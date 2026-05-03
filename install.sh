@@ -2103,14 +2103,21 @@ cmd_update_script() {
 
     # Extract just the CLI script portion (between CLIEOF markers)
     local cli_path="$HOME/.silicon/bin/silicon"
+    local cli_dir
+    cli_dir=$(dirname "$cli_path")
     local new_cli
-    new_cli=$(mktemp /tmp/silicon-cli-XXXXXX)
+    new_cli=$(mktemp "$cli_dir/.silicon-cli-XXXXXX")
 
     sed -n "/^cat > .*CLI_SCRIPT.*<< 'CLIEOF'/,/^CLIEOF$/p" "$tmp_script" | sed '1d;$d' > "$new_cli"
 
     if [ -s "$new_cli" ]; then
-        cp "$new_cli" "$cli_path"
-        chmod +x "$cli_path"
+        chmod +x "$new_cli"
+        if ! bash -n "$new_cli"; then
+            error "Downloaded CLI failed syntax validation. Keeping current CLI."
+            rm -f "$tmp_script" "$new_cli"
+            exit 1
+        fi
+        mv -f "$new_cli" "$cli_path"
         success "CLI updated to latest version"
     else
         error "Failed to extract CLI from installer. Try: silicon install"
