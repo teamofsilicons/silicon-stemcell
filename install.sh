@@ -2087,7 +2087,15 @@ PY
 cmd_update_script() {
     # Update the silicon CLI script (not the instances themselves)
     info "Updating silicon CLI..."
-    local script_url="https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/main/install.sh"
+    local ref="main"
+    if command -v git &>/dev/null; then
+        local latest_sha
+        latest_sha=$(git ls-remote https://github.com/unlikefraction/silicon-stemcell.git refs/heads/main 2>/dev/null | awk '{print $1}')
+        if [ -n "$latest_sha" ]; then
+            ref="$latest_sha"
+        fi
+    fi
+    local script_url="https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/${ref}/install.sh"
     local tmp_script
     tmp_script=$(mktemp /tmp/silicon-update-XXXXXX.sh)
 
