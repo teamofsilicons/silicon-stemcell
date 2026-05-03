@@ -6,6 +6,8 @@ import time
 import uuid
 import platform
 import shutil
+import threading
+import queue
 
 from prompts.DNA import get_manager_prompt
 
@@ -17,30 +19,68 @@ SESSIONS_DIR = os.path.join(PROJECT_ROOT, "sessions")
 # On Windows, find the full path to claude so we don't need shell=True
 # (which has an 8191 char command line limit via cmd.exe)
 CLAUDE_CMD = "claude"
+CODEX_CMD = "codex"
 if IS_WINDOWS:
     _claude_path = shutil.which("claude") or shutil.which("claude.cmd")
     if _claude_path:
         CLAUDE_CMD = _claude_path
+    _codex_path = shutil.which("codex") or shutil.which("codex.cmd")
+    if _codex_path:
+        CODEX_CMD = _codex_path
 
 TIMEOUT_MSG = "SYSTEM: You timed out (3 min limit). You were taking too long. Delegate long-running tasks to a worker instead of doing them yourself. If this task truly cannot be delegated, you may continue now — but be quick."
+
+
+SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
+
+
+def _read_silicon_config():
+    if not os.path.exists(SILICON_CONFIG_FILE):
+        return {}
+    try:
+        with open(SILICON_CONFIG_FILE) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def get_brain():
+    """Return the configured manager backend. Defaults to Claude for compatibility."""
+    brain = _read_silicon_config().get("brain", "claude")
+    if not isinstance(brain, str):
+        return "claude"
+    brain = brain.strip().lower()
+    return brain if brain in {"claude", "codex"} else "claude"
+
+
+def _session_file(carbon_id, brain="claude"):
+    suffix = "" if brain == "claude" else f"_{brain}"
+    return os.path.join(SESSIONS_DIR, f"{carbon_id}{suffix}.txt")
 
 
 def _get_session_id(carbon_id):
     """Get session UUID for a specific carbon."""
     os.makedirs(SESSIONS_DIR, exist_ok=True)
-    session_file = os.path.join(SESSIONS_DIR, f"{carbon_id}.txt")
+    session_file = _session_file(carbon_id, "claude")
     if os.path.exists(session_file):
         with open(session_file) as f:
             return f.read().strip()
     # Create a new session for this carbon
-    return new_session(carbon_id)
+    return new_session(carbon_id, brain="claude")
 
 
-def new_session(carbon_id):
-    """Generate a new session UUID for a specific carbon."""
+def new_session(carbon_id, brain=None):
+    """Reset the active manager session for a carbon."""
+    brain = (brain or get_brain()).lower()
     os.makedirs(SESSIONS_DIR, exist_ok=True)
+    if brain == "codex":
+        session_file = _session_file(carbon_id, "codex")
+        if os.path.exists(session_file):
+            os.remove(session_file)
+        return "new codex thread will be created on next turn"
+
     new_id = str(uuid.uuid4())
-    session_file = os.path.join(SESSIONS_DIR, f"{carbon_id}.txt")
+    session_file = _session_file(carbon_id, "claude")
     with open(session_file, "w") as f:
         f.write(new_id)
     return new_id
@@ -291,12 +331,299 @@ def claude_code(text, carbon_id, on_tools=None):
         return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}', None, []
 
 
-def parse_manager_output(output):
+class _CodexAppServer:
+    """Minimal JSON-RPC client for `codex app-server` over stdio."""
+
+    def __init__(self, tag, timeout=180):
+        self.tag = tag
+        self.timeout = timeout
+        self.next_id = 1
+        self.messages = queue.Queue()
+        self.stderr_lines = []
+        self.proc = subprocess.Popen(
+            [
+                CODEX_CMD, "app-server",
+                "--listen", "stdio://",
+                "--config", 'sandbox_mode="danger-full-access"',
+                "--config", 'approval_policy="never"',
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=PROJECT_ROOT,
+            bufsize=1,
+        )
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+    def _read_stdout(self):
+        for line in self.proc.stdout:
+            self.messages.put(("stdout", line.rstrip("\n")))
+
+    def _read_stderr(self):
+        for line in self.proc.stderr:
+            line = line.rstrip("\n")
+            self.stderr_lines.append(line)
+            self.messages.put(("stderr", line))
+
+    def close(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+
+    def send(self, method, params=None, msg_id=None):
+        if msg_id is None:
+            msg_id = self.next_id
+            self.next_id += 1
+        payload = {"id": msg_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        self.proc.stdin.write(json.dumps(payload) + "\n")
+        self.proc.stdin.flush()
+        return msg_id
+
+    def respond(self, msg_id, result):
+        self.proc.stdin.write(json.dumps({"id": msg_id, "result": result}) + "\n")
+        self.proc.stdin.flush()
+
+    def _handle_server_request(self, msg):
+        method = msg.get("method", "")
+        msg_id = msg.get("id")
+        if msg_id is None:
+            return False
+
+        if method == "item/commandExecution/requestApproval":
+            self.respond(msg_id, {"decision": "acceptForSession"})
+            return True
+        if method == "item/fileChange/requestApproval":
+            self.respond(msg_id, {"decision": "acceptForSession"})
+            return True
+        if method == "item/tool/requestUserInput":
+            self.respond(msg_id, {"canceled": True})
+            return True
+        if method == "mcpServer/elicitation/request":
+            self.respond(msg_id, {"action": "cancel"})
+            return True
+        return False
+
+    def request(self, method, params=None, timeout=None):
+        req_id = self.send(method, params)
+        deadline = time.time() + (timeout or self.timeout)
+
+        while time.time() < deadline:
+            try:
+                source, line = self.messages.get(timeout=0.25)
+            except queue.Empty:
+                if self.proc.poll() is not None:
+                    raise RuntimeError(self._process_exit_message())
+                continue
+
+            if source == "stderr":
+                continue
+
+            try:
+                msg = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            if self._handle_server_request(msg):
+                continue
+            if msg.get("id") == req_id:
+                return msg
+
+        raise subprocess.TimeoutExpired([CODEX_CMD, "app-server"], timeout or self.timeout)
+
+    def _process_exit_message(self):
+        detail = "\n".join(self.stderr_lines[-5:]).strip()
+        return f"codex app-server exited with code {self.proc.returncode}" + (f": {detail}" if detail else "")
+
+
+def _codex_thread_file(carbon_id):
+    return _session_file(carbon_id, "codex")
+
+
+def _read_codex_thread_id(carbon_id):
+    path = _codex_thread_file(carbon_id)
+    if not os.path.exists(path):
+        return ""
+    with open(path) as f:
+        return f.read().strip()
+
+
+def _write_codex_thread_id(carbon_id, thread_id):
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    with open(_codex_thread_file(carbon_id), "w") as f:
+        f.write(thread_id)
+
+
+def _codex_thread_params(system_prompt):
+    return {
+        "cwd": PROJECT_ROOT,
+        "baseInstructions": system_prompt,
+        "approvalPolicy": "never",
+        "sandbox": "danger-full-access",
+    }
+
+
+def _codex_start_or_resume_thread(client, carbon_id, system_prompt):
+    thread_id = _read_codex_thread_id(carbon_id)
+    params = _codex_thread_params(system_prompt)
+
+    if thread_id:
+        resp = client.request("thread/resume", {**params, "threadId": thread_id}, timeout=60)
+        if "result" in resp:
+            return resp["result"]["thread"]["id"]
+        print(f"  [manager:{carbon_id}] codex resume failed; creating new thread", flush=True)
+
+    resp = client.request("thread/start", {**params, "ephemeral": False}, timeout=60)
+    if "error" in resp:
+        raise RuntimeError(resp["error"].get("message", "codex thread/start failed"))
+    thread_id = resp["result"]["thread"]["id"]
+    _write_codex_thread_id(carbon_id, thread_id)
+    return thread_id
+
+
+def codex_app_server(text, carbon_id, on_tools=None):
+    """Invoke the Manager through Codex app-server.
+    Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
+    tag = f"manager:{carbon_id}"
+    system_prompt = get_manager_prompt(carbon_id)
+    client = None
+    final_text = ""
+    streamed_text = ""
+    rate_limit_msg = None
+    executed_tools = []
+    seen_tool_keys = set()
+    error_msg = ""
+    last_preview_at = 0
+
+    try:
+        client = _CodexAppServer(tag)
+        client.request("initialize", {
+            "clientInfo": {"name": "silicon", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True},
+        }, timeout=30)
+        thread_id = _codex_start_or_resume_thread(client, carbon_id, system_prompt)
+
+        turn_resp = client.request("turn/start", {
+            "threadId": thread_id,
+            "cwd": PROJECT_ROOT,
+            "approvalPolicy": "never",
+            "sandboxPolicy": {"type": "dangerFullAccess"},
+            "input": [{"type": "text", "text": text}],
+        }, timeout=60)
+        if "error" in turn_resp:
+            raise RuntimeError(turn_resp["error"].get("message", "codex turn/start failed"))
+
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            try:
+                source, line = client.messages.get(timeout=0.25)
+            except queue.Empty:
+                if client.proc.poll() is not None:
+                    raise RuntimeError(client._process_exit_message())
+                continue
+
+            if source == "stderr":
+                if _is_rate_limit(line):
+                    rate_limit_msg = line
+                continue
+
+            try:
+                msg = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            if client._handle_server_request(msg):
+                continue
+
+            method = msg.get("method", "")
+            params = msg.get("params", {})
+
+            if method == "item/agentMessage/delta":
+                delta = params.get("delta", "")
+                if delta:
+                    streamed_text += delta
+                    now = time.time()
+                    preview = streamed_text.strip()[:150].replace("\n", " ")
+                    if preview and now - last_preview_at >= 5:
+                        print(f"  [{tag}] {preview}", flush=True)
+                        last_preview_at = now
+                    if _is_rate_limit(streamed_text):
+                        rate_limit_msg = streamed_text
+                    if on_tools:
+                        tools_data = parse_manager_output(streamed_text, debug=False)
+                        if tools_data and "tools" in tools_data:
+                            candidates = []
+                            for tool in tools_data["tools"]:
+                                key = json.dumps(tool, sort_keys=True)
+                                if key not in seen_tool_keys:
+                                    seen_tool_keys.add(key)
+                                    candidates.append(tool)
+                            succeeded = on_tools(candidates) if candidates else []
+                            if succeeded:
+                                executed_tools.extend(succeeded)
+
+            elif method == "item/completed":
+                item = params.get("item", {})
+                if item.get("type") == "agentMessage":
+                    final_text = item.get("text", "").strip() or streamed_text.strip()
+
+            elif method == "error":
+                err = params.get("error", {})
+                error_msg = err.get("message", "")
+                if _is_rate_limit(error_msg):
+                    rate_limit_msg = error_msg
+
+            elif method == "turn/completed":
+                turn = params.get("turn", {})
+                status = turn.get("status", "")
+                if status == "failed" and not final_text:
+                    turn_error = turn.get("error") or {}
+                    error_msg = turn_error.get("message") or error_msg or "Codex turn failed"
+                break
+        else:
+            raise subprocess.TimeoutExpired([CODEX_CMD, "app-server"], 180)
+
+        output = final_text or streamed_text.strip()
+        if output and _is_rate_limit(output):
+            rate_limit_msg = output
+        if output:
+            return output, rate_limit_msg, executed_tools
+        if error_msg:
+            return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {error_msg}"}}, {{"tool": "do_nothing"}}]}}', rate_limit_msg, executed_tools
+        return "", rate_limit_msg, executed_tools
+
+    except subprocess.TimeoutExpired:
+        from core.telegram import reply_user
+        reply_user("hold on, still working on this...", carbon_id)
+        return TIMEOUT_MSG, None, []
+    except Exception as e:
+        return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}', None, []
+    finally:
+        if client:
+            client.close()
+
+
+def manager_code(text, carbon_id, on_tools=None):
+    """Invoke the configured manager brain."""
+    if get_brain() == "codex":
+        return codex_app_server(text, carbon_id, on_tools=on_tools)
+    return claude_code(text, carbon_id, on_tools=on_tools)
+
+
+def parse_manager_output(output, debug=True):
     """Extract ALL tools JSON blocks from manager's text output.
     The manager may output one or more JSON blocks like: {"tools": [...]}
     Returns a merged {"tools": [...]} with all tools from all blocks, or None."""
 
-    print(f"[DEBUG] Raw manager output:\n{output}\n", flush=True)
+    if debug:
+        print(f"[DEBUG] Raw manager output:\n{output}\n", flush=True)
 
     if not output:
         return None

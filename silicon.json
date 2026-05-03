@@ -1,8 +1,11 @@
 {
     "name": "Silicon",
     "address": "",
+    "brain": "claude",
     "run": "python main.py",
     "workers": {
-        "terminal": ["claude", "chatgpt"]
+        "browser": ["claude", "codex"],
+        "terminal": ["claude", "codex"],
+        "writer": ["claude", "codex"]
     }
 }

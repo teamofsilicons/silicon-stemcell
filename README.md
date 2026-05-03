@@ -1,13 +1,13 @@
 # Silicon Stemcell
 
-An autonomous AI assistant framework that lives on Telegram. Silicon (the AI) serves Carbons (humans) through a manager-worker architecture powered by Claude Code CLI.
+An autonomous AI assistant framework that lives on Telegram. Silicon (the AI) serves Carbons (humans) through a manager-worker architecture powered by Claude Code CLI or Codex.
 
 Silicon isn't a chatbot. It's a full agent — it delegates work to specialized workers, browses the web, runs terminal commands, writes content, manages cron jobs, maintains memory across sessions, and handles multiple users with trust-based access control.
 
 ## How It Works
 
 ```
-Telegram ←→ Event Loop ←→ Manager (Claude CLI) ←→ Workers (Claude CLI)
+Telegram ←→ Event Loop ←→ Manager (Claude or Codex) ←→ Workers (Claude or Codex)
                 ↕
          Crons, Memory, Messages
 ```
@@ -19,10 +19,10 @@ Telegram ←→ Event Loop ←→ Manager (Claude CLI) ←→ Workers (Claude CL
 4. Detects completed workers
 5. Cleans old archives
 
-**Manager** is a Claude CLI session per user. It doesn't do the work itself — it plans, delegates to workers, and communicates with the carbon. It outputs structured JSON tool calls.
+**Manager** is a persistent Claude or Codex session per user. It doesn't do the work itself — it plans, delegates to workers, and communicates with the carbon. It outputs structured JSON tool calls.
 
-**Workers** are separate Claude CLI processes that do the actual work:
-- **Browser** — Chrome access via Claude for Chrome MCP + terminal + web search. Queued (one at a time) to prevent race conditions.
+**Workers** are separate Claude or Codex processes that do the actual work:
+- **Browser** — Browser access via silicon-browser + terminal + web search. Queued (one at a time) to prevent race conditions.
 - **Terminal** — Full terminal access. Code, system ops, anything. Runs in parallel.
 - **Writer** — Writing-specialized with anti-AI-slop skills baked in. Runs in parallel.
 
@@ -31,7 +31,7 @@ Telegram ←→ Event Loop ←→ Manager (Claude CLI) ←→ Workers (Claude CL
 ### Prerequisites
 
 - Python 3.9+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) or Codex installed and authenticated
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - (Optional) [Claude for Chrome](https://chromewebstore.google.com/detail/claude/danfohhogdcfmbihjbfmcaeaonjameja) extension for browser workers
 
@@ -42,6 +42,23 @@ git clone <repo-url> silicon-stemcell
 cd silicon-stemcell
 pip install -r requirements.txt
 ```
+
+### Provider Selection
+
+`silicon.json` controls the manager and worker backends independently:
+
+```json
+{
+  "brain": "claude",
+  "workers": {
+    "browser": ["claude", "codex"],
+    "terminal": ["claude", "codex"],
+    "writer": ["claude", "codex"]
+  }
+}
+```
+
+`brain` chooses the manager. Each worker list is tried in order for new workers; once a worker starts, its provider and session are persisted for future `worker/message` calls.
 
 ### Configure
 
@@ -132,7 +149,7 @@ This keeps Telegram as the carbon-facing surface while Glass handles silicon sto
 ### Multi-Carbon (Multi-User)
 
 Silicon supports multiple users simultaneously. Each user (carbon) gets:
-- Their own manager session (persistent Claude CLI session)
+- Their own manager session (persistent Claude or Codex session)
 - Their own workers (invisible to other users)
 - Their own memory file at `prompts/memory/people/{carbon_id}.md`
 - A trust level that controls what they can do
@@ -191,7 +208,7 @@ All editable by the manager at runtime.
 ```
 silicon-stemcell/
 ├── main.py                    # Entry point — event loop, tool execution
-├── manager.py                 # Claude CLI invocation for managers
+├── manager.py                 # Claude/Codex invocation for managers
 ├── config.py                  # Event loop config, tick interval
 ├── env.py                     # Secrets (bot token, API keys) — gitignored
 ├── requirements.txt           # Python dependencies
@@ -227,7 +244,7 @@ silicon-stemcell/
 │   ├── handler.py             # Worker lifecycle management
 │   └── outputs/               # Worker output files — gitignored
 │
-└── sessions/                  # Persistent Claude CLI sessions — gitignored
+└── sessions/                  # Persistent manager sessions — gitignored
 ```
 
 ## Commands

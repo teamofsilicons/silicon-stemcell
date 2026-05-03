@@ -12,7 +12,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from config import EVENT_LOOP, LOOP_TICK
-from manager import claude_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG
+from manager import manager_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG
 from core.telegram import reply_user, get_contacts
 from core.glass import ensure_known_silicon_contact
 from core.messages import send_manager_message
@@ -453,7 +453,7 @@ def run_all_managers(context_by_carbon):
             futures = {}
             for carbon_id, text in pending.items():
                 on_tools = _make_mid_stream_handler(carbon_id)
-                future = executor.submit(claude_code, text, carbon_id, on_tools=on_tools)
+                future = executor.submit(manager_code, text, carbon_id, on_tools=on_tools)
                 futures[future] = carbon_id
 
             for future in as_completed(futures):

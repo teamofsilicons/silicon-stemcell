@@ -35,6 +35,34 @@ confirm() {
     esac
 }
 
+choose_worker_provider_order() {
+    local worker_type="$1"
+    local default_choice="${2:-claude}"
+    local choice
+    local result
+
+    printf "${BOLD}? Which provider should %s workers use – claude or codex?${RESET} [%s]: " "$worker_type" "$default_choice" >&2
+    read -r choice </dev/tty
+    choice="${choice:-$default_choice}"
+    case "$choice" in
+        codex)
+            if confirm "Keep claude as fallback for $worker_type workers?"; then
+                result='["codex", "claude"]'
+            else
+                result='["codex"]'
+            fi
+            ;;
+        *)
+            if confirm "Keep codex as fallback for $worker_type workers?"; then
+                result='["claude", "codex"]'
+            else
+                result='["claude"]'
+            fi
+            ;;
+    esac
+    echo "$result"
+}
+
 # If piped (curl | bash), we need /dev/tty for user input
 read_input() {
     local prompt="$1" default="${2:-}"
@@ -336,7 +364,7 @@ install_node() {
 if command -v node &>/dev/null && command -v npm &>/dev/null; then
     success "Node.js: $(node --version)"
 else
-    warn "Node.js / npm not found (needed for Claude Code CLI & silicon-browser)"
+    warn "Node.js / npm not found (needed for Claude Code CLI, Codex CLI & silicon-browser)"
     if confirm "Install Node.js?"; then
         install_node
         if command -v node &>/dev/null; then
@@ -346,7 +374,7 @@ else
             exit 1
         fi
     else
-        error "Node.js is required for Claude Code CLI. Aborting."
+        error "Node.js is required for AI backends and silicon-browser. Aborting."
         exit 1
     fi
 fi
@@ -381,14 +409,61 @@ else
         if command -v claude &>/dev/null; then
             success "Claude Code CLI installed"
         else
-            error "Claude Code CLI installation failed."
-            error "Try manually: npm install -g @anthropic-ai/claude-code"
-            exit 1
+            warn "Claude Code CLI installation failed."
+            warn "Try manually: npm install -g @anthropic-ai/claude-code"
         fi
     else
-        error "Claude Code CLI is required. Aborting."
-        exit 1
+        warn "Skipping Claude Code CLI."
     fi
+fi
+
+# ── Codex CLI ─────────────────────────────────────────────────
+
+if command -v codex &>/dev/null; then
+    success "Codex CLI: installed"
+else
+    warn "Codex CLI not found"
+    if confirm "Install Codex CLI via npm?"; then
+        info "Installing @openai/codex globally..."
+        npm install -g @openai/codex
+        if command -v codex &>/dev/null; then
+            success "Codex CLI installed"
+        else
+            warn "Codex CLI installation failed."
+            warn "Try manually: npm install -g @openai/codex"
+        fi
+    else
+        warn "Skipping Codex CLI."
+    fi
+fi
+
+if ! command -v claude &>/dev/null && ! command -v codex &>/dev/null; then
+    error "Install at least one AI backend: Claude Code CLI or Codex CLI."
+    exit 1
+fi
+
+# ── Manager brain ─────────────────────────────────────────────
+
+BRAIN_CHOICE="claude"
+BROWSER_WORKERS='["claude"]'
+TERMINAL_WORKERS='["claude"]'
+WRITER_WORKERS='["claude"]'
+if command -v claude &>/dev/null && command -v codex &>/dev/null; then
+    ask "Which brain should Silicon use – claude or codex? [claude]"
+    read -r brain_ans </dev/tty
+    brain_ans="${brain_ans:-claude}"
+    case "$brain_ans" in
+        codex) BRAIN_CHOICE="codex" ;;
+        *) BRAIN_CHOICE="claude" ;;
+    esac
+    BROWSER_WORKERS=$(choose_worker_provider_order "browser" "claude")
+    TERMINAL_WORKERS=$(choose_worker_provider_order "terminal" "claude")
+    WRITER_WORKERS=$(choose_worker_provider_order "writer" "claude")
+elif command -v codex &>/dev/null; then
+    BRAIN_CHOICE="codex"
+    BROWSER_WORKERS='["codex"]'
+    TERMINAL_WORKERS='["codex"]'
+    WRITER_WORKERS='["codex"]'
 fi
 
 # ── silicon-browser ───────────────────────────────────────────
@@ -562,6 +637,31 @@ ENVEOF
 
     success "Configuration saved to $ENV_FILE"
 fi
+
+"$PYTHON_CMD" - <<PY
+import json
+import pathlib
+
+silicon_path = pathlib.Path("$INSTALL_DIR") / "silicon.json"
+if silicon_path.exists():
+    try:
+        silicon = json.loads(silicon_path.read_text())
+    except json.JSONDecodeError:
+        silicon = {}
+else:
+    silicon = {}
+
+silicon.setdefault("name", "Silicon")
+silicon.setdefault("run", "python main.py")
+silicon.setdefault("workers", {})
+silicon["brain"] = "$BRAIN_CHOICE"
+silicon["workers"] = {
+    "browser": $BROWSER_WORKERS,
+    "terminal": $TERMINAL_WORKERS,
+    "writer": $WRITER_WORKERS,
+}
+silicon_path.write_text(json.dumps(silicon, indent=4) + "\\n")
+PY
 
 # ═════════════════════════════════════════════════════════════
 # STEP 5: Silicon registry
@@ -981,7 +1081,8 @@ else:
 
 silicon.setdefault("name", "Silicon")
 silicon.setdefault("run", "python main.py")
-silicon.setdefault("workers", {"terminal": ["claude", "chatgpt"]})
+silicon.setdefault("brain", "claude")
+silicon.setdefault("workers", {"browser": ["claude"], "terminal": ["claude"], "writer": ["claude"]})
 silicon.setdefault("address", "$instance_name")
 silicon.pop("version", None)
 silicon_path.write_text(json.dumps(silicon, indent=4) + "\\n")
@@ -1068,30 +1169,28 @@ PY
         fi
 
         # ── Terminal worker preference (codex detection) ──
-        local terminal_workers='["claude", "chatgpt"]'
-        if command -v codex &>/dev/null; then
+        local brain_choice="claude"
+        local browser_workers='["claude"]'
+        local terminal_workers='["claude"]'
+        local writer_workers='["claude"]'
+        if command -v claude &>/dev/null && command -v codex &>/dev/null; then
             echo ""
-            info "Detected that codex is installed."
-            printf "${BOLD}? Which do you prefer for terminal workers – claude or codex?${RESET} [claude]: "
-            local tw_choice
-            read -r tw_choice
-            tw_choice="${tw_choice:-claude}"
-            case "$tw_choice" in
-                codex)
-                    if confirm "Do you want to keep claude as fallback for terminal workers?"; then
-                        terminal_workers='["codex", "claude"]'
-                    else
-                        terminal_workers='["codex"]'
-                    fi
-                    ;;
-                *)
-                    if confirm "Do you want to keep codex as fallback for terminal workers?"; then
-                        terminal_workers='["claude", "codex"]'
-                    else
-                        terminal_workers='["claude"]'
-                    fi
-                    ;;
+            info "Detected both claude and codex."
+            printf "${BOLD}? Which brain should Silicon use – claude or codex?${RESET} [claude]: "
+            read -r brain_choice
+            brain_choice="${brain_choice:-claude}"
+            case "$brain_choice" in
+                codex) brain_choice="codex" ;;
+                *) brain_choice="claude" ;;
             esac
+            browser_workers=$(choose_worker_provider_order "browser" "claude")
+            terminal_workers=$(choose_worker_provider_order "terminal" "claude")
+            writer_workers=$(choose_worker_provider_order "writer" "claude")
+        elif command -v codex &>/dev/null; then
+            brain_choice="codex"
+            browser_workers='["codex"]'
+            terminal_workers='["codex"]'
+            writer_workers='["codex"]'
         fi
 
         "$PYTHON_CMD" - <<PY
@@ -1122,7 +1221,12 @@ if silicon_path.exists():
         silicon = json.loads(silicon_path.read_text())
     except json.JSONDecodeError:
         silicon = {}
-    silicon["workers"] = {"terminal": $terminal_workers}
+    silicon["brain"] = "$brain_choice"
+    silicon["workers"] = {
+        "browser": $browser_workers,
+        "terminal": $terminal_workers,
+        "writer": $writer_workers,
+    }
     silicon_path.write_text(json.dumps(silicon, indent=4) + "\\n")
 PY
     fi
@@ -1841,7 +1945,8 @@ else:
 
 silicon.setdefault("name", "Silicon")
 silicon.setdefault("run", "python main.py")
-silicon.setdefault("workers", {"terminal": ["claude", "chatgpt"]})
+silicon.setdefault("brain", "claude")
+silicon.setdefault("workers", {"browser": ["claude"], "terminal": ["claude"], "writer": ["claude"]})
 silicon.pop("version", None)
 silicon["address"] = "$username"
 silicon["glass"] = {

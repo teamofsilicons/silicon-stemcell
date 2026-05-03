@@ -46,9 +46,9 @@ About Worker Types:
 
 2. worker/terminal: Can do anything on Terminal. Specialized for writing code and doing things on the OS. Can build full fleged apps in any language mentioned in the task. Use this for writing custom tools to be used. Multiple terminal workers can work in parallel. Make sure to give all the technical details to this worker.
 
-   New terminal workers read their backend preference from `silicon.json` every time they are started. The value is an ordered list at `workers.terminal`, for example `["chatgpt", "claude"]`. Silicon tries providers in that exact order for NEW terminal workers only.
+   New workers read their backend preference from `silicon.json` every time they are started. Each worker type has its own ordered list, for example `workers.terminal`, `workers.browser`, and `workers.writer`. Values can be `claude` or `codex`; legacy `chatgpt` means `codex`. Silicon tries providers in that exact order for NEW workers only.
 
-   Once a terminal worker has started successfully, its actual provider and session id are persisted. Future `worker/message` calls resume with that same provider regardless of what `silicon.json` says later.
+   Once a worker has started successfully, its actual provider and session id are persisted. Future `worker/message` calls resume with that same provider regardless of what `silicon.json` says later.
 
 3. worker/writer: Its an excellent writter. It has been given special skills on how to write. It can write and edit its own writting before giving you back the best version of written things.
 

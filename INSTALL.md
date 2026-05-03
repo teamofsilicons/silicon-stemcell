@@ -21,8 +21,8 @@ The installer will check for prerequisites, install what's missing (with your co
 | Component | Purpose | Install method |
 |-----------|---------|---------------|
 | Python 3.9+ | Runtime | brew / apt / winget |
-| Node.js | For Claude Code & silicon-browser | brew / apt / winget |
-| Claude Code CLI | AI backbone | `npm install -g @anthropic-ai/claude-code` |
+| Node.js | For Claude Code, Codex & silicon-browser | brew / apt / winget |
+| Claude Code CLI / Codex | AI backbone | `npm install -g @anthropic-ai/claude-code` / `npm install -g @openai/codex` |
 | silicon-browser | Browser automation | `npm install -g silicon-browser` |
 | pip packages | Python dependencies | `pip install -r requirements.txt` |
 
@@ -48,6 +48,7 @@ pip install -r requirements.txt
 
 # 3. Make sure these are installed globally
 npm install -g @anthropic-ai/claude-code
+npm install -g @openai/codex
 npm install -g silicon-browser
 
 # 4. Configure (will prompt on first run)

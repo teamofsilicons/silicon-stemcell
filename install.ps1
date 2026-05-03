@@ -45,6 +45,21 @@ function Read-Secret {
     return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
 }
 
+function Read-WorkerProviderOrder {
+    param([string]$WorkerType, [string]$Default = "claude")
+    $choice = Read-Value "Which provider should $WorkerType workers use – claude or codex?" $Default
+    if ($choice -eq "codex") {
+        if (Read-Confirm "Keep claude as fallback for $WorkerType workers?") {
+            return @("codex", "claude")
+        }
+        return @("codex")
+    }
+    if (Read-Confirm "Keep codex as fallback for $WorkerType workers?") {
+        return @("claude", "codex")
+    }
+    return @("claude")
+}
+
 # ── Banner ────────────────────────────────────────────────────
 
 Clear-Host
@@ -159,7 +174,7 @@ $hasNpm  = $null -ne (Get-Command npm -ErrorAction SilentlyContinue)
 if ($hasNode -and $hasNpm) {
     Write-Ok "Node.js: $(node --version)"
 } else {
-    Write-Warn "Node.js / npm not found (needed for Claude Code CLI & silicon-browser)"
+    Write-Warn "Node.js / npm not found (needed for Claude Code CLI, Codex CLI & silicon-browser)"
     if (Read-Confirm "Install Node.js?") {
         $hasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($hasWinget) {
@@ -176,7 +191,7 @@ if ($hasNode -and $hasNpm) {
         }
         Write-Ok "Node.js installed: $(node --version)"
     } else {
-        Write-Err "Node.js is required for Claude Code CLI. Aborting."
+        Write-Err "Node.js is required for AI backends and silicon-browser. Aborting."
         exit 1
     }
 }
@@ -219,13 +234,57 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
         if (Get-Command claude -ErrorAction SilentlyContinue) {
             Write-Ok "Claude Code CLI installed"
         } else {
-            Write-Err "Claude Code CLI installation failed. Try: npm install -g @anthropic-ai/claude-code"
-            exit 1
+            Write-Warn "Claude Code CLI installation failed. Try: npm install -g @anthropic-ai/claude-code"
         }
     } else {
-        Write-Err "Claude Code CLI is required. Aborting."
-        exit 1
+        Write-Warn "Skipping Claude Code CLI."
     }
+}
+
+# ── Codex CLI ─────────────────────────────────────────────────
+
+if (Get-Command codex -ErrorAction SilentlyContinue) {
+    Write-Ok "Codex CLI: installed"
+} else {
+    Write-Warn "Codex CLI not found"
+    if (Read-Confirm "Install Codex CLI via npm?") {
+        Write-Info "Installing @openai/codex globally..."
+        npm install -g @openai/codex
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        if (Get-Command codex -ErrorAction SilentlyContinue) {
+            Write-Ok "Codex CLI installed"
+        } else {
+            Write-Warn "Codex CLI installation failed. Try: npm install -g @openai/codex"
+        }
+    } else {
+        Write-Warn "Skipping Codex CLI."
+    }
+}
+
+if (-not (Get-Command claude -ErrorAction SilentlyContinue) -and -not (Get-Command codex -ErrorAction SilentlyContinue)) {
+    Write-Err "Install at least one AI backend: Claude Code CLI or Codex CLI."
+    exit 1
+}
+
+# ── Manager brain ─────────────────────────────────────────────
+
+$BrainChoice = "claude"
+$BrowserWorkers = @("claude")
+$TerminalWorkers = @("claude")
+$WriterWorkers = @("claude")
+$HasClaude = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
+$HasCodex = $null -ne (Get-Command codex -ErrorAction SilentlyContinue)
+if ($HasClaude -and $HasCodex) {
+    $brainInput = Read-Value "Which brain should Silicon use – claude or codex?" "claude"
+    if ($brainInput -eq "codex") { $BrainChoice = "codex" }
+    $BrowserWorkers = Read-WorkerProviderOrder "browser" "claude"
+    $TerminalWorkers = Read-WorkerProviderOrder "terminal" "claude"
+    $WriterWorkers = Read-WorkerProviderOrder "writer" "claude"
+} elseif ($HasCodex) {
+    $BrainChoice = "codex"
+    $BrowserWorkers = @("codex")
+    $TerminalWorkers = @("codex")
+    $WriterWorkers = @("codex")
 }
 
 # ── silicon-browser ───────────────────────────────────────────
@@ -374,6 +433,37 @@ BROWSER_PROFILE = "$InstanceName"
 
     Write-Ok "Configuration saved to $EnvFile"
 }
+
+$SiliconJson = Join-Path $InstallDir "silicon.json"
+if (Test-Path $SiliconJson) {
+    try {
+        $silicon = Get-Content $SiliconJson -Raw | ConvertFrom-Json
+    } catch {
+        $silicon = [pscustomobject]@{}
+    }
+} else {
+    $silicon = [pscustomobject]@{}
+}
+if (-not ($silicon.PSObject.Properties.Name -contains "name")) {
+    $silicon | Add-Member -NotePropertyName "name" -NotePropertyValue "Silicon"
+}
+if (-not ($silicon.PSObject.Properties.Name -contains "run")) {
+    $silicon | Add-Member -NotePropertyName "run" -NotePropertyValue "python main.py"
+}
+if (-not ($silicon.PSObject.Properties.Name -contains "workers")) {
+    $silicon | Add-Member -NotePropertyName "workers" -NotePropertyValue @{}
+}
+if ($silicon.PSObject.Properties.Name -contains "brain") {
+    $silicon.brain = $BrainChoice
+} else {
+    $silicon | Add-Member -NotePropertyName "brain" -NotePropertyValue $BrainChoice
+}
+$silicon.workers = @{
+    browser  = $BrowserWorkers
+    terminal = $TerminalWorkers
+    writer   = $WriterWorkers
+}
+$silicon | ConvertTo-Json -Depth 10 | Set-Content $SiliconJson -Encoding UTF8
 
 # ═════════════════════════════════════════════════════════════
 # STEP 5: Silicon registry
