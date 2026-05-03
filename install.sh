@@ -2117,8 +2117,13 @@ cmd_update_script() {
             rm -f "$tmp_script" "$new_cli"
             exit 1
         fi
-        mv -f "$new_cli" "$cli_path"
-        success "CLI updated to latest version"
+        if [ -f "$cli_path" ] && cmp -s "$new_cli" "$cli_path"; then
+            rm -f "$new_cli"
+            success "CLI already up to date"
+        else
+            mv -f "$new_cli" "$cli_path"
+            success "CLI updated to latest version"
+        fi
     else
         error "Failed to extract CLI from installer. Try: silicon install"
     fi
