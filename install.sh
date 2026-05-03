@@ -642,6 +642,20 @@ fi
 import json
 import pathlib
 
+def provider_list(raw, default):
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return default
+    allowed = {"claude", "codex", "chatgpt"}
+    if not isinstance(value, list):
+        return default
+    out = []
+    for item in value:
+        if isinstance(item, str) and item in allowed and item not in out:
+            out.append("codex" if item == "chatgpt" else item)
+    return out or default
+
 silicon_path = pathlib.Path("$INSTALL_DIR") / "silicon.json"
 if silicon_path.exists():
     try:
@@ -656,9 +670,9 @@ silicon.setdefault("run", "python main.py")
 silicon.setdefault("workers", {})
 silicon["brain"] = "$BRAIN_CHOICE"
 silicon["workers"] = {
-    "browser": $BROWSER_WORKERS,
-    "terminal": $TERMINAL_WORKERS,
-    "writer": $WRITER_WORKERS,
+    "browser": provider_list("""$BROWSER_WORKERS""", ["claude"]),
+    "terminal": provider_list("""$TERMINAL_WORKERS""", ["claude"]),
+    "writer": provider_list("""$WRITER_WORKERS""", ["claude"]),
 }
 silicon_path.write_text(json.dumps(silicon, indent=4) + "\\n")
 PY
@@ -759,6 +773,34 @@ confirm() {
         [nN]*) return 1 ;;
         *) return 0 ;;
     esac
+}
+
+choose_worker_provider_order() {
+    local worker_type="$1"
+    local default_choice="${2:-claude}"
+    local choice
+    local result
+
+    printf "${BOLD}? Which provider should %s workers use – claude or codex?${RESET} [%s]: " "$worker_type" "$default_choice" >&2
+    read -r choice
+    choice="${choice:-$default_choice}"
+    case "$choice" in
+        codex)
+            if confirm "Keep claude as fallback for $worker_type workers?"; then
+                result='["codex", "claude"]'
+            else
+                result='["codex"]'
+            fi
+            ;;
+        *)
+            if confirm "Keep codex as fallback for $worker_type workers?"; then
+                result='["claude", "codex"]'
+            else
+                result='["claude"]'
+            fi
+            ;;
+    esac
+    echo "$result"
 }
 
 read_secret() {
@@ -1215,6 +1257,21 @@ PY
         # Update silicon.json with terminal worker preference
         "$PYTHON_CMD" - <<PY
 import json, pathlib
+
+def provider_list(raw, default):
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return default
+    allowed = {"claude", "codex", "chatgpt"}
+    if not isinstance(value, list):
+        return default
+    out = []
+    for item in value:
+        if isinstance(item, str) and item in allowed and item not in out:
+            out.append("codex" if item == "chatgpt" else item)
+    return out or default
+
 silicon_path = pathlib.Path("$abs_target/silicon.json")
 if silicon_path.exists():
     try:
@@ -1223,9 +1280,9 @@ if silicon_path.exists():
         silicon = {}
     silicon["brain"] = "$brain_choice"
     silicon["workers"] = {
-        "browser": $browser_workers,
-        "terminal": $terminal_workers,
-        "writer": $writer_workers,
+        "browser": provider_list("""$browser_workers""", ["claude"]),
+        "terminal": provider_list("""$terminal_workers""", ["claude"]),
+        "writer": provider_list("""$writer_workers""", ["claude"]),
     }
     silicon_path.write_text(json.dumps(silicon, indent=4) + "\\n")
 PY
