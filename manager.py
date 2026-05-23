@@ -111,9 +111,9 @@ def _is_rate_limit(text):
     ])
 
 
-def _display_stream_event(event, tag):
+def _display_stream_event(event, tag, state=None, progress_events=None):
     """Print a stream-json event to terminal."""
-    progress_events = claude_progress_events(event)
+    progress_events = progress_events if progress_events is not None else claude_progress_events(event, state)
     if progress_events:
         for progress in progress_events:
             line = progress_display_line(progress)
@@ -316,6 +316,7 @@ def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_lo
     raw_lines = []  # collect all raw output for debugging
     executed_tools = []  # tool specs already executed mid-stream
     deadline = time.time() + timeout
+    progress_state = {}
 
     while True:
         if time.time() > deadline:
@@ -342,9 +343,10 @@ def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_lo
                 rate_limit_msg = line
             continue
 
-        for progress in claude_progress_events(event):
+        progress_events = claude_progress_events(event, progress_state)
+        for progress in progress_events:
             write_progress_line(progress_log_path, progress)
-        _display_stream_event(event, tag)
+        _display_stream_event(event, tag, progress_state, progress_events)
 
         etype = event.get("type", "")
 
