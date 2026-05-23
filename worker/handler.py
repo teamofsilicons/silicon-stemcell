@@ -4,6 +4,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -13,19 +14,16 @@ from prompts.DNA import get_worker_prompt
 IS_WINDOWS = platform.system() == "Windows"
 
 CLAUDE_CMD = "claude"
-CODEX_CMD = "codex"
 if IS_WINDOWS:
     _claude_path = shutil.which("claude") or shutil.which("claude.cmd")
     if _claude_path:
         CLAUDE_CMD = _claude_path
-    _codex_path = shutil.which("codex") or shutil.which("codex.cmd")
-    if _codex_path:
-        CODEX_CMD = _codex_path
 
 WORKER_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(WORKER_DIR)
 OUTPUTS_DIR = os.path.join(WORKER_DIR, "outputs")
 SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
+CODEX_APP_WORKER = os.path.join(WORKER_DIR, "codex_app_worker.py")
 
 ACTIVE_FILE = os.path.join(OUTPUTS_DIR, "_active_workers.json")
 BROWSER_QUEUE_FILE = os.path.join(OUTPUTS_DIR, "_browser_queue.json")
@@ -401,6 +399,13 @@ def _extract_codex_session_id_from_raw(raw):
     for event in _extract_json_events(raw):
         if event.get("type") == "thread.started" and event.get("thread_id"):
             return event["thread_id"]
+        if event.get("method") == "thread/started":
+            thread_id = event.get("params", {}).get("thread", {}).get("id")
+            if thread_id:
+                return thread_id
+        thread_id = event.get("result", {}).get("thread", {}).get("id")
+        if thread_id:
+            return thread_id
     return ""
 
 
@@ -522,19 +527,16 @@ def _launch_claude_worker_process(worker_id, task, worker_type, carbon_id, incog
     return True, f"Done. Worker '{worker_id}' ({worker_type}, {mode}, claude) started (pid: {process.pid}, run: {run_id})"
 
 
-def _build_codex_worker_prompt(worker_type, task, resume=False):
-    if resume:
-        return task
-
+def _write_codex_worker_prompt_file(worker_id, worker_type):
     system_prompt, err = get_worker_prompt(worker_type)
     if err:
-        return ""
+        return "", err
 
-    return (
-        f"{system_prompt}\n\n"
-        "## Task from Manager\n"
-        f"{task}\n"
-    )
+    os.makedirs(OUTPUTS_DIR, exist_ok=True)
+    prompt_path = os.path.join(OUTPUTS_DIR, f"_{worker_id}_codex_prompt.md")
+    with open(prompt_path, "w", encoding="utf-8") as f:
+        f.write(system_prompt)
+    return prompt_path, ""
 
 
 def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incognito=False, resume=False, session_id=""):
@@ -544,30 +546,24 @@ def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incogn
 
     run_id = _utc_timestamp_slug()
     output_path = _run_output_path(worker_id, run_id)
-    prompt = _build_codex_worker_prompt(worker_type, task, resume=resume)
-    if not prompt:
-        return False, f"Error: Could not build {worker_type} worker prompt."
+    prompt_path, err = _write_codex_worker_prompt_file(worker_id, worker_type)
+    if err:
+        return False, err
 
     if resume:
         if not session_id:
             session_id = worker_record.get("session_id", "")
         if not session_id:
             return False, f"Error: Worker '{worker_id}' has no saved codex session id to resume."
-        cmd = [
-            CODEX_CMD, "exec", "resume", session_id, "-",
-            "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-s", "danger-full-access",
-            "-C", PROJECT_ROOT,
-        ]
-    else:
-        cmd = [
-            CODEX_CMD, "exec", "-",
-            "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-s", "danger-full-access",
-            "-C", PROJECT_ROOT,
-        ]
+
+    cmd = [
+        sys.executable,
+        CODEX_APP_WORKER,
+        "--cwd", PROJECT_ROOT,
+        "--system-prompt-file", prompt_path,
+    ]
+    if session_id:
+        cmd.extend(["--thread-id", session_id])
 
     env = os.environ.copy()
     if worker_type == "browser":
@@ -579,7 +575,7 @@ def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incogn
         popen_kwargs["stdin"] = subprocess.PIPE
         process = subprocess.Popen(cmd, **popen_kwargs)
         try:
-            process.stdin.write(prompt)
+            process.stdin.write(task)
             process.stdin.close()
         except BrokenPipeError:
             pass
@@ -1037,7 +1033,10 @@ def _has_completion_event(output_path, provider):
     raw = _read_text_file(output_path)
     events = _extract_json_events(raw)
     if _is_codex_provider(provider):
-        return any(event.get("type") == "turn.completed" for event in events)
+        return any(
+            event.get("type") == "turn.completed" or event.get("method") == "turn/completed"
+            for event in events
+        )
     return any(event.get("type") == "result" for event in events)
 
 
@@ -1206,21 +1205,100 @@ def _parse_codex_output(raw):
         return "No parseable output yet."
 
     texts = []
+    streamed_text = ""
+    tool_lines = []
+    reasoning_lines = []
+    error_lines = []
+    token_summary = ""
+
     for event in events:
+        if event.get("type") == "silicon.codex_app_error":
+            message = event.get("message", "").strip()
+            if message:
+                error_lines.append(message)
+
         if event.get("type") == "item.completed":
             item = event.get("item", {})
             if item.get("type") == "agent_message":
                 text = item.get("text", "").strip()
                 if text:
                     texts.append(text)
+            continue
+
+        method = event.get("method", "")
+        params = event.get("params", {})
+
+        if method == "item/agentMessage/delta":
+            streamed_text += params.get("delta", "")
+
+        elif method == "item/completed":
+            item = params.get("item", {})
+            item_type = item.get("type", "")
+            if item_type == "agentMessage":
+                text = item.get("text", "").strip()
+                if text:
+                    texts.append(text)
+            elif item_type == "commandExecution":
+                command = item.get("command") or item.get("cmd") or ""
+                status = item.get("status") or item.get("exitCode") or "completed"
+                if isinstance(command, list):
+                    command = " ".join(str(part) for part in command)
+                if command:
+                    tool_lines.append(f"Command {status}: {command}")
+            elif item_type == "mcpToolCall":
+                name = item.get("name") or item.get("toolName") or "mcp tool"
+                status = item.get("status") or "completed"
+                tool_lines.append(f"Tool {status}: {name}")
+            elif item_type == "fileChange":
+                path = item.get("path") or item.get("filePath") or "file change"
+                status = item.get("status") or "completed"
+                tool_lines.append(f"File {status}: {path}")
+
+        elif method in ("item/reasoning/summaryTextDelta", "item/reasoning/textDelta"):
+            delta = params.get("delta", "").strip()
+            if delta:
+                reasoning_lines.append(delta)
+
+        elif method == "thread/tokenUsage/updated":
+            usage = params.get("tokenUsage", {}).get("total", {})
+            total = usage.get("totalTokens")
+            inp = usage.get("inputTokens")
+            out = usage.get("outputTokens")
+            if total is not None:
+                token_summary = f"Token usage: total={total}, input={inp}, output={out}"
+
+        elif method == "error":
+            message = params.get("message") or params.get("error", {}).get("message", "")
+            if message:
+                error_lines.append(message.strip())
 
     if texts:
-        return texts[-1]
+        result = texts[-1]
+    elif streamed_text.strip():
+        result = streamed_text.strip()
+    elif error_lines:
+        result = "Codex worker error: " + error_lines[-1]
+    elif any(
+        event.get("type") == "turn.completed" or event.get("method") == "turn/completed"
+        for event in events
+    ):
+        result = "Worker completed with no text output."
+    else:
+        result = "Worker running, no text output yet."
 
-    if any(event.get("type") == "turn.completed" for event in events):
-        return "Worker completed with no text output."
+    details = []
+    if tool_lines:
+        details.append("Activity:\n" + "\n".join(tool_lines[-8:]))
+    if reasoning_lines and not texts:
+        details.append("Reasoning:\n" + " ".join(reasoning_lines[-6:]))
+    if token_summary:
+        details.append(token_summary)
+    if error_lines and not result.startswith("Codex worker error:"):
+        details.append("Errors:\n" + "\n".join(error_lines[-3:]))
 
-    return "Worker running, no text output yet."
+    if details:
+        return result + "\n\n" + "\n\n".join(details)
+    return result
 
 
 def _parse_worker_output(raw, provider="claude"):

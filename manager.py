@@ -15,6 +15,7 @@ IS_WINDOWS = platform.system() == "Windows"
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SESSIONS_DIR = os.path.join(PROJECT_ROOT, "sessions")
+MANAGER_STREAMS_DIR = os.path.join(SESSIONS_DIR, "manager_streams")
 
 # On Windows, find the full path to claude so we don't need shell=True
 # (which has an 8191 char command line limit via cmd.exe)
@@ -334,9 +335,10 @@ def claude_code(text, carbon_id, on_tools=None):
 class _CodexAppServer:
     """Minimal JSON-RPC client for `codex app-server` over stdio."""
 
-    def __init__(self, tag, timeout=180):
+    def __init__(self, tag, timeout=180, stream_log_path=None):
         self.tag = tag
         self.timeout = timeout
+        self.stream_log_path = stream_log_path
         self.next_id = 1
         self.messages = queue.Queue()
         self.stderr_lines = []
@@ -359,13 +361,25 @@ class _CodexAppServer:
 
     def _read_stdout(self):
         for line in self.proc.stdout:
-            self.messages.put(("stdout", line.rstrip("\n")))
+            line = line.rstrip("\n")
+            self._write_stream_log(line)
+            self.messages.put(("stdout", line))
 
     def _read_stderr(self):
         for line in self.proc.stderr:
             line = line.rstrip("\n")
             self.stderr_lines.append(line)
+            self._write_stream_log(json.dumps({"type": "codex.stderr", "message": line}))
             self.messages.put(("stderr", line))
+
+    def _write_stream_log(self, line):
+        if not self.stream_log_path or not line:
+            return
+        try:
+            with open(self.stream_log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
 
     def close(self):
         if self.proc.poll() is None:
@@ -447,6 +461,12 @@ def _codex_thread_file(carbon_id):
     return _session_file(carbon_id, "codex")
 
 
+def _codex_manager_stream_file(carbon_id):
+    os.makedirs(MANAGER_STREAMS_DIR, exist_ok=True)
+    safe_carbon_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", carbon_id)
+    return os.path.join(MANAGER_STREAMS_DIR, f"{safe_carbon_id}-{int(time.time() * 1000)}.jsonl")
+
+
 def _read_codex_thread_id(carbon_id):
     path = _codex_thread_file(carbon_id)
     if not os.path.exists(path):
@@ -501,9 +521,10 @@ def codex_app_server(text, carbon_id, on_tools=None):
     seen_tool_keys = set()
     error_msg = ""
     last_preview_at = 0
+    stream_log_path = _codex_manager_stream_file(carbon_id)
 
     try:
-        client = _CodexAppServer(tag)
+        client = _CodexAppServer(tag, stream_log_path=stream_log_path)
         client.request("initialize", {
             "clientInfo": {"name": "silicon", "version": "0.1.0"},
             "capabilities": {"experimentalApi": True},
@@ -594,9 +615,12 @@ def codex_app_server(text, carbon_id, on_tools=None):
         if output and _is_rate_limit(output):
             rate_limit_msg = output
         if output:
+            print(f"  [{tag}] stream log: {stream_log_path}", flush=True)
             return output, rate_limit_msg, executed_tools
         if error_msg:
+            print(f"  [{tag}] stream log: {stream_log_path}", flush=True)
             return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {error_msg}"}}, {{"tool": "do_nothing"}}]}}', rate_limit_msg, executed_tools
+        print(f"  [{tag}] stream log: {stream_log_path}", flush=True)
         return "", rate_limit_msg, executed_tools
 
     except subprocess.TimeoutExpired:
