@@ -27,7 +27,7 @@ header()  { printf "\n${BOLD}${CYAN}── %s ──${RESET}\n\n" "$*"; }
 ask()     { printf "${BOLD}? %s${RESET} " "$1"; }
 
 confirm() {
-    ask "$1 [Y/n]"
+    printf "${BOLD}? %s [Y/n]${RESET} " "$1" >&2
     read -r ans </dev/tty
     case "$ans" in
         [nN]*) return 1 ;;
@@ -456,9 +456,9 @@ if command -v claude &>/dev/null && command -v codex &>/dev/null; then
         codex) BRAIN_CHOICE="codex" ;;
         *) BRAIN_CHOICE="claude" ;;
     esac
-    BROWSER_WORKERS=$(choose_worker_provider_order "browser" "claude")
-    TERMINAL_WORKERS=$(choose_worker_provider_order "terminal" "claude")
-    WRITER_WORKERS=$(choose_worker_provider_order "writer" "claude")
+    BROWSER_WORKERS=$(choose_worker_provider_order "browser" "$BRAIN_CHOICE")
+    TERMINAL_WORKERS=$(choose_worker_provider_order "terminal" "$BRAIN_CHOICE")
+    WRITER_WORKERS=$(choose_worker_provider_order "writer" "$BRAIN_CHOICE")
 elif command -v codex &>/dev/null; then
     BRAIN_CHOICE="codex"
     BROWSER_WORKERS='["codex"]'
@@ -766,7 +766,7 @@ success() { printf "${GREEN}✓${RESET} %s\n" "$*"; }
 warn()  { printf "${YELLOW}⚠${RESET} %s\n" "$*"; }
 
 confirm() {
-    printf "${BOLD}? %s [Y/n]${RESET} " "$1"
+    printf "${BOLD}? %s [Y/n]${RESET} " "$1" >&2
     local ans
     read -r ans
     case "$ans" in
@@ -1225,9 +1225,9 @@ PY
                 codex) brain_choice="codex" ;;
                 *) brain_choice="claude" ;;
             esac
-            browser_workers=$(choose_worker_provider_order "browser" "claude")
-            terminal_workers=$(choose_worker_provider_order "terminal" "claude")
-            writer_workers=$(choose_worker_provider_order "writer" "claude")
+            browser_workers=$(choose_worker_provider_order "browser" "$brain_choice")
+            terminal_workers=$(choose_worker_provider_order "terminal" "$brain_choice")
+            writer_workers=$(choose_worker_provider_order "writer" "$brain_choice")
         elif command -v codex &>/dev/null; then
             brain_choice="codex"
             browser_workers='["codex"]'
