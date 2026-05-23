@@ -143,6 +143,129 @@ def _display_stream_event(event, tag):
         print(" ".join(parts), flush=True)
 
 
+def _compact_preview(text, limit=180):
+    text = " ".join(str(text or "").split())
+    if len(text) > limit:
+        return text[:limit - 1] + "…"
+    return text
+
+
+def _codex_item_label(item):
+    item_type = item.get("type", "")
+
+    if item_type == "agentMessage":
+        phase = item.get("phase")
+        return f"assistant{f' ({phase})' if phase else ''}"
+
+    if item_type == "commandExecution":
+        command = item.get("command") or item.get("cmd") or item.get("argv") or ""
+        if isinstance(command, list):
+            command = " ".join(str(part) for part in command)
+        return f"command: {_compact_preview(command, 120)}" if command else "command"
+
+    if item_type == "mcpToolCall":
+        name = item.get("name") or item.get("toolName") or item.get("serverName") or "mcp tool"
+        return f"tool: {name}"
+
+    if item_type == "fileChange":
+        path = item.get("path") or item.get("filePath") or item.get("relativePath") or ""
+        return f"file change: {path}" if path else "file change"
+
+    if item_type == "userMessage":
+        return "user message"
+
+    if item_type:
+        return item_type
+    return "item"
+
+
+def _display_codex_stream_event(msg, tag, state):
+    """Print useful Codex app-server notifications as a live activity trace."""
+    method = msg.get("method", "")
+    params = msg.get("params", {})
+
+    if method == "thread/started":
+        thread = params.get("thread", {})
+        tid = thread.get("id", "")[:8]
+        model = thread.get("modelProvider", "")
+        print(f"  [{tag}] codex thread {tid}" + (f" | {model}" if model else ""), flush=True)
+
+    elif method == "turn/started":
+        turn_id = params.get("turn", {}).get("id", "")[:8]
+        print(f"  [{tag}] turn started {turn_id}", flush=True)
+
+    elif method == "item/started":
+        item = params.get("item", {})
+        label = _codex_item_label(item)
+        item_id = item.get("id") or params.get("itemId")
+        if item_id:
+            state.setdefault("item_labels", {})[item_id] = label
+        if item.get("type") != "userMessage":
+            print(f"  [{tag}] started {label}", flush=True)
+
+    elif method == "item/completed":
+        item = params.get("item", {})
+        item_type = item.get("type", "")
+        if item_type == "agentMessage":
+            text = _compact_preview(item.get("text", ""), 160)
+            if text:
+                print(f"  [{tag}] assistant done: {text}", flush=True)
+        elif item_type != "userMessage":
+            label = _codex_item_label(item)
+            status = item.get("status") or item.get("exitCode")
+            suffix = f" ({status})" if status not in (None, "") else ""
+            print(f"  [{tag}] completed {label}{suffix}", flush=True)
+
+    elif method == "item/commandExecution/outputDelta":
+        item_id = params.get("itemId", "")
+        delta = params.get("delta", "")
+        if not delta:
+            return
+        buffers = state.setdefault("command_output", {})
+        buffers[item_id] = buffers.get(item_id, "") + delta
+        now = time.time()
+        last_key = f"command_output:{item_id}"
+        last = state.get("last_print_at", {}).get(last_key, 0)
+        if now - last >= 3:
+            preview = _compact_preview(buffers[item_id], 180)
+            if preview:
+                print(f"  [{tag}] command output: {preview}", flush=True)
+                state.setdefault("last_print_at", {})[last_key] = now
+
+    elif method in ("item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded"):
+        # Print summaries only, not raw reasoning text.
+        delta = params.get("delta") or params.get("text") or ""
+        if delta:
+            print(f"  [{tag}] reasoning summary: {_compact_preview(delta, 180)}", flush=True)
+        else:
+            print(f"  [{tag}] reasoning summary updated", flush=True)
+
+    elif method == "item/plan/delta":
+        delta = params.get("delta", "")
+        if delta:
+            print(f"  [{tag}] plan: {_compact_preview(delta, 180)}", flush=True)
+
+    elif method == "item/fileChange/patchUpdated":
+        path = params.get("path") or params.get("filePath") or ""
+        print(f"  [{tag}] patch updated" + (f": {path}" if path else ""), flush=True)
+
+    elif method == "thread/tokenUsage/updated":
+        usage = params.get("tokenUsage", {}).get("total", {})
+        total = usage.get("totalTokens")
+        if total is not None:
+            print(
+                f"  [{tag}] tokens total={total} input={usage.get('inputTokens')} output={usage.get('outputTokens')}",
+                flush=True,
+            )
+
+    elif method == "turn/completed":
+        turn = params.get("turn", {})
+        status = turn.get("status", "completed")
+        duration = turn.get("durationMs")
+        suffix = f" in {duration / 1000:.1f}s" if duration is not None else ""
+        print(f"  [{tag}] turn {status}{suffix}", flush=True)
+
+
 def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None):
     """Run claude CLI with stream-json, show events on terminal.
     on_tools(tools_list) is called for tool JSON found in intermediate assistant texts.
@@ -522,6 +645,7 @@ def codex_app_server(text, carbon_id, on_tools=None):
     error_msg = ""
     last_preview_at = 0
     stream_log_path = _codex_manager_stream_file(carbon_id)
+    stream_display_state = {}
 
     try:
         client = _CodexAppServer(tag, stream_log_path=stream_log_path)
@@ -565,6 +689,7 @@ def codex_app_server(text, carbon_id, on_tools=None):
 
             method = msg.get("method", "")
             params = msg.get("params", {})
+            _display_codex_stream_event(msg, tag, stream_display_state)
 
             if method == "item/agentMessage/delta":
                 delta = params.get("delta", "")

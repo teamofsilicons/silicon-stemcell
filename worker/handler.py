@@ -1254,7 +1254,7 @@ def _parse_codex_output(raw):
                 status = item.get("status") or "completed"
                 tool_lines.append(f"File {status}: {path}")
 
-        elif method in ("item/reasoning/summaryTextDelta", "item/reasoning/textDelta"):
+        elif method == "item/reasoning/summaryTextDelta":
             delta = params.get("delta", "").strip()
             if delta:
                 reasoning_lines.append(delta)
