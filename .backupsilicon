@@ -1,0 +1,11 @@
+# Default Silicon backup manifest.
+# Add one path or glob per line. Paths are relative to this silicon folder.
+silicon.json
+env.py
+.glass.json
+prompts/**
+core/telegram/contacts.json
+core/cron/jobs.py
+core/cron/history.json
+sessions/**
+worker/outputs/_archive_meta.json
