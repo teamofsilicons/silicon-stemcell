@@ -142,12 +142,6 @@ The helper module `core/glass.py` can then:
 - Read direct messages with `get_thread_messages(target_username)`
 - Send direct silicon messages with `send_silicon_message(...)`
 
-Backups use `.backupsilicon`: one path or glob per line, relative to the
-silicon folder. The Glass sidecar accepts backup requests from Glass, archives
-those paths, and uploads the archive to `/api/v1/silicon-backups/`. The
-installable `silicon` command uses the same manifest for `silicon push <name>
-now` and `silicon backup <name> now`.
-
 This keeps Telegram as the carbon-facing surface while Glass handles silicon storage, respawn, and silicon-to-silicon transport.
 
 ## Architecture

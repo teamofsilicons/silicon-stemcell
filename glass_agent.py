@@ -46,12 +46,12 @@ def get_silicon_name(silicon_dir):
 
 
 def build_ws_url(server_url):
-    """Convert https://... to wss://... /ws/glass/agent/."""
+    """Convert https://... to wss://... /ws/agent/"""
     url = server_url.rstrip("/")
     if url.startswith("https://"):
-        return "wss://" + url[8:] + "/ws/glass/agent/"
+        return "wss://" + url[8:] + "/ws/agent/"
     elif url.startswith("http://"):
-        return "ws://" + url[7:] + "/ws/glass/agent/"
+        return "ws://" + url[7:] + "/ws/agent/"
     return None
 
 
@@ -177,16 +177,7 @@ def execute_command(cmd, silicon_name):
                     return "done", "stopped"
             return "done", "stopped (status unconfirmed)"
 
-        elif action in {"backup", "backup_now"}:
-            try:
-                from core.backup import run_backup
-
-                ok = run_backup(silicon_dir, logger=lambda m: print(f"[glass-agent] {m}", flush=True))
-                return ("done" if ok else "failed"), "backup complete" if ok else "backup skipped"
-            except Exception as e:
-                return "failed", str(e)
-
-        elif action == "snapshot_now":
+        elif action == "backup_now":
             result = subprocess.run(
                 ["silicon", "push", silicon_name, "now"],
                 capture_output=True, text=True, timeout=120,
@@ -279,18 +270,15 @@ def run_websocket_loop(ws_url, api_key, silicon_name, silicon_dir, log_tailer, r
     """Connect via WebSocket for real-time relay. Raises on disconnect."""
     from websockets.sync.client import connect
 
-    sep = "&" if "?" in ws_url else "?"
-    authed_url = f"{ws_url}{sep}silicon_key={api_key}"
     print(f"[glass-agent] Connecting to {ws_url}", flush=True)
-    with connect(authed_url, close_timeout=5, open_timeout=10) as ws:
+    with connect(ws_url, close_timeout=5, open_timeout=10) as ws:
+        # Auth
+        ws.send(json.dumps({"type": "auth", "token": api_key}))
+        resp = json.loads(ws.recv(timeout=5))
+        if resp.get("type") != "auth_ok":
+            raise ConnectionError(f"Auth failed: {resp.get('reason', 'unknown')}")
+
         print(f"[glass-agent] WebSocket connected (live mode)", flush=True)
-        ws.send(json.dumps({
-            "type": "handshake",
-            "version": get_local_version(silicon_dir),
-            "hostname": os.uname().nodename if hasattr(os, "uname") else "",
-            "pid": os.getpid(),
-            "carbon_ids": [],
-        }))
 
         # Background threads for heartbeats and logs
         stop_event = threading.Event()
@@ -308,7 +296,7 @@ def run_websocket_loop(ws_url, api_key, silicon_name, silicon_dir, log_tailer, r
                     cur_ver = get_local_version(silicon_dir)
                     lat_ver = get_latest_version()
                     safe_send(json.dumps({
-                        "type": "status", "status": status,
+                        "type": "heartbeat", "status": status,
                         "backup_running": backup,
                         "current_version": cur_ver,
                         "latest_version": lat_ver,
@@ -322,7 +310,7 @@ def run_websocket_loop(ws_url, api_key, silicon_name, silicon_dir, log_tailer, r
                 try:
                     new_lines = log_tailer.read_new()
                     if new_lines:
-                        safe_send(json.dumps({"type": "log", "level": "info", "msg": new_lines}))
+                        safe_send(json.dumps({"type": "log", "lines": new_lines}))
                 except Exception:
                     break
                 stop_event.wait(WS_LOG_INTERVAL)
@@ -348,18 +336,16 @@ def run_websocket_loop(ws_url, api_key, silicon_name, silicon_dir, log_tailer, r
                 if msg.get("type") == "command":
                     cmd_id = msg.get("id", "")
                     # ACK
-                    if cmd_id:
-                        safe_send(json.dumps({"type": "command_ack", "id": cmd_id, "command": msg.get("command", "")}))
+                    safe_send(json.dumps({"type": "command_ack", "id": cmd_id, "command": msg.get("command", "")}))
                     # Execute
                     result_status, result_msg = execute_command(msg, silicon_name)
-                    if cmd_id:
-                        safe_send(json.dumps({
-                            "type": "command_result",
-                            "id": cmd_id,
-                            "command": msg.get("command", ""),
-                            "status": result_status,
-                            "message": result_msg,
-                        }))
+                    safe_send(json.dumps({
+                        "type": "command_result",
+                        "id": cmd_id,
+                        "command": msg.get("command", ""),
+                        "status": result_status,
+                        "message": result_msg,
+                    }))
                     print(f"[glass-agent] {msg.get('command')} → {result_status}: {result_msg}", flush=True)
         finally:
             stop_event.set()
