@@ -23,6 +23,7 @@ STATE_DIR = PROJECT_ROOT / "core" / "interface_state"
 CONTACTS_FILE = STATE_DIR / "contacts.json"
 CONTACTS_BACKUP_FILE = STATE_DIR / "contacts_backup.json"
 MEDIA_DIR = STATE_DIR / "media"
+LEGACY_TELEGRAM_CONTACTS_FILE = PROJECT_ROOT / "core" / "telegram" / "contacts.json"
 
 VALID_TRUST_LEVELS = ["very_low", "low", "ok", "high", "very_high", "ultimate"]
 USER_VISIBLE_EVENT_TYPES = {"m.text", "m.image", "m.file", "m.voice", "m.tts"}
@@ -32,6 +33,8 @@ URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 
 _listener_thread: threading.Thread | None = None
 _listener_lock = threading.Lock()
+_listener_stop: threading.Event | None = None
+_listener_proc: subprocess.Popen | None = None
 _event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
 _last_listener_error = 0.0
 
@@ -77,7 +80,53 @@ def _default_contacts_state() -> dict[str, Any]:
     }
 
 
+def _migrate_legacy_contacts() -> dict[str, Any] | None:
+    if not LEGACY_TELEGRAM_CONTACTS_FILE.exists():
+        return None
+    legacy = _read_json(LEGACY_TELEGRAM_CONTACTS_FILE, {})
+    legacy_contacts = legacy.get("contacts") if isinstance(legacy, dict) else None
+    if not isinstance(legacy_contacts, dict):
+        return None
+
+    state = _default_contacts_state()
+    for key, info in legacy_contacts.items():
+        if not isinstance(info, dict):
+            continue
+        contact_type = _normalize_contact_type(info.get("contact_type", "carbon"))
+        fixed_id = str(info.get("silicon_id") if contact_type == "silicon" else info.get("carbon_id") or key).strip()
+        if not fixed_id:
+            continue
+        state["contacts"][fixed_id] = {
+            "contact_type": contact_type,
+            "carbon_id": fixed_id if contact_type == "carbon" else "",
+            "silicon_id": fixed_id if contact_type == "silicon" else "",
+            "fixed_id": fixed_id,
+            "room_id": str(info.get("room_id") or ""),
+            "trust_level": info.get("trust_level", "very_low"),
+            "is_central_carbon": bool(info.get("is_central_carbon", False)),
+            "local_notes": info.get("local_notes", ""),
+            "relation": info.get("relation", ""),
+            "description": info.get("description", ""),
+            "timezone": info.get("timezone", ""),
+            "display_name": info.get("display_name") or info.get("name") or fixed_id,
+            "name": info.get("name") or info.get("display_name") or fixed_id,
+            "last_processed_event_ids": [],
+            "last_processed_event_id": "",
+            "last_polled_event_id": "",
+            "created_at": _utc_iso(),
+            "updated_at": _utc_iso(),
+            "metadata": {"migrated_from": "core/telegram/contacts.json"},
+        }
+        if info.get("room_id"):
+            state["rooms"][str(info["room_id"])] = fixed_id
+    return state
+
+
 def _load_state() -> dict[str, Any]:
+    if not CONTACTS_FILE.exists():
+        migrated = _migrate_legacy_contacts()
+        if migrated:
+            _save_state(migrated)
     state = _read_json(CONTACTS_FILE, _default_contacts_state())
     state.setdefault("version", 1)
     state.setdefault("contacts", {})
@@ -465,9 +514,43 @@ def _other_member(members: list[Any], own_ids: list[str]) -> dict[str, Any] | No
     return None
 
 
+def _direct_contact_from_room(room: dict[str, Any], members: list[Any], own_ids: list[str]) -> dict[str, Any] | None:
+    other = _other_member(members, own_ids) if members else None
+    if other is not None:
+        return other
+
+    for key in ("contact", "other", "peer", "target", "direct_contact"):
+        value = room.get(key)
+        if isinstance(value, dict):
+            return value
+
+    room_contact_type = _normalize_contact_type(room.get("contact_type") or room.get("kind") or room.get("type"))
+    candidate_types = [room_contact_type] if room.get("contact_type") or room.get("kind") or room.get("type") else ["carbon", "silicon"]
+    for contact_type in candidate_types:
+        if contact_type == "silicon":
+            fixed_id = str(room.get("silicon_id") or room.get("siliconId") or room.get("username") or "").strip()
+        else:
+            fixed_id = str(room.get("carbon_id") or room.get("carbonId") or room.get("public_id") or "").strip()
+        if fixed_id and fixed_id not in set(own_ids):
+            return {
+                "contact_type": contact_type,
+                "carbon_id": fixed_id if contact_type == "carbon" else "",
+                "silicon_id": fixed_id if contact_type == "silicon" else "",
+                "display_name": _display_name(room, fixed_id),
+            }
+    return None
+
+
+def _rooms_signature(state: dict[str, Any]) -> str:
+    rooms = state.get("rooms", {})
+    pairs = sorted((str(room_id), str(contact_id)) for room_id, contact_id in rooms.items())
+    return json.dumps(pairs, separators=(",", ":"))
+
+
 def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False) -> dict[str, Any]:
     client = client or InterfaceClient()
     state = _load_state()
+    before_signature = _rooms_signature(state)
     if not force and _now() - float(state.get("last_room_sync") or 0) < 60:
         return state
 
@@ -494,14 +577,7 @@ def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False
                 members = _as_list(client.room_members(room_id), ("members", "data", "results"))
             except Exception:
                 members = []
-        other = _other_member(members, own_ids) if members else None
-
-        if other is None:
-            for key in ("contact", "other", "peer", "target"):
-                value = room.get(key)
-                if isinstance(value, dict):
-                    other = value
-                    break
+        other = _direct_contact_from_room(room, members or [], own_ids)
         if other is None:
             continue
 
@@ -521,6 +597,8 @@ def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False
     state = _load_state()
     state["last_room_sync"] = _now()
     _save_state(state)
+    if before_signature != _rooms_signature(state) and _listener_thread and _listener_thread.is_alive():
+        restart_listener()
     return state
 
 
@@ -652,6 +730,37 @@ def _event_filename(event: dict[str, Any], media_id: str) -> str:
     return f"{media_id or 'media'}"
 
 
+def _event_reply_to(event: dict[str, Any]) -> str:
+    content = _event_content(event)
+    for obj in (event, content):
+        value = _first_text(obj.get("reply_to"), obj.get("reply_to_event_id"), obj.get("replyToEventId"))
+        if value:
+            return value
+        reply = obj.get("reply")
+        if isinstance(reply, dict):
+            value = _first_text(reply.get("event_id"), reply.get("eventId"), reply.get("id"), reply.get("body"), reply.get("text"))
+            if value:
+                return value
+    relates_to = content.get("m.relates_to") or content.get("relates_to")
+    if isinstance(relates_to, dict):
+        return _first_text(relates_to.get("m.in_reply_to", {}).get("event_id") if isinstance(relates_to.get("m.in_reply_to"), dict) else "", relates_to.get("event_id"))
+    return ""
+
+
+def _event_take_back_request_id(event: dict[str, Any]) -> str:
+    content = _event_content(event)
+    for obj in (event, content):
+        value = _first_text(obj.get("take_back_request_id"), obj.get("takeBackRequestId"), obj.get("take_back_id"))
+        if value:
+            return value
+        take_back = obj.get("take_back") or obj.get("takeBack")
+        if isinstance(take_back, dict):
+            value = _first_text(take_back.get("request_id"), take_back.get("requestId"), take_back.get("id"))
+            if value:
+                return value
+    return ""
+
+
 def _remember_processed(contact_id: str, event_id: str, room_id: str = "") -> None:
     if not event_id:
         return
@@ -670,6 +779,21 @@ def _remember_processed(contact_id: str, event_id: str, room_id: str = "") -> No
         if event_id not in room_ids:
             room_ids.append(event_id)
         state["processed_events"][room_id] = room_ids[-500:]
+    _save_state(state)
+
+
+def _remember_seen_event(room_id: str, event_id: str) -> None:
+    if not room_id or not event_id:
+        return
+    state = _load_state()
+    contact_id = state.get("rooms", {}).get(room_id)
+    contact = state.get("contacts", {}).get(contact_id) if contact_id else None
+    if contact:
+        contact["last_polled_event_id"] = event_id
+    room_ids = list(state.setdefault("processed_events", {}).get(room_id) or [])
+    if event_id not in room_ids:
+        room_ids.append(event_id)
+    state["processed_events"][room_id] = room_ids[-500:]
     _save_state(state)
 
 
@@ -765,10 +889,12 @@ def _format_event_context(
     ]
     if display_time:
         lines.append(f"display_time: {display_time}")
-    if event.get("reply_to") or event.get("reply_to_event_id"):
-        lines.append(f"reply_to: {_first_text(event.get('reply_to'), event.get('reply_to_event_id'))}")
-    if event.get("take_back_request_id"):
-        lines.append(f"take_back_request_id: {event.get('take_back_request_id')}")
+    reply_to = _event_reply_to(event)
+    if reply_to:
+        lines.append(f"reply_to: {reply_to}")
+    take_back_request_id = _event_take_back_request_id(event)
+    if take_back_request_id:
+        lines.append(f"take_back_request_id: {take_back_request_id}")
     if body:
         lines.extend(["message:", body])
     if transcript:
@@ -782,15 +908,17 @@ def _format_event_context(
 def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None = None) -> tuple[str, str] | None:
     client = client or InterfaceClient()
     state = _load_state()
+    event_id = _event_id(event)
+    room_id = _event_room_id(event)
     if _event_is_self(event, state):
+        _remember_seen_event(room_id, event_id)
         return None
 
     event_type = _event_type(event)
     if event_type in IGNORED_EVENT_TYPES or event_type not in USER_VISIBLE_EVENT_TYPES:
+        _remember_seen_event(room_id, event_id)
         return None
 
-    event_id = _event_id(event)
-    room_id = _event_room_id(event)
     contact_id, contact, _ = _contact_for_room(room_id, client=client)
     if not contact_id or not contact:
         return None
@@ -812,7 +940,13 @@ def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None
     if event_type in {"m.voice", "m.tts"}:
         transcript = _transcript_for_event(event, local_path, media_id, client)
 
-    context = _format_event_context(contact_id, contact, event, local_paths=local_paths, transcript=transcript)
+    body = _event_body(event).strip()
+    if event_type == "m.text" and body == "/new":
+        context = "[COMMAND: NEW_SESSION]"
+    elif event_type == "m.text" and body == "/start":
+        context = "[COMMAND: START]"
+    else:
+        context = _format_event_context(contact_id, contact, event, local_paths=local_paths, transcript=transcript)
     _remember_processed(contact_id, event_id, room_id)
     if room_id and event_id:
         try:
@@ -822,16 +956,19 @@ def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None
     return contact_id, context
 
 
-def _listener_loop() -> None:
-    global _last_listener_error
+def _listener_loop(stop_event: threading.Event) -> None:
+    global _last_listener_error, _listener_proc
     backoff = 1
-    while True:
+    while not stop_event.is_set():
         try:
             client = InterfaceClient()
             proc = client.listen_all_process()
+            _listener_proc = proc
             backoff = 1
             assert proc.stdout is not None
             for line in proc.stdout:
+                if stop_event.is_set():
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -844,7 +981,8 @@ def _listener_loop() -> None:
                         _event_queue.put(payload["event"])
                     else:
                         _event_queue.put(payload)
-            proc.wait(timeout=5)
+            if proc.poll() is None:
+                proc.wait(timeout=5)
         except InterfaceError as exc:
             if _now() - _last_listener_error > 60:
                 print(f"[Interface] listener unavailable: {exc}", flush=True)
@@ -856,14 +994,34 @@ def _listener_loop() -> None:
                 _last_listener_error = _now()
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
+        finally:
+            _listener_proc = None
 
 
 def start_listener() -> None:
-    global _listener_thread
+    global _listener_thread, _listener_stop
     with _listener_lock:
         if _listener_thread and _listener_thread.is_alive():
             return
-        _listener_thread = threading.Thread(target=_listener_loop, name="interface-listener", daemon=True)
+        _listener_stop = threading.Event()
+        _listener_thread = threading.Thread(target=_listener_loop, args=(_listener_stop,), name="interface-listener", daemon=True)
+        _listener_thread.start()
+
+
+def restart_listener() -> None:
+    global _listener_thread, _listener_stop, _listener_proc
+    with _listener_lock:
+        if _listener_stop:
+            _listener_stop.set()
+        if _listener_proc and _listener_proc.poll() is None:
+            try:
+                _listener_proc.terminate()
+            except Exception:
+                pass
+        if _listener_thread and _listener_thread.is_alive():
+            _listener_thread.join(timeout=2)
+        _listener_stop = threading.Event()
+        _listener_thread = threading.Thread(target=_listener_loop, args=(_listener_stop,), name="interface-listener", daemon=True)
         _listener_thread.start()
 
 
