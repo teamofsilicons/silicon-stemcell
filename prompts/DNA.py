@@ -25,7 +25,6 @@ If you want to load something new (eg, about a project your carbon is working on
 
 import os
 import re
-import json
 
 PROMPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(PROMPTS_DIR)
@@ -69,13 +68,13 @@ def _read_file_raw(filepath):
 
 
 def _get_contact_info(carbon_id):
-    """Load contact info for a specific carbon_id from contacts.json."""
-    contacts_file = os.path.join(PROJECT_ROOT, "core", "telegram", "contacts.json")
-    if not os.path.exists(contacts_file):
+    """Load contact info for a fixed Interface contact id."""
+    try:
+        from core.interface import get_contact
+
+        return get_contact(carbon_id)
+    except Exception:
         return None
-    with open(contacts_file, encoding="utf-8") as f:
-        data = json.load(f)
-    return data.get("contacts", {}).get(carbon_id)
 
 
 def _memory_path(contact_id, contact):
@@ -83,31 +82,6 @@ def _memory_path(contact_id, contact):
     if contact and contact.get("contact_type") == "silicon":
         return os.path.join(memory_root, "silicons", f"{contact_id}.md"), f"prompts/memory/silicons/{contact_id}.md"
     return os.path.join(memory_root, "carbons", f"{contact_id}.md"), f"prompts/memory/carbons/{contact_id}.md"
-
-
-def _legacy_memory_path(contact_id):
-    return os.path.join(PROMPTS_DIR, "memory", "people", f"{contact_id}.md")
-
-
-# def _get_contacts_summary():
-#     """Load all contacts for the CONTACTS.md context."""
-#     contacts_file = os.path.join(PROJECT_ROOT, "core", "telegram", "contacts.json")
-#     if not os.path.exists(contacts_file):
-#         return "No contacts loaded."
-#     with open(contacts_file) as f:
-#         data = json.load(f)
-#     contacts = data.get("contacts", {})
-#     if not contacts:
-#         return "No contacts yet."
-
-#     lines = []
-#     for cid, info in contacts.items():
-#         name = info.get("name") or cid
-#         trust = info.get("trust_level", "very_low")
-#         central = " [CENTRAL CARBON]" if info.get("is_central_carbon") else ""
-#         relation = info.get("relation", "")
-#         lines.append(f"- {name} (carbon_id: {cid}, trust: {trust}{central}){': ' + relation if relation else ''}")
-#     return "\n".join(lines)
 
 
 def get_manager_prompt(carbon_id):
@@ -129,11 +103,6 @@ def get_manager_prompt(carbon_id):
 
     # Load per-contact memory file
     carbon_memory_path, memory_label = _memory_path(carbon_id, contact)
-    if not os.path.exists(carbon_memory_path):
-        legacy_path = _legacy_memory_path(carbon_id)
-        if os.path.exists(legacy_path):
-            carbon_memory_path = legacy_path
-            memory_label = f"prompts/memory/people/{carbon_id}.md"
     carbon_memory = _read_file_raw(carbon_memory_path)
     if carbon_memory:
         parts.append(f"## About this Contact ({carbon_id})\n{memory_label}\n{carbon_memory}")

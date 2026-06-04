@@ -452,12 +452,12 @@ def claude_code(text, carbon_id, on_tools=None):
             if rc == 0 and result_text.strip():
                 return result_text.strip(), rate_limit, executed_tools
             # If that also failed, give up gracefully
-            from core.telegram import reply_user
-            reply_user("Manager session not found – send a message to start a new one.", carbon_id)
+            from core.interface import reply_contact
+            reply_contact("Manager session not found - send a message to start a new one.", carbon_id)
             return '{"tools": [{"tool": "do_nothing"}]}', None, []
     except subprocess.TimeoutExpired:
-        from core.telegram import reply_user
-        reply_user("hold on, still working on this...", carbon_id)
+        from core.interface import reply_contact
+        reply_contact("hold on, still working on this...", carbon_id)
         return TIMEOUT_MSG, None, []
     except Exception:
         pass
@@ -485,8 +485,8 @@ def claude_code(text, carbon_id, on_tools=None):
         rl = output if (output and _is_rate_limit(output)) else None
         return output, rl, []
     except subprocess.TimeoutExpired:
-        from core.telegram import reply_user
-        reply_user("hold on, still working on this...", carbon_id)
+        from core.interface import reply_contact
+        reply_contact("hold on, still working on this...", carbon_id)
         return TIMEOUT_MSG, None, []
     except Exception as e:
         return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}', None, []
@@ -798,8 +798,8 @@ def codex_app_server(text, carbon_id, on_tools=None):
         return "", rate_limit_msg, executed_tools
 
     except subprocess.TimeoutExpired:
-        from core.telegram import reply_user
-        reply_user("hold on, still working on this...", carbon_id)
+        from core.interface import reply_contact
+        reply_contact("hold on, still working on this...", carbon_id)
         return TIMEOUT_MSG, None, []
     except Exception as e:
         return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}', None, []

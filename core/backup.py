@@ -61,6 +61,7 @@ def _resolve(root: Path, pattern: str) -> list[Path]:
 
 
 def build_archive(root: Path, patterns: list[str]) -> tuple[bytes, list[str]]:
+    root = root.resolve()
     resolved: list[Path] = []
     for pattern in patterns:
         resolved.extend(_resolve(root, pattern))
@@ -106,12 +107,12 @@ def run_backup(start: str | os.PathLike | None = None, note: str = "on-demand", 
 
     response = requests.post(
         _server_url(config) + UPLOAD_PATH,
-        headers={"X-Silicon-Key": key},
-        files={"file": ("backup.tar.gz", data, "application/gzip")},
+        headers={"Authorization": f"Bearer {key}"},
+        files={"archive": ("backup.tar.gz", data, "application/gzip")},
         data={"manifest": json.dumps(included), "note": note},
         timeout=UPLOAD_TIMEOUT,
     )
-    if response.status_code == 201:
+    if response.status_code in {200, 201}:
         try:
             seq = response.json().get("seq", "?")
         except Exception:

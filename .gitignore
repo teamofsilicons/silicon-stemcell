@@ -5,8 +5,8 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Telegram state (contains user IDs)
-core/telegram/state.json
+# Interface runtime state (contains local trust, rooms, media, watermarks)
+core/interface_state/
 
 # Worker outputs (generated at runtime)
 worker/outputs/*.txt
@@ -17,10 +17,10 @@ worker/outputs/_worker_registry.json
 # Session files (generated at runtime)
 sessions/
 
-# Telegram media (downloaded at runtime)
-core/telegram/media/
-
 # Runtime state
 .restart_pending
+.glass_agent.pid
+.glass-push.pid
+*.tar.gz
 .DS_Store
 .silicon-upstream/
