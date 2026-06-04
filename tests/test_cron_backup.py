@@ -110,6 +110,31 @@ class BackupManifestTest(unittest.TestCase):
             self.assertIn("prompts/memory/carbons/a.md", tar_names)
             self.assertNotIn("other.txt", tar_names)
 
+    def test_run_backup_uses_prod_upload_contract(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".backupsilicon").write_text("prompts/MEMORY.md\n", encoding="utf-8")
+            (root / ".glass.json").write_text(
+                json.dumps({"server_url": "https://glass.example", "api_key": "scs_live_test"}),
+                encoding="utf-8",
+            )
+            (root / "prompts").mkdir()
+            (root / "prompts" / "MEMORY.md").write_text("memory", encoding="utf-8")
+
+            fake_response = mock.Mock(status_code=201)
+            fake_response.json.return_value = {"seq": 7}
+            with mock.patch.object(backup.requests, "post", return_value=fake_response) as post:
+                ok = backup.run_backup(root, note="test", logger=lambda _msg: None)
+
+        self.assertTrue(ok)
+        post.assert_called_once()
+        _url, kwargs = post.call_args.args[0], post.call_args.kwargs
+        self.assertEqual(_url, "https://glass.example/api/v1/silicon-backups/")
+        self.assertEqual(kwargs["headers"], {"X-Silicon-Key": "scs_live_test"})
+        self.assertIn("file", kwargs["files"])
+        self.assertNotIn("archive", kwargs["files"])
+        self.assertEqual(kwargs["files"]["file"][0], "backup.tar.gz")
+
 
 if __name__ == "__main__":
     unittest.main()

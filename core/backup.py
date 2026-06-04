@@ -107,8 +107,8 @@ def run_backup(start: str | os.PathLike | None = None, note: str = "on-demand", 
 
     response = requests.post(
         _server_url(config) + UPLOAD_PATH,
-        headers={"Authorization": f"Bearer {key}"},
-        files={"archive": ("backup.tar.gz", data, "application/gzip")},
+        headers={"X-Silicon-Key": key},
+        files={"file": ("backup.tar.gz", data, "application/gzip")},
         data={"manifest": json.dumps(included), "note": note},
         timeout=UPLOAD_TIMEOUT,
     )
