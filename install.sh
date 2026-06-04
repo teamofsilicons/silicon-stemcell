@@ -587,51 +587,21 @@ ENV_FILE="$INSTALL_DIR/env.py"
 # Check if already configured
 ALREADY_CONFIGURED=false
 if [ -f "$ENV_FILE" ]; then
-    if grep -q 'TELEGRAM_BOT_TOKEN = ""' "$ENV_FILE" 2>/dev/null || grep -q "TELEGRAM_BOT_TOKEN = ''" "$ENV_FILE" 2>/dev/null; then
-        ALREADY_CONFIGURED=false
-    else
-        token_val=$(grep 'TELEGRAM_BOT_TOKEN' "$ENV_FILE" 2>/dev/null | head -1)
-        if [ -n "$token_val" ] && ! echo "$token_val" | grep -q '""'; then
-            ALREADY_CONFIGURED=true
-        fi
+    if grep -q 'BROWSER_PROFILE' "$ENV_FILE" 2>/dev/null; then
+        ALREADY_CONFIGURED=true
     fi
 fi
 
 if [ "$ALREADY_CONFIGURED" = "true" ]; then
-    success "Already configured (env.py has tokens)"
+    success "Already configured (env.py exists)"
     if confirm "Reconfigure?"; then
         ALREADY_CONFIGURED=false
     fi
 fi
 
 if [ "$ALREADY_CONFIGURED" = "false" ]; then
-    echo ""
-    info "You need a Telegram bot token to use Silicon."
-    printf "${DIM}  1. Open Telegram and search for @BotFather${RESET}\n"
-    printf "${DIM}  2. Send /newbot and follow the prompts${RESET}\n"
-    printf "${DIM}  3. Copy the token BotFather gives you${RESET}\n"
-    echo ""
-
-    TELEGRAM_TOKEN=$(read_secret "Telegram bot token")
-    if [ -z "$TELEGRAM_TOKEN" ]; then
-        error "Telegram bot token is required."
-        exit 1
-    fi
-
-    echo ""
-    info "OpenAI API key (for incoming voice transcription via Whisper)."
-    info "Press Enter to skip – incoming voice transcription will be disabled."
-    OPENAI_KEY=$(read_secret "OpenAI API key (optional)")
-
-    echo ""
-    info "Gemini API key (for outgoing text-to-speech)."
-    info "Press Enter to skip – outgoing voice messages will be disabled."
-    GEMINI_KEY=$(read_secret "Gemini API key (optional)")
-
     cat > "$ENV_FILE" << ENVEOF
-TELEGRAM_BOT_TOKEN = "$TELEGRAM_TOKEN"
-OPENAI_API_KEY = "$OPENAI_KEY"
-GEMINI_API_KEY = "$GEMINI_KEY"
+GLASS_API_KEY = ""
 BROWSER_PROFILE = "$INSTANCE_NAME"
 ENVEOF
 
@@ -1132,9 +1102,7 @@ silicon_path.write_text(json.dumps(silicon, indent=4) + "\\n")
 env_path = dst / "env.py"
 lines = env_path.read_text().splitlines() if env_path.exists() else []
 required = {
-    "TELEGRAM_BOT_TOKEN": "",
-    "OPENAI_API_KEY": "",
-    "GEMINI_API_KEY": "",
+    "GLASS_API_KEY": "",
     "BROWSER_PROFILE": "$instance_name",
 }
 seen = set()
@@ -1157,59 +1125,7 @@ PY
 
     snapshot_upstream_source "$tmp_src" "$abs_target"
 
-    local current_telegram=""
-    local current_openai=""
-    local current_gemini=""
-    if [ -f "$abs_target/env.py" ]; then
-        python_capture_to current_telegram <<PY
-import pathlib, re
-text = pathlib.Path("$abs_target/env.py").read_text()
-m = re.search(r'^TELEGRAM_BOT_TOKEN\\s*=\\s*["\\'](.*)["\\']\\s*$', text, re.M)
-print(m.group(1) if m else "")
-PY
-        python_capture_to current_openai <<PY
-import pathlib, re
-text = pathlib.Path("$abs_target/env.py").read_text()
-m = re.search(r'^OPENAI_API_KEY\\s*=\\s*["\\'](.*)["\\']\\s*$', text, re.M)
-print(m.group(1) if m else "")
-PY
-        python_capture_to current_gemini <<PY
-import pathlib, re
-text = pathlib.Path("$abs_target/env.py").read_text()
-m = re.search(r'^GEMINI_API_KEY\\s*=\\s*["\\'](.*)["\\']\\s*$', text, re.M)
-print(m.group(1) if m else "")
-PY
-    fi
-
     if [ -t 0 ] && [ -t 1 ]; then
-        if [ -z "$current_telegram" ]; then
-            echo ""
-            info "You need a Telegram bot token to use Silicon."
-            printf "${DIM}  1. Open Telegram and search for @BotFather${RESET}\n"
-            printf "${DIM}  2. Send /newbot and follow the prompts${RESET}\n"
-            printf "${DIM}  3. Copy the token BotFather gives you${RESET}\n"
-            echo ""
-            current_telegram=$(read_secret "Telegram bot token")
-            if [ -z "$current_telegram" ]; then
-                error "Telegram bot token is required."
-                exit 1
-            fi
-        fi
-
-        if [ -z "$current_openai" ]; then
-            echo ""
-            info "OpenAI API key (for incoming voice transcription via Whisper)."
-            info "Press Enter to skip – incoming voice transcription will be disabled."
-            current_openai=$(read_secret "OpenAI API key (optional)")
-        fi
-
-        if [ -z "$current_gemini" ]; then
-            echo ""
-            info "Gemini API key (for outgoing text-to-speech)."
-            info "Press Enter to skip – outgoing voice messages will be disabled."
-            current_gemini=$(read_secret "Gemini API key (optional)")
-        fi
-
         # ── Terminal worker preference (codex detection) ──
         local brain_choice="claude"
         local browser_workers='["claude"]'
@@ -1234,25 +1150,6 @@ PY
             terminal_workers='["codex"]'
             writer_workers='["codex"]'
         fi
-
-        "$PYTHON_CMD" - <<PY
-import pathlib, re
-env_path = pathlib.Path("$abs_target/env.py")
-text = env_path.read_text()
-
-def upsert(text, key, value):
-    pattern = rf'^{key}\s*=\s*["\x27].*["\x27]\s*$'
-    replacement = f'{key} = "{value}"'
-    if re.search(pattern, text, re.M):
-        return re.sub(pattern, replacement, text, flags=re.M)
-    text = text.rstrip() + "\\n"
-    return text + replacement + "\\n"
-
-text = upsert(text, "TELEGRAM_BOT_TOKEN", """$current_telegram""")
-text = upsert(text, "OPENAI_API_KEY", """$current_openai""")
-text = upsert(text, "GEMINI_API_KEY", """$current_gemini""")
-env_path.write_text(text.rstrip() + "\\n")
-PY
 
         # Update silicon.json with terminal worker preference
         "$PYTHON_CMD" - <<PY

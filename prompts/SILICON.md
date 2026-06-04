@@ -455,7 +455,8 @@ Without memory, that request is meaningless. With memory, Silicon knows:
 MEMORY.md          ← Hot cache (~30 people, common terms)
 memory/
   glossary.md      ← Full decoder ring (everything)
-  people/          ← Complete profiles
+  carbons/         ← Carbon profiles by fixed carbon_id
+  silicons/        ← Silicon profiles by fixed silicon_id
   projects/        ← Project details
   context/         ← Company, teams, tools
 ```
@@ -472,7 +473,7 @@ memory/
 - Searched when something isn't in MEMORY.md
 - Can grow indefinitely
 
-**memory/people/, projects/, context/:**
+**memory/carbons/, memory/silicons/, projects/, context/:**
 - Rich detail when needed for execution
 - Full profiles, history, context
 
@@ -516,7 +517,7 @@ Use tables for compactness. Target ~50-80 lines total.
 | **Todd** | Todd Martinez, Finance lead |
 | **Sarah** | Sarah Chen, Engineering (Platform) |
 | **Greg** | Greg Wilson, Sales |
-→ Full list: memory/glossary.md, profiles: memory/people/
+→ Full list: memory/glossary.md, profiles: memory/carbons/ and memory/silicons/
 
 ## Terms
 | Term | Meaning |
@@ -575,7 +576,7 @@ Workplace shorthand, acronyms, and internal language.
 | Horizon | New mobile app |
 ```
 
-**memory/people/{carbon_id}.md:**
+**memory/carbons/{carbon_id}.md:**
 ```markdown
 # Todd Martinez
 
@@ -653,7 +654,7 @@ $1.2M budget, 6-month timeline. Critical path for Horizon project.
 ```
 1. MEMORY.md (hot cache)     → Check first, covers 90% of cases
 2. memory/glossary.md        → Full glossary if not in hot cache
-3. memory/people/, projects/ → Rich detail when needed
+3. memory/carbons/, memory/silicons/, projects/ → Rich detail when needed
 4. Ask user                  → Unknown term? Learn it.
 ```
 
@@ -681,7 +682,7 @@ When user says "remember this" or "X means Y":
    - If frequently used, add to MEMORY.md Quick Glossary
 
 2. **People:**
-   - Create/update memory/people/{carbon_id}.md
+   - Create/update memory/carbons/{carbon_id}.md
    - Add to MEMORY.md Key People if important
    - **Capture nicknames** - critical for decoding
 
@@ -706,7 +707,7 @@ When user asks "who is X" or "what does X mean":
 2. Dive into memory/ when you need full context for execution
 3. Example: drafting an email to todd about the PSR
    - MEMORY.md tells you Todd = Todd Martinez, PSR = Pipeline Status Report
-   - memory/people/todd-martinez.md tells you he prefers Slack, is direct
+   - memory/carbons/todd-martinez.md tells you he prefers Slack, is direct
 
 ## Bootstrapping
 
@@ -726,7 +727,7 @@ Use `/productivity:start` to initialize by scanning your carbon's chat, calendar
 
 | Type | MEMORY.md (Hot Cache) | memory/ (Full Storage) |
 |------|----------------------|------------------------|
-| Person | Top ~30 frequent contacts | glossary.md + people/{carbon_id}.md |
+| Person | Top ~30 frequent contacts | glossary.md + carbons/{carbon_id}.md or silicons/{silicon_id}.md |
 | Acronym/term | ~30 most common | glossary.md (complete list) |
 | Project | Active projects only | glossary.md + projects/{project_name}.md |
 | Nickname | In Key People if top 30 | glossary.md (all nicknames) |

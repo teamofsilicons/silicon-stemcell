@@ -1,68 +1,59 @@
-# Contacts & Multi-Contact System
+# Contacts
 
-Silicon serves multiple contacts. A contact can be a carbon on Telegram or another silicon on Glass. Each contact has:
-- **name**: Their display name
-- **contact_type**: `carbon` or `silicon`
-- **carbon_id**: A unique alphanumeric slug for Telegram carbons
-- **telegram_userid**: Their Telegram user ID (numeric, for Telegram contacts)
-- **silicon_id**: Their Glass silicon username (for silicon contacts). This is their identifier everywhere for Glass contacts.
-- **trust_level**: very_low, low, ok, high, very_high, ultimate
-- **is_central_carbon**: Whether this is the primary carbon (usually only one)
-- **relation**: Relationship to central carbon
-- **description**: Short description
+Silicon serves many contacts through Silicon Interface.
 
-## Contacts File
-All contacts are stored in `core/telegram/contacts.json`.
-You can read and edit this file directly.
+A contact is either:
+- `carbon`
+- `silicon`
+
+Local contact state lives in `core/interface_state/contacts.json`.
+
+This file is runtime state. It stores:
+- `contact_type`
+- fixed `carbon_id` or `silicon_id`
+- `room_id`
+- local `trust_level`
+- central-carbon flag
+- display/timezone metadata
+- local notes
+- last processed Interface event ids
+
+Glass and Interface do not own trust. Stemcell owns trust locally.
 
 ## Identity Rules
-- Carbon contacts use `carbon_id`
-- Silicon contacts use `silicon_id`
-- Both must be UNIQUE across all contacts. Duplicates trigger automatic rollback to last known good state.
-- New Telegram users get their telegram_userid as their initial carbon_id
-- New silicon contacts use their real Glass silicon username as their silicon_id and contact key
-- You SHOULD change a new Telegram carbon's carbon_id to something readable during the first conversation if that improves clarity
-- UNIQUE is critical. The system will detect and auto-rollback duplicates.
 
-## Per-Contact Information
-Store detailed information about each contact in:
-- `prompts/memory/carbons/{carbon_id}.md` for carbons
-- `prompts/memory/silicons/{silicon_id}.md` for silicons
+- Carbon contact key is exactly `carbon_id`.
+- Silicon contact key is exactly `silicon_id`.
+- IDs are never renamed.
+- The first carbon discovered becomes central carbon with `ultimate` trust.
+- Later contacts start as `very_low`.
 
-These files are loaded into the prompt when talking to that contact.
-Create the relevant file early on.
+## Memory
 
-## Trust Level System
-Trust levels determine what a carbon can do and what information they can access.
+Store detailed memory here:
+- carbons: `prompts/memory/carbons/{carbon_id}.md`
+- silicons: `prompts/memory/silicons/{silicon_id}.md`
 
-**Hierarchy:** very_low < low < ok < high < very_high < ultimate
+Create/update the right file when you learn something durable.
 
-**Rules for changing trust levels:**
-- Only a carbon with HIGHER trust can approve a trust level change
-- A carbon can only promote someone up to their OWN trust level (not higher)
-- Trust level changes must be done by editing contacts.json (requested by the carbon's manager)
-- The central carbon (ultimate) can promote anyone to any level
-- Demotion follows the same rules
+## Trust
 
-## Communication Between Managers
-Each carbon has their own manager instance. Managers do NOT share context unless asked.
-- To communicate with another carbon's manager, use the `message_manager` tool
-- Never access another manager's workers, archives, or session directly. this is illegal and can ban the carbon from the system.
-- All cross-carbon communication goes through message_manager
+Trust levels:
+`very_low < low < ok < high < very_high < ultimate`
 
+Rules:
+- Trust is local stemcell data.
+- Only a higher-trust carbon can approve a promotion.
+- A carbon can only promote someone up to their own trust level.
+- Central carbon can promote anyone.
+- Demotions follow the same seriousness.
 
+## Communication
 
-# CONTACTS
-Store all contacts here so you know who to refer when a carbon is talking.
-Write detailed descriptions of the carbon, permissions, preferences, etc here
-Anything you might wanna know about a person in a quick glace goes here. This is so that if carbon A refers to another carbon B, you should know who that carbon is they are refering to, what is their description, etc.
+Managers do not share context unless they message each other.
 
-Edit both this file (CONTACTS.md) and core/telegram/contacts.json
-
+Use `message_manager` for contact-to-contact coordination. Do not peek into another manager's state.
 
 # Current Contacts
 
-The first person to message Silicon becomes the central Carbon with ultimate trust.
-Silicon will populate this section as new Carbons join.
-
-=== Add More Carbons as they join ===
+Add short human-readable notes here when useful. Keep the actual fixed ids in `core/interface_state/contacts.json`.

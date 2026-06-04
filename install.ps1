@@ -388,46 +388,21 @@ $AlreadyConfigured = $false
 
 if (Test-Path $EnvFile) {
     $envContent = Get-Content $EnvFile -Raw
-    if ($envContent -notmatch 'TELEGRAM_BOT_TOKEN\s*=\s*""' -and $envContent -match 'TELEGRAM_BOT_TOKEN\s*=\s*"[^"]+"') {
+    if ($envContent -match 'BROWSER_PROFILE\s*=') {
         $AlreadyConfigured = $true
     }
 }
 
 if ($AlreadyConfigured) {
-    Write-Ok "Already configured (env.py has tokens)"
+    Write-Ok "Already configured (env.py exists)"
     if (Read-Confirm "Reconfigure?") {
         $AlreadyConfigured = $false
     }
 }
 
 if (-not $AlreadyConfigured) {
-    Write-Host ""
-    Write-Info "You need a Telegram bot token to use Silicon."
-    Write-Host "  1. Open Telegram and search for @BotFather" -ForegroundColor DarkGray
-    Write-Host "  2. Send /newbot and follow the prompts" -ForegroundColor DarkGray
-    Write-Host "  3. Copy the token BotFather gives you" -ForegroundColor DarkGray
-    Write-Host ""
-
-    $TelegramToken = Read-Secret "Telegram bot token"
-    if (-not $TelegramToken) {
-        Write-Err "Telegram bot token is required."
-        exit 1
-    }
-
-    Write-Host ""
-    Write-Info "OpenAI API key (for incoming voice transcription via Whisper)."
-    Write-Info "Press Enter to skip – incoming voice transcription will be disabled."
-    $OpenAIKey = Read-Secret "OpenAI API key (optional)"
-
-    Write-Host ""
-    Write-Info "Gemini API key (for outgoing text-to-speech)."
-    Write-Info "Press Enter to skip – outgoing voice messages will be disabled."
-    $GeminiKey = Read-Secret "Gemini API key (optional)"
-
     @"
-TELEGRAM_BOT_TOKEN = "$TelegramToken"
-OPENAI_API_KEY = "$OpenAIKey"
-GEMINI_API_KEY = "$GeminiKey"
+GLASS_API_KEY = ""
 BROWSER_PROFILE = "$InstanceName"
 "@ | Set-Content $EnvFile -Encoding UTF8
 
