@@ -2,7 +2,6 @@ import time
 import sys
 import os
 import json
-import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -13,10 +12,19 @@ if PROJECT_ROOT not in sys.path:
 
 from config import EVENT_LOOP, LOOP_TICK
 from manager import manager_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG
-from core.telegram import reply_user, get_contacts
-from core.glass import ensure_known_silicon_contact
+from core.interface import (
+    complete_take_back,
+    ensure_contact_for_target,
+    get_contacts,
+    remote_browser_close,
+    remote_browser_share,
+    reply_contact as reply_user,
+    send_progress,
+    take_back_event,
+    validate_contacts_integrity,
+)
 from core.messages import send_manager_message
-from core.carbon_id import change_carbon_id
+from core.cron import execute_cron_tool
 from worker.handler import (
     start_worker,
     message_worker,
@@ -29,82 +37,10 @@ from worker.handler import (
 from core.cron.checkback import add_checkback
 
 RESTART_FLAG = os.path.join(PROJECT_ROOT, ".restart_pending")
-CONTACTS_FILE = os.path.join(PROJECT_ROOT, "core", "telegram", "contacts.json")
-CONTACTS_BACKUP_FILE = os.path.join(PROJECT_ROOT, "core", "telegram", "contacts_backup.json")
 
 
 def log(msg):
     print(msg, flush=True)
-
-
-# --- Bot token check ---
-
-def _ensure_env():
-    """If Telegram bot token is not configured, prompt for it plus OpenAI and Gemini keys. Restart after."""
-    from env import TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY
-
-    if TELEGRAM_BOT_TOKEN:
-        return
-
-    log("[Silicon] First boot setup.")
-    log("")
-
-    log("[Silicon] Create a bot via @BotFather on Telegram, then paste the token here.")
-    token = input("[Silicon] Bot token: ").strip()
-    if not token:
-        log("[Silicon] No token provided. Exiting.")
-        sys.exit(1)
-
-    log("")
-    log("[Silicon] OpenAI API key (for voice message transcription via Whisper).")
-    log("[Silicon] Press Enter to skip — incoming voice transcription will be disabled.")
-    openai_key = input("[Silicon] OpenAI API key: ").strip()
-
-    log("")
-    log("[Silicon] Gemini API key (for text-to-speech).")
-    log("[Silicon] Press Enter to skip — outgoing voice messages will be disabled.")
-    gemini_key = input("[Silicon] Gemini API key: ").strip()
-
-    env_path = os.path.join(PROJECT_ROOT, "env.py")
-    with open(env_path, "w") as f:
-        f.write(f'TELEGRAM_BOT_TOKEN = "{token}"\n')
-        f.write(f'OPENAI_API_KEY = "{openai_key}"\n')
-        f.write(f'GEMINI_API_KEY = "{gemini_key}"\n')
-
-    log("[Silicon] Saved to env.py. Restarting...")
-    os.execv(sys.executable, [sys.executable, "-u"] + sys.argv)
-
-
-# --- Contacts integrity ---
-
-def validate_contacts_integrity():
-    """Check that each contact key matches its declared identity. Auto-restore from backup if corrupted."""
-    if not os.path.exists(CONTACTS_FILE):
-        return
-
-    with open(CONTACTS_FILE) as f:
-        contacts_data = json.load(f)
-
-    contacts = contacts_data.get("contacts", {})
-    duplicates = False
-
-    for key, info in contacts.items():
-        contact_type = info.get("contact_type", "carbon")
-        expected_id = info.get("silicon_id") if contact_type == "silicon" else info.get("carbon_id", key)
-        label = "silicon_id" if contact_type == "silicon" else "carbon_id"
-        if expected_id != key:
-            log(f"[Silicon] WARNING: Contact key '{key}' doesn't match {label} '{expected_id}'")
-            duplicates = True
-
-    if duplicates:
-        if os.path.exists(CONTACTS_BACKUP_FILE):
-            log("[Silicon] Restoring contacts from last known good backup...")
-            shutil.copy2(CONTACTS_BACKUP_FILE, CONTACTS_FILE)
-        else:
-            log("[Silicon] No backup available to restore from!")
-    else:
-        # Save current as backup (last known good state)
-        shutil.copy2(CONTACTS_FILE, CONTACTS_BACKUP_FILE)
 
 
 # --- Restart handling ---
@@ -190,27 +126,60 @@ def execute_single_tool(tool_spec, carbon_id):
         if not message:
             return "Tool 'message_manager': Error: message is required"
 
-        contacts = get_contacts().get("contacts", {})
-
         if target_carbon_id:
-            target_contact = contacts.get(target_carbon_id)
-            if target_contact and target_contact.get("contact_type") != "silicon":
-                status = send_manager_message(carbon_id, target_carbon_id, message)
-                return f"Tool 'message_manager' (to {target_carbon_id}): {status}"
-            if target_contact and target_contact.get("contact_type") == "silicon":
-                target_silicon_id = target_contact.get("silicon_id", target_carbon_id)
+            try:
+                contact = ensure_contact_for_target("carbon", target_carbon_id)
+            except Exception as e:
+                return f"Tool 'message_manager' (to {target_carbon_id}): Error: {e}"
+            target_id = contact.get("carbon_id") or target_carbon_id
+            status = send_manager_message(carbon_id, target_id, message)
+            return f"Tool 'message_manager' (to {target_id}): {status}"
 
-        if not target_silicon_id:
-            return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
+        if target_silicon_id:
+            try:
+                contact = ensure_contact_for_target("silicon", target_silicon_id)
+            except Exception as e:
+                return f"Tool 'message_manager' (to {target_silicon_id}): Error: {e}"
+            target_id = contact.get("silicon_id") or target_silicon_id
+            status = send_manager_message(carbon_id, target_id, message)
+            return f"Tool 'message_manager' (to {target_id}): {status}"
 
+        return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
+
+    elif tool_name == "remote_browser":
+        action_type = tool_spec.get("type", "share")
+        if action_type == "share":
+            expiry = tool_spec.get("expiry", 60)
+            new = tool_spec.get("new", True)
+            status = remote_browser_share(carbon_id, expiry=expiry, new=new)
+            return f"Tool 'remote_browser/share': {status}"
+        if action_type == "close":
+            status = remote_browser_close(carbon_id)
+            return f"Tool 'remote_browser/close': {status}"
+        return f"Tool 'remote_browser': Unknown type '{action_type}'"
+
+    elif tool_name == "take_back":
+        request_id = tool_spec.get("request_id", "")
+        event_id = tool_spec.get("event_id", "")
+        if request_id:
+            status = complete_take_back(request_id, tool_spec.get("message", ""))
+            return f"Tool 'take_back': {status}"
+        if event_id:
+            status = take_back_event(event_id, reason=tool_spec.get("reason", ""), force=bool(tool_spec.get("force", False)))
+            return f"Tool 'take_back': {status}"
+        return "Tool 'take_back': Error: request_id or event_id is required"
+
+    elif tool_name.startswith("cron/"):
         try:
-            contact, exists = ensure_known_silicon_contact(target_silicon_id)
-            if not exists:
-                return f"Tool 'message_manager' (to {target_silicon_id}): Error: silicon_id does not exist on Glass"
-            status = send_manager_message(carbon_id, target_silicon_id, message)
-            return f"Tool 'message_manager' (to {target_silicon_id}): {status}"
+            return execute_cron_tool(tool_spec)
         except Exception as e:
-            return f"Tool 'message_manager' (to {target_silicon_id}): Error: {e}"
+            return f"Tool '{tool_name}': Error: {e}"
+
+    elif tool_name == "cron/list":
+        try:
+            return execute_cron_tool(tool_spec)
+        except Exception as e:
+            return f"Tool 'cron/list': Error: {e}"
 
     elif tool_name.startswith("worker"):
         worker_type, action_type, worker_id = _parse_worker_tool(tool_spec)
@@ -221,6 +190,7 @@ def execute_single_tool(tool_spec, carbon_id):
             task = tool_spec.get("task", "")
             incognito = tool_spec.get("incognito", False)
             status = start_worker(worker_id, task, worker_type, carbon_id, incognito=incognito)
+            send_progress(carbon_id, f"worker:{worker_id}", "executing", status)
 
             # Handle checkback_in if specified
             checkback_in = tool_spec.get("checkback_in")
@@ -240,6 +210,7 @@ def execute_single_tool(tool_spec, carbon_id):
             if not task:
                 return f"Tool 'worker/message' ({worker_id}): Error: message is required"
             status = message_worker(worker_id, task, carbon_id)
+            send_progress(carbon_id, f"worker:{worker_id}", "executing", status)
             return f"Tool 'worker/message' ({worker_id}): {status}"
 
         elif action_type == "checkback":
@@ -260,6 +231,7 @@ def execute_single_tool(tool_spec, carbon_id):
 
         elif action_type == "stop":
             status = stop_worker(worker_id, carbon_id)
+            send_progress(carbon_id, f"worker:{worker_id}", "done", status)
             return f"Tool 'worker/stop' ({worker_id}): {status}"
 
         elif action_type == "list_active":
@@ -285,10 +257,6 @@ def execute_single_tool(tool_spec, carbon_id):
         # Handled separately in execute_all_tools
         return None
 
-    elif tool_name == "change_carbon_id":
-        # Handled separately in execute_all_tools
-        return None
-
     else:
         return f"Unknown tool: '{tool_name}'"
 
@@ -296,22 +264,17 @@ def execute_single_tool(tool_spec, carbon_id):
 def execute_all_tools(all_tools):
     """Execute all tools from all managers through a single executor.
     all_tools is a list of (carbon_id, tool_spec) tuples.
-    Returns (results_by_carbon, carbon_id_remaps).
-    carbon_id_remaps: {old_id: new_id} for any change_carbon_id calls that succeeded."""
+    Returns (results_by_carbon, empty_remaps_for_legacy_callers)."""
     results_by_carbon = {}
     needs_restart = False
     restart_carbon_id = None
-    carbon_id_remaps = {}  # old_id -> new_id
 
     # Sort: restart at end
     restart_tools = [(cid, t) for cid, t in all_tools if t.get("tool") == "restart_silicon_service"]
     other_tools = [(cid, t) for cid, t in all_tools if t.get("tool") != "restart_silicon_service"]
     sorted_tools = other_tools + restart_tools
 
-    for original_carbon_id, tool_spec in sorted_tools:
-        # Apply any remap from earlier change_carbon_id in this batch
-        carbon_id = carbon_id_remaps.get(original_carbon_id, original_carbon_id)
-
+    for carbon_id, tool_spec in sorted_tools:
         tool_name = tool_spec.get("tool", "")
 
         if tool_name == "restart_silicon_service":
@@ -319,18 +282,7 @@ def execute_all_tools(all_tools):
             restart_carbon_id = carbon_id
             continue
 
-        if tool_name == "change_carbon_id":
-            new_id = tool_spec.get("new_carbon_id", "")
-            if not new_id:
-                result = "Tool 'change_carbon_id': Error: new_carbon_id is required"
-            else:
-                status = change_carbon_id(carbon_id, new_id)
-                result = f"Tool 'change_carbon_id': {status}"
-                if "successfully" in status:
-                    carbon_id_remaps[original_carbon_id] = new_id
-                    carbon_id = new_id
-        else:
-            result = execute_single_tool(tool_spec, carbon_id)
+        result = execute_single_tool(tool_spec, carbon_id)
 
         if result is not None:
             if carbon_id not in results_by_carbon:
@@ -345,7 +297,7 @@ def execute_all_tools(all_tools):
                 results_by_carbon[restart_carbon_id] = []
             results_by_carbon[restart_carbon_id].append(f"Tool 'restart_silicon_service': {err}")
 
-    return results_by_carbon, carbon_id_remaps
+    return results_by_carbon, {}
 
 
 def is_only_do_nothing(tools_data):
@@ -396,6 +348,8 @@ def run_event_loop_tick():
                         if carbon_id not in context_by_carbon:
                             context_by_carbon[carbon_id] = []
                         context_by_carbon[carbon_id].append(ctx)
+                        if handler["name"] == "check_workers":
+                            send_progress(carbon_id, "workers", "done", "worker update ready")
             elif isinstance(result, str) and result:
                 log(f"[Silicon] Warning: handler '{handler['name']}' returned string instead of dict")
 
@@ -453,6 +407,7 @@ def run_all_managers(context_by_carbon):
             futures = {}
             for carbon_id, text in pending.items():
                 on_tools = _make_mid_stream_handler(carbon_id)
+                send_progress(carbon_id, f"manager:{carbon_id}", "thinking", "manager running")
                 future = executor.submit(manager_code, text, carbon_id, on_tools=on_tools)
                 futures[future] = carbon_id
 
@@ -463,8 +418,10 @@ def run_all_managers(context_by_carbon):
                     manager_outputs[carbon_id] = output
                     if executed_tools:
                         already_executed[carbon_id] = executed_tools
+                    send_progress(carbon_id, f"manager:{carbon_id}", "done", "manager finished")
                 except Exception as e:
                     manager_outputs[carbon_id] = f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}'
+                    send_progress(carbon_id, f"manager:{carbon_id}", "done", f"manager error: {e}")
 
         # Parse tools from all managers
         all_tools = []  # list of (carbon_id, tool_spec)
@@ -534,8 +491,6 @@ def run_all_managers(context_by_carbon):
 
 
 def main():
-    _ensure_env()
-
     log("[Silicon] Starting event loop...")
     log(f"[Silicon] Tick interval: {LOOP_TICK}s")
 

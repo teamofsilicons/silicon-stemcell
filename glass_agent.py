@@ -1,467 +1,234 @@
 #!/usr/bin/env python3
-"""Glass Agent — sidecar daemon that connects a silicon instance to Glass remote control.
-Tries WebSocket for real-time streaming, falls back to REST polling."""
+"""Glass sidecar for Silicon v1.
+
+Keeps one live connection to Glass control, reports status, and runs manifest
+backups when Glass asks for them.
+"""
+from __future__ import annotations
 
 import json
 import os
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
-POLL_INTERVAL = 10
-WS_HEARTBEAT_INTERVAL = 10
-WS_LOG_INTERVAL = 1  # check for new logs every second
-LOG_CHUNK_MAX = 50_000  # bytes
-REST_FALLBACK_CYCLES = 5  # poll cycles before retrying WS
-VERSION_CHECK_INTERVAL = 1800  # check for updates every 30 minutes
-UPSTREAM_VERSION_URL = "https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/main/silicon.info"
-
-# ── Config ───────────────────────────────────────────────────
+STATUS_INTERVAL = 15
+PING_INTERVAL = 20
+MAX_BACKOFF = 30
 
 
-def find_silicon_dir():
+def silicon_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def load_config(silicon_dir):
-    config_path = silicon_dir / ".glass.json"
-    if not config_path.exists():
-        return None
-    with open(config_path) as f:
-        return json.load(f)
+def load_config(root: Path) -> dict:
+    path = root / ".glass.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def get_silicon_name(silicon_dir):
-    sj = silicon_dir / "silicon.json"
-    if sj.exists():
+def silicon_name(root: Path) -> str:
+    path = root / "silicon.json"
+    if path.exists():
         try:
-            data = json.loads(sj.read_text())
-            return data.get("address") or data.get("name") or silicon_dir.name
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data.get("address") or data.get("name") or root.name
         except Exception:
             pass
-    return silicon_dir.name
+    return root.name
 
 
-def build_ws_url(server_url):
-    """Convert https://... to wss://... /ws/agent/"""
-    url = server_url.rstrip("/")
-    if url.startswith("https://"):
-        return "wss://" + url[8:] + "/ws/agent/"
-    elif url.startswith("http://"):
-        return "ws://" + url[7:] + "/ws/agent/"
-    return None
-
-
-# ── HTTP helpers ─────────────────────────────────────────────
-
-
-def api_request(server_url, path, api_key, method="GET", data=None):
-    import urllib.error
-    import urllib.request
-
-    url = server_url.rstrip("/") + path
-    headers = {"Authorization": f"Bearer {api_key}"}
-    body = None
-    if data is not None:
-        body = json.dumps(data).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
+def local_version(root: Path) -> str:
+    path = root / "silicon.info"
+    if path.exists():
         try:
-            return json.loads(e.read().decode("utf-8"))
-        except Exception:
-            return {"error": str(e)}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# ── Version checking ─────────────────────────────────────────
-
-
-def get_local_version(silicon_dir):
-    info = silicon_dir / "silicon.info"
-    if info.exists():
-        try:
-            return json.loads(info.read_text()).get("version", "")
+            return json.loads(path.read_text(encoding="utf-8")).get("version", "")
         except Exception:
             pass
     return ""
 
 
-_cached_latest_version = ""
-_last_version_check = 0
+def ws_url(server_url: str, api_key: str) -> str:
+    base = server_url.rstrip("/")
+    if base.startswith("https://"):
+        base = "wss://" + base[8:]
+    elif base.startswith("http://"):
+        base = "ws://" + base[7:]
+    sep = "&" if "?" in base else "?"
+    return f"{base}/ws/glass/agent/{sep}silicon_key={api_key}"
 
 
-def get_latest_version():
-    global _cached_latest_version, _last_version_check
-    now = time.time()
-    if now - _last_version_check < VERSION_CHECK_INTERVAL and _cached_latest_version:
-        return _cached_latest_version
-    try:
-        import urllib.request
-        req = urllib.request.Request(UPSTREAM_VERSION_URL, headers={"User-Agent": "glass-agent"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
-            _cached_latest_version = data.get("version", "")
-            _last_version_check = now
-    except Exception:
-        pass
-    return _cached_latest_version
-
-
-# ── Status detection ─────────────────────────────────────────
-
-
-def detect_status(silicon_dir):
-    pid_file = silicon_dir / ".silicon.pid"
-    stop_file = silicon_dir / ".silicon.stop"
+def detect_status(root: Path) -> str:
+    pid_file = root / ".silicon.pid"
+    stop_file = root / ".silicon.stop"
     if not pid_file.exists():
         return "stopped"
     try:
-        pid = int(pid_file.read_text().strip())
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
         os.kill(pid, 0)
         return "running"
     except (ValueError, ProcessLookupError, PermissionError):
-        if stop_file.exists():
-            return "stopped"
-        return "crashed"
+        return "stopped" if stop_file.exists() else "crashed"
 
 
-def detect_backup_running(silicon_dir):
-    pid_file = silicon_dir / ".glass-push.pid"
-    if not pid_file.exists():
-        return False
+def send_json(ws, payload: dict) -> None:
+    ws.send(json.dumps(payload, separators=(",", ":")))
+
+
+def status_payload(root: Path) -> dict:
+    return {
+        "type": "status",
+        "status": detect_status(root),
+        "version": local_version(root),
+        "pid": os.getpid(),
+    }
+
+
+def run_backup(root: Path, note: str = "glass command") -> tuple[str, str]:
     try:
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except (ValueError, ProcessLookupError, PermissionError):
-        return False
+        from core.backup import run_backup as manifest_backup
+
+        ok = manifest_backup(root, note=note, logger=lambda msg: print(f"[glass-agent] {msg}", flush=True))
+        return ("done", "backup complete") if ok else ("failed", "backup skipped")
+    except Exception as exc:
+        return "failed", str(exc)
 
 
-# ── Command execution ────────────────────────────────────────
-
-
-def execute_command(cmd, silicon_name):
-    action = cmd.get("command", "")
-    silicon_dir = find_silicon_dir()
-    try:
-        if action == "start":
-            subprocess.Popen(
-                ["silicon", "start", silicon_name],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            for _ in range(30):
-                time.sleep(1)
-                if silicon_dir and detect_status(silicon_dir) == "running":
-                    return "done", "started"
-            return "done", "started (status unconfirmed)"
-
-        elif action == "stop":
-            subprocess.Popen(
-                ["silicon", "stop", silicon_name],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            for _ in range(30):
-                time.sleep(1)
-                if silicon_dir and detect_status(silicon_dir) != "running":
-                    return "done", "stopped"
-            return "done", "stopped (status unconfirmed)"
-
-        elif action == "backup_now":
-            result = subprocess.run(
-                ["silicon", "push", silicon_name, "now"],
-                capture_output=True, text=True, timeout=120,
-            )
-            msg = result.stdout.strip() or result.stderr.strip() or "backup complete"
-            return ("done" if result.returncode == 0 else "failed"), msg
-
-        elif action == "backup_on":
-            if detect_backup_running(silicon_dir):
-                return "done", "continuous backup already running"
-            subprocess.Popen(
-                ["silicon", "push", silicon_name],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            # Wait a few seconds for the PID file to appear
-            for _ in range(10):
-                time.sleep(1)
-                if detect_backup_running(silicon_dir):
-                    return "done", "continuous backup started"
-            return "done", "continuous backup started (status unconfirmed)"
-
-        elif action == "backup_off":
-            result = subprocess.run(
-                ["silicon", "push", silicon_name, "stop"],
-                capture_output=True, text=True, timeout=15,
-            )
-            msg = result.stdout.strip() or result.stderr.strip() or "continuous backup stopped"
-            return "done", msg
-
-        elif action == "update":
-            if detect_status(silicon_dir) == "running":
-                return "failed", "bud must be stopped before updating"
-            result = subprocess.run(
-                ["silicon", "update", silicon_name],
-                capture_output=True, text=True, timeout=300,
-            )
-            output = result.stdout.strip()
-            err = result.stderr.strip()
-            if result.returncode == 0:
-                return "done", output or "updated successfully"
-            elif result.returncode == 2:
-                return "failed", "merge conflicts detected — no files were changed"
-            else:
-                return "failed", err or output or "update failed"
-
-        else:
-            return "failed", f"unknown command: {action}"
-    except subprocess.TimeoutExpired:
-        return "failed", "command timed out"
-    except FileNotFoundError:
-        return "failed", "silicon CLI not found on PATH"
-    except Exception as e:
-        return "failed", str(e)
-
-
-# ── Log streaming ────────────────────────────────────────────
-
-
-class LogTailer:
-    def __init__(self, log_path):
-        self.path = log_path
-        self.pos = 0
-        if self.path.exists():
-            self.pos = self.path.stat().st_size
-
-    def read_new(self):
-        if not self.path.exists():
-            self.pos = 0
-            return ""
-        size = self.path.stat().st_size
-        if size < self.pos:
-            self.pos = 0
-        if size == self.pos:
-            return ""
+def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
+    action = command.get("command", "")
+    if action in {"backup", "backup_now"}:
+        return run_backup(root, note=f"glass command {command.get('id') or ''}".strip())
+    if action == "start":
         try:
-            with open(self.path, "rb") as f:
-                f.seek(self.pos)
-                chunk = f.read(LOG_CHUNK_MAX)
-                self.pos = f.tell()
-            return chunk.decode("utf-8", errors="replace")
-        except Exception:
-            return ""
+            subprocess.Popen(["silicon", "start", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return "done", "started"
+        except Exception as exc:
+            return "failed", str(exc)
+    if action == "stop":
+        try:
+            subprocess.Popen(["silicon", "stop", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return "done", "stopped"
+        except Exception as exc:
+            return "failed", str(exc)
+    if action == "update":
+        if detect_status(root) == "running":
+            return "failed", "silicon must be stopped before update"
+        try:
+            proc = subprocess.run(["silicon", "update", name], capture_output=True, text=True, timeout=300)
+            output = proc.stdout.strip() or proc.stderr.strip()
+            return ("done" if proc.returncode == 0 else "failed"), output
+        except Exception as exc:
+            return "failed", str(exc)
+    return "failed", f"unknown command: {action}"
 
 
-# ── WebSocket mode ───────────────────────────────────────────
+def handle_message(ws, msg: dict, root: Path, name: str) -> None:
+    msg_type = msg.get("type")
+    if msg_type == "welcome":
+        print("[glass-agent] welcome", flush=True)
+        return
+    if msg_type == "billing":
+        print(f"[glass-agent] billing: {msg.get('status') or msg.get('message') or 'ok'}", flush=True)
+        return
+    if msg_type == "pong":
+        return
+    if msg_type != "command":
+        return
+
+    command_id = msg.get("id", "")
+    if command_id:
+        send_json(ws, {"type": "command_ack", "id": command_id, "command": msg.get("command", "")})
+    status, detail = execute_command(msg, root, name)
+    if command_id:
+        send_json(ws, {
+            "type": "command_result",
+            "id": command_id,
+            "command": msg.get("command", ""),
+            "status": status,
+            "message": detail,
+        })
+    print(f"[glass-agent] command {msg.get('command')} -> {status}: {detail}", flush=True)
 
 
-def run_websocket_loop(ws_url, api_key, silicon_name, silicon_dir, log_tailer, running_flag):
-    """Connect via WebSocket for real-time relay. Raises on disconnect."""
+def run_live(root: Path, config: dict, running: list[bool]) -> None:
     from websockets.sync.client import connect
 
-    print(f"[glass-agent] Connecting to {ws_url}", flush=True)
-    with connect(ws_url, close_timeout=5, open_timeout=10) as ws:
-        # Auth
-        ws.send(json.dumps({"type": "auth", "token": api_key}))
-        resp = json.loads(ws.recv(timeout=5))
-        if resp.get("type") != "auth_ok":
-            raise ConnectionError(f"Auth failed: {resp.get('reason', 'unknown')}")
+    name = silicon_name(root)
+    url = ws_url(config["server_url"], config["api_key"])
+    print(f"[glass-agent] connecting to {config['server_url'].rstrip('/')}/ws/glass/agent/", flush=True)
+    with connect(url, close_timeout=5, open_timeout=10) as ws:
+        print("[glass-agent] connected", flush=True)
+        send_json(ws, {
+            "type": "handshake",
+            "name": name,
+            "version": local_version(root),
+            "hostname": os.uname().nodename if hasattr(os, "uname") else "",
+            "pid": os.getpid(),
+        })
+        send_json(ws, status_payload(root))
+        next_status = time.time() + STATUS_INTERVAL
+        next_ping = time.time() + PING_INTERVAL
 
-        print(f"[glass-agent] WebSocket connected (live mode)", flush=True)
+        while running[0]:
+            now = time.time()
+            if now >= next_status:
+                send_json(ws, status_payload(root))
+                next_status = now + STATUS_INTERVAL
+            if now >= next_ping:
+                send_json(ws, {"type": "ping", "ts": int(now)})
+                next_ping = now + PING_INTERVAL
 
-        # Background threads for heartbeats and logs
-        stop_event = threading.Event()
-        ws_lock = threading.Lock()
-
-        def safe_send(data):
-            with ws_lock:
-                ws.send(data)
-
-        def heartbeat_sender():
-            while not stop_event.is_set() and running_flag[0]:
-                try:
-                    status = detect_status(silicon_dir)
-                    backup = detect_backup_running(silicon_dir)
-                    cur_ver = get_local_version(silicon_dir)
-                    lat_ver = get_latest_version()
-                    safe_send(json.dumps({
-                        "type": "heartbeat", "status": status,
-                        "backup_running": backup,
-                        "current_version": cur_ver,
-                        "latest_version": lat_ver,
-                    }))
-                except Exception:
-                    break
-                stop_event.wait(WS_HEARTBEAT_INTERVAL)
-
-        def log_sender():
-            while not stop_event.is_set() and running_flag[0]:
-                try:
-                    new_lines = log_tailer.read_new()
-                    if new_lines:
-                        safe_send(json.dumps({"type": "log", "lines": new_lines}))
-                except Exception:
-                    break
-                stop_event.wait(WS_LOG_INTERVAL)
-
-        t_hb = threading.Thread(target=heartbeat_sender, daemon=True)
-        t_log = threading.Thread(target=log_sender, daemon=True)
-        t_hb.start()
-        t_log.start()
-
-        try:
-            # Receiver: blocks on ws.recv(), handles commands
-            while running_flag[0]:
-                try:
-                    raw = ws.recv(timeout=2)
-                except TimeoutError:
-                    continue
-
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-
-                if msg.get("type") == "command":
-                    cmd_id = msg.get("id", "")
-                    # ACK
-                    safe_send(json.dumps({"type": "command_ack", "id": cmd_id, "command": msg.get("command", "")}))
-                    # Execute
-                    result_status, result_msg = execute_command(msg, silicon_name)
-                    safe_send(json.dumps({
-                        "type": "command_result",
-                        "id": cmd_id,
-                        "command": msg.get("command", ""),
-                        "status": result_status,
-                        "message": result_msg,
-                    }))
-                    print(f"[glass-agent] {msg.get('command')} → {result_status}: {result_msg}", flush=True)
-        finally:
-            stop_event.set()
-            t_hb.join(timeout=3)
-            t_log.join(timeout=3)
+            try:
+                raw = ws.recv(timeout=2)
+            except TimeoutError:
+                continue
+            if not raw:
+                continue
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(msg, dict):
+                handle_message(ws, msg, root, name)
 
 
-# ── REST polling mode (fallback) ─────────────────────────────
-
-
-def run_poll_loop(server_url, api_key, silicon_name, silicon_dir, log_tailer, running_flag, max_cycles=0):
-    """REST polling fallback. Runs for max_cycles (0 = unlimited)."""
-    cycle = 0
-    seconds_in_cycle = 0
-    while running_flag[0]:
-        try:
-            # Heartbeat + commands every POLL_INTERVAL seconds
-            if seconds_in_cycle == 0:
-                status = detect_status(silicon_dir)
-                backup = detect_backup_running(silicon_dir)
-                cur_ver = get_local_version(silicon_dir)
-                lat_ver = get_latest_version()
-                api_request(server_url, "/control/api/heartbeat/", api_key, method="POST", data={
-                    "status": status, "backup_running": backup,
-                    "current_version": cur_ver, "latest_version": lat_ver,
-                })
-
-                resp = api_request(server_url, "/control/api/commands/pending/", api_key)
-                commands = resp.get("commands", []) if isinstance(resp, dict) else []
-                for cmd in commands:
-                    cmd_id = cmd.get("id")
-                    if not cmd_id:
-                        continue
-                    api_request(server_url, f"/control/api/commands/{cmd_id}/ack/", api_key, method="POST")
-                    result_status, result_msg = execute_command(cmd, silicon_name)
-                    api_request(server_url, f"/control/api/commands/{cmd_id}/complete/", api_key, method="POST", data={
-                        "status": result_status, "message": result_msg,
-                    })
-                    print(f"[glass-agent] {cmd.get('command')} → {result_status}: {result_msg}", flush=True)
-
-            # Logs every 2 seconds
-            new_lines = log_tailer.read_new()
-            if new_lines:
-                api_request(server_url, "/control/api/logs/", api_key, method="POST", data={"lines": new_lines})
-
-        except Exception as e:
-            print(f"[glass-agent] Poll error: {e}", flush=True)
-
-        seconds_in_cycle += 2
-        if seconds_in_cycle >= POLL_INTERVAL:
-            seconds_in_cycle = 0
-            cycle += 1
-            if max_cycles and cycle >= max_cycles:
-                return
-
-        if not running_flag[0]:
-            return
-        time.sleep(2)
-
-
-# ── Main ─────────────────────────────────────────────────────
-
-
-def main():
-    silicon_dir = find_silicon_dir()
-    config = load_config(silicon_dir)
+def main() -> None:
+    root = silicon_dir()
+    config = load_config(root)
     if not config:
         print("[glass-agent] No .glass.json found. Exiting.", flush=True)
         sys.exit(1)
-
-    server_url = config.get("server_url", "")
-    api_key = config.get("api_key", "")
-    if not server_url or not api_key:
+    if not config.get("server_url") or not config.get("api_key"):
         print("[glass-agent] Missing server_url or api_key in .glass.json. Exiting.", flush=True)
         sys.exit(1)
 
-    silicon_name = get_silicon_name(silicon_dir)
-    log_tailer = LogTailer(silicon_dir / ".silicon.log")
-    agent_pid_file = silicon_dir / ".glass_agent.pid"
-    agent_pid_file.write_text(str(os.getpid()))
+    pid_file = root / ".glass_agent.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    running = [True]
 
-    running = [True]  # mutable for threads
-
-    def handle_signal(signum, frame):
+    def stop(_signum, _frame):
         running[0] = False
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
 
-    print(f"[glass-agent] Started for '{silicon_name}' → {server_url}", flush=True)
-
-    # Try WebSocket, fall back to REST
-    ws_url = build_ws_url(server_url)
-    ws_available = False
-    try:
-        import websockets  # noqa: F401
-        ws_available = ws_url is not None
-    except ImportError:
-        print("[glass-agent] websockets not installed, using REST polling only.", flush=True)
-
+    backoff = 1
+    print(f"[glass-agent] started for '{silicon_name(root)}'", flush=True)
     while running[0]:
-        if ws_available:
-            try:
-                run_websocket_loop(ws_url, api_key, silicon_name, silicon_dir, log_tailer, running)
-            except Exception as e:
-                if running[0]:
-                    print(f"[glass-agent] WS disconnected: {e}. Falling back to REST.", flush=True)
-                    run_poll_loop(server_url, api_key, silicon_name, silicon_dir, log_tailer, running, max_cycles=REST_FALLBACK_CYCLES)
-        else:
-            run_poll_loop(server_url, api_key, silicon_name, silicon_dir, log_tailer, running)
+        try:
+            run_live(root, config, running)
+            backoff = 1
+        except Exception as exc:
+            if running[0]:
+                print(f"[glass-agent] disconnected: {exc}; reconnecting in {backoff}s", flush=True)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, MAX_BACKOFF)
 
-    try:
-        agent_pid_file.unlink(missing_ok=True)
-    except Exception:
-        pass
-    print("[glass-agent] Stopped.", flush=True)
+    pid_file.unlink(missing_ok=True)
+    print("[glass-agent] stopped", flush=True)
 
 
 if __name__ == "__main__":

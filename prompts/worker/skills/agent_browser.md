@@ -4,6 +4,17 @@ Your primary tool for browser automation. All `silicon-browser` commands are exe
 
 Your browser session is pre-configured via environment variables. Do NOT pass `--session` or `--profile` flags — they are already set for you. Just use `silicon-browser` commands directly.
 
+Current v1 browser is Steel-backed. Profile state persists when you close the session. Always close before reporting done.
+
+Remote browser shares are usually created by the manager tool, not by workers:
+
+```bash
+silicon-browser share --new --expiry 60
+silicon-browser close
+```
+
+Use share only if the manager explicitly asks you to produce a share URL. Close after the carbon says login is done so cookies/storage are saved.
+
 
 # silicon-browser
 
