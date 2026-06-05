@@ -6,6 +6,7 @@ apply the update when the local version is behind.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -329,6 +330,24 @@ def check_for_system_update(now: float | None = None) -> dict[str, str]:
     return {head_contact_id: _update_message(latest, latest_version)}
 
 
-if __name__ == "__main__":
-    result = check_for_system_update(now=time.time() + UPDATE_CHECK_INTERVAL_SECONDS)
+def trigger_system_update_check(*, force: bool = True) -> dict[str, str]:
+    """Run the same update check on demand for CLI-triggered checks."""
+    now = time.time() + UPDATE_CHECK_INTERVAL_SECONDS if force else None
+    return check_for_system_update(now=now)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Trigger a silicon system update check.")
+    parser.add_argument(
+        "--no-force",
+        action="store_true",
+        help="Respect the hourly throttle instead of forcing the check.",
+    )
+    args = parser.parse_args(argv)
+    result = trigger_system_update_check(force=not args.no_force)
     print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

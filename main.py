@@ -569,5 +569,9 @@ def run_headed_browser():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "browser":
         run_headed_browser()
+    elif len(sys.argv) > 1 and sys.argv[1] in {"update", "update-check"}:
+        from update import main as update_main
+
+        raise SystemExit(update_main(sys.argv[2:]))
     else:
         main()

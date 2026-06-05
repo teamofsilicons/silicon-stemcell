@@ -483,7 +483,22 @@ def _extract_own_ids(payload: Any) -> list[str]:
     if not isinstance(payload, dict):
         return []
     ids = []
-    for key in ("id", "carbon_id", "carbonId", "silicon_id", "siliconId", "username", "public_id"):
+    for key in (
+        "id",
+        "carbon_id",
+        "carbonId",
+        "carbon_username",
+        "carbonUsername",
+        "silicon_id",
+        "siliconId",
+        "silicon_username",
+        "siliconUsername",
+        "username",
+        "handle",
+        "public_id",
+        "publicId",
+        "name",
+    ):
         value = payload.get(key)
         if value:
             ids.append(str(value))
@@ -695,18 +710,88 @@ def _event_room_id(event: dict[str, Any]) -> str:
 
 
 def _event_sender(event: dict[str, Any]) -> str:
+    candidates = _event_sender_candidates(event)
+    return candidates[0] if candidates else ""
+
+
+def _event_sender_candidates(event: dict[str, Any]) -> list[str]:
     content = _event_content(event)
+    values: list[Any] = []
     sender = event.get("sender")
     if isinstance(sender, dict):
-        return _first_text(sender.get("id"), sender.get("carbon_id"), sender.get("silicon_id"), sender.get("username"))
-    return _first_text(sender, event.get("sender_id"), event.get("senderId"), content.get("sender"))
+        values.extend(
+            [
+                sender.get("id"),
+                sender.get("carbon_id"),
+                sender.get("carbonId"),
+                sender.get("silicon_id"),
+                sender.get("siliconId"),
+                sender.get("username"),
+                sender.get("handle"),
+                sender.get("public_id"),
+                sender.get("publicId"),
+                sender.get("name"),
+            ]
+        )
+    else:
+        values.append(sender)
+
+    values.extend(
+        [
+            event.get("sender_id"),
+            event.get("senderId"),
+            event.get("sender_handle"),
+            event.get("senderHandle"),
+            event.get("sender_username"),
+            event.get("senderUsername"),
+            event.get("sender_public_id"),
+            event.get("senderPublicId"),
+            event.get("carbon_id"),
+            event.get("carbonId"),
+            event.get("silicon_id"),
+            event.get("siliconId"),
+            content.get("sender"),
+            content.get("sender_id"),
+            content.get("senderId"),
+            content.get("sender_handle"),
+            content.get("senderHandle"),
+            content.get("sender_username"),
+            content.get("senderUsername"),
+            content.get("carbon_id"),
+            content.get("carbonId"),
+            content.get("silicon_id"),
+            content.get("siliconId"),
+        ]
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            out.append(text)
+            seen.add(text)
+    return out
+
+
+def _identity_set(values: Any) -> set[str]:
+    out: set[str] = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        out.add(text)
+        out.add(text.lower())
+    return out
 
 
 def _event_is_self(event: dict[str, Any], state: dict[str, Any]) -> bool:
     if event.get("is_self") or event.get("self") or event.get("sender_is_self"):
         return True
-    sender = _event_sender(event)
-    return bool(sender and sender in set(state.get("own_ids") or []))
+    own_ids = _identity_set(state.get("own_ids") or [])
+    if not own_ids:
+        return False
+    senders = _identity_set(_event_sender_candidates(event))
+    return bool(senders and senders.intersection(own_ids))
 
 
 def _event_body(event: dict[str, Any]) -> str:

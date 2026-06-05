@@ -210,6 +210,23 @@ class InterfaceStateTest(unittest.TestCase):
         contact = interface.get_contact("carbon-a")
         self.assertEqual(contact["last_polled_event_id"], "evt-progress")
 
+    def test_self_sender_handle_updates_watermark_and_drops_echo(self):
+        state = interface.get_contacts()
+        state["own_ids"] = ["api-dev-test"]
+        interface._save_state(state)
+        event = {
+            "type": "m.text",
+            "event_id": "evt-self",
+            "room_id": "room-a",
+            "sender_handle": "api-dev-test",
+            "content": {"body": "my own reply"},
+        }
+
+        processed = interface.process_incoming_event(event, client=object())
+
+        self.assertIsNone(processed)
+        self.assertIn("evt-self", interface.get_contacts()["processed_events"]["room-a"])
+
     def test_interface_new_command_maps_to_session_command(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
 
