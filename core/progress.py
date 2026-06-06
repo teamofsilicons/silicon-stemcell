@@ -275,8 +275,7 @@ def progress_display_line(event):
     status = event.get("status")
 
     if kind == THINKING:
-        preview = event.get("preview")
-        return f"thinking: {preview}" if preview else "thinking"
+        return "thinking"
 
     if kind == READING_FILE:
         target = event.get("path") or event.get("preview") or ""
@@ -295,14 +294,22 @@ def progress_display_line(event):
     if kind == EXECUTING:
         if status == "output":
             return f"executing output: {event.get('preview', '')}"
+        tool_name = event.get("tool_name") or ""
         command = event.get("command") or event.get("preview") or ""
         if status == "completed":
-            bits = [f"executing done: {compact(command, 120)}"]
+            if command:
+                bits = [f"executing done: {compact(command, 120)}"]
+            elif tool_name:
+                bits = [f"tool done: {compact(tool_name, 120)}"]
+            else:
+                bits = ["tool done"]
             if event.get("exit_code") is not None:
                 bits.append(f"exit={event.get('exit_code')}")
             if event.get("preview"):
                 bits.append(f"output={event.get('preview')}")
             return " ".join(bits)
+        if tool_name and not command:
+            return f"called tool: {compact(tool_name, 160)}"
         return f"executing: {compact(command, 160)}"
 
     if kind == SEARCHING_WEB:

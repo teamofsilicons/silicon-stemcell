@@ -188,6 +188,24 @@ def _display_stream_event(event, tag, state=None, progress_events=None):
         print(" ".join(parts), flush=True)
 
 
+def _notify_progress(on_progress, progress):
+    """Forward normalized provider progress without letting manager prose drive UI."""
+    if not on_progress or not progress:
+        return
+    line = progress_display_line(progress)
+    if not line:
+        return
+    try:
+        on_progress(progress, line)
+    except TypeError:
+        try:
+            on_progress(line)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _compact_preview(text, limit=180):
     text = " ".join(str(text or "").split())
     if len(text) > limit:
@@ -317,7 +335,7 @@ def _display_codex_stream_event(msg, tag, state):
         print(f"  [{tag}] turn {status}{suffix}", flush=True)
 
 
-def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_log_path=None):
+def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_log_path=None, on_progress=None):
     """Run claude CLI with stream-json, show events on terminal.
     on_tools(tools_list) is called for tool JSON found in intermediate assistant texts.
     Returns (result_text, rate_limit_msg_or_None, returncode, executed_tools)."""
@@ -377,6 +395,7 @@ def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_lo
         progress_events = claude_progress_events(event, progress_state)
         for progress in progress_events:
             write_progress_line(progress_log_path, progress)
+            _notify_progress(on_progress, progress)
         _display_stream_event(event, tag, progress_state, progress_events)
 
         etype = event.get("type", "")
@@ -430,7 +449,7 @@ def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_lo
     return result_text, rate_limit_msg, rc, executed_tools, stderr.strip() if stderr else "", result_error_subtype, result_error_msg
 
 
-def claude_code(text, carbon_id, on_tools=None):
+def claude_code(text, carbon_id, on_tools=None, on_progress=None):
     """Invoke the Manager via claude CLI with streaming JSON.
     on_tools(tools_list) is called for mid-stream tool JSON in assistant texts.
     Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
@@ -457,6 +476,7 @@ def claude_code(text, carbon_id, on_tools=None):
             tag,
             on_tools=on_tools,
             progress_log_path=progress_log_path,
+            on_progress=on_progress,
         )
         if rc == 0 and result_text.strip():
             return result_text.strip(), rate_limit, executed_tools
@@ -479,6 +499,7 @@ def claude_code(text, carbon_id, on_tools=None):
                 tag,
                 on_tools=on_tools,
                 progress_log_path=progress_log_path,
+                on_progress=on_progress,
             )
             if rc == 0 and result_text.strip():
                 return result_text.strip(), rate_limit, executed_tools
@@ -705,7 +726,7 @@ def _codex_start_or_resume_thread(client, carbon_id, system_prompt):
     return thread_id
 
 
-def codex_app_server(text, carbon_id, on_tools=None):
+def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
     """Invoke the Manager through Codex app-server.
     Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
     tag = f"manager:{carbon_id}"
@@ -766,6 +787,7 @@ def codex_app_server(text, carbon_id, on_tools=None):
             params = msg.get("params", {})
             progress = codex_progress_event(msg, stream_display_state)
             write_progress_line(progress_log_path, progress)
+            _notify_progress(on_progress, progress)
             _display_codex_stream_event(msg, tag, stream_display_state)
 
             if method == "item/agentMessage/delta":
@@ -839,7 +861,7 @@ def codex_app_server(text, carbon_id, on_tools=None):
             client.close()
 
 
-def manager_code(text, carbon_id, on_tools=None):
+def manager_code(text, carbon_id, on_tools=None, on_progress=None):
     """Invoke the configured manager brain.
 
     Fallback providers are only tried after the provider above returns a
@@ -852,9 +874,9 @@ def manager_code(text, carbon_id, on_tools=None):
     for provider in get_brain_order():
         try:
             if provider == "codex":
-                result = codex_app_server(text, carbon_id, on_tools=on_tools)
+                result = codex_app_server(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
             else:
-                result = claude_code(text, carbon_id, on_tools=on_tools)
+                result = claude_code(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
         except Exception as exc:
             result = (
                 f'{{"tools": [{{"tool": "reply", "message": "Manager error: {exc}"}}, {{"tool": "do_nothing"}}]}}',

@@ -43,6 +43,69 @@ def log(msg):
     print(msg, flush=True)
 
 
+PROVIDER_PROGRESS_STATES = {
+    "reading_file",
+    "writing_file",
+    "executing",
+    "searching_web",
+    "thinking",
+}
+
+
+def _provider_progress_state(progress):
+    kind = str((progress or {}).get("kind") or "")
+    if kind in PROVIDER_PROGRESS_STATES:
+        return kind
+    return "executing"
+
+
+def _provider_progress_note(progress, line):
+    progress = progress or {}
+    kind = str(progress.get("kind") or "")
+    status = str(progress.get("status") or "")
+    text = " ".join(str(line or "").split())
+    if not text:
+        return ""
+
+    # Keep the UI operational. Provider reasoning summaries are not a safe
+    # progress surface, but "thinking" as a state is still useful.
+    if kind == "thinking" and status == "output":
+        return "thinking"
+    if kind == "done":
+        return f"provider finished: {text}"
+    return text
+
+
+def _make_provider_progress_handler(carbon_id):
+    group = f"manager:{carbon_id}"
+    last_sent_at_by_key = {}
+    last_note_by_key = {}
+
+    def on_progress(progress, line):
+        note = _provider_progress_note(progress, line)
+        if not note:
+            return
+
+        progress = progress or {}
+        kind = str(progress.get("kind") or "executing")
+        status = str(progress.get("status") or "")
+        item_id = str(progress.get("item_id") or "")
+        key = (kind, status, item_id)
+        now = time.time()
+        min_interval = 3.0 if status == "output" else 0.6
+
+        if last_note_by_key.get(key) == note and now - last_sent_at_by_key.get(key, 0) < 2.0:
+            return
+        if now - last_sent_at_by_key.get(key, 0) < min_interval:
+            return
+
+        last_note_by_key[key] = note
+        last_sent_at_by_key[key] = now
+        send_progress(carbon_id, group, _provider_progress_state(progress), note)
+
+    return on_progress
+
+
 # --- Restart handling ---
 
 def _check_restart_flag():
@@ -107,6 +170,48 @@ def _parse_worker_tool(tool_spec):
     return worker_type, action_type, worker_id
 
 
+def _tool_progress_note(tool_spec):
+    tool_name = str(tool_spec.get("tool", "") or "")
+    if not tool_name or tool_name == "do_nothing":
+        return ""
+
+    if tool_name == "reply":
+        return "called tool: reply"
+
+    if tool_name == "message_manager":
+        target = tool_spec.get("carbon_id") or tool_spec.get("silicon_id") or "unknown"
+        return f"called tool: message_manager -> {target}"
+
+    if tool_name == "remote_browser":
+        action = tool_spec.get("type", "share")
+        return f"called tool: remote_browser/{action}"
+
+    if tool_name == "take_back":
+        target = tool_spec.get("request_id") or tool_spec.get("event_id") or "unknown"
+        return f"called tool: take_back -> {target}"
+
+    if tool_name.startswith("cron/") or tool_name == "cron/list":
+        return f"called tool: {tool_name}"
+
+    if tool_name.startswith("worker"):
+        worker_type, action_type, worker_id = _parse_worker_tool(tool_spec)
+        worker_label = f" {worker_id}" if worker_id else ""
+        if action_type == "new":
+            kind = worker_type or "worker"
+            return f"spawning {kind} worker{worker_label}"
+        if action_type:
+            return f"called tool: worker/{action_type}{worker_label}"
+        return f"called tool: {tool_name}{worker_label}"
+
+    if tool_name == "new_session":
+        return "called tool: new_session"
+
+    if tool_name == "restart_silicon_service":
+        return "called tool: restart_silicon_service"
+
+    return f"called tool: {tool_name}"
+
+
 def execute_single_tool(tool_spec, carbon_id):
     """Execute a single tool. Returns result string or None for do_nothing."""
     tool_name = tool_spec.get("tool", "")
@@ -114,7 +219,11 @@ def execute_single_tool(tool_spec, carbon_id):
     if tool_name == "do_nothing":
         return None
 
-    elif tool_name == "reply":
+    progress_note = _tool_progress_note(tool_spec)
+    if progress_note:
+        send_progress(carbon_id, f"manager:{carbon_id}", "executing", progress_note)
+
+    if tool_name == "reply":
         message = tool_spec.get("message", "")
         status = reply_user(message, carbon_id)
         return f"Tool 'reply': {status}"
@@ -187,7 +296,11 @@ def execute_single_tool(tool_spec, carbon_id):
         if action_type == "new":
             if not worker_type:
                 return "Tool 'worker/new': Error: worker_type is required. Use worker/browser, worker/terminal, or worker/writer"
+            if not worker_id:
+                return "Tool 'worker/new': Error: worker-id is required"
             task = tool_spec.get("task", "")
+            if not task:
+                return f"Tool 'worker/new' ({worker_id}): Error: task is required"
             incognito = tool_spec.get("incognito", False)
             status = start_worker(worker_id, task, worker_type, carbon_id, incognito=incognito)
             send_progress(carbon_id, f"worker:{worker_id}", "executing", status)
@@ -407,8 +520,15 @@ def run_all_managers(context_by_carbon):
             futures = {}
             for carbon_id, text in pending.items():
                 on_tools = _make_mid_stream_handler(carbon_id)
-                send_progress(carbon_id, f"manager:{carbon_id}", "thinking", "manager running")
-                future = executor.submit(manager_code, text, carbon_id, on_tools=on_tools)
+                on_progress = _make_provider_progress_handler(carbon_id)
+                send_progress(carbon_id, f"manager:{carbon_id}", "thinking", "spawning manager")
+                future = executor.submit(
+                    manager_code,
+                    text,
+                    carbon_id,
+                    on_tools=on_tools,
+                    on_progress=on_progress,
+                )
                 futures[future] = carbon_id
 
             for future in as_completed(futures):
