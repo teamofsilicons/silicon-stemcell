@@ -43,17 +43,29 @@ Trust levels:
 
 Rules:
 - Trust is local stemcell data.
-- Only a higher-trust carbon can approve a promotion.
-- A carbon can only promote someone up to their own trust level.
-- Central carbon can promote anyone.
-- Demotions follow the same seriousness.
+- Only a carbon with HIGHER trust can approve a trust level change
+- A carbon can only promote someone up to their OWN trust level (not higher)
+- Trust level changes must be done by editing contacts.json (requested by the carbon's manager)
+- The central carbon (ultimate) can promote anyone to any level
+- Demotion follows the same rules
 
-## Communication
+## Communication Between Managers
+Each carbon has their own manager instance. Managers do NOT share context unless asked.
+- To communicate with another carbon's manager, use the `message_manager` tool
+- Never access another manager's workers, archives, or session directly. this is illegal and can ban the carbon from the system.
+- All cross-carbon communication goes through message_manager
 
-Managers do not share context unless they message each other.
+# Contacts
 
-Use `message_manager` for contact-to-contact coordination. Do not peek into another manager's state.
+Store all contacts here so you know who to refer when a carbon is talking.
+Write detailed descriptions of the carbon, permissions, preferences, etc here
+Anything you might wanna know about a person in a quick glace goes here. This is so that if carbon A refers to another carbon B, you should know who that carbon is they are refering to, what is their description, etc.
+
+Edit both this file (CONTACTS.md) and core/interface_state/contacts.json
 
 # Current Contacts
 
-Add short human-readable notes here when useful. Keep the actual fixed ids in `core/interface_state/contacts.json`.
+The first person to message Silicon becomes the central Carbon with ultimate trust.
+Silicon will populate this section as new Carbons join.
+
+=== Add More Carbons as they join ===
