@@ -583,8 +583,10 @@ def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False
     if not force and _now() - float(state.get("last_room_sync") or 0) < 60:
         return state
 
+    me_payload = None
     try:
-        own_ids = _extract_own_ids(client.whoami())
+        me_payload = client.whoami()
+        own_ids = _extract_own_ids(me_payload)
         if own_ids:
             state["own_ids"] = own_ids
             _save_state(state)
@@ -623,12 +625,60 @@ def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False
             metadata={**_contact_metadata(room), **_contact_metadata(other)},
         )
 
+    # After contacts exist, reconcile the Glass-side profile (description,
+    # central carbon) onto them — Glass is the authority on who is central.
+    _sync_profile_from_glass(me_payload)
+
     state = _load_state()
     state["last_room_sync"] = _now()
     _save_state(state)
     if before_signature != _rooms_signature(state) and _listener_thread and _listener_thread.is_alive():
         restart_listener()
     return state
+
+
+def _sync_profile_from_glass(payload: Any) -> None:
+    """Cache the silicon's own Glass profile and reconcile the central carbon.
+
+    Glass claims the central carbon when the first non-lord carbon actually
+    messages the silicon — lords (platform setup) never claim. When the
+    whoami payload carries a `central_carbon` key, it overrides the local
+    first-contact bootstrap: the matching carbon contact is flagged (and
+    raised to ultimate trust on a fresh claim), every other carbon is
+    unflagged. An absent key (older Glass) leaves local state untouched.
+    """
+    if not isinstance(payload, dict):
+        return
+    state = _load_state()
+    central_raw = payload.get("central_carbon")
+    state["profile"] = {
+        "name": str(payload.get("name") or ""),
+        "tagline": str(payload.get("tagline") or ""),
+        "description": str(payload.get("description") or ""),
+        "central_carbon": central_raw if isinstance(central_raw, dict) else None,
+    }
+    if "central_carbon" in payload:
+        central_id = str((central_raw or {}).get("carbon_id") or "").strip()
+        for fixed_id, contact in state.get("contacts", {}).items():
+            if contact.get("contact_type") != "carbon":
+                continue
+            should_be_central = bool(central_id) and fixed_id == central_id
+            if should_be_central and not contact.get("is_central_carbon"):
+                contact["is_central_carbon"] = True
+                contact["trust_level"] = "ultimate"
+                contact["updated_at"] = _utc_iso()
+            elif not should_be_central and contact.get("is_central_carbon"):
+                # Trust is local/user-managed — only the flag is withdrawn.
+                contact["is_central_carbon"] = False
+                contact["updated_at"] = _utc_iso()
+    _save_state(state)
+
+
+def get_own_profile() -> dict[str, Any]:
+    """The silicon's cached Glass profile (name, tagline, description,
+    central_carbon) — refreshed on every room sync."""
+    profile = _load_state().get("profile")
+    return profile if isinstance(profile, dict) else {}
 
 
 def ensure_contact_for_target(contact_type: str, fixed_id: str, client: InterfaceClient | None = None) -> dict[str, Any]:
@@ -1087,6 +1137,14 @@ def _listener_loop(stop_event: threading.Event) -> None:
                 except (json.JSONDecodeError, ValueError):
                     continue
                 if isinstance(payload, dict):
+                    if payload.get("type") == "central_carbon_set":
+                        # Glass just resolved who this silicon answers to —
+                        # refresh the cached profile + contact flags now.
+                        try:
+                            _sync_profile_from_glass(client.whoami())
+                        except Exception:
+                            pass
+                        continue
                     if isinstance(payload.get("event"), dict):
                         event = dict(payload["event"])
                         if payload.get("room_id") and not event.get("room_id") and not event.get("roomId"):

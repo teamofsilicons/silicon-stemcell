@@ -354,5 +354,87 @@ class InterfaceClientTest(unittest.TestCase):
         )
 
 
+
+class GlassProfileSyncTest(InterfaceStateTest):
+    def test_glass_central_carbon_overrides_local_first_contact(self):
+        # A lord DMs first — the local bootstrap wrongly flags them central.
+        interface.upsert_contact("carbon", "lord-1", room_id="room-lord")
+        interface.upsert_contact("carbon", "alice", room_id="room-alice")
+        self.assertTrue(interface.get_contact("lord-1")["is_central_carbon"])
+
+        # Glass says: still unclaimed (the lord never claims) → flag withdrawn.
+        interface._sync_profile_from_glass({"silicon_id": "self", "central_carbon": None})
+        self.assertFalse(interface.get_contact("lord-1")["is_central_carbon"])
+        self.assertEqual(interface.get_central_contact_id(), "")
+
+        # Alice sends the first real message — Glass reports the claim.
+        interface._sync_profile_from_glass(
+            {"silicon_id": "self", "central_carbon": {"carbon_id": "alice", "username": "alice", "name": "Alice"}}
+        )
+        alice = interface.get_contact("alice")
+        self.assertTrue(alice["is_central_carbon"])
+        self.assertEqual(alice["trust_level"], "ultimate")
+        self.assertFalse(interface.get_contact("lord-1")["is_central_carbon"])
+        # The lord's locally granted trust is preserved — only the flag moves.
+        self.assertEqual(interface.get_contact("lord-1")["trust_level"], "ultimate")
+
+    def test_absent_central_carbon_key_keeps_local_state(self):
+        interface.upsert_contact("carbon", "alice", room_id="room-a")
+        interface._sync_profile_from_glass({"silicon_id": "self", "name": "Ada Silicon"})
+        self.assertTrue(interface.get_contact("alice")["is_central_carbon"])
+
+    def test_profile_caches_description_for_prompts(self):
+        interface._sync_profile_from_glass(
+            {
+                "silicon_id": "self",
+                "name": "Ada Silicon",
+                "tagline": "designs systems",
+                "description": "Handles inbound sales emails.",
+                "central_carbon": None,
+            }
+        )
+        profile = interface.get_own_profile()
+        self.assertEqual(profile["description"], "Handles inbound sales emails.")
+        self.assertEqual(profile["central_carbon"], None)
+
+    def test_discover_rooms_reconciles_from_whoami(self):
+        class FakeClient:
+            def whoami(self):
+                return {
+                    "silicon_id": "self-si",
+                    "description": "Sales silicon.",
+                    "central_carbon": {"carbon_id": "carbon-b", "username": "bee", "name": "Bee"},
+                }
+
+            def rooms_list(self):
+                return {
+                    "rooms": [
+                        {
+                            "room_id": "room-a",
+                            "is_direct": True,
+                            "members": [
+                                {"contact_type": "silicon", "silicon_id": "self-si", "is_self": True},
+                                {"contact_type": "carbon", "carbon_id": "carbon-a"},
+                            ],
+                        },
+                        {
+                            "room_id": "room-b",
+                            "is_direct": True,
+                            "members": [
+                                {"contact_type": "silicon", "silicon_id": "self-si", "is_self": True},
+                                {"contact_type": "carbon", "carbon_id": "carbon-b"},
+                            ],
+                        },
+                    ]
+                }
+
+        state = interface.discover_rooms(FakeClient(), force=True)
+        # carbon-a was discovered first (local bootstrap), but Glass says carbon-b.
+        self.assertFalse(state["contacts"]["carbon-a"]["is_central_carbon"])
+        self.assertTrue(state["contacts"]["carbon-b"]["is_central_carbon"])
+        self.assertEqual(state["contacts"]["carbon-b"]["trust_level"], "ultimate")
+        self.assertEqual(state["profile"]["description"], "Sales silicon.")
+
+
 if __name__ == "__main__":
     unittest.main()

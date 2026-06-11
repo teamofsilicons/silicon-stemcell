@@ -124,14 +124,33 @@ def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
         except Exception as exc:
             return "failed", str(exc)
     if action == "update":
-        if detect_status(root) == "running":
-            return "failed", "silicon must be stopped before update"
+        # A running silicon is stopped for the update and restarted after, so
+        # Glass can push a release to the whole fleet in one go.
+        was_running = detect_status(root) == "running"
+        if was_running:
+            try:
+                subprocess.run(["silicon", "stop", name], capture_output=True, text=True, timeout=60)
+            except Exception as exc:
+                return "failed", f"could not stop before update: {exc}"
+            for _ in range(30):
+                if detect_status(root) != "running":
+                    break
+                time.sleep(1)
+            if detect_status(root) == "running":
+                return "failed", "silicon did not stop before update"
         try:
             proc = subprocess.run(["silicon", "update", name], capture_output=True, text=True, timeout=300)
             output = proc.stdout.strip() or proc.stderr.strip()
-            return ("done" if proc.returncode == 0 else "failed"), output
+            ok = proc.returncode == 0
         except Exception as exc:
             return "failed", str(exc)
+        if was_running:
+            try:
+                subprocess.Popen(["silicon", "start", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                output = f"{output} · restarted".strip(" ·")
+            except Exception as exc:
+                return ("done" if ok else "failed"), f"{output} (restart failed: {exc})"
+        return ("done" if ok else "failed"), output
     return "failed", f"unknown command: {action}"
 
 

@@ -25,7 +25,12 @@ Glass and Interface do not own trust. Stemcell owns trust locally.
 - Carbon contact key is exactly `carbon_id`.
 - Silicon contact key is exactly `silicon_id`.
 - IDs are never renamed.
-- The first carbon discovered becomes central carbon with `ultimate` trust.
+- The central carbon is decided by Glass: the first carbon to actually message
+  you claims it (and gets `ultimate` trust). Lords — the creators, the carbons
+  who built the platform, who may talk to you first to set you up — never
+  claim it.
+- Until Glass reports a claim, the first carbon discovered is treated as
+  central locally; Glass's answer overrides on the next sync.
 - Later contacts start as `very_low`.
 
 ## Memory
@@ -65,7 +70,8 @@ Edit both this file (CONTACTS.md) and core/interface_state/contacts.json
 
 # Current Contacts
 
-The first person to message Silicon becomes the central Carbon with ultimate trust.
+The first carbon to message Silicon becomes the central Carbon with ultimate
+trust (Glass tracks this; lords setting Silicon up don't count).
 Silicon will populate this section as new Carbons join.
 
 === Add More Carbons as they join ===

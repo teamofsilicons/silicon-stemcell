@@ -77,6 +77,34 @@ def _get_contact_info(carbon_id):
         return None
 
 
+def _glass_profile_section():
+    """What your team wrote about you on Glass, plus who you answer to."""
+    try:
+        from core.interface import get_own_profile
+
+        profile = get_own_profile() or {}
+    except Exception:
+        return ""
+    lines = []
+    if profile.get("description"):
+        lines.append(
+            "Your team wrote this about you on Glass — it describes your role; "
+            f"let it shape how you work:\n{profile['description']}"
+        )
+    central = profile.get("central_carbon")
+    if isinstance(central, dict) and central.get("carbon_id"):
+        who = central.get("name") or central.get("username") or central.get("carbon_id")
+        lines.append(
+            f"Your central carbon is {who} (carbon_id: {central['carbon_id']}) — "
+            "the carbon you answer to. Anyone who talked to you before they did "
+            "was a lord — one of the creators, the carbons who built this "
+            "platform — setting you up."
+        )
+    if not lines:
+        return ""
+    return "## Your Glass profile\n" + "\n\n".join(lines)
+
+
 def _memory_path(contact_id, contact):
     memory_root = os.path.join(PROMPTS_DIR, "memory")
     if contact and contact.get("contact_type") == "silicon":
@@ -98,6 +126,7 @@ def get_manager_prompt(carbon_id):
         _read_prompt("LORE.md"),
         _read_prompt("CONTACTS.md"),
         # f"## Current Contacts\n{_get_contacts_summary()}",
+        _glass_profile_section(),
         _read_prompt(f"trust/{trust_level}.md"),
     ])
 
@@ -118,7 +147,12 @@ def get_manager_prompt(carbon_id):
 
     # Add carbon_id context
     identity_label = "silicon_id" if contact and contact.get("contact_type") == "silicon" else "carbon_id"
-    parts.append(f"\n## Current Session\nYou are talking to contact {identity_label}: {carbon_id}\nTheir trust level: {trust_level}")
+    central_note = (
+        "\nThis contact is your central carbon — the carbon you answer to."
+        if contact and contact.get("is_central_carbon")
+        else ""
+    )
+    parts.append(f"\n## Current Session\nYou are talking to contact {identity_label}: {carbon_id}\nTheir trust level: {trust_level}{central_note}")
 
     # Load BOOT.md if it exists
     boot_path = os.path.join(PROMPTS_DIR, "BOOT.md")
