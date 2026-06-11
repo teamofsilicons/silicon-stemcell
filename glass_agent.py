@@ -123,6 +123,9 @@ def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
             return "done", "stopped"
         except Exception as exc:
             return "failed", str(exc)
+    if action == "version":
+        # Report the version this silicon is currently running (silicon.info).
+        return "done", local_version(root) or "unversioned"
     if action in {"fetch_latest", "update_check"}:
         # Brain-driven update: force the version check now. When behind, it
         # spawns the detached update brain which manages the whole sequence
@@ -185,6 +188,9 @@ def handle_message(ws, msg: dict, root: Path, name: str) -> None:
     if command_id:
         send_json(ws, {"type": "command_ack", "id": command_id, "command": msg.get("command", "")})
     status, detail = execute_command(msg, root, name)
+    # Keep Glass's stored status fresh — the console reads `version` from it
+    # (the on-demand "version" command, and any command that may change it).
+    send_json(ws, {"type": "status", "version": local_version(root)})
     if command_id:
         send_json(ws, {
             "type": "command_result",
