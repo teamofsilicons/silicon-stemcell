@@ -3,3 +3,4 @@ prompts/memory/**
 prompts/LORE.md
 prompts/CONTACTS.md
 core/interface_state/contacts.json
+logs/**

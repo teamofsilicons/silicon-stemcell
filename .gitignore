@@ -24,3 +24,6 @@ sessions/
 *.tar.gz
 .DS_Store
 .silicon-upstream/
+
+# Daily activity logs (generated at runtime; backed up via .backupsilicon)
+logs/

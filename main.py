@@ -219,6 +219,23 @@ def _message_failure_status(carbon_id, target_kind, target_id, error):
 
 
 def execute_single_tool(tool_spec, carbon_id):
+    """Execute a single tool, logging the call + result to the daily activity log.
+
+    `do_nothing` is the idle no-op fired on most ticks; logging it would bury the
+    real actions, so it's the one thing we skip.
+    """
+    result = _execute_single_tool(tool_spec, carbon_id)
+    tool_name = str(tool_spec.get("tool", "") or "")
+    if tool_name and tool_name != "do_nothing":
+        try:
+            from core.activity_log import tool_call
+            tool_call(carbon_id, tool_name, tool_spec, result)
+        except Exception:
+            pass
+    return result
+
+
+def _execute_single_tool(tool_spec, carbon_id):
     """Execute a single tool. Returns result string or None for do_nothing."""
     tool_name = tool_spec.get("tool", "")
 

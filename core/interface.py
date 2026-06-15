@@ -1101,6 +1101,19 @@ def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None
         transcript = _transcript_for_event(event, local_path, media_id, client)
 
     body = _event_body(event).strip()
+    # Log every inbound message; for attachments, resolve and record the S3 link.
+    try:
+        from core.activity_log import incoming as _log_incoming, url_from
+        _att_url = ""
+        if media_id:
+            try:
+                _att_url = url_from(client.media_show(media_id))
+            except Exception:
+                _att_url = ""
+        _log_incoming(contact_id, event_type, body=body, media_id=media_id,
+                      attachment_url=_att_url, event_id=event_id)
+    except Exception:
+        pass
     if event_type == "m.text" and body == "/new":
         context = "[COMMAND: NEW_SESSION]"
     elif event_type == "m.text" and body == "/start":
@@ -1303,14 +1316,24 @@ def reply_contact(message: str, contact_id: str) -> str:
                 if not os.path.exists(path):
                     errors.append(f"File not found: {path}")
                     continue
-                client.send_file(room_id, path)
+                sent = client.send_file(room_id, path)
+                try:
+                    from core.activity_log import attachment, url_from
+                    attachment("sent", contact_id, url=url_from(sent), path=path,
+                               filename=os.path.basename(path))
+                except Exception:
+                    pass
             elif seg_type == "voice":
                 client.tts(room_id, seg_value)
         except Exception as exc:
             errors.append(f"{seg_type} segment failed: {exc}")
-    if errors:
-        return "Sent with errors: " + "; ".join(errors)
-    return "Message sent"
+    status = "Sent with errors: " + "; ".join(errors) if errors else "Message sent"
+    try:
+        from core.activity_log import reply as _log_reply
+        _log_reply(contact_id, message, status)
+    except Exception:
+        pass
+    return status
 
 
 def send_progress(contact_id: str, group: str, state: str, message: str = "") -> None:
