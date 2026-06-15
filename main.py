@@ -695,11 +695,26 @@ def run_headed_browser():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "browser":
-        run_headed_browser()
-    elif len(sys.argv) > 1 and sys.argv[1] in {"update", "update-check"}:
+    if len(sys.argv) > 1 and sys.argv[1] in {"update", "update-check"}:
         from update import main as update_main
 
         raise SystemExit(update_main(sys.argv[2:]))
+
+    # Glass is the single source of truth for provider API keys — pull them into
+    # the environment before the brain CLIs or any browser subprocess run, so
+    # nothing has to be stored locally on this box.
+    try:
+        from core.glass import load_provider_keys_into_env
+
+        loaded = load_provider_keys_into_env()
+        if loaded:
+            log(f"[Silicon] Loaded {len(loaded)} provider key(s) from Glass: {', '.join(sorted(loaded))}")
+        else:
+            log("[Silicon] No provider keys returned by Glass (using existing environment).")
+    except Exception as e:  # boot must not fail on key fetch
+        log(f"[Silicon] Provider key load skipped: {e}")
+
+    if len(sys.argv) > 1 and sys.argv[1] == "browser":
+        run_headed_browser()
     else:
         main()

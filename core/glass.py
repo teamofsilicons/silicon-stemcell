@@ -7,7 +7,10 @@ for sidecar and backup code that needs direct Glass HTTP access.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import requests
 
 CONFIG_FILE = ".glass.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,3 +35,39 @@ def load_glass_config(start: str | Path | None = None) -> tuple[dict, Path]:
 def auth_headers(config: dict) -> dict[str, str]:
     key = config.get("api_key") or config.get("silicon_api_key") or ""
     return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def load_provider_keys_into_env(config: dict | None = None) -> dict[str, str]:
+    """Fetch this silicon's provider API keys from Glass and export them to env.
+
+    Glass is the single source of truth for provider secrets; nothing is stored
+    locally. The brain CLIs (claude/codex) and the browser tool (silicon-browser)
+    run as subprocesses that inherit ``os.environ``, so exporting the keys here —
+    once, before anything else runs — makes them available everywhere.
+
+    Best-effort: any failure is logged and returns ``{}`` so the silicon still
+    boots (tools needing a missing key will report it themselves).
+    """
+    try:
+        if config is None:
+            config, _ = load_glass_config()
+        server = (config.get("server_url") or "").rstrip("/")
+        key = config.get("api_key") or config.get("silicon_api_key") or ""
+        if not server or not key:
+            return {}
+        resp = requests.get(
+            f"{server}/api/v1/silicons/me/provider-keys",
+            headers={"X-Silicon-Key": key},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        keys = (resp.json() or {}).get("keys") or {}
+        applied: dict[str, str] = {}
+        for name, value in keys.items():
+            if isinstance(name, str) and isinstance(value, str) and value:
+                os.environ[name] = value
+                applied[name] = value
+        return applied
+    except Exception as exc:  # noqa: BLE001 — boot must not fail on key fetch
+        print(f"[silicon] could not load provider keys from Glass: {exc}", flush=True)
+        return {}
