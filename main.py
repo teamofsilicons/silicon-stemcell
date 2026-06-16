@@ -717,6 +717,20 @@ if __name__ == "__main__":
 
         raise SystemExit(update_main(sys.argv[2:]))
 
+    # Maintain the pull-only GitHub connection and seed any missing living files
+    # from templates — every start, so the install self-connects and self-heals.
+    # Best-effort; never blocks boot. (Tarball installs are converted by the
+    # one-time migration, not here.)
+    try:
+        from core.git_update import ensure_git_connected, seed_living_files
+
+        ensure_git_connected()
+        seeded = seed_living_files()
+        if seeded:
+            log(f"[Silicon] Seeded {len(seeded)} living file(s) from templates.")
+    except Exception as e:
+        log(f"[Silicon] git connect/seed skipped: {e}")
+
     # Glass is the single source of truth for provider API keys — pull them into
     # the environment before the brain CLIs or any browser subprocess run, so
     # nothing has to be stored locally on this box.

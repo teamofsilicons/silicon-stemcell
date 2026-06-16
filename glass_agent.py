@@ -126,48 +126,42 @@ def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
     if action == "version":
         # Report the version this silicon is currently running (silicon.info).
         return "done", local_version(root) or "unversioned"
-    if action in {"fetch_latest", "update_check"}:
-        # Brain-driven update: force the version check now. When behind, it
-        # spawns the detached update brain which manages the whole sequence
-        # itself (diff, apply, bump silicon.info) — works while running.
+    if action in {"fetch_latest", "update_check", "update", "git_update"}:
+        # Git-based, pull-only update: merge upstream while preserving the
+        # silicon's own code + living data, then restart to load it. The version
+        # rides in via the merged silicon.info; the status frame sent right after
+        # this command reports it to Glass (which is what the rollout polls).
         try:
             proc = subprocess.run(
-                ["silicon", "update", "check", name],
-                capture_output=True, text=True, timeout=180,
+                [
+                    sys.executable, "-c",
+                    "import json,sys; sys.path.insert(0, '.'); "
+                    "from core.git_update import git_apply; print(json.dumps(git_apply()))",
+                ],
+                cwd=str(root), capture_output=True, text=True, timeout=1800,
             )
-            output = proc.stdout.strip() or proc.stderr.strip()
-            return ("done" if proc.returncode == 0 else "failed"), output or "update check triggered"
+            lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+            result = json.loads(lines[-1]) if lines else {}
         except Exception as exc:
-            return "failed", str(exc)
-    if action == "update":
-        # Legacy mechanical update (CLI merge). A running silicon is stopped
-        # for the update and restarted after, so Glass can push a release to
-        # the whole fleet in one go.
-        was_running = detect_status(root) == "running"
-        if was_running:
+            return "failed", f"git update error: {exc}"
+
+        st = result.get("status")
+        if st == "up_to_date":
+            return "done", f"already on {result.get('version')}"
+        if st == "updated":
+            # Restart silicon + agent to load the new code. Delay a few seconds
+            # so this command's status/result frames reach Glass before the stop
+            # tears us down. Pass `name` as $1 so it can't be shell-injected.
             try:
-                subprocess.run(["silicon", "stop", name], capture_output=True, text=True, timeout=60)
+                subprocess.Popen(
+                    ["sh", "-c", 'sleep 3; silicon restart "$1"', "_", name],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                )
             except Exception as exc:
-                return "failed", f"could not stop before update: {exc}"
-            for _ in range(30):
-                if detect_status(root) != "running":
-                    break
-                time.sleep(1)
-            if detect_status(root) == "running":
-                return "failed", "silicon did not stop before update"
-        try:
-            proc = subprocess.run(["silicon", "update", name], capture_output=True, text=True, timeout=300)
-            output = proc.stdout.strip() or proc.stderr.strip()
-            ok = proc.returncode == 0
-        except Exception as exc:
-            return "failed", str(exc)
-        if was_running:
-            try:
-                subprocess.Popen(["silicon", "start", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-                output = f"{output} · restarted".strip(" ·")
-            except Exception as exc:
-                return ("done" if ok else "failed"), f"{output} (restart failed: {exc})"
-        return ("done" if ok else "failed"), output
+                return "done", f"updated to {result.get('version')} (restart failed: {exc})"
+            mode = result.get("mode")
+            return "done", f"updated to {result.get('version')}{f' ({mode})' if mode else ''}; restarting"
+        return "failed", result.get("detail") or "git update failed"
     return "failed", f"unknown command: {action}"
 
 

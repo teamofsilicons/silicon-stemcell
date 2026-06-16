@@ -223,15 +223,16 @@ def seed_living_files() -> list[str]:
 
 
 def ensure_git_connected() -> dict:
-    """Connect this install to GitHub (pull-only) without disturbing the working
-    tree. Called at every boot — connects fresh installs and self-heals tarball
-    installs. Does NOT merge/reset; the update flow does that explicitly."""
+    """Maintain the pull-only GitHub connection at every boot — harden the remote
+    and fetch. Does NOT merge/reset (the update flow does that explicitly).
+
+    A tarball install (no .git) is left untouched: the one-time migration
+    establishes correct shared history from the version baseline first.
+    Auto-initialising here without that baseline would mis-merge."""
     if not is_git_repo():
-        log("not a git repo — initialising and connecting (pull-only)")
-        _git("init")
-        _git("symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
+        return {"connected": False, "needs_migration": True}
     harden_pull_only()
-    fetched = _git("fetch", "--depth", "200", REMOTE, BRANCH, timeout=120)
+    fetched = _git("fetch", "--tags", REMOTE, BRANCH, timeout=120)
     return {"connected": True, "fetch_ok": fetched.returncode == 0}
 
 
