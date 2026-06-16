@@ -1,10 +1,12 @@
 """Git-based, pull-only self-update for a Silicon.
 
-A Silicon evolves its own code, so an update is a **merge**, never an overwrite:
-the Silicon's local changes are committed, upstream is fetched, and the two are
-merged — a clean merge keeps both the local edits and the new feature; a conflict
-(same lines touched on both sides) is resolved preferring the **incoming**
-(upstream) version while the Silicon's other edits survive untouched.
+A Silicon evolves its own code, so an update is a **merge**, never an overwrite.
+The goal is to **apply all of the upcoming version's new changes while keeping the
+Silicon's own changes** — an integration, not a takeover. The Silicon's local
+changes are committed, upstream is fetched, and the two are merged: a clean merge
+keeps both the local edits and the new features; a genuine same-line conflict is
+integrated by a resolver (codex→claude) that applies the upstream change *and*
+preserves the Silicon's customisation — it does not just take one side.
 
 The Silicon's living data and identity are never touched. The protected set is
 the union of the **current and the incoming** ``.backupsilicon`` (so a path a
@@ -240,27 +242,49 @@ def ensure_git_connected() -> dict:
 
 # --------------------------------------------------------------------------- #
 # Conflict resolver (rare — only when the Silicon self-modified a line a release
-# also changed). codex first, then claude. Prefer incoming.
+# also changed). codex first, then claude. Integrate: apply upstream's new
+# changes while keeping the Silicon's own.
 # --------------------------------------------------------------------------- #
 def _resolver_prompt(conflicted: list[str], notes: str, globs: list[str]) -> str:
     return (
-        "You are the update resolver for a Silicon. A `git pull` just hit merge "
-        "conflicts; resolve them in place, then stop. You only edit files — you "
+        "You are the update resolver for a Silicon. A merge with the upstream just "
+        "hit conflicts; resolve them in place, then stop. You only edit files — you "
         "are not talking to anyone and you must never run `git push`.\n\n"
-        "Rules:\n"
-        "- The upstream is the source of truth for code: for every conflict, prefer "
-        "the INCOMING (upstream) version. Keep the Silicon's local edits only where "
-        "they do not conflict with upstream.\n"
-        "- NEVER touch the Silicon's living data / identity (these are protected and "
-        "must be left exactly as-is): " + ", ".join(globs) + ".\n"
-        "- Never delete the Silicon's existing content. Only reconcile code.\n"
+        "GOAL — integrate, do not take over:\n"
+        "- Every new feature/change in the upcoming (upstream) version MUST end up "
+        "applied. Do not drop any upstream change.\n"
+        "- The Silicon's OWN changes must be KEPT. This is not 'prefer incoming' — "
+        "you are combining both sides. Where the same lines changed on both sides, "
+        "merge them so the upstream's new behaviour is present AND the Silicon's "
+        "customisation is preserved. Never simply throw away the Silicon's edits.\n"
+        "- NEVER touch the Silicon's living data / identity (leave exactly as-is): "
+        + ", ".join(globs) + ".\n"
         "- Remove every conflict marker (<<<<<<<, =======, >>>>>>>). None may remain. "
         "Leave each file valid.\n\n"
-        f"Release notes for the version being applied:\n{notes or '(none)'}\n\n"
+        f"What the upcoming version changes (release notes):\n{notes or '(none)'}\n\n"
         "Conflicted files (already in the working tree with markers): "
         + ", ".join(conflicted)
-        + "\nResolve them now."
+        + "\nResolve them now, applying the new changes while keeping the Silicon's."
     )
+
+
+def _merge_upstream(globs: list[str]) -> dict:
+    """Merge origin/main into HEAD so the upcoming version's new changes apply
+    while the Silicon's own changes are kept. Clean merges need no brain; genuine
+    same-line conflicts are integrated by the resolver (codex→claude). An
+    unresolvable merge is aborted — the tree is left exactly as it was."""
+    notes = _git("log", "--no-merges", "--pretty=%s", f"HEAD..{REMOTE}/{BRANCH}").stdout.strip()
+    merge = _git("merge", "--no-edit", f"{REMOTE}/{BRANCH}", timeout=180)
+    if merge.returncode == 0:
+        return {"ok": True, "mode": "clean"}
+    conflicted = [f for f in _git("diff", "--name-only", "--diff-filter=U").stdout.splitlines() if f]
+    log(f"merge conflicts in {len(conflicted)} file(s): {conflicted}")
+    if not _run_resolver(conflicted, notes, globs) or _markers_remain(conflicted):
+        _git("merge", "--abort")
+        return {"ok": False, "detail": "conflict resolution failed; merge aborted"}
+    _git("add", *conflicted)
+    _git("commit", "--no-edit")
+    return {"ok": True, "mode": "resolved", "resolved": conflicted}
 
 
 def _run_resolver(conflicted: list[str], notes: str, globs: list[str]) -> bool:
@@ -314,10 +338,10 @@ def migrate(baseline: str = "") -> dict:
       is snapshotted and restored around the whole operation;
     - HEAD is seeded at the install's version baseline with ``reset --mixed``
       (index only — the working tree is never touched);
-    - the silicon's own code (tracked mods) is committed, then main is merged
-      with ``-X theirs`` (deterministic prefer-incoming, no brain) — so a stock
-      install fast-forwards and a self-modified one keeps its non-conflicting
-      edits while the new code wins on conflicts;
+    - the silicon's own code (tracked mods) is committed, then main is merged so
+      the upcoming version's new changes apply while the silicon's own changes are
+      kept — a stock install fast-forwards; a self-modified one keeps its edits and
+      genuine same-line conflicts are integrated by the resolver (codex→claude);
     - untracked files (incl. secrets) are never staged or deleted;
     - any merge failure aborts the merge and leaves the install untouched.
 
@@ -344,15 +368,14 @@ def migrate(baseline: str = "") -> dict:
         if _git("status", "--porcelain", "--untracked-files=no").stdout.strip():
             _git("add", "-u")  # tracked code mods only — never untracked secrets
             _git("commit", "-m", "silicon: adopt local code at migration baseline")
-        merge = _git("merge", "--no-edit", "-X", "theirs", f"{REMOTE}/{BRANCH}", timeout=180)
-        if merge.returncode != 0:
-            _git("merge", "--abort")
-            return {"status": "error", "detail": "merge failed; aborted (nothing changed)"}
+        merged = _merge_upstream(globs)
+        if not merged["ok"]:
+            return {"status": "error", "detail": merged["detail"]}
     finally:
         _restore(snapshot)
 
     seed_living_files()
-    return {"status": "migrated", "version": _local_version()}
+    return {"status": "migrated", "version": _local_version(), "mode": merged.get("mode")}
 
 
 def git_apply() -> dict:
@@ -385,22 +408,10 @@ def git_apply() -> dict:
         if behind in ("", "0"):
             return {"status": "up_to_date", "version": before}
 
-        notes = _git("log", "--no-merges", "--pretty=%s", f"HEAD..{REMOTE}/{BRANCH}").stdout.strip()
-        merge = _git("merge", "--no-edit", f"{REMOTE}/{BRANCH}", timeout=120)
-        if merge.returncode == 0:
-            return {"status": "updated", "version": _local_version(), "mode": "clean"}
-
-        conflicted = [
-            f for f in _git("diff", "--name-only", "--diff-filter=U").stdout.splitlines() if f
-        ]
-        log(f"merge conflicts in {len(conflicted)} file(s): {conflicted}")
-        if not _run_resolver(conflicted, notes, globs) or _markers_remain(conflicted):
-            _git("merge", "--abort")
-            return {"status": "error", "detail": "conflict resolution failed; merge aborted",
-                    "version": before}
-        _git("add", *conflicted)
-        _git("commit", "--no-edit")
-        return {"status": "updated", "version": _local_version(), "mode": "resolved",
-                "resolved": conflicted}
+        merged = _merge_upstream(globs)
+        if not merged["ok"]:
+            return {"status": "error", "detail": merged["detail"], "version": before}
+        return {"status": "updated", "version": _local_version(),
+                "mode": merged["mode"], "resolved": merged.get("resolved", [])}
     finally:
         _restore(snapshot)
