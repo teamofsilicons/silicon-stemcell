@@ -306,6 +306,55 @@ def _local_version() -> str:
         return ""
 
 
+def migrate(baseline: str = "") -> dict:
+    """One-time, NON-DESTRUCTIVE conversion of a tarball install into a pull-only
+    git checkout of main. Loses nothing and NEVER uses ``reset --hard``:
+
+    - all protected data (.backupsilicon paths + .glass.json/.env/silicon.json)
+      is snapshotted and restored around the whole operation;
+    - HEAD is seeded at the install's version baseline with ``reset --mixed``
+      (index only — the working tree is never touched);
+    - the silicon's own code (tracked mods) is committed, then main is merged
+      with ``-X theirs`` (deterministic prefer-incoming, no brain) — so a stock
+      install fast-forwards and a self-modified one keeps its non-conflicting
+      edits while the new code wins on conflicts;
+    - untracked files (incl. secrets) are never staged or deleted;
+    - any merge failure aborts the merge and leaves the install untouched.
+
+    ``baseline`` is the upstream commit matching the install's current version
+    (pass the v<version> commit) so the merge has a real common ancestor.
+    """
+    if is_git_repo():
+        return {"status": "already_git", "version": _local_version()}
+    _git("init")
+    _git("symbolic-ref", "HEAD", f"refs/heads/{BRANCH}")
+    harden_pull_only()
+    if _git("fetch", "--tags", REMOTE, BRANCH, timeout=180).returncode != 0:
+        return {"status": "error", "detail": "fetch failed"}
+    base = baseline or f"{REMOTE}/{BRANCH}"
+    if _git("rev-parse", "--verify", base).returncode != 0:
+        base = f"{REMOTE}/{BRANCH}"
+
+    globs = protected_globs()
+    snapshot = _snapshot(globs)
+    try:
+        _git("reset", "--mixed", base)  # HEAD+index = baseline; working tree untouched
+        sync_gitignore(globs)
+        _untrack(globs)
+        if _git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            _git("add", "-u")  # tracked code mods only — never untracked secrets
+            _git("commit", "-m", "silicon: adopt local code at migration baseline")
+        merge = _git("merge", "--no-edit", "-X", "theirs", f"{REMOTE}/{BRANCH}", timeout=180)
+        if merge.returncode != 0:
+            _git("merge", "--abort")
+            return {"status": "error", "detail": "merge failed; aborted (nothing changed)"}
+    finally:
+        _restore(snapshot)
+
+    seed_living_files()
+    return {"status": "migrated", "version": _local_version()}
+
+
 def git_apply() -> dict:
     """Pull-only merge update. Returns a result dict; never restarts (caller does)."""
     if not is_git_repo():
