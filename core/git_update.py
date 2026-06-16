@@ -37,7 +37,7 @@ BRANCH = os.environ.get("SILICON_REPO_BRANCH", "main")
 # Read-only fetch URL. Overridable (mirrors / tests) but defaults to the canonical
 # public repo. There is never a push URL — see harden_pull_only().
 FETCH_URL = os.environ.get(
-    "SILICON_REPO_URL", "https://github.com/unlikefraction/silicon-stemcell.git"
+    "SILICON_REPO_URL", "https://github.com/teamofsilicons/silicon-stemcell.git"
 )
 MANIFEST = ".backupsilicon"
 # Per-install identity + secrets that must never be tracked, clobbered, or

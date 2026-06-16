@@ -3,11 +3,11 @@ set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────
 # Silicon Stemcell – Universal Installer (Mac / Linux)
-# curl -fsSL https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/main/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/teamofsilicons/silicon-stemcell/main/install.sh | bash
 # ─────────────────────────────────────────────────────────────
 
-REPO_URL="https://github.com/unlikefraction/silicon-stemcell.git"
-REPO_ZIP="https://github.com/unlikefraction/silicon-stemcell/archive/refs/heads/main.zip"
+REPO_URL="https://github.com/teamofsilicons/silicon-stemcell.git"
+REPO_ZIP="https://github.com/teamofsilicons/silicon-stemcell/archive/refs/heads/main.zip"
 REGISTRY_DIR="$HOME/.silicon"
 REGISTRY_FILE="$REGISTRY_DIR/registry.json"
 BIN_DIR="$REGISTRY_DIR/bin"
@@ -713,8 +713,8 @@ cat > "$CLI_SCRIPT" << 'CLIEOF'
 REGISTRY_DIR="$HOME/.silicon"
 REGISTRY_FILE="$REGISTRY_DIR/registry.json"
 GLASS_SERVER_URL="${GLASS_SERVER_URL:-https://glass.unlikefraction.com}"
-REPO_URL="https://github.com/unlikefraction/silicon-stemcell.git"
-REPO_ZIP="https://github.com/unlikefraction/silicon-stemcell/archive/refs/heads/main.zip"
+REPO_URL="https://github.com/teamofsilicons/silicon-stemcell.git"
+REPO_ZIP="https://github.com/teamofsilicons/silicon-stemcell/archive/refs/heads/main.zip"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'
@@ -1967,12 +1967,12 @@ cmd_update_script() {
     local ref="main"
     if command -v git &>/dev/null; then
         local latest_sha
-        latest_sha=$(git ls-remote https://github.com/unlikefraction/silicon-stemcell.git refs/heads/main 2>/dev/null | awk '{print $1}')
+        latest_sha=$(git ls-remote https://github.com/teamofsilicons/silicon-stemcell.git refs/heads/main 2>/dev/null | awk '{print $1}')
         if [ -n "$latest_sha" ]; then
             ref="$latest_sha"
         fi
     fi
-    local script_url="https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/${ref}/install.sh"
+    local script_url="https://raw.githubusercontent.com/teamofsilicons/silicon-stemcell/${ref}/install.sh"
     local tmp_script
     tmp_script=$(mktemp /tmp/silicon-update-XXXXXX.sh)
 
@@ -2292,7 +2292,7 @@ PY
 
 cmd_install() {
     # Re-run the installer
-    local script_url="https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/main/install.sh"
+    local script_url="https://raw.githubusercontent.com/teamofsilicons/silicon-stemcell/main/install.sh"
     if command -v curl &>/dev/null; then
         curl -fsSL "$script_url" | bash
     elif command -v wget &>/dev/null; then
