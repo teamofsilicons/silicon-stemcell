@@ -27,3 +27,13 @@ sessions/
 
 # Daily activity logs (generated at runtime; backed up via .backupsilicon)
 logs/
+
+# >>> silicon-managed (auto-synced from .backupsilicon) >>>
+core/interface_state/contacts.json
+logs/**
+prompts/CONTACTS.md
+prompts/LORE.md
+prompts/MEMORY.md
+prompts/memory/**
+silicon.json
+# <<< silicon-managed <<<

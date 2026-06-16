@@ -195,6 +195,33 @@ def harden_pull_only() -> None:
         pass
 
 
+TEMPLATES_DIR = PROJECT_ROOT / "templates"
+
+
+def seed_living_files() -> list[str]:
+    """Create any missing living file from its template — NEVER overwrites.
+
+    Living/identity files (MEMORY.md, LORE.md, CONTACTS.md, the memory/ dirs, …)
+    are git-ignored, so a fresh clone won't have them and a release that adds a
+    new one can't ship it directly. Templates under ``templates/`` mirror the live
+    paths; on boot we copy template → live only when the live path is absent, so
+    fresh installs get defaults and existing silicons keep what they have.
+    """
+    seeded: list[str] = []
+    if not TEMPLATES_DIR.exists():
+        return seeded
+    for root, _dirs, files in os.walk(TEMPLATES_DIR):
+        for fn in files:
+            src = Path(root) / fn
+            rel = src.relative_to(TEMPLATES_DIR)
+            dst = PROJECT_ROOT / rel
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                seeded.append(str(rel))
+    return seeded
+
+
 def ensure_git_connected() -> dict:
     """Connect this install to GitHub (pull-only) without disturbing the working
     tree. Called at every boot — connects fresh installs and self-heals tarball
