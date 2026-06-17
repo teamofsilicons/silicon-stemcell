@@ -37,6 +37,34 @@ def auth_headers(config: dict) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
+def server_and_key(config: dict | None = None) -> tuple[str, str]:
+    """The Glass base URL and this silicon's API key, from .glass.json."""
+    if config is None:
+        config, _ = load_glass_config()
+    server = (config.get("server_url") or "").rstrip("/")
+    key = config.get("api_key") or config.get("silicon_api_key") or ""
+    return server, key
+
+
+def silicon_api_post(path: str, json_body: dict | None = None, timeout: int = 15):
+    """POST to the Glass API authenticated as this silicon (X-Silicon-Key).
+
+    Same auth the interface CLI uses, so the stemcell can hit silicon-only
+    endpoints directly without shelling out to the CLI. Raises on failure.
+    """
+    server, key = server_and_key()
+    if not server or not key:
+        raise RuntimeError("Glass server_url/api_key not configured in .glass.json")
+    resp = requests.post(
+        f"{server}{path}",
+        headers={"X-Silicon-Key": key},
+        json=json_body or {},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp
+
+
 def load_provider_keys_into_env(config: dict | None = None) -> dict[str, str]:
     """Fetch this silicon's provider API keys from Glass and export them to env.
 

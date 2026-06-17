@@ -511,7 +511,16 @@ def _launch_claude_worker_process(worker_id, task, worker_type, carbon_id, incog
 
     env = os.environ.copy()
     if worker_type == "browser":
-        env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}" if incognito else SILICON_BROWSER_PROFILE
+        if incognito:
+            # Ephemeral: fresh session, no shared profile/cookies.
+            env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}"
+            env.pop("SILICON_BROWSER_PROFILE", None)
+        else:
+            # Shared browser: same live session AND the persistent profile, so
+            # logins saved by `share`/`close` are loaded back. silicon-browser
+            # reads both env vars as defaults for --session/--profile.
+            env["SILICON_BROWSER_SESSION"] = SILICON_BROWSER_PROFILE
+            env["SILICON_BROWSER_PROFILE"] = SILICON_BROWSER_PROFILE
 
     output_file = open(output_path, "w", encoding="utf-8")
     try:
@@ -567,7 +576,16 @@ def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incogn
 
     env = os.environ.copy()
     if worker_type == "browser":
-        env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}" if incognito else SILICON_BROWSER_PROFILE
+        if incognito:
+            # Ephemeral: fresh session, no shared profile/cookies.
+            env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}"
+            env.pop("SILICON_BROWSER_PROFILE", None)
+        else:
+            # Shared browser: same live session AND the persistent profile, so
+            # logins saved by `share`/`close` are loaded back. silicon-browser
+            # reads both env vars as defaults for --session/--profile.
+            env["SILICON_BROWSER_SESSION"] = SILICON_BROWSER_PROFILE
+            env["SILICON_BROWSER_PROFILE"] = SILICON_BROWSER_PROFILE
 
     output_file = open(output_path, "w", encoding="utf-8")
     try:

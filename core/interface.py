@@ -1351,6 +1351,48 @@ def parse_remote_browser_url(stdout: str) -> str:
     return match.group(0).rstrip(".,)") if match else ""
 
 
+# Maps an active share session ("remote-<contact>") to the interface event_id
+# of its card, so `close` can tell the interface to grey that card out.
+REMOTE_BROWSER_STATE_FILE = STATE_DIR / "remote_browser.json"
+
+
+def _extract_event_id(posted: Any) -> str:
+    if isinstance(posted, dict):
+        ev = posted.get("event") if isinstance(posted.get("event"), dict) else posted
+        eid = ev.get("event_id") or ev.get("id")
+        if isinstance(eid, str):
+            return eid
+    return ""
+
+
+def _load_remote_browser_state() -> dict:
+    try:
+        return json.loads(REMOTE_BROWSER_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_remote_browser_event(session_name: str, event_id: str) -> None:
+    try:
+        state = _load_remote_browser_state()
+        state[session_name] = event_id
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        REMOTE_BROWSER_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _pop_remote_browser_event(session_name: str) -> str:
+    state = _load_remote_browser_state()
+    event_id = state.pop(session_name, "")
+    if event_id:
+        try:
+            REMOTE_BROWSER_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+        except Exception:
+            pass
+    return event_id if isinstance(event_id, str) else ""
+
+
 def remote_browser_share(contact_id: str, expiry: int = 60, new: bool = True) -> str:
     contact, err = _contact_room_or_error(contact_id)
     if err:
@@ -1380,7 +1422,10 @@ def remote_browser_share(contact_id: str, expiry: int = 60, new: bool = True) ->
     if not url:
         return f"Error: silicon-browser did not return a share URL: {output.strip()}"
 
-    InterfaceClient().remote_browser(contact["room_id"], url, minutes)
+    posted = InterfaceClient().remote_browser(contact["room_id"], url, minutes)
+    event_id = _extract_event_id(posted)
+    if event_id:
+        _save_remote_browser_event(session_name, event_id)
     return f"Done. Remote browser shared. session={session_name}, expiry_minutes={minutes}, url={url}"
 
 
@@ -1400,6 +1445,20 @@ def remote_browser_close(contact_id: str) -> str:
     output = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return f"Error: silicon-browser close failed: {output}"
+
+    # Tell the interface the card is closed so it greys out immediately,
+    # rather than counting down to its original expiry. Best-effort.
+    event_id = _pop_remote_browser_event(session_name)
+    if event_id:
+        try:
+            from core.glass import silicon_api_post
+
+            silicon_api_post(f"/api/v1/events/{event_id}/remote_browser_close")
+        except Exception as exc:  # noqa: BLE001 — close must not fail on the card update
+            return (
+                f"Done. Remote browser closed. session={session_name}. Profile state saved. "
+                f"(card update skipped: {exc})"
+            )
     return f"Done. Remote browser closed. session={session_name}. Profile state saved."
 
 
