@@ -483,7 +483,12 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None):
         # Session not found — check the exact error message
         if rc != 0 and "no" in error_msg.lower() and "found" in error_msg.lower() and session_id in error_msg:
             print(f"  [{tag}] {error_msg} — creating new session...", flush=True)
-            new_sid = new_session(carbon_id)
+            # MUST pass brain="claude": this is the claude path and needs a claude
+            # UUID. Without it, new_session() defaults to the silicon's configured
+            # brain — for a codex-brain silicon that returns the codex placeholder
+            # string, which claude then rejects ("Invalid session ID"), surfacing
+            # a spurious "Manager session not found".
+            new_sid = new_session(carbon_id, brain="claude")
             # Use --session-id to actually create the session (--resume only looks for existing)
             cmd_new = [
                 CLAUDE_CMD, "-p",
