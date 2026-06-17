@@ -546,7 +546,7 @@ def run_all_managers(context_by_carbon):
             for carbon_id, text in pending.items():
                 on_tools = _make_mid_stream_handler(carbon_id)
                 on_progress = _make_provider_progress_handler(carbon_id)
-                send_progress(carbon_id, f"manager:{carbon_id}", "thinking", "spawning manager")
+                send_progress(carbon_id, f"manager:{carbon_id}", "thinking", "calling manager")
                 future = executor.submit(
                     manager_code,
                     text,
