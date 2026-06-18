@@ -35,7 +35,13 @@ if IS_WINDOWS:
     if _codex_path:
         CODEX_CMD = _codex_path
 
-TIMEOUT_MSG = "SYSTEM: You timed out (3 min limit). You were taking too long. Delegate long-running tasks to a worker instead of doing them yourself. If this task truly cannot be delegated, you may continue now — but be quick."
+# Manager turn time limit (seconds). A turn that runs past this is killed and
+# counts as a provider failure (codex then falls back to claude). Raised from the
+# original 3 min to 30 min so codex can finish longer work inline instead of
+# prematurely timing out and falling back.
+MANAGER_TIMEOUT = 30 * 60  # 30 minutes
+
+TIMEOUT_MSG = "SYSTEM: You timed out (30 min limit). You were taking too long. Delegate long-running tasks to a worker instead of doing them yourself. If this task truly cannot be delegated, you may continue now — but be quick."
 
 
 SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
@@ -335,7 +341,7 @@ def _display_codex_stream_event(msg, tag, state):
         print(f"  [{tag}] turn {status}{suffix}", flush=True)
 
 
-def _run_streaming(cmd, input_text, tag, timeout=180, on_tools=None, progress_log_path=None, on_progress=None):
+def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None, progress_log_path=None, on_progress=None):
     """Run claude CLI with stream-json, show events on terminal.
     on_tools(tools_list) is called for tool JSON found in intermediate assistant texts.
     Returns (result_text, rate_limit_msg_or_None, returncode, executed_tools)."""
@@ -535,7 +541,7 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None):
             input=text,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=MANAGER_TIMEOUT,
             cwd=PROJECT_ROOT,
         )
         output = result.stdout.strip()
@@ -766,7 +772,7 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
         if "error" in turn_resp:
             raise RuntimeError(turn_resp["error"].get("message", "codex turn/start failed"))
 
-        deadline = time.time() + 180
+        deadline = time.time() + MANAGER_TIMEOUT
         while time.time() < deadline:
             try:
                 source, line = client.messages.get(timeout=0.25)
@@ -838,7 +844,7 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
                     error_msg = turn_error.get("message") or error_msg or "Codex turn failed"
                 break
         else:
-            raise subprocess.TimeoutExpired([CODEX_CMD, "app-server"], 180)
+            raise subprocess.TimeoutExpired([CODEX_CMD, "app-server"], MANAGER_TIMEOUT)
 
         output = final_text or streamed_text.strip()
         if output and _is_rate_limit(output):
