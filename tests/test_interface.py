@@ -320,6 +320,10 @@ class InterfaceClientTest(unittest.TestCase):
             self.assertIn([str(exe), "--json", "take-back", "evt-1", "--reason", "manual", "--force"], commands)
             self.assertIn([str(exe), "--json", "crons", "delete", "cron-1"], commands)
             self.assertTrue(any(cmd[:5] == [str(exe), "--json", "crons", "create", "--trigger"] for cmd in commands))
+            # Targets must be repeated `--target kind:id` flags, not a JSON blob.
+            self.assertTrue(
+                any("--target" in cmd and "carbon:c" in cmd and "--targets" not in cmd for cmd in commands)
+            )
             self.assertTrue(any(cmd[:4] == [str(exe), "--json", "crons", "update"] and "--active" in cmd for cmd in commands))
 
     def test_cli_builds_current_interface_commands(self):

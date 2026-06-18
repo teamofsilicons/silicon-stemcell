@@ -341,16 +341,20 @@ class InterfaceClient:
         return self.run(["crons", "list", "--mine"], timeout=45)
 
     def cron_create(self, trigger: str, task: str, targets: list[dict[str, Any]]) -> Any:
-        return self.run([
-            "crons",
-            "create",
-            "--trigger",
-            trigger,
-            "--task",
-            task,
-            "--targets",
-            json.dumps(targets),
-        ], timeout=60)
+        # The Interface CLI takes recipients as repeated `--target kind:id` flags
+        # (kind ∈ carbon|silicon), NOT a single `--targets` JSON blob — passing
+        # JSON makes it fail with "Pass at least one --target kind:id."
+        args = ["crons", "create", "--trigger", trigger, "--task", task]
+        for t in targets:
+            kind = str(t.get("kind") or "").strip().lower()
+            ident = str(
+                t.get("id") or t.get("carbon_id") or t.get("silicon_id") or ""
+            ).strip()
+            if not kind:
+                kind = "carbon" if t.get("carbon_id") else "silicon" if t.get("silicon_id") else ""
+            if kind and ident:
+                args.extend(["--target", f"{kind}:{ident}"])
+        return self.run(args, timeout=60)
 
     def cron_update(self, cron_id: str, **updates: Any) -> Any:
         args = ["crons", "update", cron_id]
