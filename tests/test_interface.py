@@ -16,16 +16,24 @@ class InterfaceStateTest(unittest.TestCase):
         self.old_backup = interface.CONTACTS_BACKUP_FILE
         self.old_media = interface.MEDIA_DIR
         self.old_legacy = interface.LEGACY_TELEGRAM_CONTACTS_FILE
+        self.old_boot_event_sync_done = interface._boot_event_sync_done
         interface.CONTACTS_FILE = root / "contacts.json"
         interface.CONTACTS_BACKUP_FILE = root / "contacts_backup.json"
         interface.MEDIA_DIR = root / "media"
         interface.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy" / "contacts.json"
+        interface._boot_event_sync_done = False
+        while True:
+            try:
+                interface._event_queue.get_nowait()
+            except Exception:
+                break
 
     def tearDown(self):
         interface.CONTACTS_FILE = self.old_contacts
         interface.CONTACTS_BACKUP_FILE = self.old_backup
         interface.MEDIA_DIR = self.old_media
         interface.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
+        interface._boot_event_sync_done = self.old_boot_event_sync_done
         self.tmp.cleanup()
 
     def test_first_carbon_is_central_and_ids_are_fixed(self):
@@ -220,6 +228,7 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertIsNone(processed)
         contact = interface.get_contact("carbon-a")
         self.assertEqual(contact["last_polled_event_id"], "evt-progress")
+        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-progress")
 
     def test_self_sender_handle_updates_watermark_and_drops_echo(self):
         state = interface.get_contacts()
@@ -237,6 +246,7 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertIsNone(processed)
         self.assertIn("evt-self", interface.get_contacts()["processed_events"]["room-a"])
+        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-self")
 
     def test_interface_new_command_maps_to_session_command(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
@@ -251,6 +261,72 @@ class InterfaceStateTest(unittest.TestCase):
         )
 
         self.assertEqual(processed, ("carbon-a", "[COMMAND: NEW_SESSION]"))
+        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-new")
+
+    def test_get_unread_events_uses_global_sync_without_room_polling(self):
+        class FakeClient:
+            def __init__(self):
+                self.sync_calls = []
+                self.poll_calls = []
+                self.read_calls = []
+
+            def whoami(self):
+                return {"silicon_id": "self-si"}
+
+            def rooms_list(self):
+                return {
+                    "rooms": [
+                        {
+                            "room_id": "room-a",
+                            "is_direct": True,
+                            "members": [
+                                {"contact_type": "silicon", "silicon_id": "self-si", "is_self": True},
+                                {"contact_type": "carbon", "carbon_id": "carbon-a", "display_name": "Carbon A"},
+                            ],
+                        }
+                    ]
+                }
+
+            def events_sync(self, after="", limit=interface.EVENT_SYNC_LIMIT):
+                self.sync_calls.append((after, limit))
+                return {
+                    "frames": [
+                        {
+                            "type": "event",
+                            "room_id": "room-a",
+                            "event": {
+                                "type": "m.text",
+                                "event_id": "evt-sync",
+                                "content": {"body": "hello from sync"},
+                            },
+                        }
+                    ],
+                    "next": "evt-sync",
+                    "has_more": False,
+                }
+
+            def events_list(self, room_id, since=""):
+                self.poll_calls.append((room_id, since))
+                raise AssertionError("per-room polling should not run")
+
+            def read(self, room_id, event_id):
+                self.read_calls.append((room_id, event_id))
+
+        fake = FakeClient()
+        with mock.patch.object(interface, "InterfaceClient", return_value=fake), mock.patch.object(interface, "start_listener"):
+            contexts = interface.get_unread_events()
+
+        self.assertEqual(fake.sync_calls, [("", interface.EVENT_SYNC_LIMIT)])
+        self.assertEqual(fake.poll_calls, [])
+        self.assertIn("carbon-a", contexts)
+        self.assertIn("hello from sync", contexts["carbon-a"])
+        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-sync")
+
+    def test_listener_process_uses_one_socket_without_cli_sync(self):
+        client = interface.InterfaceClient.__new__(interface.InterfaceClient)
+        with mock.patch.object(interface.InterfaceClient, "popen") as popen:
+            client.listen_all_process()
+        popen.assert_called_once_with(["listen", "all", "--once", "--no-sync"])
 
     def test_reply_segments_keep_order_and_report_missing_files(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")

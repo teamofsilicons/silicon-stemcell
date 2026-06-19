@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -37,6 +38,13 @@ _listener_stop: threading.Event | None = None
 _listener_proc: subprocess.Popen | None = None
 _event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
 _last_listener_error = 0.0
+_event_sync_lock = threading.Lock()
+_boot_event_sync_done = False
+
+EVENT_SYNC_LIMIT = 500
+EVENT_SYNC_MAX_PAGES = 5
+SAFETY_EVENT_SYNC_SECONDS = 300
+SAFETY_EVENT_SYNC_JITTER_SECONDS = 120
 
 
 class InterfaceError(RuntimeError):
@@ -77,6 +85,9 @@ def _default_contacts_state() -> dict[str, Any]:
         "processed_events": {},
         "own_ids": [],
         "last_room_sync": 0,
+        "last_event_cursor": "",
+        "last_event_sync": 0,
+        "next_safety_event_sync": 0,
     }
 
 
@@ -133,6 +144,10 @@ def _load_state() -> dict[str, Any]:
     state.setdefault("rooms", {})
     state.setdefault("processed_events", {})
     state.setdefault("own_ids", [])
+    state.setdefault("last_room_sync", 0)
+    state.setdefault("last_event_cursor", "")
+    state.setdefault("last_event_sync", 0)
+    state.setdefault("next_safety_event_sync", 0)
     return state
 
 
@@ -296,8 +311,14 @@ class InterfaceClient:
         args = ["messages", "list", room_id, "--limit", "200"]
         return self.run(args, timeout=45)
 
+    def events_sync(self, after: str = "", limit: int = EVENT_SYNC_LIMIT) -> Any:
+        args = ["events", "sync", "--limit", str(limit), "--no-cursor"]
+        if after:
+            args.extend(["--after", after])
+        return self.run(args, timeout=60)
+
     def listen_all_process(self) -> subprocess.Popen:
-        return self.popen(["listen", "all"])
+        return self.popen(["listen", "all", "--once", "--no-sync"])
 
     def send(self, room_id: str, message: str) -> Any:
         return self.run(["send", room_id, message], timeout=60)
@@ -929,6 +950,7 @@ def _remember_processed(contact_id: str, event_id: str, room_id: str = "") -> No
     if not event_id:
         return
     state = _load_state()
+    _advance_event_cursor(state, event_id)
     contact = state.setdefault("contacts", {}).get(contact_id)
     if contact:
         ids = list(contact.get("last_processed_event_ids") or [])
@@ -947,9 +969,13 @@ def _remember_processed(contact_id: str, event_id: str, room_id: str = "") -> No
 
 
 def _remember_seen_event(room_id: str, event_id: str) -> None:
-    if not room_id or not event_id:
+    if not event_id:
         return
     state = _load_state()
+    _advance_event_cursor(state, event_id)
+    if not room_id:
+        _save_state(state)
+        return
     contact_id = state.get("rooms", {}).get(room_id)
     contact = state.get("contacts", {}).get(contact_id) if contact_id else None
     if contact:
@@ -968,6 +994,15 @@ def _already_processed(contact: dict[str, Any] | None, room_id: str, event_id: s
         return True
     state = _load_state()
     return event_id in set(state.get("processed_events", {}).get(room_id) or [])
+
+
+def _advance_event_cursor(state: dict[str, Any], event_id: str) -> None:
+    if not event_id:
+        return
+    current = str(state.get("last_event_cursor") or "")
+    if not current or event_id > current:
+        state["last_event_cursor"] = event_id
+        state["last_event_cursor_updated_at"] = _utc_iso()
 
 
 def _safe_filename(name: str) -> str:
@@ -1085,8 +1120,10 @@ def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None
 
     contact_id, contact, _ = _contact_for_room(room_id, client=client)
     if not contact_id or not contact:
+        _remember_seen_event(room_id, event_id)
         return None
     if _already_processed(contact, room_id, event_id):
+        _remember_seen_event(room_id, event_id)
         return None
 
     local_paths: list[str] = []
@@ -1139,6 +1176,12 @@ def _listener_loop(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         try:
             client = InterfaceClient()
+            try:
+                discover_rooms(client)
+            except Exception:
+                pass
+            for event in _sync_events_from_cursor(client, reason="listener"):
+                _event_queue.put(event)
             proc = client.listen_all_process()
             _listener_proc = proc
             backoff = 1
@@ -1159,6 +1202,12 @@ def _listener_loop(stop_event: threading.Event) -> None:
                         # refresh the cached profile + contact flags now.
                         try:
                             _sync_profile_from_glass(client.whoami())
+                        except Exception:
+                            pass
+                        continue
+                    if payload.get("type") == "room.added":
+                        try:
+                            discover_rooms(client, force=True)
                         except Exception:
                             pass
                         continue
@@ -1223,6 +1272,73 @@ def _drain_listener_events(max_events: int = 200) -> list[dict[str, Any]]:
     return events
 
 
+def _event_from_frame(frame: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(frame, dict) or frame.get("type") != "event":
+        return None
+    event = frame.get("event")
+    if not isinstance(event, dict):
+        return None
+    payload = dict(event)
+    if frame.get("room_id") and not payload.get("room_id") and not payload.get("roomId"):
+        payload["room_id"] = frame["room_id"]
+    return payload
+
+
+def _sync_events_from_cursor(client: InterfaceClient, *, reason: str = "") -> list[dict[str, Any]]:
+    if not _event_sync_lock.acquire(blocking=False):
+        return []
+    try:
+        state = _load_state()
+        after = str(state.get("last_event_cursor") or "")
+        events: list[dict[str, Any]] = []
+        for _ in range(EVENT_SYNC_MAX_PAGES):
+            try:
+                payload = client.events_sync(after=after, limit=EVENT_SYNC_LIMIT)
+            except Exception as exc:
+                if reason:
+                    print(f"[Interface] event sync failed ({reason}): {exc}", flush=True)
+                return events
+            frames = _as_list(payload, ("frames", "data", "results"))
+            for frame in frames:
+                event = _event_from_frame(frame)
+                if event is not None:
+                    events.append(event)
+            next_after = str(payload.get("next") or "")
+            if not payload.get("has_more") or not frames or not next_after or next_after == after:
+                break
+            after = next_after
+        if events:
+            label = f" ({reason})" if reason else ""
+            print(f"[Interface] synced {len(events)} missed event(s){label}", flush=True)
+        return events
+    finally:
+        _event_sync_lock.release()
+
+
+def _schedule_next_safety_sync(state: dict[str, Any], now: float | None = None) -> None:
+    jitter = random.uniform(0, SAFETY_EVENT_SYNC_JITTER_SECONDS)
+    state["next_safety_event_sync"] = (now or _now()) + SAFETY_EVENT_SYNC_SECONDS + jitter
+
+
+def _maybe_safety_sync(client: InterfaceClient) -> list[dict[str, Any]]:
+    now = _now()
+    state = _load_state()
+    next_at = float(state.get("next_safety_event_sync") or 0)
+    if next_at <= 0:
+        _schedule_next_safety_sync(state, now)
+        _save_state(state)
+        return []
+    if now < next_at:
+        return []
+
+    events = _sync_events_from_cursor(client, reason="safety")
+    state = _load_state()
+    state["last_event_sync"] = now
+    _schedule_next_safety_sync(state, now)
+    _save_state(state)
+    return events
+
+
 def _poll_room_events(client: InterfaceClient, state: dict[str, Any]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for contact in state.get("contacts", {}).values():
@@ -1246,6 +1362,7 @@ def _poll_room_events(client: InterfaceClient, state: dict[str, Any]) -> list[di
 
 def get_unread_events() -> dict[str, str]:
     """Return manager contexts keyed by fixed contact id."""
+    global _boot_event_sync_done
     client = InterfaceClient()
     try:
         discover_rooms(client)
@@ -1255,10 +1372,14 @@ def get_unread_events() -> dict[str, str]:
     except Exception as exc:
         print(f"[Interface] room discovery failed: {exc}", flush=True)
 
+    raw_events: list[dict[str, Any]] = []
+    if not _boot_event_sync_done:
+        raw_events.extend(_sync_events_from_cursor(client, reason="boot"))
+        _boot_event_sync_done = True
+
     start_listener()
-    state = _load_state()
-    raw_events = _drain_listener_events()
-    raw_events.extend(_poll_room_events(client, state))
+    raw_events.extend(_drain_listener_events())
+    raw_events.extend(_maybe_safety_sync(client))
 
     contexts: dict[str, list[str]] = {}
     for event in raw_events:
