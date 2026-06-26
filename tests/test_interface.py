@@ -109,6 +109,20 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual(state["contacts"]["carbon-a"]["display_name"], "Carbon A")
         self.assertEqual(state["contacts"]["carbon-a"]["trust_level"], "ultimate")
 
+    def test_remote_browser_result_uses_posted_branded_url(self):
+        posted = {
+            "event": {
+                "event_id": "evt1",
+                "content": {"url": "https://browser.teamofsilicons.com/s/session-123"},
+            }
+        }
+
+        self.assertEqual(interface._extract_event_id(posted), "evt1")
+        self.assertEqual(
+            interface._extract_remote_browser_url(posted, fallback="https://api.steel.dev/x"),
+            "https://browser.teamofsilicons.com/s/session-123",
+        )
+
     def test_room_discovery_accepts_room_level_contact_fields(self):
         class FakeClient:
             def whoami(self):

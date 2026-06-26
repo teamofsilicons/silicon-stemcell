@@ -1490,6 +1490,16 @@ def _extract_event_id(posted: Any) -> str:
     return ""
 
 
+def _extract_remote_browser_url(posted: Any, fallback: str = "") -> str:
+    if isinstance(posted, dict):
+        ev = posted.get("event") if isinstance(posted.get("event"), dict) else posted
+        content = ev.get("content") if isinstance(ev.get("content"), dict) else {}
+        url = content.get("url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return fallback
+
+
 def _load_remote_browser_state() -> dict:
     try:
         return json.loads(REMOTE_BROWSER_STATE_FILE.read_text(encoding="utf-8"))
@@ -1551,7 +1561,8 @@ def remote_browser_share(contact_id: str, expiry: int = 60, new: bool = True) ->
     event_id = _extract_event_id(posted)
     if event_id:
         _save_remote_browser_event(session_name, event_id)
-    return f"Done. Remote browser shared. session={session_name}, expiry_minutes={minutes}, url={url}"
+    branded_url = _extract_remote_browser_url(posted, fallback=url)
+    return f"Done. Remote browser shared. session={session_name}, expiry_minutes={minutes}, url={branded_url}"
 
 
 def remote_browser_close(contact_id: str) -> str:
