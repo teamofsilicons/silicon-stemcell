@@ -110,6 +110,14 @@ class BackupManifestTest(unittest.TestCase):
             self.assertIn("prompts/memory/carbons/a.md", tar_names)
             self.assertNotIn("other.txt", tar_names)
 
+    def test_manifest_must_be_file_not_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".backupsilicon").mkdir()
+
+            with self.assertRaises(IsADirectoryError):
+                backup.read_manifest(root)
+
     def test_run_backup_uses_prod_upload_contract(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

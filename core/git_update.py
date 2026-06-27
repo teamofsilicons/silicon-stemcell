@@ -40,6 +40,15 @@ FETCH_URL = os.environ.get(
     "SILICON_REPO_URL", "https://github.com/teamofsilicons/silicon-stemcell.git"
 )
 MANIFEST = ".backupsilicon"
+DEFAULT_MANIFEST = (
+    "prompts/MEMORY.md",
+    "prompts/memory/**",
+    "prompts/LORE.md",
+    "prompts/CONTACTS.md",
+    "core/interface_state/contacts.json",
+    "logs/**",
+)
+MANIFEST_ARCHIVE_PREFIX = ".backupsilicon.archive"
 # Per-install identity + secrets that must never be tracked, clobbered, or
 # deleted by an update. .glass.json carries the silicon's auth key/id; .env its
 # local secrets; silicon.json its identity (name/brain).
@@ -78,9 +87,63 @@ def _parse_manifest(text: str) -> list[str]:
     return globs
 
 
-def _local_manifest() -> list[str]:
+def _default_manifest_text() -> str:
+    return "\n".join(DEFAULT_MANIFEST) + "\n"
+
+
+def _git_blob(ref: str) -> str:
+    res = _git("show", f"{ref}:{MANIFEST}")
+    return res.stdout if res.returncode == 0 and res.stdout.strip() else ""
+
+
+def _unique_manifest_archive_path() -> Path:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    base = PROJECT_ROOT / f"{MANIFEST_ARCHIVE_PREFIX}.{stamp}"
+    path = base
+    i = 1
+    while path.exists():
+        i += 1
+        path = PROJECT_ROOT / f"{MANIFEST_ARCHIVE_PREFIX}.{stamp}.{i}"
+    return path
+
+
+def ensure_manifest_file() -> list[str]:
+    """.backupsilicon is a manifest file, never a backup directory.
+
+    A few legacy installs used ``.backupsilicon/`` as an archive folder. That
+    path now belongs to the protected-file manifest. Preserve any legacy folder
+    by renaming it aside, then restore the manifest from HEAD/upstream or write
+    the default manifest.
+    """
     path = PROJECT_ROOT / MANIFEST
-    return _parse_manifest(path.read_text(encoding="utf-8")) if path.exists() else []
+    archived: list[str] = []
+    if path.exists() and not path.is_file():
+        archive = _unique_manifest_archive_path()
+        path.rename(archive)
+        archived.append(archive.name)
+        log(f"archived legacy {MANIFEST} directory to {archive.name}")
+
+    if path.is_file():
+        return archived
+
+    # Prefer the manifest already tracked by this install, then the incoming
+    # version, then the built-in default used by fresh stemcells.
+    if is_git_repo() and _git("checkout", "--", MANIFEST).returncode == 0 and path.is_file():
+        return archived
+
+    text = ""
+    if is_git_repo():
+        text = _git_blob("HEAD") or _git_blob(f"{REMOTE}/{BRANCH}")
+    if not text:
+        text = _default_manifest_text()
+    path.write_text(text.rstrip("\n") + "\n", encoding="utf-8")
+    return archived
+
+
+def _local_manifest() -> list[str]:
+    ensure_manifest_file()
+    path = PROJECT_ROOT / MANIFEST
+    return _parse_manifest(path.read_text(encoding="utf-8")) if path.is_file() else []
 
 
 def _incoming_manifest() -> list[str]:
@@ -91,6 +154,7 @@ def _incoming_manifest() -> list[str]:
 
 
 def protected_globs() -> list[str]:
+    ensure_manifest_file()
     seen: list[str] = []
     for g in [*_local_manifest(), *_incoming_manifest(), *ALWAYS_PROTECTED]:
         if g not in seen:
@@ -237,6 +301,7 @@ def ensure_git_connected() -> dict:
         return {"connected": False, "needs_migration": True}
     harden_pull_only()
     fetched = _git("fetch", "--tags", REMOTE, BRANCH, timeout=120)
+    ensure_manifest_file()
     return {"connected": True, "fetch_ok": fetched.returncode == 0}
 
 

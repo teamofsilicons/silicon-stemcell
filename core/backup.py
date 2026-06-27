@@ -45,6 +45,8 @@ def read_manifest(root: Path) -> list[str]:
     path = root / MANIFEST_NAME
     if not path.exists():
         return []
+    if path.is_dir():
+        raise IsADirectoryError(f"{MANIFEST_NAME} must be a manifest file, not a directory")
     patterns: list[str] = []
     for line in path.read_text().splitlines():
         line = line.strip()

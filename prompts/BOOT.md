@@ -19,7 +19,7 @@ You can edit any file you want.
 Especially; LORE, MEMEORY, SILICON, SOUL, CONTACTS, and anything inside memory/
 (all of them are inside prompts)
 
-And for all the files you change, you are supposed to store them in `.backupsilicon` - these are all the files that will be backed up.
+And for every file you change that must be backed up, append its relative path to the `.backupsilicon` manifest file. `.backupsilicon` must stay a plain text file; do not create a `.backupsilicon/` directory.
 
 Help your carbon to set you up well.
 Be accoutable, and suggest robust ways you can help achive each purpose. setup crons for yourself if needed.

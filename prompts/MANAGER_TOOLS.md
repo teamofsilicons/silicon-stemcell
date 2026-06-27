@@ -674,7 +674,9 @@ They have just joined the system.
 
 Get to know them, get to deeply understand them and update your knowledge about them.
 
-IF YOU EDIT ANOTHER FILE, STORE IT IN .backupsilicon
+IF YOU EDIT ANOTHER FILE THAT MUST BE BACKED UP, APPEND ITS RELATIVE PATH TO THE `.backupsilicon` MANIFEST FILE.
+
+`.backupsilicon` MUST remain a plain text file. Do not create a `.backupsilicon/` directory.
 
 ```text
 .backupsilicon
