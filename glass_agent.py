@@ -18,8 +18,6 @@ import shutil
 import ssl
 import subprocess
 import sys
-import tarfile
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -32,15 +30,9 @@ STATUS_INTERVAL = 15
 PING_INTERVAL = 20
 MAX_BACKOFF = 30
 REGISTRY_TIMEOUT = 8
-GLASS_CLI_REPO = (
-    os.environ.get("SILICON_GLASS_CLI_REPO")
-    or os.environ.get("GLASS_CLI_REPO")
-    or "unlikefraction/glass"
-)
 NPM_RUNTIME_PACKAGES = (
     {"name": "@anthropic-ai/claude-code", "command": "claude"},
     {"name": "@openai/codex", "command": "codex"},
-    {"name": "silicon-browser", "command": "silicon-browser"},
 )
 LOCAL_NPM_CLIS = (
     {
@@ -59,11 +51,11 @@ SCRIPT_CLIS = (
         "update_args": ("script", "update"),
     },
     {
-        "name": "glass",
-        "command": "glass",
-        "source": "Glass CLI",
-        "latest_repo": GLASS_CLI_REPO,
-        "update_kind": "glass_cli",
+        "name": "silicon-browser",
+        "command": "silicon-browser",
+        "source": "Silicon Browser CLI",
+        "package": "silicon-browser",
+        "update_kind": "python_cli",
     },
 )
 TERMINAL_COMMANDS = {
@@ -270,20 +262,11 @@ def _version_from_command(command: str) -> str:
     return match.group(0) if match else text[0][:80]
 
 
-def _python_console_package_version(root: Path, command: str, package: str) -> str:
-    exe = _resolve_command(root, command)
-    if not exe:
-        return ""
+def _python_runner_from_executable(exe: str) -> list[str]:
     try:
         first_line = Path(exe).read_bytes()[:256].splitlines()[0].decode("utf-8", errors="ignore")
     except Exception:
-        first_line = ""
-
-    code = (
-        "from importlib.metadata import PackageNotFoundError, version\n"
-        f"try: print(version({package!r}))\n"
-        "except PackageNotFoundError: pass\n"
-    )
+        return []
     if first_line.startswith("#!") and "python" in first_line.lower():
         try:
             parts = shlex.split(first_line[2:].strip())
@@ -293,18 +276,34 @@ def _python_console_package_version(root: Path, command: str, package: str) -> s
             runner = parts[:]
             if Path(runner[0]).name == "env" and len(runner) == 1:
                 runner.append("python3")
-            try:
-                proc = subprocess.run(
-                    [*runner, "-c", code],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                text = (proc.stdout or "").strip().splitlines()
-                if proc.returncode == 0 and text:
-                    return text[0]
-            except Exception:
-                pass
+            return runner
+    return []
+
+
+def _python_console_package_version(root: Path, command: str, package: str) -> str:
+    exe = _resolve_command(root, command)
+    if not exe:
+        return ""
+
+    code = (
+        "from importlib.metadata import PackageNotFoundError, version\n"
+        f"try: print(version({package!r}))\n"
+        "except PackageNotFoundError: pass\n"
+    )
+    runner = _python_runner_from_executable(exe)
+    if runner:
+        try:
+            proc = subprocess.run(
+                [*runner, "-c", code],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            text = (proc.stdout or "").strip().splitlines()
+            if proc.returncode == 0 and text:
+                return text[0]
+        except Exception:
+            pass
 
     return _installed_python_version(package)
 
@@ -489,44 +488,26 @@ def _run_install(cmd: list[str], root: Path, timeout: int = 900) -> dict:
         return {"command": " ".join(cmd), "ok": False, "returncode": None, "detail": str(exc)}
 
 
-def _install_glass_cli() -> dict:
-    command = f"install glass CLI from github:{GLASS_CLI_REPO}@main"
-    glass_dir = Path.home() / ".glass"
-    bin_dir = Path.home() / ".local" / "bin"
-    tmp = Path(tempfile.mkdtemp(prefix="glass-install-"))
-    try:
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        archive = f"https://codeload.github.com/{GLASS_CLI_REPO}/tar.gz/refs/heads/main"
-        tarball = tmp / "glass.tar.gz"
-        req = Request(archive, headers={"User-Agent": "silicon-glass-agent/1.0"})
-        with urlopen(req, timeout=60) as resp, tarball.open("wb") as f:
-            shutil.copyfileobj(resp, f)
-        with tarfile.open(tarball) as tf:
-            tf.extractall(tmp)
-        src = next((p for p in tmp.iterdir() if p.is_dir() and p.name.startswith("glass-")), None)
-        if not src or not (src / "glass").exists():
-            return {"command": command, "ok": False, "returncode": None, "detail": "downloaded archive was invalid"}
-
-        shutil.rmtree(glass_dir, ignore_errors=True)
-        glass_dir.mkdir(parents=True, exist_ok=True)
-        for item in src.iterdir():
-            if item.name in {".git", "__pycache__"}:
-                continue
-            dest = glass_dir / item.name
-            if item.is_dir():
-                shutil.copytree(item, dest, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, dest)
-        os.chmod(glass_dir / "glass", 0o755)
-        wrapper = bin_dir / "glass"
-        if wrapper.exists() or wrapper.is_symlink():
-            wrapper.unlink()
-        wrapper.symlink_to(glass_dir / "glass")
-        return {"command": command, "ok": True, "returncode": 0, "detail": "glass CLI installed"}
-    except Exception as exc:
-        return {"command": command, "ok": False, "returncode": None, "detail": str(exc)}
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+def _update_python_cli(root: Path, item: dict) -> dict:
+    command = str(item["command"])
+    package = str(item["package"])
+    exe = _resolve_command(root, command)
+    if not exe:
+        return {
+            "command": f"{command}: upgrade Python package {package}",
+            "ok": False,
+            "returncode": None,
+            "detail": f"{command} not found",
+        }
+    runner = _python_runner_from_executable(exe)
+    if not runner:
+        return {
+            "command": f"{command}: upgrade Python package {package}",
+            "ok": False,
+            "returncode": None,
+            "detail": f"{command} is not a Python-backed CLI",
+        }
+    return _run_install([*runner, "-m", "pip", "install", "--upgrade", package], root, timeout=1200)
 
 
 def update_dependencies(root: Path) -> dict:
@@ -602,8 +583,8 @@ def update_dependencies(root: Path) -> dict:
             )
 
     for item in SCRIPT_CLIS:
-        if item.get("update_kind") == "glass_cli":
-            install_results.append(_install_glass_cli())
+        if item.get("update_kind") == "python_cli":
+            install_results.append(_update_python_cli(root, item))
             continue
         exe = _resolve_command(root, item["command"])
         if exe:
