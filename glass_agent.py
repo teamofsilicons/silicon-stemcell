@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -30,6 +31,7 @@ STATUS_INTERVAL = 15
 PING_INTERVAL = 20
 MAX_BACKOFF = 30
 REGISTRY_TIMEOUT = 8
+NPM_LIST_TIMEOUT = 12
 NPM_RUNTIME_PACKAGES = (
     {"name": "@anthropic-ai/claude-code", "command": "claude"},
     {"name": "@openai/codex", "command": "codex"},
@@ -181,6 +183,28 @@ def _latest_npm_version(name: str) -> tuple[str, str]:
         return "", str(exc)
 
 
+def _lookup_many(names: list[str], lookup) -> dict[str, tuple[str, str]]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name and name not in seen:
+            unique.append(name)
+            seen.add(name)
+    if not unique:
+        return {}
+
+    results: dict[str, tuple[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(unique))) as pool:
+        futures = {pool.submit(lookup, name): name for name in unique}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:
+                results[name] = "", str(exc)
+    return results
+
+
 def _latest_github_main(repo: str) -> tuple[str, str]:
     try:
         body = _request_json(f"https://api.github.com/repos/{repo}/commits/main")
@@ -229,7 +253,7 @@ def _npm_global_versions() -> tuple[dict[str, str], str]:
             [npm, "list", "-g", "--depth=0", "--json"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=NPM_LIST_TIMEOUT,
         )
         body = json.loads(proc.stdout or "{}")
         deps = body.get("dependencies") or {}
@@ -349,10 +373,17 @@ def _dependency_status(installed: str, latest: str) -> str:
 def dependency_report(root: Path) -> dict:
     packages: list[dict] = []
     errors: list[str] = []
+    requirements = _python_requirements(root)
+    script_packages = [str(item.get("package") or "") for item in SCRIPT_CLIS]
+    pypi_latest = _lookup_many([name for name, _ in requirements] + script_packages, _latest_pypi_version)
+    npm_latest = _lookup_many(
+        [item["name"] for item in NPM_RUNTIME_PACKAGES] + [item["name"] for item in LOCAL_NPM_CLIS],
+        _latest_npm_version,
+    )
 
-    for name, required in _python_requirements(root):
+    for name, required in requirements:
         installed = _installed_python_version(name)
-        latest, err = _latest_pypi_version(name)
+        latest, err = pypi_latest.get(name, ("", ""))
         if err:
             errors.append(f"pypi:{name}: {err}")
         packages.append(
@@ -373,7 +404,7 @@ def dependency_report(root: Path) -> dict:
     for item in NPM_RUNTIME_PACKAGES:
         name = item["name"]
         installed = npm_versions.get(name) or _version_from_command(item["command"])
-        latest, err = _latest_npm_version(name)
+        latest, err = npm_latest.get(name, ("", ""))
         if err:
             errors.append(f"npm:{name}: {err}")
         packages.append(
@@ -398,7 +429,7 @@ def dependency_report(root: Path) -> dict:
             if exe:
                 installed = _version_from_command(exe) or _file_identity(exe)
                 break
-        latest, err = _latest_npm_version(name)
+        latest, err = npm_latest.get(name, ("", ""))
         if err:
             errors.append(f"npm:{name}: {err}")
         packages.append(
@@ -423,7 +454,7 @@ def dependency_report(root: Path) -> dict:
             installed = _python_console_package_version(root, item["command"], package)
         installed = installed or _command_identity(root, item["command"])
         if package:
-            latest, err = _latest_pypi_version(package)
+            latest, err = pypi_latest.get(package, ("", ""))
         else:
             latest, err = _latest_github_main(item["latest_repo"])
         if err:
