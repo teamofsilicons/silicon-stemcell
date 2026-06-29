@@ -39,6 +39,8 @@ BRANCH = os.environ.get("SILICON_REPO_BRANCH", "main")
 FETCH_URL = os.environ.get(
     "SILICON_REPO_URL", "https://github.com/teamofsilicons/silicon-stemcell.git"
 )
+GIT_USER_NAME = "Silicon Updater"
+GIT_USER_EMAIL = "updater@teamofsilicons.com"
 MANIFEST = ".backupsilicon"
 DEFAULT_MANIFEST = (
     "prompts/MEMORY.md",
@@ -263,6 +265,19 @@ def harden_pull_only() -> None:
         pass
 
 
+def ensure_git_identity() -> None:
+    """Set a local committer identity for non-interactive self-updates.
+
+    Docker-backed silicons often run as a user with no global git config. Git
+    then rejects merge commits before any conflict exists, which used to look
+    like a successful zero-file conflict resolution.
+    """
+    if not _git("config", "user.name").stdout.strip():
+        _git("config", "user.name", GIT_USER_NAME)
+    if not _git("config", "user.email").stdout.strip():
+        _git("config", "user.email", GIT_USER_EMAIL)
+
+
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 
 
@@ -300,6 +315,7 @@ def ensure_git_connected() -> dict:
     if not is_git_repo():
         return {"connected": False, "needs_migration": True}
     harden_pull_only()
+    ensure_git_identity()
     fetched = _git("fetch", "--tags", REMOTE, BRANCH, timeout=120)
     ensure_manifest_file()
     return {"connected": True, "fetch_ok": fetched.returncode == 0}
@@ -344,11 +360,18 @@ def _merge_upstream(globs: list[str]) -> dict:
         return {"ok": True, "mode": "clean"}
     conflicted = [f for f in _git("diff", "--name-only", "--diff-filter=U").stdout.splitlines() if f]
     log(f"merge conflicts in {len(conflicted)} file(s): {conflicted}")
+    if not conflicted:
+        detail = (merge.stderr or merge.stdout or "git merge failed without conflicted files").strip()
+        return {"ok": False, "detail": detail}
     if not _run_resolver(conflicted, notes, globs) or _markers_remain(conflicted):
         _git("merge", "--abort")
         return {"ok": False, "detail": "conflict resolution failed; merge aborted"}
-    _git("add", *conflicted)
-    _git("commit", "--no-edit")
+    add = _git("add", *conflicted)
+    if add.returncode != 0:
+        return {"ok": False, "detail": (add.stderr or add.stdout or "git add failed").strip()}
+    commit = _git("commit", "--no-edit")
+    if commit.returncode != 0:
+        return {"ok": False, "detail": (commit.stderr or commit.stdout or "git commit failed").strip()}
     return {"ok": True, "mode": "resolved", "resolved": conflicted}
 
 
@@ -394,6 +417,18 @@ def _local_version() -> str:
     p = PROJECT_ROOT / "silicon.info"
     try:
         return str(json.loads(p.read_text(encoding="utf-8")).get("version") or "")
+    except Exception:
+        return ""
+
+
+def _ref_version(ref: str) -> str:
+    import json
+
+    res = _git("show", f"{ref}:silicon.info")
+    if res.returncode != 0:
+        return ""
+    try:
+        return str(json.loads(res.stdout).get("version") or "")
     except Exception:
         return ""
 
@@ -462,6 +497,7 @@ def git_apply() -> dict:
     snapshot = _snapshot(globs)
 
     before = _local_version()
+    expected = _ref_version(f"{REMOTE}/{BRANCH}")
     try:
         # Snapshot the Silicon's own code changes so the merge preserves them.
         # `add -u` stages modifications to ALREADY-TRACKED files only — never
@@ -479,7 +515,15 @@ def git_apply() -> dict:
         merged = _merge_upstream(globs)
         if not merged["ok"]:
             return {"status": "error", "detail": merged["detail"], "version": before}
-        return {"status": "updated", "version": _local_version(),
+        after = _local_version()
+        if expected and after != expected:
+            return {
+                "status": "error",
+                "detail": f"merge completed but local version is {after or 'unknown'}, expected {expected}",
+                "version": after,
+                "expected_version": expected,
+            }
+        return {"status": "updated", "version": after,
                 "mode": merged["mode"], "resolved": merged.get("resolved", [])}
     finally:
         _restore(snapshot)

@@ -58,6 +58,26 @@ class GitUpdateManifestTest(unittest.TestCase):
             self.assertTrue((root / ".backupsilicon").is_file())
             self.assertIn("prompts/MEMORY.md", (root / ".backupsilicon").read_text(encoding="utf-8"))
 
+    def test_merge_failure_without_conflicts_is_not_resolved(self):
+        calls = []
+
+        def fake_git(*args, **_kwargs):
+            calls.append(args)
+            if args[:3] == ("log", "--no-merges", "--pretty=%s"):
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if args[:2] == ("merge", "--no-edit"):
+                return mock.Mock(returncode=128, stdout="", stderr="Committer identity unknown")
+            if args[:3] == ("diff", "--name-only", "--diff-filter=U"):
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(git_update, "_git", side_effect=fake_git):
+            result = git_update._merge_upstream([])
+
+        self.assertFalse(result["ok"])
+        self.assertIn("Committer identity unknown", result["detail"])
+        self.assertNotIn(("commit", "--no-edit"), calls)
+
 
 if __name__ == "__main__":
     unittest.main()
