@@ -289,6 +289,14 @@ def execute_single_tool(tool_spec, carbon_id):
         # Handled separately in execute_all_tools
         return None
 
+    elif tool_name == "call_carbon":
+        from core.ring import call_carbon
+        cid = tool_spec.get("carbon_id", "")
+        if not cid:
+            return "Tool 'call_carbon': Error: carbon_id is required"
+        result = call_carbon(cid, tool_spec.get("message", ""))
+        return f"Tool 'call_carbon' ({cid}): {result}"
+
     else:
         return f"Unknown tool: '{tool_name}'"
 
