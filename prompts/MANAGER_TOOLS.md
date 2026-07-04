@@ -307,6 +307,19 @@ The restart notification will only come back to YOU (the manager of the carbon w
 }
 
 
+### Call a Carbon on their phone
+Ring a Carbon's Glass app (Android/iOS/web) with a live AI voice call. The Carbon's device rings like a WhatsApp call; once answered, a Gemini Live AI voice conversation begins.
+
+{
+    "tool": "call_carbon",
+    "carbon_id": "shivam",
+    "message": "Optional context/agenda passed to the AI as a system prompt seed"
+}
+
+Returns a call_id immediately (status: ringing). The Carbon's phone will ring within seconds.
+Use `silicon-ring status <call_id>` or `silicon-ring transcript <call_id>` in a worker/terminal to follow up after the call ends.
+
+
 ### Cron Jobs
 To perform CRUD on your Cron Jobs. Follow these steps:
 1. Read core/cron/__init__.py
