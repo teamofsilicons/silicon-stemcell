@@ -533,6 +533,63 @@ def _run_install(cmd: list[str], root: Path, timeout: int = 900) -> dict:
         return {"command": " ".join(cmd), "ok": False, "returncode": None, "detail": str(exc)}
 
 
+def _combine_install_results(results: list[dict]) -> dict:
+    detail = "\n".join(_trim(str(r.get("detail") or "")) for r in results if r.get("detail"))
+    failed = next((r for r in results if not r.get("ok")), None)
+    last = results[-1] if results else {}
+    return {
+        "command": " && ".join(str(r.get("command") or "") for r in results if r.get("command")),
+        "ok": failed is None,
+        "returncode": (failed or last).get("returncode"),
+        "detail": _trim(detail, limit=1000),
+    }
+
+
+def _reinstall_python_package(
+    runner: list[str],
+    root: Path,
+    package: str,
+    requirement: str,
+) -> dict:
+    uninstall = _run_install([*runner, "-m", "pip", "uninstall", "-y", package], root, timeout=600)
+    install = _run_install([*runner, "-m", "pip", "install", requirement], root, timeout=1200)
+    return _combine_install_results([uninstall, install])
+
+
+def _clear_local_npm_cli(root: Path, item: dict) -> dict:
+    if item.get("name") != "@teamofsilicons/silicon-interface-cli":
+        return {"command": f"{item.get('name')}: no local uninstall step", "ok": True, "returncode": 0, "detail": ""}
+
+    interface_root = root / ".silicon-interface"
+    paths = [
+        interface_root / "package",
+        interface_root / "bin" / "si",
+        interface_root / "bin" / "silicon-interface",
+    ]
+    removed: list[str] = []
+    try:
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path)
+                removed.append(str(path.relative_to(root)))
+            elif path.exists() or path.is_symlink():
+                path.unlink()
+                removed.append(str(path.relative_to(root)))
+    except Exception as exc:
+        return {
+            "command": f"remove local {item.get('install_command') or item.get('name')}",
+            "ok": False,
+            "returncode": None,
+            "detail": str(exc),
+        }
+    return {
+        "command": f"remove local {item.get('install_command') or item.get('name')}",
+        "ok": True,
+        "returncode": 0,
+        "detail": "removed " + ", ".join(removed) if removed else "nothing to remove",
+    }
+
+
 def _update_python_cli(root: Path, item: dict) -> dict:
     command = str(item["command"])
     package = str(item["package"])
@@ -554,7 +611,7 @@ def _update_python_cli(root: Path, item: dict) -> dict:
             "returncode": None,
             "detail": f"{command} is not a Python-backed CLI",
         }
-    result = _run_install([*runner, "-m", "pip", "install", "--upgrade", requirement], root, timeout=1200)
+    result = _reinstall_python_package(runner, root, package, requirement)
     if result.get("ok"):
         return result
 
@@ -578,11 +635,7 @@ def _update_python_cli(root: Path, item: dict) -> dict:
                 detail = _trim(create.stderr or create.stdout or "")
                 result["detail"] = f"{result.get('detail') or ''}\nlocal venv create failed: {detail}".strip()
                 return result
-        fallback = _run_install(
-            [str(venv_python), "-m", "pip", "install", "--upgrade", requirement],
-            root,
-            timeout=1200,
-        )
+        fallback = _reinstall_python_package([str(venv_python)], root, package, requirement)
         script = tool_root / "bin" / command
         target = bin_dir / command
         if fallback.get("ok") and script.exists():
@@ -641,33 +694,35 @@ def update_dependencies(root: Path) -> dict:
         )
 
     for item in LOCAL_NPM_CLIS:
+        uninstall = _clear_local_npm_cli(root, item)
+        if not uninstall.get("ok"):
+            install_results.append(uninstall)
+            continue
         if npm:
-            install_results.append(
-                _run_install(
-                    [
-                        npm,
-                        "exec",
-                        "--yes",
-                        "--package",
-                        item["name"],
-                        "--",
-                        item["install_command"],
-                        "install",
-                        str(root),
-                    ],
-                    root,
-                    timeout=1200,
-                )
+            install = _run_install(
+                [
+                    npm,
+                    "exec",
+                    "--yes",
+                    "--package",
+                    item["name"],
+                    "--",
+                    item["install_command"],
+                    "install",
+                    str(root),
+                ],
+                root,
+                timeout=1200,
             )
+            install_results.append(_combine_install_results([uninstall, install]))
         else:
-            install_results.append(
-                {
-                    "command": f"npm exec --package {item['name']} -- {item['install_command']} install {root}",
-                    "ok": False,
-                    "returncode": None,
-                    "detail": "npm not found",
-                }
-            )
+            missing = {
+                "command": f"npm exec --package {item['name']} -- {item['install_command']} install {root}",
+                "ok": False,
+                "returncode": None,
+                "detail": "npm not found",
+            }
+            install_results.append(_combine_install_results([uninstall, missing]))
 
     for item in SCRIPT_CLIS:
         if item.get("update_kind") == "python_cli":

@@ -65,7 +65,7 @@ class GlassAgentDependenciesTest(unittest.TestCase):
         self.assertEqual(report["summary"]["outdated"], 3)
         self.assertEqual(report["summary"]["missing"], 2)
 
-    def test_python_cli_update_uses_cli_owner_interpreter(self):
+    def test_python_cli_update_reinstalls_with_cli_owner_interpreter(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             fake_python = root / "python"
@@ -81,11 +81,74 @@ class GlassAgentDependenciesTest(unittest.TestCase):
                 )
 
         self.assertTrue(result["ok"])
-        run_install.assert_called_once_with(
-            [str(fake_python), "-m", "pip", "install", "--upgrade", "silicon-browser"],
-            root,
-            timeout=1200,
+        self.assertEqual(
+            run_install.call_args_list,
+            [
+                mock.call(
+                    [str(fake_python), "-m", "pip", "uninstall", "-y", "silicon-browser"],
+                    root,
+                    timeout=600,
+                ),
+                mock.call(
+                    [str(fake_python), "-m", "pip", "install", "silicon-browser"],
+                    root,
+                    timeout=1200,
+                ),
+            ],
         )
+
+    def test_python_cli_update_reinstalls_target_version(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_python = root / "python"
+            cli = root / "silicon-browser"
+            cli.write_text(f"#!{fake_python}\n", encoding="utf-8")
+
+            with mock.patch.object(glass_agent, "_resolve_command", return_value=str(cli)), mock.patch.object(
+                glass_agent, "_run_install", return_value={"ok": True, "returncode": 0, "detail": ""}
+            ) as run_install:
+                result = glass_agent._update_python_cli(
+                    root,
+                    {
+                        "command": "silicon-browser",
+                        "package": "silicon-browser",
+                        "target_version": "1.0.1",
+                    },
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            run_install.call_args_list[-1],
+            mock.call(
+                [str(fake_python), "-m", "pip", "install", "silicon-browser==1.0.1"],
+                root,
+                timeout=1200,
+            ),
+        )
+
+    def test_local_interface_update_clears_package_and_shims(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            package = root / ".silicon-interface" / "package"
+            bin_dir = root / ".silicon-interface" / "bin"
+            state = root / ".silicon-interface" / "state.json"
+            package.mkdir(parents=True)
+            (package / "old.js").write_text("old", encoding="utf-8")
+            bin_dir.mkdir(parents=True)
+            (bin_dir / "si").write_text("old", encoding="utf-8")
+            (bin_dir / "silicon-interface").write_text("old", encoding="utf-8")
+            state.write_text("{}", encoding="utf-8")
+
+            result = glass_agent._clear_local_npm_cli(
+                root,
+                {"name": "@teamofsilicons/silicon-interface-cli", "install_command": "silicon-interface"},
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(package.exists())
+            self.assertFalse((bin_dir / "si").exists())
+            self.assertFalse((bin_dir / "silicon-interface").exists())
+            self.assertTrue(state.exists())
 
 
 if __name__ == "__main__":
