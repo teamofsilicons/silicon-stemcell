@@ -57,6 +57,7 @@ SCRIPT_CLIS = (
         "command": "silicon-browser",
         "source": "Silicon Browser CLI",
         "package": "silicon-browser",
+        "target_version": "1.0.0",
         "update_kind": "python_cli",
     },
 )
@@ -450,10 +451,13 @@ def dependency_report(root: Path) -> dict:
         name = item["name"]
         installed = ""
         package = str(item.get("package") or "")
+        target = str(item.get("target_version") or "")
         if package:
             installed = _python_console_package_version(root, item["command"], package)
         installed = installed or _command_identity(root, item["command"])
-        if package:
+        if target:
+            latest, err = target, ""
+        elif package:
             latest, err = pypi_latest.get(package, ("", ""))
         else:
             latest, err = _latest_github_main(item["latest_repo"])
@@ -522,10 +526,12 @@ def _run_install(cmd: list[str], root: Path, timeout: int = 900) -> dict:
 def _update_python_cli(root: Path, item: dict) -> dict:
     command = str(item["command"])
     package = str(item["package"])
+    target = str(item.get("target_version") or "").strip()
+    requirement = f"{package}=={target}" if target else package
     exe = _resolve_command(root, command)
     if not exe:
         return {
-            "command": f"{command}: upgrade Python package {package}",
+            "command": f"{command}: upgrade Python package {requirement}",
             "ok": False,
             "returncode": None,
             "detail": f"{command} not found",
@@ -538,7 +544,7 @@ def _update_python_cli(root: Path, item: dict) -> dict:
             "returncode": None,
             "detail": f"{command} is not a Python-backed CLI",
         }
-    return _run_install([*runner, "-m", "pip", "install", "--upgrade", package], root, timeout=1200)
+    return _run_install([*runner, "-m", "pip", "install", "--upgrade", requirement], root, timeout=1200)
 
 
 def update_dependencies(root: Path) -> dict:
