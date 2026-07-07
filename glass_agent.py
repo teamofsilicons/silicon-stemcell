@@ -949,6 +949,7 @@ def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
             # Restart silicon + agent to load the new code. Delay a few seconds
             # so this command's status/result frames reach Glass before the stop
             # tears us down. Pass `name` as $1 so it can't be shell-injected.
+            command["_agent_reexec"] = True
             try:
                 subprocess.Popen(
                     ["sh", "-c", 'sleep 3; silicon restart "$1"', "_", name],
@@ -998,6 +999,10 @@ def handle_message(ws, msg: dict, root: Path, name: str) -> None:
             "message": detail,
         })
     print(f"[glass-agent] command {msg.get('command')} -> {status}: {detail}", flush=True)
+    if msg.pop("_agent_reexec", False):
+        print("[glass-agent] re-execing to load updated code", flush=True)
+        time.sleep(1)
+        os.execv(sys.executable, [sys.executable, "-u", str(Path(__file__).resolve())])
 
 
 def run_live(root: Path, config: dict, running: list[bool]) -> None:

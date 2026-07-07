@@ -113,6 +113,7 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
         import glass_agent
 
         calls = []
+        command = {"command": "update"}
 
         def fake_run(cmd, **kwargs):
             calls.append(("run", cmd, kwargs))
@@ -126,16 +127,17 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
              mock.patch.object(glass_agent.subprocess, "Popen", side_effect=fake_popen), \
              mock.patch.object(glass_agent.time, "sleep"):
             status, detail = glass_agent.execute_command(
-                {"command": "update"}, Path("/tmp/x"), "worker"
+                command, Path("/tmp/x"), "worker"
             )
-        return status, detail, calls
+        return status, detail, calls, command
 
     def test_git_update_result_restarts_silicon(self):
-        status, detail, calls = self._run('{"status": "updated", "version": "1.5", "mode": "merge"}\n')
+        status, detail, calls, command = self._run('{"status": "updated", "version": "1.5", "mode": "merge"}\n')
 
         self.assertEqual(status, "done")
         self.assertIn("updated to 1.5", detail)
         self.assertIn("restarting", detail)
+        self.assertTrue(command["_agent_reexec"])
         run_cmds = [c[1] for c in calls if c[0] == "run"]
         self.assertEqual(run_cmds[0][0:2], [sys.executable, "-c"])
         self.assertIn("git_apply", run_cmds[0][2])
@@ -144,9 +146,10 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
         self.assertEqual(popen_cmds[0], ["sh", "-c", 'sleep 3; silicon restart "$1"', "_", "worker"])
 
     def test_up_to_date_result_does_not_restart(self):
-        status, detail, calls = self._run('{"status": "up_to_date", "version": "1.5"}\n')
+        status, detail, calls, command = self._run('{"status": "up_to_date", "version": "1.5"}\n')
         self.assertEqual(status, "done")
         self.assertEqual(detail, "already on 1.5")
+        self.assertNotIn("_agent_reexec", command)
         run_cmds = [c[1] for c in calls if c[0] == "run"]
         self.assertEqual(len(run_cmds), 1)
         self.assertEqual([c for c in calls if c[0] == "popen"], [])
