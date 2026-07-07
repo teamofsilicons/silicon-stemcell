@@ -9,6 +9,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
+LOCAL_BIN = os.path.join(PROJECT_ROOT, ".local", "bin")
+if LOCAL_BIN not in os.environ.get("PATH", "").split(os.pathsep):
+    os.environ["PATH"] = LOCAL_BIN + os.pathsep + os.environ.get("PATH", "")
 
 from config import EVENT_LOOP, LOOP_TICK
 from manager import manager_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG

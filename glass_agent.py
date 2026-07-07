@@ -74,6 +74,17 @@ def silicon_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def local_bin_dir(root: Path) -> Path:
+    return root / ".local" / "bin"
+
+
+def prepend_local_bin(root: Path) -> None:
+    bin_dir = str(local_bin_dir(root))
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if bin_dir not in parts:
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+
 def load_config(root: Path) -> dict:
     path = root / ".glass.json"
     if not path.exists():
@@ -544,7 +555,47 @@ def _update_python_cli(root: Path, item: dict) -> dict:
             "returncode": None,
             "detail": f"{command} is not a Python-backed CLI",
         }
-    return _run_install([*runner, "-m", "pip", "install", "--upgrade", requirement], root, timeout=1200)
+    result = _run_install([*runner, "-m", "pip", "install", "--upgrade", requirement], root, timeout=1200)
+    if result.get("ok"):
+        return result
+
+    # Some fleet images have Python CLIs in a root-owned /opt runtime. Fall back
+    # to a per-silicon venv and put its console script first on PATH.
+    tool_root = root / ".tools" / command
+    bin_dir = local_bin_dir(root)
+    venv_python = tool_root / "bin" / "python"
+    try:
+        tool_root.parent.mkdir(parents=True, exist_ok=True)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if not venv_python.exists():
+            create = subprocess.run(
+                [sys.executable, "-m", "venv", str(tool_root)],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if create.returncode != 0:
+                detail = _trim(create.stderr or create.stdout or "")
+                result["detail"] = f"{result.get('detail') or ''}\nlocal venv create failed: {detail}".strip()
+                return result
+        fallback = _run_install(
+            [str(venv_python), "-m", "pip", "install", "--upgrade", requirement],
+            root,
+            timeout=1200,
+        )
+        script = tool_root / "bin" / command
+        target = bin_dir / command
+        if fallback.get("ok") and script.exists():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            target.symlink_to(script)
+            prepend_local_bin(root)
+            fallback["command"] = f"{fallback['command']} && link {target}"
+        return fallback
+    except Exception as exc:
+        result["detail"] = f"{result.get('detail') or ''}\nlocal install failed: {exc}".strip()
+        return result
 
 
 def update_dependencies(root: Path) -> dict:
@@ -996,6 +1047,7 @@ def run_live(root: Path, config: dict, running: list[bool]) -> None:
 
 def main() -> None:
     root = silicon_dir()
+    prepend_local_bin(root)
     config = load_config(root)
     if not config:
         print("[glass-agent] No .glass.json found. Exiting.", flush=True)
