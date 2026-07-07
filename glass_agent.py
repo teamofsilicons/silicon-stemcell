@@ -57,7 +57,6 @@ SCRIPT_CLIS = (
         "command": "silicon-browser",
         "source": "Silicon Browser CLI",
         "package": "silicon-browser",
-        "target_version": "1.0.0",
         "update_kind": "python_cli",
     },
 )
