@@ -998,6 +998,7 @@ def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
 
         st = result.get("status")
         if st == "up_to_date":
+            command["_agent_reexec"] = True
             return "done", f"already on {result.get('version')}"
         if st == "updated":
             # Restart silicon + agent to load the new code. Delay a few seconds

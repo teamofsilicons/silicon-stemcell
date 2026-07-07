@@ -145,11 +145,11 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
         popen_cmds = [c[1] for c in calls if c[0] == "popen"]
         self.assertEqual(popen_cmds[0], ["sh", "-c", 'sleep 3; silicon restart "$1"', "_", "worker"])
 
-    def test_up_to_date_result_does_not_restart(self):
+    def test_up_to_date_result_reexecs_agent_without_restart(self):
         status, detail, calls, command = self._run('{"status": "up_to_date", "version": "1.5"}\n')
         self.assertEqual(status, "done")
         self.assertEqual(detail, "already on 1.5")
-        self.assertNotIn("_agent_reexec", command)
+        self.assertTrue(command["_agent_reexec"])
         run_cmds = [c[1] for c in calls if c[0] == "run"]
         self.assertEqual(len(run_cmds), 1)
         self.assertEqual([c for c in calls if c[0] == "popen"], [])
