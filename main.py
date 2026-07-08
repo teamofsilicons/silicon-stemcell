@@ -288,7 +288,8 @@ def _execute_single_tool(tool_spec, carbon_id):
         if action_type == "share":
             expiry = tool_spec.get("expiry", 60)
             new = tool_spec.get("new", True)
-            status = remote_browser_share(carbon_id, expiry=expiry, new=new)
+            start_url = tool_spec.get("url") or tool_spec.get("start_url") or ""
+            status = remote_browser_share(carbon_id, expiry=expiry, new=new, url=start_url)
             return f"Tool 'remote_browser/share': {status}"
         if action_type == "close":
             status = remote_browser_close(carbon_id)

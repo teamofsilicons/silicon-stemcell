@@ -93,6 +93,30 @@ class ManagerToolExecutionTest(unittest.TestCase):
             )
         )
 
+    def test_remote_browser_share_passes_start_url(self):
+        spec = {
+            "tool": "remote_browser",
+            "type": "share",
+            "expiry": 120,
+            "new": True,
+            "url": "https://example.com/login",
+        }
+
+        with (
+            mock.patch.object(main, "remote_browser_share", return_value="Done. shared") as share,
+            mock.patch.object(main, "send_progress") as send_progress,
+        ):
+            result = main.execute_single_tool(spec, "carbon-a")
+
+        share.assert_called_once_with(
+            "carbon-a",
+            expiry=120,
+            new=True,
+            url="https://example.com/login",
+        )
+        send_progress.assert_called()
+        self.assertEqual(result, "Tool 'remote_browser/share': Done. shared")
+
 
 if __name__ == "__main__":
     unittest.main()

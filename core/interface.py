@@ -31,6 +31,7 @@ USER_VISIBLE_EVENT_TYPES = {"m.text", "m.image", "m.file", "m.voice", "m.tts"}
 IGNORED_EVENT_TYPES = {"m.progress", "m.reaction", "m.session_marker", "m.system"}
 RICH_MEDIA_RE = re.compile(r"\[(file|voice)=((?:[^\[\]]|\[[^\]]*\])*)\]", re.DOTALL)
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+REMOTE_BROWSER_START_URL = os.environ.get("SILICON_REMOTE_BROWSER_START_URL", "https://www.google.com")
 
 _listener_thread: threading.Thread | None = None
 _listener_lock = threading.Lock()
@@ -1476,6 +1477,37 @@ def parse_remote_browser_url(stdout: str) -> str:
     return match.group(0).rstrip(".,)") if match else ""
 
 
+def _normalize_remote_browser_start_url(value: str | None) -> str:
+    url = (value or "").strip() or REMOTE_BROWSER_START_URL
+    if not url:
+        return "https://www.google.com"
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+        url = f"https://{url}"
+    if not url.lower().startswith(("http://", "https://")):
+        return REMOTE_BROWSER_START_URL
+    return url
+
+
+def _remote_browser_cmd(session_name: str, profile: str, *parts: str) -> list[str]:
+    return [
+        "silicon-browser",
+        "--session",
+        session_name,
+        "--profile",
+        profile,
+        *parts,
+    ]
+
+
+def _remote_browser_output(proc: subprocess.CompletedProcess[str]) -> str:
+    return ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+
+
+def _share_missing_session(output: str) -> bool:
+    text = output.lower()
+    return "no active session" in text or "open a page first" in text
+
+
 # Maps an active share session ("remote-<contact>") to the interface event_id
 # of its card, so `close` can tell the interface to grey that card out.
 REMOTE_BROWSER_STATE_FILE = STATE_DIR / "remote_browser.json"
@@ -1528,7 +1560,7 @@ def _pop_remote_browser_event(session_name: str) -> str:
     return event_id if isinstance(event_id, str) else ""
 
 
-def remote_browser_share(contact_id: str, expiry: int = 60, new: bool = True) -> str:
+def remote_browser_share(contact_id: str, expiry: int = 60, new: bool = True, url: str = "") -> str:
     contact, err = _contact_room_or_error(contact_id)
     if err:
         return err
@@ -1536,26 +1568,57 @@ def remote_browser_share(contact_id: str, expiry: int = 60, new: bool = True) ->
 
     from worker.handler import SILICON_BROWSER_PROFILE
 
-    minutes = int(expiry or 60)
+    try:
+        minutes = int(expiry or 60)
+    except (TypeError, ValueError):
+        minutes = 60
+    if minutes <= 0:
+        minutes = 60
+
     session_name = f"remote-{contact_id}"
-    cmd = [
-        "silicon-browser",
-        "--session",
+    start_url = _normalize_remote_browser_start_url(url)
+
+    def open_session() -> str:
+        open_cmd = _remote_browser_cmd(
+            session_name,
+            SILICON_BROWSER_PROFILE,
+            "open",
+            start_url,
+            "--timeout",
+            str(minutes),
+        )
+        open_proc = subprocess.run(open_cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=180)
+        if open_proc.returncode != 0:
+            return _remote_browser_output(open_proc)
+        return ""
+
+    if new:
+        close_cmd = _remote_browser_cmd(session_name, SILICON_BROWSER_PROFILE, "close")
+        subprocess.run(close_cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60)
+        open_error = open_session()
+        if open_error:
+            return f"Error: silicon-browser open failed: {open_error}"
+
+    cmd = _remote_browser_cmd(
         session_name,
-        "--profile",
         SILICON_BROWSER_PROFILE,
         "share",
-    ]
-    if new:
-        cmd.append("--new")
-    cmd.extend(["--expiry", str(minutes)])
+        "--expiry",
+        str(minutes),
+    )
     proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=120)
-    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    output = _remote_browser_output(proc)
+    if proc.returncode != 0 and not new and _share_missing_session(output):
+        open_error = open_session()
+        if open_error:
+            return f"Error: silicon-browser open failed: {open_error}"
+        proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=120)
+        output = _remote_browser_output(proc)
     if proc.returncode != 0:
-        return f"Error: silicon-browser share failed: {output.strip()}"
+        return f"Error: silicon-browser share failed: {output}"
     url = parse_remote_browser_url(output)
     if not url:
-        return f"Error: silicon-browser did not return a share URL: {output.strip()}"
+        return f"Error: silicon-browser did not return a share URL: {output}"
 
     posted = InterfaceClient().remote_browser(contact["room_id"], url, minutes)
     event_id = _extract_event_id(posted)

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +123,107 @@ class InterfaceStateTest(unittest.TestCase):
             interface._extract_remote_browser_url(posted, fallback="https://api.steel.dev/x"),
             "https://browser.teamofsilicons.com/s/session-123",
         )
+
+    def test_remote_browser_new_opens_page_then_shares_existing_session(self):
+        interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
+        posted = {
+            "event": {
+                "event_id": "evt1",
+                "content": {"url": "https://browser.teamofsilicons.com/s/session-123"},
+            }
+        }
+        fake_client = mock.Mock()
+        fake_client.remote_browser.return_value = posted
+        completed = [
+            subprocess.CompletedProcess([], 1, stdout="", stderr="no session"),
+            subprocess.CompletedProcess([], 0, stdout="opened", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="Share URL: https://remote.example/session/abc", stderr=""),
+        ]
+
+        with (
+            mock.patch("worker.handler.SILICON_BROWSER_PROFILE", "profile-a"),
+            mock.patch("subprocess.run", side_effect=completed) as run,
+            mock.patch.object(interface, "InterfaceClient", return_value=fake_client),
+            mock.patch.object(interface, "_save_remote_browser_event"),
+        ):
+            result = interface.remote_browser_share("carbon-a", expiry=120, new=True, url="example.com")
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(
+            commands,
+            [
+                [
+                    "silicon-browser",
+                    "--session",
+                    "remote-carbon-a",
+                    "--profile",
+                    "profile-a",
+                    "close",
+                ],
+                [
+                    "silicon-browser",
+                    "--session",
+                    "remote-carbon-a",
+                    "--profile",
+                    "profile-a",
+                    "open",
+                    "https://example.com",
+                    "--timeout",
+                    "120",
+                ],
+                [
+                    "silicon-browser",
+                    "--session",
+                    "remote-carbon-a",
+                    "--profile",
+                    "profile-a",
+                    "share",
+                    "--expiry",
+                    "120",
+                ],
+            ],
+        )
+        self.assertNotIn("--new", commands[-1])
+        fake_client.remote_browser.assert_called_once_with(
+            "room-a",
+            "https://remote.example/session/abc",
+            120,
+        )
+        self.assertIn("https://browser.teamofsilicons.com/s/session-123", result)
+
+    def test_remote_browser_reuses_existing_or_opens_default_if_missing(self):
+        interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
+        fake_client = mock.Mock()
+        fake_client.remote_browser.return_value = {
+            "event": {"event_id": "evt1", "content": {"url": "https://browser.teamofsilicons.com/s/session-123"}}
+        }
+        completed = [
+            subprocess.CompletedProcess(
+                [],
+                1,
+                stdout="",
+                stderr="No active session named 'remote-carbon-a'. Open a page first.",
+            ),
+            subprocess.CompletedProcess([], 0, stdout="opened", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="Share URL: https://remote.example/session/abc", stderr=""),
+        ]
+
+        with (
+            mock.patch("worker.handler.SILICON_BROWSER_PROFILE", "profile-a"),
+            mock.patch.object(interface, "REMOTE_BROWSER_START_URL", "https://default.test"),
+            mock.patch("subprocess.run", side_effect=completed) as run,
+            mock.patch.object(interface, "InterfaceClient", return_value=fake_client),
+            mock.patch.object(interface, "_save_remote_browser_event"),
+        ):
+            result = interface.remote_browser_share("carbon-a", expiry=45, new=False)
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[0][-3:], ["share", "--expiry", "45"])
+        self.assertEqual(commands[1][-4:], ["open", "https://default.test", "--timeout", "45"])
+        self.assertEqual(commands[2][-3:], ["share", "--expiry", "45"])
+        for command in commands:
+            self.assertNotIn("--new", command)
+        self.assertIn("Remote browser shared", result)
 
     def test_room_discovery_accepts_room_level_contact_fields(self):
         class FakeClient:

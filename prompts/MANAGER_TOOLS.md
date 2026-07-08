@@ -445,7 +445,8 @@ Share a remote browser with the current contact:
     "tool": "remote_browser",
     "type": "share",
     "expiry": 60,
-    "new": true
+    "new": true,
+    "url": "https://www.google.com"
 }
 ```
 
@@ -453,11 +454,14 @@ Defaults:
 
 * `expiry`: 60 minutes
 * `new`: true, so the requested expiry is honored
+* `url`: `https://www.google.com`; use this to start the shared browser on the page the carbon needs
 
 Silicon runs:
 
 ```bash
-silicon-browser --session remote-<contact_id> --profile <BROWSER_PROFILE> share --new --expiry <minutes>
+silicon-browser --session remote-<contact_id> --profile <BROWSER_PROFILE> close
+silicon-browser --session remote-<contact_id> --profile <BROWSER_PROFILE> open <url> --timeout <minutes>
+silicon-browser --session remote-<contact_id> --profile <BROWSER_PROFILE> share --expiry <minutes>
 ```
 
 Then it sends the generated URL through Interface `remote-browser`.
