@@ -138,6 +138,7 @@ def get_manager_prompt(carbon_id):
 
     parts.extend([
         _read_prompt("MEMORY.md"),
+        _read_prompt("ATTRIBUTION.md"),
         _read_prompt("MANAGER.md"),
         _read_prompt("MANAGER_TOOLS.md"),
     ])
@@ -172,6 +173,7 @@ def get_update_prompt():
         _read_prompt("SILICON.md"),
         _glass_profile_section(),
         _read_prompt("MEMORY.md"),
+        _read_prompt("ATTRIBUTION.md"),
         _read_prompt("UPDATE.md"),
     ]
     return "\n\n".join(p for p in parts if p)
@@ -191,6 +193,7 @@ def get_worker_prompt(worker_type):
     type_upper = worker_type.upper()
     parts = [
         _read_prompt("WORKER.md"),
+        _read_prompt("ATTRIBUTION.md"),
         _read_prompt(f"worker/{type_upper}.md"),
         _read_prompt(f"worker/{type_upper}_WTOOLS.md"),
     ]
