@@ -480,3 +480,40 @@ class SidecarPlatformParityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GlassAgentReconnectBackoffTests(unittest.TestCase):
+    """A socket that handshakes then dies must not become a fixed-rate hot loop."""
+
+    def test_flapping_connection_escalates_instead_of_pinning_at_one_delay(self):
+        # Each attempt handshakes (so on_connected fires) and dies inside a
+        # second -- the signature of a rollup Glass cannot ingest.
+        backoff, delays = 1, []
+        for _ in range(7):
+            delay, backoff = glass_agent.reconnect_delay(
+                backoff, rejected=False, session_seconds=0.4
+            )
+            delays.append(delay)
+
+        self.assertEqual(delays, [2, 4, 8, 16, 30, 30, 30])
+        self.assertLessEqual(max(delays), glass_agent.MAX_BACKOFF)
+
+    def test_connection_that_never_handshaked_escalates(self):
+        self.assertEqual(
+            glass_agent.reconnect_delay(4, rejected=False, session_seconds=None),
+            (8, 8),
+        )
+
+    def test_healthy_connection_breaking_retries_promptly(self):
+        delay, backoff = glass_agent.reconnect_delay(
+            16,
+            rejected=False,
+            session_seconds=glass_agent.STABLE_CONNECTION_SECONDS + 1,
+        )
+        self.assertEqual((delay, backoff), (1, 2))
+
+    def test_authentication_rejection_waits_out_the_long_backoff(self):
+        self.assertEqual(
+            glass_agent.reconnect_delay(8, rejected=True, session_seconds=0.1),
+            (glass_agent.AUTH_REJECTION_BACKOFF, 1),
+        )

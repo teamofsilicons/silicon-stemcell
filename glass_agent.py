@@ -44,6 +44,11 @@ RUNTIME_LOG_MAX_LINE_BYTES = 16 * 1024
 RUNTIME_LOG_INITIAL_SCAN_BYTES = 256 * 1024
 RUNTIME_LOG_ANCHOR_BYTES = 64
 MAX_BACKOFF = 30
+# A connection must outlive one ping round-trip before a break is treated as a
+# healthy link dropping rather than a failed attempt. Below this, reconnects
+# escalate, so a socket that dies right after the handshake cannot hold the
+# agent in a fixed-interval hot loop.
+STABLE_CONNECTION_SECONDS = 30
 AUTH_REJECTION_BACKOFF = 5 * 60
 REGISTRY_TIMEOUT = 8
 NPM_LIST_TIMEOUT = 12
@@ -348,6 +353,32 @@ def is_authentication_rejection(exc: Exception) -> bool:
     return status in {401, 403}
 
 
+def reconnect_delay(
+    backoff: int,
+    *,
+    rejected: bool,
+    session_seconds: float | None,
+) -> tuple[int, int]:
+    """Return (seconds to wait now, backoff to carry into the next failure).
+
+    `session_seconds` is how long the connection that just broke stayed up, or
+    None if it never handshaked. A connection counts as healthy only once it
+    outlives STABLE_CONNECTION_SECONDS; anything shorter -- including a socket
+    that opens, handshakes, and dies within a second -- is a failed attempt and
+    escalates. Without that, a persistent server-side fault pins the agent in a
+    fixed-interval reconnect loop that hammers Glass indefinitely.
+    """
+
+    if rejected:
+        return AUTH_REJECTION_BACKOFF, 1
+    if session_seconds is not None and session_seconds >= STABLE_CONNECTION_SECONDS:
+        # A healthy connection broke: retry promptly rather than inheriting a
+        # delay from failures that predate it.
+        return 1, 2
+    escalated = min(max(backoff, 1) * 2, MAX_BACKOFF)
+    return escalated, escalated
+
+
 def wait_for_retry(
     root: Path,
     running: list[bool],
@@ -399,9 +430,82 @@ def detect_status(root: Path) -> str:
         return "stopped" if stop_file.exists() else "crashed"
 
 
-def send_json(ws, payload: dict) -> None:
+# Glass runs uvicorn with --ws-max-size 131072. Anything larger is refused at
+# the transport with close 1009 and the server application never sees it, so it
+# can neither answer nor reject the frame -- the sidecar just loses its socket.
+# Callers that can produce bulk (diagnostic rollups) bound themselves with real
+# domain knowledge; this is the last-resort backstop for every other frame, so
+# no future sender can take the control channel down by being too verbose.
+MAX_OUTBOUND_FRAME_BYTES = 120_000
+
+# Keys that identify or route a frame. Truncating these would corrupt the
+# protocol, so they are never candidates for trimming.
+_PROTECTED_FRAME_KEYS = frozenset(
+    {"type", "id", "run_id", "command", "session_id", "action", "ts", "status"}
+)
+
+
+def _frame_size(payload: dict) -> int:
+    return len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+
+
+def bound_frame(payload: dict, budget: int = MAX_OUTBOUND_FRAME_BYTES):
+    """Return a frame at or under `budget`, or None if it cannot be shrunk.
+
+    Trims the largest non-protected field first and leaves a marker in its
+    place, so an over-long frame arrives truncated-but-useful instead of
+    costing the connection.
+    """
+
+    if _frame_size(payload) <= budget:
+        return payload
+
+    trimmed = dict(payload)
+    while _frame_size(trimmed) > budget:
+        candidates = [
+            (len(json.dumps(v, separators=(",", ":"), default=str)), k)
+            for k, v in trimmed.items()
+            if k not in _PROTECTED_FRAME_KEYS
+        ]
+        if not candidates:
+            return None
+        size, key = max(candidates)
+        if size <= 64:
+            # Nothing left worth trimming; the frame is irreducibly too big.
+            return None
+        value = trimmed[key]
+        if isinstance(value, str):
+            keep = max(0, len(value) - (size - budget) - 512)
+            trimmed[key] = value[:keep] + f"…[truncated {len(value) - keep} chars]"
+        elif isinstance(value, list):
+            trimmed[key] = [{"truncated_items": len(value)}]
+        else:
+            trimmed[key] = "[truncated]"
+    return trimmed
+
+
+def send_json(ws, payload: dict) -> bool:
+    """Send one frame. Returns False if it was too large to send at all."""
+    bounded = bound_frame(payload)
+    # The type is attacker/bug-controlled like any other field, so bound it too
+    # rather than letting a malformed frame flood the log.
+    kind = str(payload.get("type", "?"))[:64]
+    if bounded is None:
+        print(
+            f"[glass-agent] dropped oversized {kind} frame "
+            f"({_frame_size(payload)} bytes)",
+            flush=True,
+        )
+        return False
+    if bounded is not payload:
+        print(
+            f"[glass-agent] truncated oversized {kind} frame "
+            f"({_frame_size(payload)} -> {_frame_size(bounded)} bytes)",
+            flush=True,
+        )
     with SEND_LOCK:
-        ws.send(json.dumps(payload, separators=(",", ":")))
+        ws.send(json.dumps(bounded, separators=(",", ":")))
+    return True
 
 
 def runtime_log_level(line: str) -> str:
@@ -1559,8 +1663,6 @@ def run_live(
     try:
         with connect(url, **connect_options) as ws:
             print("[glass-agent] connected", flush=True)
-            if on_connected is not None:
-                on_connected()
             _request_team_context_reconcile(
                 reconciler,
                 force=True,
@@ -1579,6 +1681,11 @@ def run_live(
                 "pid": os.getpid(),
                 "capabilities": ["trust_policy_v1"],
             })
+            # Only now is the link proven usable end-to-end. The reconnect
+            # policy times from here, so a socket that dies mid-handshake
+            # counts as a failed attempt rather than a healthy link dropping.
+            if on_connected is not None:
+                on_connected()
             send_json(ws, status_payload(root))
             drain_diagnostics(ws, root, config)
             now = time.monotonic()
@@ -1680,12 +1787,11 @@ def main() -> None:
                     str(config.get("server_url") or ""),
                 )
                 continue
-            connected = False
+            connected_at = None
 
             def mark_connected():
-                nonlocal backoff, connected
-                connected = True
-                backoff = 1
+                nonlocal connected_at
+                connected_at = time.monotonic()
 
             try:
                 run_live(
@@ -1701,7 +1807,15 @@ def main() -> None:
             except Exception as exc:
                 if running[0]:
                     rejected = is_authentication_rejection(exc)
-                    delay = AUTH_REJECTION_BACKOFF if rejected else backoff
+                    delay, next_backoff = reconnect_delay(
+                        backoff,
+                        rejected=rejected,
+                        session_seconds=(
+                            None
+                            if connected_at is None
+                            else time.monotonic() - connected_at
+                        ),
+                    )
                     reason = "authentication rejected" if rejected else str(exc)
                     print(f"[glass-agent] disconnected: {reason}; reconnecting in {delay}s", flush=True)
                     wait_for_retry(
@@ -1711,14 +1825,7 @@ def main() -> None:
                         key if rejected else "",
                         str(config.get("server_url") or "") if rejected else None,
                     )
-                    if rejected:
-                        backoff = 1
-                    elif connected:
-                        # A live connection broke, so the next attempt starts at
-                        # the minimum delay rather than inheriting old failures.
-                        backoff = 2
-                    else:
-                        backoff = min(backoff * 2, MAX_BACKOFF)
+                    backoff = next_backoff
     finally:
         reconciler.stop()
         trust_reconciler.stop()

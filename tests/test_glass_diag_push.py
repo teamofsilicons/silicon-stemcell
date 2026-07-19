@@ -27,6 +27,10 @@ import tempfile
 import unittest
 
 from core.glass_diag_push import (
+    MAX_DELIVERY_ATTEMPTS,
+    MAX_FRAME_BYTES,
+    _frame_bytes,
+    _shrink_frame,
     _row_to_frame,
     acknowledge,
     drain,
@@ -310,3 +314,144 @@ class GlassDiagPushTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UndeliverableRollupTests(unittest.TestCase):
+    """No single rollup may block the queue or the sidecar's control channel.
+
+    Glass caps inbound frames (uvicorn --ws-max-size). An oversized frame is
+    refused at the transport with close 1009, so the server application never
+    sees it and can neither ack nor reject it. Under acknowledgement mode that
+    row stays pending and resends on every reconnect -- which is how one silicon
+    ended up in a permanent connect/handshake/disconnect loop.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "rollups.sqlite")
+        conn = sqlite3.connect(self.db)
+        _create_runs_schema(conn)
+        conn.close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _pending(self):
+        conn = sqlite3.connect(self.db)
+        try:
+            return conn.execute(
+                """SELECT COUNT(*) FROM runs r
+                   LEFT JOIN diag_sent s ON r.run_id = s.run_id
+                   LEFT JOIN diag_rejected x ON r.run_id = x.run_id
+                   WHERE s.run_id IS NULL AND x.run_id IS NULL"""
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_oversized_graph_is_trimmed_rather_than_dropped(self):
+        frame = {
+            "type": "diag.rollup",
+            "run_id": "big",
+            "duration_ms": 4200,
+            "tokens": {"total": 2500},
+            "events": [{"event_id": f"e{i}", "blob": "x" * 400} for i in range(1000)],
+            "spans": [{"span_id": f"s{i}"} for i in range(50)],
+            "meta": {"keep": "me"},
+        }
+        self.assertGreater(_frame_bytes(frame), MAX_FRAME_BYTES)
+
+        shrunk, dropped = _shrink_frame(frame)
+
+        self.assertLessEqual(_frame_bytes(shrunk), MAX_FRAME_BYTES)
+        self.assertGreater(dropped, 0)
+        # Headline metrics survive -- they are what Glass charts.
+        self.assertEqual(shrunk["run_id"], "big")
+        self.assertEqual(shrunk["duration_ms"], 4200)
+        self.assertEqual(shrunk["tokens"]["total"], 2500)
+        self.assertEqual(shrunk["meta"]["keep"], "me")
+        # The gap is recorded, not silent.
+        note = shrunk["meta"]["diagnostics_frame_truncated"]
+        self.assertEqual(note["dropped"]["events"], 1000)
+        self.assertGreater(note["original_bytes"], MAX_FRAME_BYTES)
+
+    def test_frame_that_cannot_fit_is_dead_lettered_not_resent_forever(self):
+        conn = sqlite3.connect(self.db)
+        # bottlenecks is the last thing _shrink_frame drops; make the row
+        # oversized through a field it cannot trim away to zero benefit.
+        _seed_run(conn, "huge", 1, bottlenecks=[{"n": "x" * 200} for _ in range(2000)])
+        conn.close()
+
+        sent = []
+        for _ in range(12):
+            drain(self.db, sent.append, mark_on_send=False)
+
+        # Whatever it takes -- trimming to fit, or retiring the row -- delivery
+        # attempts are bounded. The unbounded resend is the bug.
+        self.assertLessEqual(len(sent), MAX_DELIVERY_ATTEMPTS)
+        self.assertEqual(self._pending(), 0)
+        for frame in sent:
+            self.assertLessEqual(_frame_bytes(frame), MAX_FRAME_BYTES)
+
+    def test_repeatedly_failing_send_stops_after_the_attempt_budget(self):
+        """The general backstop: any undeliverable row retires, whatever the cause."""
+        conn = sqlite3.connect(self.db)
+        _seed_run(conn, "poison", 1)
+        _seed_run(conn, "healthy", 2)
+        conn.close()
+
+        attempts = []
+
+        def send_fn(frame):
+            attempts.append(frame["run_id"])
+            if frame["run_id"] == "poison":
+                raise RuntimeError("sent 1009 (message too big)")
+            # Mirror production: Glass acks a stored rollup within milliseconds.
+            acknowledge(self.db, frame["run_id"], stored=True)
+
+        for _ in range(20):
+            try:
+                drain(self.db, send_fn, mark_on_send=False)
+            except RuntimeError:
+                pass  # mirrors the sidecar losing its socket mid-drain
+
+        poison_sends = attempts.count("poison")
+        self.assertEqual(poison_sends, MAX_DELIVERY_ATTEMPTS)
+
+        conn = sqlite3.connect(self.db)
+        try:
+            reason = conn.execute(
+                "SELECT reason FROM diag_rejected WHERE run_id = ?", ("poison",)
+            ).fetchone()
+            self.assertIsNotNone(reason, "poison row should be dead-lettered")
+            self.assertIn("attempts", reason[0])
+        finally:
+            conn.close()
+
+        # The row behind it is neither starved by the poison pill nor swept up
+        # by the backstop -- an acked rollup carries no attempt debt.
+        self.assertIn("healthy", attempts)
+        conn = sqlite3.connect(self.db)
+        try:
+            swept = conn.execute(
+                "SELECT COUNT(*) FROM diag_rejected WHERE run_id = ?", ("healthy",)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(swept, 0, "a delivered rollup must never be dead-lettered")
+
+    def test_successful_ack_clears_the_attempt_counter(self):
+        conn = sqlite3.connect(self.db)
+        _seed_run(conn, "flaky", 1)
+        conn.close()
+
+        drain(self.db, lambda f: None, mark_on_send=False)
+        acknowledge(self.db, "flaky", stored=True)
+
+        conn = sqlite3.connect(self.db)
+        try:
+            left = conn.execute(
+                "SELECT COUNT(*) FROM diag_attempts WHERE run_id = ?", ("flaky",)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(left, 0, "a stored rollup must not carry attempt debt")

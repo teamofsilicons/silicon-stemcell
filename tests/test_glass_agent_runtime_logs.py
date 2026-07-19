@@ -79,3 +79,77 @@ class RuntimeLogTailerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutboundFrameBoundTests(unittest.TestCase):
+    """No frame may exceed Glass's inbound cap and cost the control channel.
+
+    Glass runs uvicorn with --ws-max-size 131072; a larger frame is refused at
+    the transport with close 1009, which the server application never sees. That
+    is how one silicon lost its socket every second for hours.
+    """
+
+    def test_small_frames_pass_through_untouched(self):
+        frame = {"type": "ping", "ts": 1}
+        self.assertIs(glass_agent.bound_frame(frame), frame)
+
+    def test_oversized_field_is_truncated_not_dropped(self):
+        frame = {
+            "type": "command_result",
+            "id": "cmd-1",
+            "command": "backup",
+            "status": "done",
+            "message": "x" * 400_000,
+        }
+        bounded = glass_agent.bound_frame(frame)
+
+        self.assertIsNotNone(bounded)
+        self.assertLessEqual(
+            glass_agent._frame_size(bounded), glass_agent.MAX_OUTBOUND_FRAME_BYTES
+        )
+        # Routing/identity survives so the receiver can still act on it.
+        self.assertEqual(bounded["id"], "cmd-1")
+        self.assertEqual(bounded["command"], "backup")
+        self.assertEqual(bounded["status"], "done")
+        self.assertIn("truncated", bounded["message"])
+
+    def test_oversized_list_is_replaced_with_a_count_marker(self):
+        frame = {"type": "status", "items": [{"blob": "y" * 500} for _ in range(1000)]}
+        bounded = glass_agent.bound_frame(frame)
+
+        self.assertIsNotNone(bounded)
+        self.assertLessEqual(
+            glass_agent._frame_size(bounded), glass_agent.MAX_OUTBOUND_FRAME_BYTES
+        )
+        self.assertEqual(bounded["items"], [{"truncated_items": 1000}])
+
+    def test_send_json_reports_failure_instead_of_raising(self):
+        sent = []
+
+        class FakeWS:
+            def send(self, data):
+                sent.append(data)
+
+        ws = FakeWS()
+        self.assertTrue(glass_agent.send_json(ws, {"type": "ping", "ts": 1}))
+        self.assertEqual(len(sent), 1)
+
+        # A frame that is all protected keys cannot be shrunk -- it must be
+        # reported, never handed to the socket.
+        huge_protected = {"type": "x" * 400_000}
+        self.assertFalse(glass_agent.send_json(ws, huge_protected))
+        self.assertEqual(len(sent), 1, "oversized frame must not reach the socket")
+
+    def test_every_bounded_frame_fits_the_server_limit(self):
+        for frame in (
+            {"type": "log", "msg": "z" * 300_000, "level": "info", "source": "silicon"},
+            {"type": "diag.rollup", "run_id": "r1", "events": [{"e": "q" * 300}] * 2000},
+            {"type": "terminal", "session_id": "s1", "data": "t" * 250_000},
+        ):
+            bounded = glass_agent.bound_frame(frame)
+            self.assertIsNotNone(bounded, frame["type"])
+            self.assertLessEqual(
+                glass_agent._frame_size(bounded),
+                glass_agent.MAX_OUTBOUND_FRAME_BYTES,
+                frame["type"],
+            )

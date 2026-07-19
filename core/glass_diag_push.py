@@ -58,6 +58,25 @@ DEFAULT_DIAG_DIR = os.fspath(
 )
 ABANDONED_TRACE_GRACE_MS = 30_000
 
+# Glass runs uvicorn with --ws-max-size 131072. A frame above that is refused at
+# the transport layer with close code 1009 -- the server application never sees
+# it, so it can never ack or reject it. Stay under the limit with headroom for
+# the WebSocket framing itself.
+MAX_FRAME_BYTES = 120_000
+
+# No rollup may block the queue forever. Delivery is counted BEFORE the send and
+# committed immediately, so an attempt that kills the socket (or the process)
+# still counts. Once a row exhausts its attempts it is dead-lettered locally.
+# This is the backstop that makes ANY undeliverable payload self-limiting --
+# oversize, malformed, or a server-side fault we have not seen yet -- instead of
+# pinning the sidecar in a reconnect loop.
+#
+# A stored rollup clears its counter on ack, so this only accrues across cycles
+# that produced no acknowledgement at all. The budget is set above the couple of
+# reconnects a normal Glass deploy causes, so ordinary churn never discards good
+# telemetry; sustained silence is what retires a row.
+MAX_DELIVERY_ATTEMPTS = 5
+
 
 def resolve_db_path(root, override=None) -> str:
     """Locate the same rollups.sqlite the tracer writes.
@@ -101,6 +120,13 @@ def _ensure_sent_table(conn: sqlite3.Connection) -> None:
             reason TEXT
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS diag_attempts (
+            run_id TEXT PRIMARY KEY,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_ms INTEGER
+        )"""
+    )
 
 
 def acknowledge(db_path: str, run_id: str, *, stored: bool, reason: str = "") -> bool:
@@ -119,6 +145,7 @@ def acknowledge(db_path: str, run_id: str, *, stored: bool, reason: str = "") ->
                 (run_id, now_ms),
             )
             conn.execute("DELETE FROM diag_rejected WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM diag_attempts WHERE run_id = ?", (run_id,))
         else:
             conn.execute(
                 """INSERT OR REPLACE INTO diag_rejected
@@ -446,6 +473,81 @@ def recover_abandoned_traces(
             conn.close()
 
 
+def _frame_bytes(frame: dict) -> int:
+    """Serialized size, matching how glass_agent.send_json writes the frame."""
+    return len(json.dumps(frame, separators=(",", ":")).encode("utf-8"))
+
+
+def _shrink_frame(frame: dict, budget: int = MAX_FRAME_BYTES) -> tuple[dict, int]:
+    """Return (frame at or under budget, bytes dropped) -- or the original.
+
+    The span/event graph is almost always what makes a rollup oversized, and it
+    is also the least important part on the wire: the headline metrics (timing,
+    tokens, cost, status, bottlenecks) are what Glass charts. So drop the graph
+    rather than the row, and record what was removed so the gap is visible in
+    Glass instead of silent.
+    """
+
+    original = _frame_bytes(frame)
+    if original <= budget:
+        return frame, 0
+
+    shrunk = dict(frame)
+    dropped_counts = {}
+    # Heaviest first: events dwarf spans in practice, so try the cheapest cut.
+    for key in ("events", "spans", "bottlenecks"):
+        value = shrunk.get(key)
+        if not value:
+            continue
+        dropped_counts[key] = len(value) if isinstance(value, list) else 0
+        shrunk[key] = []
+        if _frame_bytes(shrunk) <= budget:
+            break
+
+    meta = dict(shrunk.get("meta") or {})
+    meta["diagnostics_frame_truncated"] = {
+        "original_bytes": original,
+        "budget_bytes": budget,
+        "dropped": dropped_counts,
+    }
+    shrunk["meta"] = meta
+    return shrunk, original - _frame_bytes(shrunk)
+
+
+def _count_attempt(conn: sqlite3.Connection, run_id: str) -> int:
+    """Record a delivery attempt and return the new count, committed up front.
+
+    Committing before the send is the point: if the send closes the socket or
+    kills the process, the attempt is still on record, so the next drain sees it
+    and the row cannot retry forever.
+    """
+
+    conn.execute(
+        """INSERT INTO diag_attempts (run_id, attempts, last_attempt_ms)
+           VALUES (?, 1, ?)
+           ON CONFLICT(run_id) DO UPDATE SET
+             attempts = attempts + 1,
+             last_attempt_ms = excluded.last_attempt_ms""",
+        (run_id, int(time.time() * 1000)),
+    )
+    conn.commit()
+    return int(
+        conn.execute(
+            "SELECT attempts FROM diag_attempts WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+    )
+
+
+def _dead_letter(conn: sqlite3.Connection, run_id: str, reason: str) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO diag_rejected (run_id, rejected_at_ms, reason)
+           VALUES (?, ?, ?)""",
+        (run_id, int(time.time() * 1000), reason[:500]),
+    )
+    conn.commit()
+    log.warning("glass_diag_push: dead-lettered run_id=%s: %s", run_id, reason)
+
+
 def drain(db_path: str, send_fn, limit: int = 50, *, mark_on_send: bool = True) -> int:
     """Send unsent rollups via send_fn(frame). Return the number sent.
 
@@ -483,11 +585,43 @@ def drain(db_path: str, send_fn, limit: int = 50, *, mark_on_send: bool = True) 
             return 0
 
         for row in rows:
+            run_id = row["run_id"] if "run_id" in row.keys() else ""
             try:
                 frame = _row_to_frame(row)
             except Exception:
-                rid = row["run_id"] if "run_id" in row.keys() else "?"
-                log.exception("glass_diag_push: bad row, skipping run_id=%s", rid)
+                log.exception("glass_diag_push: bad row, skipping run_id=%s", run_id or "?")
+                continue
+
+            # Retire anything that has already burned its attempts. This runs
+            # before the size check so a row made undeliverable by ANY cause --
+            # including one we have not diagnosed -- stops being retried.
+            if run_id:
+                attempts = _count_attempt(conn, run_id)
+                if attempts > MAX_DELIVERY_ATTEMPTS:
+                    _dead_letter(
+                        conn,
+                        run_id,
+                        f"undeliverable after {MAX_DELIVERY_ATTEMPTS} attempts",
+                    )
+                    continue
+
+            # Never hand the socket a frame the server is known to refuse: an
+            # oversized frame is closed at the transport with 1009, so it can
+            # never be acked or rejected, and would otherwise resend forever.
+            frame, dropped = _shrink_frame(frame)
+            if dropped:
+                log.warning(
+                    "glass_diag_push: trimmed %d bytes of span/event graph from run_id=%s",
+                    dropped,
+                    run_id or "?",
+                )
+            size = _frame_bytes(frame)
+            if size > MAX_FRAME_BYTES:
+                _dead_letter(
+                    conn,
+                    run_id,
+                    f"frame is {size} bytes, over the {MAX_FRAME_BYTES}-byte limit",
+                )
                 continue
 
             # May raise on a broken socket -- allowed to propagate. Marks for
