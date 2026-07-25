@@ -1,33 +1,68 @@
+import atexit
 import time
 import sys
 import os
 import json
+import re
+import signal
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Ensure project root is in path
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+# Ensure the active immutable release is importable before resolving the
+# durable instance root used by side-by-side updates.
+CODE_ROOT = os.path.dirname(os.path.abspath(__file__))
+if CODE_ROOT not in sys.path:
+    sys.path.insert(0, CODE_ROOT)
+from core.runtime_paths import DATA_ROOT
+
+PROJECT_ROOT = os.fspath(DATA_ROOT)
 LOCAL_BIN = os.path.join(PROJECT_ROOT, ".local", "bin")
-if LOCAL_BIN not in os.environ.get("PATH", "").split(os.pathsep):
-    os.environ["PATH"] = LOCAL_BIN + os.pathsep + os.environ.get("PATH", "")
+ACTIVE_ENV_BIN = os.path.dirname(os.path.abspath(sys.executable))
+_path_entries = [
+    entry
+    for entry in os.environ.get("PATH", "").split(os.pathsep)
+    if entry and entry not in {ACTIVE_ENV_BIN, LOCAL_BIN}
+]
+# Package entry points belong to the selected generation environment. Keep that
+# bin directory ahead of the legacy data-root bin so an old generated Extend
+# launcher can never shadow the installed silicon-extend command.
+os.environ["PATH"] = os.pathsep.join(
+    [ACTIVE_ENV_BIN, LOCAL_BIN, *_path_entries]
+)
 
 from config import EVENT_LOOP, LOOP_TICK
 from manager import manager_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG
 from core.interface import (
     complete_take_back,
     ensure_contact_for_target,
+    get_contact,
     get_contacts,
+    maintenance_inbox_quiescent,
     remote_browser_close,
     remote_browser_share,
     reply_contact as reply_user,
+    schedule_maintenance_notices,
     send_progress,
+    start_listener,
+    stop_listener,
     take_back_event,
     validate_contacts_integrity,
+    wait_for_runtime_activity,
 )
 from core.messages import send_manager_message
 from core.cron import execute_cron_tool
+from core.maintenance import (
+    COORDINATOR as MAINTENANCE,
+    RootAdmission,
+    heartbeat_scope,
+)
+from core.runtime_health import start_runtime_health, stop_runtime_health
+from core.extend import (
+    execute_tool as execute_extend_tool,
+    inspect_extend_for_manager,
+    request_setup as request_extend_setup,
+)
 from worker.handler import (
     start_worker,
     message_worker,
@@ -36,14 +71,71 @@ from worker.handler import (
     list_active,
     list_archive,
     read_archive,
+    reconcile_maintenance_activities,
 )
 from core.cron.checkback import add_checkback
+from core.diagnostics import Diagnostics
+from core.progress import (
+    contains_advertising_memory_reference,
+    contains_private_manager_tool,
+    diagnostic_error_summary,
+    progress_is_error,
+    redact_diagnostic_text,
+)
+from core.work_updates import (
+    begin_manager_activity,
+    current_manager_activity_group,
+    enqueue_outbound_call,
+    execute_work_update,
+    prepare_outbound_call,
+    record_worker_started,
+    set_active_task_timer,
+    settle_manager_activity,
+)
 
 RESTART_FLAG = os.path.join(PROJECT_ROOT, ".restart_pending")
 
 
+def _install_diagnostic_shutdown_hooks():
+    """Persist in-flight evidence on normal exit and catchable termination."""
+    atexit.register(
+        Diagnostics.close_active_runs,
+        reason="Silicon process exited before the run completed",
+        category="process_exit",
+    )
+
+    def shutdown(signum, _frame):
+        try:
+            signal_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            signal_name = str(signum)
+        Diagnostics.close_active_runs(
+            reason=f"Silicon process received {signal_name}",
+            category="process_signal",
+        )
+        raise SystemExit(128 + int(signum))
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, shutdown)
+
+
 def log(msg):
     print(msg, flush=True)
+
+
+def _bootstrap_team_context():
+    """Best-effort team mirror before any manager can receive a startup turn."""
+    try:
+        from core.team_context import reconcile_team_context
+
+        return reconcile_team_context(
+            PROJECT_ROOT,
+            force=True,
+            reason="startup",
+        )
+    except Exception as exc:
+        log(f"[Silicon] Team context startup sync skipped: {exc}")
+        return None
 
 
 PROVIDER_PROGRESS_STATES = {
@@ -79,8 +171,7 @@ def _provider_progress_note(progress, line):
     return text
 
 
-def _make_provider_progress_handler(carbon_id):
-    group = f"manager:{carbon_id}"
+def _make_provider_progress_handler(carbon_id, group):
     last_sent_at_by_key = {}
     last_note_by_key = {}
 
@@ -93,6 +184,8 @@ def _make_provider_progress_handler(carbon_id):
         kind = str(progress.get("kind") or "executing")
         status = str(progress.get("status") or "")
         item_id = str(progress.get("item_id") or "")
+        if kind == "done":
+            return
         key = (kind, status, item_id)
         now = time.time()
         min_interval = 3.0 if status == "output" else 0.6
@@ -104,7 +197,47 @@ def _make_provider_progress_handler(carbon_id):
 
         last_note_by_key[key] = note
         last_sent_at_by_key[key] = now
-        send_progress(carbon_id, group, _provider_progress_state(progress), note)
+        trace = Diagnostics.get_active_run(carbon_id)
+        if trace is not None:
+            result_summary = ""
+            if kind != "thinking" and status in {"completed", "error"}:
+                result_summary = redact_diagnostic_text(
+                    progress.get("preview") or progress.get("output") or "",
+                    limit=500,
+                )
+            trace.event(
+                "provider.progress",
+                provider=str(progress.get("provider") or ""),
+                kind=kind,
+                status=status,
+                item_id=item_id,
+                model=str(progress.get("model") or ""),
+                duration_ms=progress.get("duration_ms"),
+                is_error=bool(progress_is_error(progress)),
+                error_summary=diagnostic_error_summary(progress),
+                tool_name=str(progress.get("tool_name") or "")[:120],
+                path=str(progress.get("path") or "")[:500],
+                query=redact_diagnostic_text(progress.get("query") or "", limit=500),
+                command=redact_diagnostic_text(progress.get("command") or "", limit=500),
+                exit_code=progress.get("exit_code"),
+                result_summary=result_summary,
+                note=redact_diagnostic_text(note, limit=500),
+            )
+        frame_key = (
+            f"provider:{progress.get('provider') or 'manager'}:{item_id}"
+            if item_id
+            else (
+                f"provider:{progress.get('provider') or 'manager'}:{kind}:"
+                f"{progress.get('tool_name') or progress.get('path') or progress.get('query') or status}"
+            )
+        )
+        send_progress(
+            carbon_id,
+            group,
+            _provider_progress_state(progress),
+            note,
+            frame_key=frame_key,
+        )
 
     return on_progress
 
@@ -173,6 +306,54 @@ def _parse_worker_tool(tool_spec):
     return worker_type, action_type, worker_id
 
 
+_EXTEND_DISCOVERY_ACTIONS = {
+    "list",
+    "ready",
+    "needs_setup",
+    "pending",
+    "status",
+    "show",
+    "connections",
+    "requests",
+}
+_EXTEND_ACTION_ALIASES = {
+    "tools": "list",
+    "run": "execute",
+    "setup": "request_setup",
+}
+
+
+def _parse_extend_tool(tool_spec):
+    """Return a normalized Extend action and tool key."""
+
+    tool_name = str(tool_spec.get("tool") or "")
+    suffix = (
+        tool_name.removeprefix("extend/")
+        if tool_name.startswith("extend/")
+        else ""
+    )
+    explicit_action = (
+        str(tool_spec.get("type") or "").strip().lower().replace("-", "_")
+    )
+    action_names = (
+        _EXTEND_DISCOVERY_ACTIONS
+        | {"execute", "request_setup"}
+        | set(_EXTEND_ACTION_ALIASES)
+    )
+    if explicit_action:
+        action = explicit_action
+    elif suffix in action_names:
+        action = suffix
+    else:
+        action = "execute"
+    action = _EXTEND_ACTION_ALIASES.get(action, action)
+
+    key = str(tool_spec.get("name") or tool_spec.get("key") or "").strip()
+    if not key and suffix and suffix not in action_names:
+        key = suffix
+    return action, key
+
+
 def _tool_progress_note(tool_spec):
     tool_name = str(tool_spec.get("tool", "") or "")
     if not tool_name or tool_name == "do_nothing":
@@ -192,6 +373,33 @@ def _tool_progress_note(tool_spec):
     if tool_name == "take_back":
         target = tool_spec.get("request_id") or tool_spec.get("event_id") or "unknown"
         return f"called tool: take_back -> {target}"
+
+    if tool_name == "advertising_memory/update":
+        return "updating team-visible advertising memory"
+
+    if tool_name == "trust/set":
+        target = tool_spec.get("carbon_id") or tool_spec.get("silicon_id") or "unknown"
+        return f"updating trust for {target}"
+
+    if tool_name == "extend" or tool_name.startswith("extend/"):
+        action, key = _parse_extend_tool(tool_spec)
+        if action == "request_setup":
+            return f"requesting Extend setup: {key or 'unknown'}"
+        if action == "list":
+            return "listing team-enabled Extend tools"
+        if action == "ready":
+            return "listing ready Extend tools"
+        if action == "needs_setup":
+            return "checking which Extend tools need setup"
+        if action == "pending":
+            return "checking pending Extend setup"
+        if action == "status":
+            return "checking Extend status"
+        if action == "show":
+            return f"inspecting Extend tool: {key or 'unknown'}"
+        if action in {"connections", "requests"}:
+            return f"checking Extend {action}"
+        return f"called Extend tool: {key or 'unknown'}"
 
     if tool_name.startswith("cron/") or tool_name == "cron/list":
         return f"called tool: {tool_name}"
@@ -217,8 +425,69 @@ def _tool_progress_note(tool_spec):
 
 def _message_failure_status(carbon_id, target_kind, target_id, error):
     message = f"Message failed: {target_kind} '{target_id}' could not be reached. {error}"
-    send_progress(carbon_id, f"manager:{carbon_id}", "executing", message)
+    send_progress(
+        carbon_id,
+        current_manager_activity_group(carbon_id) or f"manager:{carbon_id}",
+        "calling",
+        message,
+    )
     return message
+
+
+def _work_reference_suffix(reference, *keys):
+    """Expose accepted durable identities to the manager without card content."""
+    if not isinstance(reference, dict):
+        return ""
+    values = [
+        f"{key}={reference[key]}"
+        for key in keys
+        if reference.get(key)
+    ]
+    return f" Work update: {', '.join(values)}." if values else ""
+
+
+def _tool_progress_state(tool_spec):
+    tool_name = str(tool_spec.get("tool", "") or "")
+    action_type = str(tool_spec.get("type", "") or "")
+    if tool_name == "message_manager":
+        return "calling"
+    if tool_name.startswith("worker") and action_type == "new":
+        return "spawning_worker"
+    return "executing"
+
+
+def _is_private_manager_tool_name(tool_name):
+    return (
+        tool_name == "advertising_memory/update"
+        or tool_name == "trust/set"
+        or tool_name == "work_update"
+        or tool_name == "extend"
+        or tool_name.startswith("extend/")
+    )
+
+
+def _diagnostic_tool_metadata(tool_spec):
+    """Return only fields that are safe to persist outside manager output."""
+    tool_name = str(tool_spec.get("tool", "") or "")
+    metadata = {"tool": tool_name}
+    if _is_private_manager_tool_name(tool_name):
+        return metadata
+    target_kind = (
+        "silicon" if tool_spec.get("silicon_id")
+        else "carbon" if tool_spec.get("carbon_id")
+        else ""
+    )
+    metadata.update(
+        action=str(tool_spec.get("type") or ""),
+        worker_id=str(tool_spec.get("worker-id") or ""),
+        target_kind=target_kind,
+        target_id=str(
+            tool_spec.get("silicon_id")
+            or tool_spec.get("carbon_id")
+            or ""
+        )[:120],
+    )
+    return metadata
 
 
 def execute_single_tool(tool_spec, carbon_id):
@@ -227,8 +496,38 @@ def execute_single_tool(tool_spec, carbon_id):
     `do_nothing` is the idle no-op fired on most ticks; logging it would bury the
     real actions, so it's the one thing we skip.
     """
-    result = _execute_single_tool(tool_spec, carbon_id)
     tool_name = str(tool_spec.get("tool", "") or "")
+    trace = Diagnostics.get_active_run(carbon_id)
+    if trace is not None and tool_name != "do_nothing":
+        result = None
+        executed = False
+        try:
+            with trace.span("tool_call") as span:
+                span.set_meta(**_diagnostic_tool_metadata(tool_spec))
+                result = _execute_single_tool(tool_spec, carbon_id)
+                executed = True
+                result_status = "error" if "Error" in str(result) else "ok"
+                result_summary = (
+                    "[Extend result omitted]"
+                    if tool_name == "extend" or tool_name.startswith("extend/")
+                    else "[Advertising memory result omitted]"
+                    if tool_name == "advertising_memory/update"
+                    else "[Work update result omitted]"
+                    if tool_name == "work_update"
+                    else redact_diagnostic_text(result, limit=500)
+                )
+                span.set_meta(
+                    result_status=result_status,
+                    result_summary=result_summary,
+                )
+                if result_status == "error":
+                    span.status = "error"
+                    span.set_meta(error=result_summary)
+        except Exception:
+            if not executed:
+                result = _execute_single_tool(tool_spec, carbon_id)
+    else:
+        result = _execute_single_tool(tool_spec, carbon_id)
     if tool_name and tool_name != "do_nothing":
         try:
             from core.activity_log import tool_call
@@ -247,11 +546,23 @@ def _execute_single_tool(tool_spec, carbon_id):
 
     progress_note = _tool_progress_note(tool_spec)
     if progress_note:
-        send_progress(carbon_id, f"manager:{carbon_id}", "executing", progress_note)
+        send_progress(
+            carbon_id,
+            current_manager_activity_group(carbon_id) or f"manager:{carbon_id}",
+            _tool_progress_state(tool_spec),
+            progress_note,
+        )
+
+    if tool_name == "work_update":
+        return f"Tool 'work_update': {execute_work_update(tool_spec, carbon_id)}"
 
     if tool_name == "reply":
         message = tool_spec.get("message", "")
-        status = reply_user(message, carbon_id)
+        status = reply_user(
+            message,
+            carbon_id,
+            work_continues=bool(tool_spec.get("work_continues", False)),
+        )
         return f"Tool 'reply': {status}"
 
     elif tool_name == "message_manager":
@@ -268,8 +579,39 @@ def _execute_single_tool(tool_spec, carbon_id):
                 status = _message_failure_status(carbon_id, "carbon", target_carbon_id, e)
                 return f"Tool 'message_manager' (to {target_carbon_id}): Error: {status}"
             target_id = contact.get("carbon_id") or target_carbon_id
-            status = send_manager_message(carbon_id, target_id, message)
-            return f"Tool 'message_manager' (to {target_id}): {status}"
+            target_name = (
+                f"{contact.get('display_name') or contact.get('name') or target_id}'s manager"
+            )
+            try:
+                work_call = prepare_outbound_call(
+                    carbon_id,
+                    target_kind="manager",
+                    target_id=target_id,
+                    target_name=target_name,
+                    message=message,
+                    task_id=str(tool_spec.get("task_id") or ""),
+                )
+            except Exception:
+                work_call = {}
+            status = send_manager_message(
+                carbon_id,
+                target_id,
+                message,
+                target_type="carbon",
+                work_call=work_call,
+            )
+            try:
+                enqueue_outbound_call(
+                    work_call,
+                    target_name=target_name,
+                    message=message,
+                )
+            except Exception:
+                pass
+            return (
+                f"Tool 'message_manager' (to {target_id}): {status}"
+                + _work_reference_suffix(work_call, "task_id", "call_id")
+            )
 
         if target_silicon_id:
             try:
@@ -278,10 +620,76 @@ def _execute_single_tool(tool_spec, carbon_id):
                 status = _message_failure_status(carbon_id, "silicon", target_silicon_id, e)
                 return f"Tool 'message_manager' (to {target_silicon_id}): Error: {status}"
             target_id = contact.get("silicon_id") or target_silicon_id
-            status = send_manager_message(carbon_id, target_id, message)
-            return f"Tool 'message_manager' (to {target_id}): {status}"
+            target_name = str(
+                contact.get("display_name")
+                or contact.get("name")
+                or target_id
+            )
+            try:
+                work_call = prepare_outbound_call(
+                    carbon_id,
+                    target_kind="silicon",
+                    target_id=target_id,
+                    target_name=target_name,
+                    message=message,
+                    task_id=str(tool_spec.get("task_id") or ""),
+                )
+            except Exception:
+                work_call = {}
+            status = send_manager_message(
+                carbon_id,
+                target_id,
+                message,
+                target_type="silicon",
+                work_call=work_call,
+            )
+            try:
+                enqueue_outbound_call(
+                    work_call,
+                    target_name=target_name,
+                    message=message,
+                )
+            except Exception:
+                pass
+            return (
+                f"Tool 'message_manager' (to {target_id}): {status}"
+                + _work_reference_suffix(work_call, "task_id", "call_id")
+            )
 
         return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
+
+    elif tool_name == "trust/set":
+        target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
+        target_silicon_id = str(tool_spec.get("silicon_id") or "").strip()
+        if bool(target_carbon_id) == bool(target_silicon_id):
+            return (
+                "Tool 'trust/set': Error: provide exactly one of carbon_id "
+                "or silicon_id"
+            )
+        raw_level = tool_spec.get("level")
+        level = None if raw_level in {None, "", "inherit", "team_default"} else str(raw_level)
+        try:
+            from core.trust import set_contact_trust
+
+            initiating_contact = get_contact(carbon_id) or {}
+            result = set_contact_trust(
+                "carbon" if target_carbon_id else "silicon",
+                target_carbon_id or target_silicon_id,
+                level,
+                reason=str(tool_spec.get("reason") or ""),
+                initiated_by_carbon_id=(
+                    carbon_id
+                    if initiating_contact.get("contact_type") == "carbon"
+                    else ""
+                ),
+                root=PROJECT_ROOT,
+            )
+        except Exception as exc:
+            return f"Tool 'trust/set': Error: {exc}"
+        return (
+            f"Tool 'trust/set': {result['target']} is now "
+            f"{result['level']} at Glass revision {result['revision']}"
+        )
 
     elif tool_name == "remote_browser":
         action_type = tool_spec.get("type", "share")
@@ -306,6 +714,76 @@ def _execute_single_tool(tool_spec, carbon_id):
             status = take_back_event(event_id, reason=tool_spec.get("reason", ""), force=bool(tool_spec.get("force", False)))
             return f"Tool 'take_back': {status}"
         return "Tool 'take_back': Error: request_id or event_id is required"
+
+    elif tool_name == "advertising_memory/update":
+        content = tool_spec.get("content")
+        if not isinstance(content, str):
+            return "Tool 'advertising_memory/update': Error: content must be a string"
+        resolve_conflict = tool_spec.get("resolve_conflict", False)
+        if not isinstance(resolve_conflict, bool):
+            return (
+                "Tool 'advertising_memory/update': Error: "
+                "resolve_conflict must be a boolean"
+            )
+        try:
+            from core.team_context import update_own_advertising_memory
+
+            outcome = update_own_advertising_memory(
+                content,
+                root=PROJECT_ROOT,
+                resolve_conflict=resolve_conflict,
+            )
+        except ValueError as exc:
+            return f"Tool 'advertising_memory/update': Error: {exc}"
+        except Exception as exc:
+            return f"Tool 'advertising_memory/update': Error: {exc}"
+
+        if isinstance(outcome, dict):
+            status = str(outcome.get("status") or "saved")
+            details = []
+            revision = outcome.get("revision")
+            actual_revision = outcome.get("actual_revision")
+            if isinstance(revision, int) and not isinstance(revision, bool):
+                details.append(f"revision {revision}")
+            if (
+                isinstance(actual_revision, int)
+                and not isinstance(actual_revision, bool)
+            ):
+                details.append(f"Glass is at revision {actual_revision}")
+            if outcome.get("local_saved") and outcome.get("ok") is False:
+                details.append("local draft preserved")
+            detail = str(outcome.get("detail") or "").strip()
+            if detail:
+                details.append(detail)
+            suffix = f" — {'; '.join(details)}" if details else ""
+            error_prefix = "Error: " if outcome.get("ok") is False else ""
+            return (
+                "Tool 'advertising_memory/update': "
+                f"{error_prefix}{status}{suffix}"
+            )
+        return f"Tool 'advertising_memory/update': {outcome or 'saved'}"
+
+    elif tool_name == "extend" or tool_name.startswith("extend/"):
+        action, key = _parse_extend_tool(tool_spec)
+        if action == "request_setup":
+            return request_extend_setup(
+                key,
+                note=tool_spec.get("note", ""),
+                carbon_id=carbon_id,
+            )
+        if action in _EXTEND_DISCOVERY_ACTIONS:
+            return inspect_extend_for_manager(
+                action,
+                tool_key=key,
+                query=tool_spec.get("query", ""),
+                page=tool_spec.get("page", 1),
+                limit=tool_spec.get("limit", 100),
+                status=tool_spec.get("status", ""),
+            )
+        if action != "execute":
+            return f"Tool 'extend/{key or 'unknown'}': Error: unknown type '{action}'"
+        arguments = tool_spec.get("arguments", {})
+        return execute_extend_tool(key, arguments, carbon_id=carbon_id)
 
     elif tool_name.startswith("cron/"):
         try:
@@ -332,7 +810,20 @@ def _execute_single_tool(tool_spec, carbon_id):
                 return f"Tool 'worker/new' ({worker_id}): Error: task is required"
             incognito = tool_spec.get("incognito", False)
             status = start_worker(worker_id, task, worker_type, carbon_id, incognito=incognito)
-            send_progress(carbon_id, f"worker:{worker_id}", "executing", status)
+            work_invocation = {}
+            if "Error" not in status:
+                work_invocation = record_worker_started(
+                    carbon_id,
+                    worker_id,
+                    worker_type,
+                    task,
+                    queued="queued" in status.lower(),
+                    task_id=str(tool_spec.get("task_id") or ""),
+                )
+                trace = Diagnostics.get_active_run(carbon_id)
+                if trace is not None:
+                    trace.note_worker_spawned()
+                    trace.event("worker.spawned", worker_id=worker_id, worker_type=worker_type)
 
             # Handle checkback_in if specified
             checkback_in = tool_spec.get("checkback_in")
@@ -343,7 +834,15 @@ def _execute_single_tool(tool_spec, carbon_id):
                 except Exception as e:
                     status += f" (checkback setup failed: {e})"
 
-            return f"Tool 'worker/new' ({worker_type}, {worker_id}): {status}"
+            return (
+                f"Tool 'worker/new' ({worker_type}, {worker_id}): {status}"
+                + _work_reference_suffix(
+                    work_invocation,
+                    "task_id",
+                    "group_id",
+                    "invocation_id",
+                )
+            )
 
         elif action_type == "message":
             task = tool_spec.get("message", "")
@@ -352,8 +851,25 @@ def _execute_single_tool(tool_spec, carbon_id):
             if not task:
                 return f"Tool 'worker/message' ({worker_id}): Error: message is required"
             status = message_worker(worker_id, task, carbon_id)
-            send_progress(carbon_id, f"worker:{worker_id}", "executing", status)
-            return f"Tool 'worker/message' ({worker_id}): {status}"
+            work_invocation = {}
+            if "Error" not in status:
+                work_invocation = record_worker_started(
+                    carbon_id,
+                    worker_id,
+                    "worker",
+                    task,
+                    queued="queued" in status.lower(),
+                    task_id=str(tool_spec.get("task_id") or ""),
+                )
+            return (
+                f"Tool 'worker/message' ({worker_id}): {status}"
+                + _work_reference_suffix(
+                    work_invocation,
+                    "task_id",
+                    "group_id",
+                    "invocation_id",
+                )
+            )
 
         elif action_type == "checkback":
             checkback_in = tool_spec.get("checkback_in")
@@ -373,7 +889,6 @@ def _execute_single_tool(tool_spec, carbon_id):
 
         elif action_type == "stop":
             status = stop_worker(worker_id, carbon_id)
-            send_progress(carbon_id, f"worker:{worker_id}", "done", status)
             return f"Tool 'worker/stop' ({worker_id}): {status}"
 
         elif action_type == "list_active":
@@ -442,6 +957,62 @@ def execute_all_tools(all_tools):
     return results_by_carbon, {}
 
 
+def _tool_results_for_log(all_tools, results_by_carbon):
+    """Keep provider payloads out of the Stemcell's process logs."""
+    private_result_contacts = {
+        carbon_id
+        for carbon_id, tool_spec in all_tools
+        if str(tool_spec.get("tool") or "") == "extend"
+        or str(tool_spec.get("tool") or "").startswith("extend/")
+        or str(tool_spec.get("tool") or "") == "advertising_memory/update"
+        or str(tool_spec.get("tool") or "") == "trust/set"
+        or str(tool_spec.get("tool") or "") == "work_update"
+    }
+    return {
+        carbon_id: (
+            ["[Private tool result omitted]"]
+            if carbon_id in private_result_contacts
+            else results
+        )
+        for carbon_id, results in results_by_carbon.items()
+    }
+
+
+def _manager_output_for_log(output, tools_data):
+    """Redact private invocation material before printing manager output."""
+    tools = (tools_data.get("tools") or []) if isinstance(tools_data, dict) else []
+    parsed_private = any(
+        str(tool_spec.get("tool") or "") == "extend"
+        or str(tool_spec.get("tool") or "").startswith("extend/")
+        or str(tool_spec.get("tool") or "") == "advertising_memory/update"
+        or str(tool_spec.get("tool") or "") == "trust/set"
+        or str(tool_spec.get("tool") or "") == "work_update"
+        for tool_spec in tools
+        if isinstance(tool_spec, dict)
+    )
+    raw = str(output or "")
+    raw_private = contains_private_manager_tool(raw)
+    if parsed_private or raw_private:
+        return "[Private tool invocation omitted]"
+    redacted = redact_diagnostic_text(raw, limit=200)
+    if redacted == "[advertising memory content omitted]":
+        return "[Advertising memory content omitted]"
+    return redacted
+
+
+def _rate_limit_reply_text(output):
+    """Never send a malformed private invocation back to the Carbon."""
+    if (
+        contains_private_manager_tool(output)
+        or contains_advertising_memory_reference(output)
+    ):
+        return "The manager provider is rate-limited. Please try again shortly."
+    return (
+        redact_diagnostic_text(output, limit=500)
+        or "The manager provider is rate-limited. Please try again shortly."
+    )
+
+
 def is_only_do_nothing(tools_data):
     """Check if the manager returned only do_nothing."""
     if not tools_data or "tools" not in tools_data:
@@ -468,16 +1039,24 @@ def handle_commands(context_by_carbon):
 
         if context:
             cleaned[carbon_id] = context
+        else:
+            trace = Diagnostics.get_active_run(carbon_id)
+            if trace is not None:
+                Diagnostics.unregister_active(carbon_id, trace)
+                trace.close()
     return cleaned
 
 
 # --- Event loop ---
 
-def run_event_loop_tick():
-    """Run one tick of the event loop. Returns {carbon_id: context_string}."""
+def run_event_loop_tick(handler_names=None):
+    """Run selected event handlers. Returns {carbon_id: context_string}."""
     context_by_carbon = {}
+    selected = set(handler_names or ())
 
     for handler in EVENT_LOOP:
+        if selected and handler["name"] not in selected:
+            continue
         try:
             result = handler["execute"]()
             if not result:
@@ -490,8 +1069,6 @@ def run_event_loop_tick():
                         if carbon_id not in context_by_carbon:
                             context_by_carbon[carbon_id] = []
                         context_by_carbon[carbon_id].append(ctx)
-                        if handler["name"] == "check_workers":
-                            send_progress(carbon_id, "workers", "done", "worker update ready")
             elif isinstance(result, str) and result:
                 log(f"[Silicon] Warning: handler '{handler['name']}' returned string instead of dict")
 
@@ -514,13 +1091,15 @@ def run_event_loop_tick():
 
 def _make_mid_stream_handler(carbon_id):
     """Create a callback that executes reply tools mid-stream for fast delivery.
-    Only reply is fire-and-forget. All other tools need their results fed back
-    to the manager, so they must go through the centralized executor."""
+    Only explicitly intermediate replies are fire-and-forget. Final replies
+    stay in the ordered executor so a terminal card or other preceding update
+    is accepted first. All non-reply tools need their results fed back to the
+    manager and therefore also use the centralized executor."""
     def on_tools(tools_list):
         succeeded = []
         for tool_spec in tools_list:
             tool_name = tool_spec.get("tool", "")
-            if tool_name != "reply":
+            if tool_name != "reply" or not tool_spec.get("work_continues"):
                 continue
             result = execute_single_tool(tool_spec, carbon_id)
             if result:
@@ -531,156 +1110,521 @@ def _make_mid_stream_handler(carbon_id):
     return on_tools
 
 
+def _trace_correlation(context):
+    """Extract stable Glass identifiers already present in Interface contexts."""
+    text = str(context or "")
+    message_ids = list(dict.fromkeys(re.findall(r"^event_id:\s*(\S+)", text, re.MULTILINE)))
+    room_ids = list(dict.fromkeys(re.findall(r"^room_id:\s*(\S+)", text, re.MULTILINE)))
+    return (room_ids[0] if room_ids else ""), message_ids
+
+
+def _instrumented_manager_call(carbon_id, text, trace, iteration, on_tools, on_progress):
+    if trace is None:
+        return manager_code(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
+    with trace.span(f"round[{iteration}]"):
+        with trace.span("manager_turn"):
+            return manager_code(
+                text, carbon_id, on_tools=on_tools, on_progress=on_progress,
+                trace=trace,
+            )
+
+
 def run_all_managers(context_by_carbon):
-    """Run managers for all carbons that have context. Parallel invocation, centralized tool execution."""
-    pending = dict(context_by_carbon)  # {carbon_id: text_to_send}
+    """Run managers and retain one complete graph for each inbound message batch."""
+    # Commands are roots too. They must cross the same durable update fence as
+    # ordinary manager turns, rather than running during ingestion.
+    pending = handle_commands(dict(context_by_carbon))
+    if not pending:
+        return
     max_iterations = 10
+    traces = {}
+    activity_groups = {}
 
-    for iteration in range(max_iterations):
-        if not pending:
-            break
-
-        log(f"[Silicon] Manager round {iteration + 1} for {list(pending.keys())}...")
-
-        # Invoke all managers in parallel
-        manager_outputs = {}       # {carbon_id: raw_text}
-        already_executed = {}      # {carbon_id: [tool_spec, ...]}
-        with ThreadPoolExecutor(max_workers=max(len(pending), 1)) as executor:
-            futures = {}
-            for carbon_id, text in pending.items():
-                on_tools = _make_mid_stream_handler(carbon_id)
-                on_progress = _make_provider_progress_handler(carbon_id)
-                send_progress(carbon_id, f"manager:{carbon_id}", "thinking", "calling manager")
-                future = executor.submit(
-                    manager_code,
-                    text,
-                    carbon_id,
-                    on_tools=on_tools,
-                    on_progress=on_progress,
+    def get_trace(carbon_id, context=""):
+        if carbon_id in traces:
+            return traces[carbon_id]
+        room_id, message_ids = _trace_correlation(context)
+        try:
+            pending_contexts = Diagnostics.consume_pending_contexts(carbon_id)
+            source_run_ids = list(dict.fromkeys(
+                str(item.get("source_run_id") or "")
+                for item in pending_contexts
+                if item.get("source_run_id")
+            ))
+            inherited_message_ids = [
+                str(event_id)
+                for item in pending_contexts
+                for event_id in (item.get("message_ids") or [])
+                if event_id
+            ]
+            message_ids = list(dict.fromkeys([*message_ids, *inherited_message_ids]))
+            if not room_id:
+                room_id = next(
+                    (str(item.get("room_id") or "") for item in pending_contexts if item.get("room_id")),
+                    "",
                 )
-                futures[future] = carbon_id
+            trace = Diagnostics.get_active_run(carbon_id)
+            if trace is None:
+                trace = Diagnostics.start_run(
+                    trigger=(
+                        "message" if _trace_correlation(context)[1]
+                        else "handoff" if pending_contexts
+                        else "manager_loop"
+                    ),
+                    carbon_id=carbon_id,
+                    parent_run_id=source_run_ids[0] if len(source_run_ids) == 1 else None,
+                    room_id=room_id,
+                    message_ids=message_ids,
+                    meta={
+                        "source_run_ids": source_run_ids,
+                        "handoff_ids": [
+                            str(item.get("handoff_id") or "")
+                            for item in pending_contexts
+                            if item.get("handoff_id")
+                        ],
+                    } if pending_contexts else None,
+                )
+                for event_id in message_ids:
+                    trace.event("message.ingress", event_id=event_id, room_id=room_id)
+                for item in pending_contexts:
+                    trace.event(
+                        "handoff.accepted",
+                        handoff_id=str(item.get("handoff_id") or ""),
+                        source_run_id=str(item.get("source_run_id") or ""),
+                        target_type=str(item.get("target_type") or ""),
+                        target_id=str(item.get("target_id") or carbon_id),
+                    )
+                Diagnostics.register_active(carbon_id, trace)
+            else:
+                for event_id in message_ids:
+                    trace.add_message(event_id, room_id)
+            if trace is not None:
+                trace.meta["_manager_running"] = True
+        except Exception:
+            trace = None
+        traces[carbon_id] = trace
+        return trace
 
-            for future in as_completed(futures):
-                carbon_id = futures[future]
+    def close_trace(carbon_id):
+        group = activity_groups.pop(carbon_id, "")
+        if group:
+            send_progress(
+                carbon_id,
+                group,
+                "done",
+                "manager finished",
+                frame_key="manager:done",
+            )
+            settle_manager_activity(carbon_id, group)
+        trace = traces.pop(carbon_id, None)
+        Diagnostics.unregister_active(carbon_id, trace)
+        if trace is not None:
+            try:
+                trace.meta.pop("_manager_running", None)
+                trace.close()
+            except Exception:
+                pass
+
+    try:
+        for iteration in range(max_iterations):
+            if not pending:
+                break
+
+            log(f"[Silicon] Manager round {iteration + 1} for {list(pending.keys())}...")
+            manager_outputs = {}
+            already_executed = {}
+            with ThreadPoolExecutor(max_workers=max(len(pending), 1)) as executor:
+                futures = {}
+                for carbon_id, text in pending.items():
+                    trace = get_trace(carbon_id, text)
+                    group = activity_groups.get(carbon_id)
+                    if not group:
+                        group = begin_manager_activity(
+                            carbon_id,
+                            getattr(trace, "run_id", "") if trace is not None else "",
+                        )
+                        activity_groups[carbon_id] = group
+                        set_active_task_timer(
+                            carbon_id,
+                            timer_state="running",
+                        )
+                    on_tools = _make_mid_stream_handler(carbon_id)
+                    on_progress = _make_provider_progress_handler(carbon_id, group)
+                    send_progress(
+                        carbon_id,
+                        group,
+                        "thinking",
+                        "calling manager",
+                        frame_key=f"manager:round:{iteration}",
+                    )
+                    future = executor.submit(
+                        _instrumented_manager_call, carbon_id, text, trace,
+                        iteration, on_tools, on_progress,
+                    )
+                    futures[future] = carbon_id
+
+                for future in as_completed(futures):
+                    carbon_id = futures[future]
+                    try:
+                        output, _, executed_tools = future.result()
+                        manager_outputs[carbon_id] = output
+                        if executed_tools:
+                            already_executed[carbon_id] = executed_tools
+                    except Exception as exc:
+                        set_active_task_timer(
+                            carbon_id,
+                            timer_state="paused",
+                            pause_reason="infrastructure",
+                        )
+                        safe_error = (
+                            redact_diagnostic_text(exc, limit=500)
+                            or "manager call failed"
+                        )
+                        manager_outputs[carbon_id] = json.dumps({
+                            "tools": [
+                                {
+                                    "tool": "reply",
+                                    "message": f"Manager error: {safe_error}",
+                                },
+                                {"tool": "do_nothing"},
+                            ]
+                        })
+
+            all_tools = []
+            pending = {}
+            for carbon_id, output in manager_outputs.items():
+                tools_data = parse_manager_output(output, debug=False)
+                log(
+                    f"[Silicon] Manager output for {carbon_id}: "
+                    f"{_manager_output_for_log(output, tools_data)}"
+                )
+                if tools_data is None:
+                    if output and _is_rate_limit(output):
+                        set_active_task_timer(
+                            carbon_id,
+                            timer_state="paused",
+                            pause_reason="rate_limited",
+                        )
+                        reply_user(_rate_limit_reply_text(output), carbon_id)
+                        continue
+                    if output == TIMEOUT_MSG:
+                        pending[carbon_id] = output
+                        continue
+                    if not output or not output.strip():
+                        error_msg = "Manager must output TOOL JSON. You returned empty output."
+                    elif '"tools"' not in output and "'tools'" not in output:
+                        error_msg = "Manager must output TOOL JSON. No tools key found in your output."
+                    else:
+                        error_msg = "TOOL JSON formatting is incorrect. Could not parse valid JSON."
+                    pending[carbon_id] = error_msg
+                    continue
+
+                if is_only_do_nothing(tools_data):
+                    continue
+                executed_keys = {
+                    json.dumps(t, sort_keys=True)
+                    for t in already_executed.get(carbon_id, [])
+                }
+                for tool_spec in tools_data["tools"]:
+                    key = json.dumps(tool_spec, sort_keys=True)
+                    if tool_spec.get("tool") != "do_nothing" and key not in executed_keys:
+                        all_tools.append((carbon_id, tool_spec))
+
+            if all_tools:
+                results_by_carbon, remaps = execute_all_tools(all_tools)
+                log(
+                    "[Silicon] Tool results: "
+                    f"{_tool_results_for_log(all_tools, results_by_carbon)}"
+                )
+                for old_id, new_id in remaps.items():
+                    if old_id in pending:
+                        pending[new_id] = pending.pop(old_id)
+                    if old_id in traces:
+                        traces[new_id] = traces.pop(old_id)
+                        Diagnostics.rename_active(old_id, new_id)
+                for carbon_id, results in results_by_carbon.items():
+                    if results:
+                        pending[carbon_id] = "Tool execution results:\n" + "\n".join(results)
+
+            for carbon_id in [cid for cid in traces if cid not in pending]:
+                close_trace(carbon_id)
+
+        if pending:
+            log(f"[Silicon] Max manager iterations reached. Remaining: {list(pending.keys())}")
+            for carbon_id in pending:
+                trace = traces.get(carbon_id)
+                if trace is None:
+                    continue
                 try:
-                    output, _, executed_tools = future.result()
-                    manager_outputs[carbon_id] = output
-                    if executed_tools:
-                        already_executed[carbon_id] = executed_tools
-                    send_progress(carbon_id, f"manager:{carbon_id}", "done", "manager finished")
-                except Exception as e:
-                    manager_outputs[carbon_id] = f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}'
-                    send_progress(carbon_id, f"manager:{carbon_id}", "done", f"manager error: {e}")
+                    with trace.span("manager.iteration_limit") as span:
+                        span.status = "error"
+                        span.set_meta(
+                            error="manager retry budget exhausted",
+                            max_iterations=max_iterations,
+                        )
+                    trace.event(
+                        "manager.iteration_limit",
+                        max_iterations=max_iterations,
+                        pending_reason="no_valid_terminal_tool_output",
+                    )
+                except Exception:
+                    pass
+    finally:
+        for carbon_id in list(traces):
+            close_trace(carbon_id)
 
-        # Parse tools from all managers
-        all_tools = []  # list of (carbon_id, tool_spec)
-        pending = {}
 
-        for carbon_id, output in manager_outputs.items():
-            log(f"[Silicon] Manager output for {carbon_id}: {output[:200]}...")
+class ManagerDispatcher:
+    """Serialize turns per contact while allowing unrelated contacts to run.
 
-            tools_data = parse_manager_output(output)
+    Interface ingestion stays live while managers and workers are busy. A new
+    message for an active contact is coalesced into that contact's next turn;
+    a message for another contact starts independently.
+    """
 
-            if tools_data is None:
-                # Check if this is a rate limit message — notify user, don't retry
-                if output and _is_rate_limit(output):
-                    log(f"[Silicon] Rate limit for {carbon_id}: {output[:200]}")
-                    reply_user(output.strip(), carbon_id)
-                    continue
+    def __init__(self, runner=None, *, max_active_contacts=16):
+        self._runner = runner or run_all_managers
+        self._condition = threading.Condition()
+        self._pending = {}
+        self._running = set()
+        self._threads = set()
+        self._closed = False
+        self._slots = threading.BoundedSemaphore(max(1, int(max_active_contacts)))
 
-                # Manager timed out — feed the timeout message back directly
-                if output == TIMEOUT_MSG:
-                    log(f"[Silicon] Manager timeout for {carbon_id}")
-                    pending[carbon_id] = output
-                    continue
-
-                if not output or not output.strip():
-                    error_msg = "Manager must output TOOL JSON. You returned empty output."
-                elif '"tools"' not in output and "'tools'" not in output:
-                    error_msg = "Manager must output TOOL JSON. No tools key found in your output."
-                else:
-                    error_msg = "TOOL JSON formatting is incorrect. Could not parse valid JSON from your output. Make sure the JSON is valid."
-                log(f"[Silicon] Parse error for {carbon_id}: {error_msg}")
-                pending[carbon_id] = error_msg
+    def submit(self, context_by_carbon):
+        """Durably enqueue roots and start only those admitted before the fence."""
+        admissions = []
+        for carbon_id, context in (context_by_carbon or {}).items():
+            if not context:
                 continue
+            result = MAINTENANCE.enqueue_root(carbon_id, str(context))
+            if result.admission is not None:
+                admissions.append(result.admission)
+        self._schedule_admissions(admissions)
 
-            if is_only_do_nothing(tools_data):
-                log(f"[Silicon] Manager for {carbon_id} returned do_nothing.")
-                continue
-
-            # Dedup against tools already executed mid-stream
-            executed_keys = set()
-            if carbon_id in already_executed:
-                executed_keys = {json.dumps(t, sort_keys=True) for t in already_executed[carbon_id]}
-
-            for tool_spec in tools_data["tools"]:
-                if tool_spec.get("tool") == "do_nothing":
+    def _schedule_admissions(self, admissions):
+        started = []
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("manager dispatcher is closed")
+            for admission in admissions:
+                if not isinstance(admission, RootAdmission):
                     continue
-                if json.dumps(tool_spec, sort_keys=True) in executed_keys:
-                    log(f"[Silicon] Skipping (already mid-stream): {tool_spec.get('tool')}")
+                carbon_id = admission.contact_id
+                self._pending.setdefault(carbon_id, []).append(admission)
+                if carbon_id in self._running:
                     continue
-                all_tools.append((carbon_id, tool_spec))
+                self._running.add(carbon_id)
+                thread = threading.Thread(
+                    target=self._run_contact,
+                    args=(carbon_id,),
+                    name=f"manager-dispatch-{carbon_id}",
+                    daemon=True,
+                )
+                self._threads.add(thread)
+                started.append(thread)
+            self._condition.notify_all()
+        for thread in started:
+            thread.start()
 
-        # Execute all tools through centralized executor
-        if all_tools:
-            results_by_carbon, remaps = execute_all_tools(all_tools)
-            log(f"[Silicon] Tool results: {results_by_carbon}")
+    def replay_maintenance_queue(self, *, limit=100):
+        """Claim durable roots after a cancelled/completed maintenance window."""
+        admissions = MAINTENANCE.claim_pending_roots(limit=limit)
+        if admissions:
+            self._schedule_admissions(admissions)
+        return len(admissions)
 
-            # Apply carbon_id remaps to pending
-            for old_id, new_id in remaps.items():
-                if old_id in pending:
-                    pending[new_id] = pending.pop(old_id)
+    def _run_contact(self, carbon_id):
+        released = False
+        try:
+            with self._slots:
+                while True:
+                    with self._condition:
+                        admissions = self._pending.pop(carbon_id, [])
+                        if not admissions:
+                            self._running.discard(carbon_id)
+                            self._threads.discard(threading.current_thread())
+                            released = True
+                            self._condition.notify_all()
+                            return
+                    try:
+                        # One contact's accepted roots may be coalesced into a
+                        # turn, but every durable claim remains leased until
+                        # that turn has actually returned.
+                        with heartbeat_scope(
+                            [item.activity for item in admissions],
+                            coordinator=MAINTENANCE,
+                        ):
+                            self._runner({
+                                carbon_id: "\n\n".join(
+                                    item.context for item in admissions
+                                )
+                            })
+                        MAINTENANCE.complete_roots(admissions)
+                        log(f"[Silicon] Manager loop complete for {carbon_id}.")
+                    except Exception as exc:
+                        MAINTENANCE.retry_roots(admissions)
+                        log(f"[Silicon] Manager dispatcher error for {carbon_id}: {exc}")
+        finally:
+            if not released:
+                with self._condition:
+                    self._running.discard(carbon_id)
+                    self._threads.discard(threading.current_thread())
+                    self._condition.notify_all()
 
-            for carbon_id, results in results_by_carbon.items():
-                if results:
-                    pending[carbon_id] = "Tool execution results:\n" + "\n".join(results)
+    def wait_for_idle(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + max(0, timeout)
+        with self._condition:
+            while self._running or any(self._pending.values()):
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+        return True
 
-    if pending:
-        log(f"[Silicon] Max manager iterations reached. Remaining: {list(pending.keys())}")
+    def shutdown(self, *, wait=False):
+        with self._condition:
+            self._closed = True
+            threads = list(self._threads)
+            self._condition.notify_all()
+        if wait:
+            for thread in threads:
+                thread.join()
+
+
+def _maintenance_runtime_tick(dispatcher, *, attest=True):
+    """Replay released work, publish acknowledgements, and attest quiescence."""
+    try:
+        if MAINTENANCE.public_status()["phase"] == "available":
+            start_listener()
+        else:
+            stop_listener()
+    except Exception as exc:
+        log(f"[Silicon] Maintenance listener fence deferred: {exc}")
+
+    try:
+        reconcile_maintenance_activities()
+    except Exception as exc:
+        log(f"[Silicon] Maintenance worker reconciliation deferred: {exc}")
+
+    try:
+        dispatcher.replay_maintenance_queue()
+    except Exception as exc:
+        log(f"[Silicon] Maintenance replay deferred: {exc}")
+
+    try:
+        if MAINTENANCE.public_status().get("pending_notice_count"):
+            schedule_maintenance_notices()
+    except Exception as exc:
+        log(f"[Silicon] Maintenance acknowledgement deferred: {exc}")
+
+    try:
+        status = MAINTENANCE.public_status()
+        if (
+            attest
+            and status["phase"] == "draining"
+            and status["active_count"] == 0
+            and dispatcher.wait_for_idle(timeout=0)
+        ):
+            from core.background import flush_best_effort
+
+            flushed = flush_best_effort(timeout=0.25)
+            MAINTENANCE.acknowledge_runtime_quiescent(
+                epoch=status["epoch"],
+                outbox_flushed=flushed and maintenance_inbox_quiescent(),
+                pid=os.getpid(),
+            )
+    except Exception as exc:
+        log(f"[Silicon] Maintenance quiescence check deferred: {exc}")
+    try:
+        return MAINTENANCE.public_status()
+    except Exception:
+        return {"phase": "available"}
 
 
 def main():
+    _install_diagnostic_shutdown_hooks()
     log("[Silicon] Starting event loop...")
-    log(f"[Silicon] Tick interval: {LOOP_TICK}s")
+    log(f"[Silicon] Periodic tick interval: {LOOP_TICK}s; Interface wakeups are immediate")
+
+    _bootstrap_team_context()
+    start_listener()
+    dispatcher = ManagerDispatcher()
+    start_runtime_health(
+        lambda: str(MAINTENANCE.public_status().get("phase", "available"))
+    )
 
     # Check if we just restarted
     restart_msg, restart_carbon_id = _check_restart_flag()
     if restart_msg:
         if restart_carbon_id:
             log(f"[Silicon] Post-restart for {restart_carbon_id}: {restart_msg}")
-            run_all_managers({restart_carbon_id: restart_msg})
+            dispatcher.submit({restart_carbon_id: restart_msg})
         else:
             # Find central carbon to notify
             log(f"[Silicon] Post-restart (no carbon_id): {restart_msg}")
             contacts_data = get_contacts()
             for cid, info in contacts_data.get("contacts", {}).items():
                 if info.get("is_central_carbon"):
-                    run_all_managers({cid: restart_msg})
+                    dispatcher.submit({cid: restart_msg})
                     break
 
-    while True:
-        try:
-            # Validate contacts integrity every tick
-            validate_contacts_integrity()
+    next_periodic = 0.0
+    immediate_handlers = {"check_interface", "check_manager_messages"}
+    try:
+        while True:
+            try:
+                maintenance_status = _maintenance_runtime_tick(
+                    dispatcher,
+                    attest=False,
+                )
+                maintenance_active = (
+                    maintenance_status.get("phase") != "available"
+                )
+                now = time.monotonic()
+                periodic_due = now >= next_periodic
+                if periodic_due and not maintenance_active:
+                    validate_contacts_integrity()
 
-            context_by_carbon = run_event_loop_tick()
-
-            if context_by_carbon:
-                context_by_carbon = handle_commands(context_by_carbon)
+                if maintenance_active:
+                    selected_handlers = {
+                        "check_interface",
+                        "check_manager_messages",
+                        "check_workers",
+                    }
+                else:
+                    selected_handlers = (
+                        None if periodic_due else immediate_handlers
+                    )
+                context_by_carbon = run_event_loop_tick(selected_handlers)
+                if periodic_due:
+                    next_periodic = time.monotonic() + LOOP_TICK
 
                 if context_by_carbon:
                     for cid, ctx in context_by_carbon.items():
                         log(f"[Silicon] Context for {cid}:\n{ctx[:200]}...")
-                    run_all_managers(context_by_carbon)
-                    log("[Silicon] All manager loops done.")
-
-        except KeyboardInterrupt:
-            log("\n[Silicon] Shutting down.")
-            sys.exit(0)
-        except Exception as e:
-            log(f"[Silicon] Error: {e}")
-
-        time.sleep(LOOP_TICK)
+                    dispatcher.submit(context_by_carbon)
+                _maintenance_runtime_tick(dispatcher, attest=True)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                log(f"[Silicon] Error: {exc}")
+                if next_periodic <= time.monotonic():
+                    next_periodic = time.monotonic() + min(float(LOOP_TICK), 1.0)
+            timeout = max(0.0, next_periodic - time.monotonic())
+            # Maintenance requests are raised by silicon-cli in another
+            # process, so cap the sleep even when no Interface event arrives.
+            wait_for_runtime_activity(min(timeout, 0.5))
+    except KeyboardInterrupt:
+        log("\n[Silicon] Shutting down.")
+        raise SystemExit(0)
+    finally:
+        stop_runtime_health()
+        stop_listener()
+        dispatcher.shutdown(wait=False)
 
 
 def run_headed_browser():
@@ -688,7 +1632,7 @@ def run_headed_browser():
     silicon-browser has built-in stealth and bundles its own browser."""
     from worker.handler import SILICON_BROWSER_PROFILE
 
-    log(f"[Silicon] Opening headed browser for login")
+    log("[Silicon] Opening headed browser for login")
     log(f"[Silicon] Profile: {SILICON_BROWSER_PROFILE}")
     log("[Silicon] Log into any services you need. Press Ctrl+C when done.")
     log("")
@@ -716,24 +1660,37 @@ def run_headed_browser():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "diag":
+        from core.diag_cli import main as diag_main
+
+        raise SystemExit(diag_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] in {"update", "update-check"}:
         from update import main as update_main
 
         raise SystemExit(update_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
+        from core.maintenance import main as maintenance_main
 
-    # Maintain the pull-only GitHub connection and seed any missing living files
-    # from templates — every start, so the install self-connects and self-heals.
-    # Best-effort; never blocks boot. (Tarball installs are converted by the
-    # one-time migration, not here.)
+        raise SystemExit(maintenance_main(["--root", PROJECT_ROOT, *sys.argv[2:]]))
+
+    # Seed missing living files from tracked templates. Source updates are owned
+    # exclusively by the offline silicon-cli update flow; runtime boot never
+    # fetches Git or mutates repository configuration.
     try:
-        from core.git_update import ensure_git_connected, seed_living_files
+        from core.backup import ensure_manifest_file
+        from core.living_files import seed_living_files
 
-        ensure_git_connected()
+        archived = ensure_manifest_file(PROJECT_ROOT)
+        if archived:
+            log(
+                "[Silicon] Archived legacy backup directory: "
+                + ", ".join(archived)
+            )
         seeded = seed_living_files()
         if seeded:
             log(f"[Silicon] Seeded {len(seeded)} living file(s) from templates.")
     except Exception as e:
-        log(f"[Silicon] git connect/seed skipped: {e}")
+        log(f"[Silicon] living-file seed skipped: {e}")
 
     # Glass is the single source of truth for provider API keys — pull them into
     # the environment before the brain CLIs or any browser subprocess run, so

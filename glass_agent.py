@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import pty
 import re
 import secrets
 import shlex
@@ -24,12 +23,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+
+from core.runtime_paths import CODE_ROOT, DATA_ROOT
+
+try:
+    import pty
+except ImportError:  # Windows has no pseudo-terminal module.
+    pty = None
 
 STATUS_INTERVAL = 15
 PING_INTERVAL = 20
+DIAGNOSTICS_INTERVAL = 5
+TEAM_CONTEXT_INTERVAL = 60
+TRUST_POLICY_INTERVAL = 60
 MAX_BACKOFF = 30
+AUTH_REJECTION_BACKOFF = 5 * 60
 REGISTRY_TIMEOUT = 8
 NPM_LIST_TIMEOUT = 12
 NPM_RUNTIME_PACKAGES = (
@@ -67,10 +77,182 @@ TERMINAL_COMMANDS = {
 SEND_LOCK = threading.Lock()
 TERMINAL_LOCK = threading.Lock()
 TERMINAL_SESSION: dict[str, object] = {}
+DIAGNOSTIC_RECOVERY_CHECK_INTERVAL = 60
+DIAGNOSTIC_RECOVERY_CHECKS: dict[tuple[str, str, int | None], float] = {}
+
+
+class TeamContextReconciler:
+    """Run context reconciliation off the WebSocket thread and coalesce nudges."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self._condition = threading.Condition()
+        self._pending = False
+        self._force = False
+        self._reasons: set[str] = set()
+        self._stopped = False
+        self._thread: threading.Thread | None = None
+
+    def request(self, *, force: bool = False, reason: str = "") -> None:
+        with self._condition:
+            if self._stopped:
+                return
+            self._pending = True
+            self._force = self._force or force
+            if reason and len(self._reasons) < 8:
+                self._reasons.add(str(reason)[:120])
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="team-context-reconciler",
+                    daemon=True,
+                )
+                self._thread.start()
+            self._condition.notify()
+
+    def stop(self, timeout: float = 2) -> None:
+        with self._condition:
+            self._stopped = True
+            self._condition.notify()
+            thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending and not self._stopped:
+                    self._condition.wait()
+                if self._stopped:
+                    return
+                force = self._force
+                reason = ",".join(sorted(self._reasons))[:240]
+                self._pending = False
+                self._force = False
+                self._reasons.clear()
+
+            try:
+                # Dynamic import keeps the sidecar alive across partial updates
+                # and makes a missing/transient sync dependency fail open.
+                from core.team_context import reconcile_team_context
+                from core.maintenance import (
+                    MaintenanceCoordinator,
+                    heartbeat_scope,
+                )
+
+                coordinator = MaintenanceCoordinator(self.root)
+                activity = coordinator.acquire_activity(
+                    "glass_team_context_sync",
+                    activity_id="glass-team-context",
+                )
+                if activity is None:
+                    continue
+                try:
+                    with heartbeat_scope(
+                        [activity],
+                        coordinator=coordinator,
+                    ):
+                        reconcile_team_context(
+                            self.root,
+                            force=force,
+                            reason=reason,
+                        )
+                finally:
+                    coordinator.release(activity)
+            except Exception as exc:
+                print(
+                    f"[glass-agent] team context reconciliation deferred: {str(exc)[:300]}",
+                    flush=True,
+                )
+
+
+class TrustPolicyReconciler:
+    """Coalesce Glass trust invalidations away from the WebSocket thread."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self._condition = threading.Condition()
+        self._pending = False
+        self._force = False
+        self._reasons: set[str] = set()
+        self._stopped = False
+        self._thread: threading.Thread | None = None
+
+    def request(self, *, force: bool = False, reason: str = "") -> None:
+        with self._condition:
+            if self._stopped:
+                return
+            self._pending = True
+            self._force = self._force or force
+            if reason and len(self._reasons) < 8:
+                self._reasons.add(str(reason)[:120])
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="trust-policy-reconciler",
+                    daemon=True,
+                )
+                self._thread.start()
+            self._condition.notify()
+
+    def stop(self, timeout: float = 2) -> None:
+        with self._condition:
+            self._stopped = True
+            self._condition.notify()
+            thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending and not self._stopped:
+                    self._condition.wait()
+                if self._stopped:
+                    return
+                force = self._force
+                reason = ",".join(sorted(self._reasons))[:240]
+                self._pending = False
+                self._force = False
+                self._reasons.clear()
+            try:
+                from core.maintenance import MaintenanceCoordinator, heartbeat_scope
+                from core.trust import reconcile_trust_policy
+
+                coordinator = MaintenanceCoordinator(self.root)
+                activity = coordinator.acquire_activity(
+                    "glass_trust_sync",
+                    activity_id="glass-trust",
+                )
+                if activity is None:
+                    continue
+                try:
+                    with heartbeat_scope([activity], coordinator=coordinator):
+                        reconcile_trust_policy(
+                            self.root,
+                            force=force,
+                            reason=reason,
+                        )
+                finally:
+                    coordinator.release(activity)
+            except Exception as exc:
+                print(
+                    f"[glass-agent] trust reconciliation deferred: {str(exc)[:300]}",
+                    flush=True,
+                )
 
 
 def silicon_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return DATA_ROOT
+
+
+def release_dir(root: Path) -> Path:
+    """Return active code for the real instance, preserving explicit test roots."""
+
+    try:
+        return CODE_ROOT if Path(root).resolve() == DATA_ROOT else Path(root)
+    except OSError:
+        return Path(root)
 
 
 def local_bin_dir(root: Path) -> Path:
@@ -85,10 +267,21 @@ def prepend_local_bin(root: Path) -> None:
 
 
 def load_config(root: Path) -> dict:
-    path = root / ".glass.json"
-    if not path.exists():
+    # Share the runtime's exact-root, no-symlink loader so the sidecar cannot
+    # inherit another Silicon's credentials and legacy 0644 files are hardened
+    # to owner-only permissions before use.
+    from core.glass import load_glass_config
+
+    try:
+        config, _path = load_glass_config(root)
+    except FileNotFoundError:
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return config
+
+
+def glass_api_key(config: dict) -> str:
+    """Return either supported spelling of the per-Silicon credential."""
+    return str(config.get("api_key") or config.get("silicon_api_key") or "").strip()
 
 
 def silicon_name(root: Path) -> str:
@@ -103,7 +296,7 @@ def silicon_name(root: Path) -> str:
 
 
 def local_version(root: Path) -> str:
-    path = root / "silicon.info"
+    path = release_dir(root) / "silicon.info"
     if path.exists():
         try:
             return json.loads(path.read_text(encoding="utf-8")).get("version", "")
@@ -112,14 +305,71 @@ def local_version(root: Path) -> str:
     return ""
 
 
-def ws_url(server_url: str, api_key: str) -> str:
-    base = server_url.rstrip("/")
-    if base.startswith("https://"):
-        base = "wss://" + base[8:]
-    elif base.startswith("http://"):
-        base = "ws://" + base[7:]
-    sep = "&" if "?" in base else "?"
-    return f"{base}/ws/glass/agent/{sep}silicon_key={api_key}"
+def ws_url(server_url: str) -> str:
+    """Build a credential-safe Glass agent URL.
+
+    The agent always authenticates this socket with a permanent Silicon key, so
+    plaintext WebSockets are allowed only for loopback development servers.
+    Reject URL features that could obscure the authenticated destination.
+    """
+
+    from core.glass import GlassConfigurationError, validate_authenticated_origin
+
+    try:
+        validated = validate_authenticated_origin(server_url)
+        parsed = urlsplit(validated)
+    except (GlassConfigurationError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Refusing to send a Silicon API key to an unsafe Glass WebSocket URL."
+        ) from exc
+
+    websocket_scheme = "wss" if parsed.scheme.lower() == "https" else "ws"
+    websocket_path = f"{parsed.path.rstrip('/')}/ws/glass/agent/"
+    return urlunsplit(
+        parsed._replace(
+            scheme=websocket_scheme,
+            path=websocket_path,
+            query="",
+            fragment="",
+        )
+    )
+
+
+def is_authentication_rejection(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    return status in {401, 403}
+
+
+def wait_for_retry(
+    root: Path,
+    running: list[bool],
+    delay: int,
+    rejected_key: str = "",
+    rejected_server_url: str | None = None,
+) -> None:
+    """Wait interruptibly, optionally waking when credentials are repaired."""
+
+    deadline = time.monotonic() + max(0, delay)
+    while running[0] and time.monotonic() < deadline:
+        try:
+            current_config = load_config(root)
+            current_key = glass_api_key(current_config)
+            current_server_url = str(current_config.get("server_url") or "")
+        except (OSError, ValueError, TypeError):
+            current_key = ""
+            current_server_url = ""
+        if current_key and current_server_url:
+            if rejected_server_url is not None and (
+                not secrets.compare_digest(current_key, rejected_key)
+                or current_server_url != rejected_server_url
+            ):
+                return
+            if rejected_key and not secrets.compare_digest(current_key, rejected_key):
+                return
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
 
 
 def ssl_context() -> ssl.SSLContext:
@@ -149,6 +399,74 @@ def send_json(ws, payload: dict) -> None:
         ws.send(json.dumps(payload, separators=(",", ":")))
 
 
+def drain_diagnostics(ws, root: Path, config: dict) -> int:
+    """Push completed traces over the authenticated agent socket, fail-open."""
+    if config.get("diag_push", True) is False:
+        return 0
+    coordinator = None
+    activity = None
+    heartbeat_context = None
+    try:
+        from core.maintenance import MaintenanceCoordinator, heartbeat_scope
+
+        coordinator = MaintenanceCoordinator(root)
+        activity = coordinator.acquire_activity(
+            "glass_diagnostics",
+            activity_id="diagnostic-drain",
+        )
+        if activity is None:
+            return 0
+        heartbeat_context = heartbeat_scope(
+            [activity],
+            coordinator=coordinator,
+        )
+        heartbeat_context.__enter__()
+        from core.glass_diag_push import (
+            drain,
+            recover_abandoned_traces,
+            resolve_db_path,
+        )
+
+        db_path = resolve_db_path(root, config.get("diag_db"))
+        service_status = detect_status(root)
+        current_pid = None
+        try:
+            current_pid = int((root / ".silicon.pid").read_text(encoding="utf-8").strip())
+        except (OSError, TypeError, ValueError):
+            pass
+        recovery_signature = (str(root), service_status, current_pid)
+        last_recovery_check = DIAGNOSTIC_RECOVERY_CHECKS.get(recovery_signature, 0)
+        if time.time() - last_recovery_check >= DIAGNOSTIC_RECOVERY_CHECK_INTERVAL:
+            recovered = recover_abandoned_traces(
+                db_path,
+                current_pid=current_pid,
+                service_running=service_status == "running",
+            )
+            DIAGNOSTIC_RECOVERY_CHECKS[recovery_signature] = time.time()
+            if recovered:
+                send_json(ws, {
+                    "type": "log",
+                    "level": "error",
+                    "source": "diagnostics",
+                    "msg": f"Recovered {recovered} diagnostic run(s) abandoned by an earlier process.",
+                })
+        if not os.path.exists(db_path):
+            return 0
+        return drain(
+            db_path,
+            lambda frame: send_json(ws, frame),
+            mark_on_send=False,
+        )
+    except Exception as exc:
+        print(f"[glass-agent] diagnostics drain deferred: {exc}", flush=True)
+        return 0
+    finally:
+        if heartbeat_context is not None:
+            heartbeat_context.__exit__(None, None, None)
+        if coordinator is not None and activity is not None:
+            coordinator.release(activity)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -163,13 +481,35 @@ def status_payload(root: Path) -> dict:
 
 
 def run_backup(root: Path, note: str = "glass command") -> tuple[str, str]:
+    coordinator = None
+    activity = None
     try:
+        from core.maintenance import (
+            MaintenanceCoordinator,
+            heartbeat_scope,
+        )
+
+        coordinator = MaintenanceCoordinator(root)
+        activity = coordinator.acquire_activity(
+            "backup",
+            activity_id="glass-backup",
+        )
+        if activity is None:
+            return "failed", "Silicon is preparing an update; backup start is deferred."
         from core.backup import run_backup as manifest_backup
 
-        ok = manifest_backup(root, note=note, logger=lambda msg: print(f"[glass-agent] {msg}", flush=True))
+        with heartbeat_scope([activity], coordinator=coordinator):
+            ok = manifest_backup(
+                root,
+                note=note,
+                logger=lambda msg: print(f"[glass-agent] {msg}", flush=True),
+            )
         return ("done", "backup complete") if ok else ("failed", "backup skipped")
     except Exception as exc:
         return "failed", str(exc)
+    finally:
+        if coordinator is not None and activity is not None:
+            coordinator.release(activity)
 
 
 def _request_json(url: str) -> dict:
@@ -384,7 +724,7 @@ def _dependency_status(installed: str, latest: str) -> str:
 def dependency_report(root: Path) -> dict:
     packages: list[dict] = []
     errors: list[str] = []
-    requirements = _python_requirements(root)
+    requirements = _python_requirements(release_dir(root))
     script_packages = [str(item.get("package") or "") for item in SCRIPT_CLIS]
     pypi_latest = _lookup_many([name for name, _ in requirements] + script_packages, _latest_pypi_version)
     npm_latest = _lookup_many(
@@ -506,250 +846,6 @@ def dependency_report(root: Path) -> dict:
     }
 
 
-def _trim(text: str, limit: int = 500) -> str:
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[-limit:]
-
-
-def _run_install(cmd: list[str], root: Path, timeout: int = 900) -> dict:
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        detail = _trim(proc.stderr or proc.stdout or "")
-        return {
-            "command": " ".join(cmd),
-            "ok": proc.returncode == 0,
-            "returncode": proc.returncode,
-            "detail": detail,
-        }
-    except Exception as exc:
-        return {"command": " ".join(cmd), "ok": False, "returncode": None, "detail": str(exc)}
-
-
-def _combine_install_results(results: list[dict]) -> dict:
-    detail = "\n".join(_trim(str(r.get("detail") or "")) for r in results if r.get("detail"))
-    failed = next((r for r in results if not r.get("ok")), None)
-    last = results[-1] if results else {}
-    return {
-        "command": " && ".join(str(r.get("command") or "") for r in results if r.get("command")),
-        "ok": failed is None,
-        "returncode": (failed or last).get("returncode"),
-        "detail": _trim(detail, limit=1000),
-    }
-
-
-def _reinstall_python_package(
-    runner: list[str],
-    root: Path,
-    package: str,
-    requirement: str,
-) -> dict:
-    uninstall = _run_install([*runner, "-m", "pip", "uninstall", "-y", package], root, timeout=600)
-    install = _run_install([*runner, "-m", "pip", "install", requirement], root, timeout=1200)
-    return _combine_install_results([uninstall, install])
-
-
-def _clear_local_npm_cli(root: Path, item: dict) -> dict:
-    if item.get("name") != "@teamofsilicons/silicon-interface-cli":
-        return {"command": f"{item.get('name')}: no local uninstall step", "ok": True, "returncode": 0, "detail": ""}
-
-    interface_root = root / ".silicon-interface"
-    paths = [
-        interface_root / "package",
-        interface_root / "bin" / "si",
-        interface_root / "bin" / "silicon-interface",
-    ]
-    removed: list[str] = []
-    try:
-        for path in paths:
-            if path.is_dir():
-                shutil.rmtree(path)
-                removed.append(str(path.relative_to(root)))
-            elif path.exists() or path.is_symlink():
-                path.unlink()
-                removed.append(str(path.relative_to(root)))
-    except Exception as exc:
-        return {
-            "command": f"remove local {item.get('install_command') or item.get('name')}",
-            "ok": False,
-            "returncode": None,
-            "detail": str(exc),
-        }
-    return {
-        "command": f"remove local {item.get('install_command') or item.get('name')}",
-        "ok": True,
-        "returncode": 0,
-        "detail": "removed " + ", ".join(removed) if removed else "nothing to remove",
-    }
-
-
-def _update_python_cli(root: Path, item: dict) -> dict:
-    command = str(item["command"])
-    package = str(item["package"])
-    target = str(item.get("target_version") or "").strip()
-    requirement = f"{package}=={target}" if target else package
-    exe = _resolve_command(root, command)
-    if not exe:
-        return {
-            "command": f"{command}: upgrade Python package {requirement}",
-            "ok": False,
-            "returncode": None,
-            "detail": f"{command} not found",
-        }
-    runner = _python_runner_from_executable(exe)
-    if not runner:
-        return {
-            "command": f"{command}: upgrade Python package {package}",
-            "ok": False,
-            "returncode": None,
-            "detail": f"{command} is not a Python-backed CLI",
-        }
-    result = _reinstall_python_package(runner, root, package, requirement)
-    if result.get("ok"):
-        return result
-
-    # Some fleet images have Python CLIs in a root-owned /opt runtime. Fall back
-    # to a per-silicon venv and put its console script first on PATH.
-    tool_root = root / ".tools" / command
-    bin_dir = local_bin_dir(root)
-    venv_python = tool_root / "bin" / "python"
-    try:
-        tool_root.parent.mkdir(parents=True, exist_ok=True)
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        if not venv_python.exists():
-            create = subprocess.run(
-                [sys.executable, "-m", "venv", str(tool_root)],
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if create.returncode != 0:
-                detail = _trim(create.stderr or create.stdout or "")
-                result["detail"] = f"{result.get('detail') or ''}\nlocal venv create failed: {detail}".strip()
-                return result
-        fallback = _reinstall_python_package([str(venv_python)], root, package, requirement)
-        script = tool_root / "bin" / command
-        target = bin_dir / command
-        if fallback.get("ok") and script.exists():
-            if target.exists() or target.is_symlink():
-                target.unlink()
-            target.symlink_to(script)
-            prepend_local_bin(root)
-            fallback["command"] = f"{fallback['command']} && link {target}"
-        return fallback
-    except Exception as exc:
-        result["detail"] = f"{result.get('detail') or ''}\nlocal install failed: {exc}".strip()
-        return result
-
-
-def update_dependencies(root: Path) -> dict:
-    install_results: list[dict] = []
-    req = root / "requirements.txt"
-    if req.exists():
-        attempts = [
-            [sys.executable, "-m", "pip", "install", "--upgrade", "-r", str(req)],
-            [sys.executable, "-m", "pip", "install", "--upgrade", "--user", "-r", str(req)],
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "--break-system-packages",
-                "-r",
-                str(req),
-            ],
-        ]
-        for cmd in attempts:
-            result = _run_install(cmd, root)
-            install_results.append(result)
-            if result["ok"]:
-                break
-
-    npm = shutil.which("npm")
-    if npm:
-        install_results.append(
-            _run_install(
-                [npm, "install", "-g", *(item["name"] for item in NPM_RUNTIME_PACKAGES)],
-                root,
-                timeout=1200,
-            )
-        )
-    else:
-        install_results.append(
-            {
-                "command": "npm install -g " + " ".join(item["name"] for item in NPM_RUNTIME_PACKAGES),
-                "ok": False,
-                "returncode": None,
-                "detail": "npm not found",
-            }
-        )
-
-    for item in LOCAL_NPM_CLIS:
-        uninstall = _clear_local_npm_cli(root, item)
-        if not uninstall.get("ok"):
-            install_results.append(uninstall)
-            continue
-        if npm:
-            install = _run_install(
-                [
-                    npm,
-                    "exec",
-                    "--yes",
-                    "--package",
-                    item["name"],
-                    "--",
-                    item["install_command"],
-                    "install",
-                    str(root),
-                ],
-                root,
-                timeout=1200,
-            )
-            install_results.append(_combine_install_results([uninstall, install]))
-        else:
-            missing = {
-                "command": f"npm exec --package {item['name']} -- {item['install_command']} install {root}",
-                "ok": False,
-                "returncode": None,
-                "detail": "npm not found",
-            }
-            install_results.append(_combine_install_results([uninstall, missing]))
-
-    for item in SCRIPT_CLIS:
-        if item.get("update_kind") == "python_cli":
-            install_results.append(_update_python_cli(root, item))
-            continue
-        exe = _resolve_command(root, item["command"])
-        if exe:
-            install_results.append(
-                _run_install([exe, *item["update_args"]], root, timeout=900)
-            )
-        else:
-            install_results.append(
-                {
-                    "command": " ".join((item["command"], *item["update_args"])),
-                    "ok": False,
-                    "returncode": None,
-                    "detail": f"{item['command']} not found",
-                }
-            )
-
-    report = dependency_report(root)
-    report["updated_at"] = now_iso()
-    report["install_results"] = install_results
-    report["summary"]["failed_installs"] = sum(1 for r in install_results if not r.get("ok"))
-    return report
-
-
 def dependency_summary_text(report: dict, *, updated: bool = False) -> str:
     summary = report.get("summary") or {}
     total = int(summary.get("total") or 0)
@@ -792,6 +888,11 @@ def _terminal_reader(ws, session_id: str, provider: str, fd: int, proc: subproce
                 rc = None
         with TERMINAL_LOCK:
             current = TERMINAL_SESSION.get("id") == session_id
+            maintenance_activity = (
+                dict(TERMINAL_SESSION.get("maintenance_activity") or {})
+                if current
+                else {}
+            )
             if current:
                 TERMINAL_SESSION.clear()
         try:
@@ -799,6 +900,14 @@ def _terminal_reader(ws, session_id: str, provider: str, fd: int, proc: subproce
         except OSError:
             pass
         if current:
+            try:
+                from core.maintenance import MaintenanceCoordinator
+
+                lease_id = str(maintenance_activity.get("lease_id") or "")
+                if lease_id:
+                    MaintenanceCoordinator(silicon_dir()).release(lease_id)
+            except Exception:
+                pass
             terminal_frame(
                 ws,
                 event="exit",
@@ -832,6 +941,29 @@ def terminal_stop(ws=None, reason: str = "stopped") -> bool:
         except OSError:
             pass
 
+    reference = dict(session.get("maintenance_activity") or {})
+    if isinstance(proc, subprocess.Popen) and reference:
+        def release_when_stopped():
+            try:
+                from core.maintenance import MaintenanceCoordinator
+
+                coordinator = MaintenanceCoordinator(silicon_dir())
+                lease_id = str(reference.get("lease_id") or "")
+                while proc.poll() is None:
+                    if lease_id:
+                        coordinator.heartbeat(lease_id)
+                    time.sleep(1)
+                if lease_id:
+                    coordinator.release(lease_id)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=release_when_stopped,
+            name="glass-terminal-stop-lease",
+            daemon=True,
+        ).start()
+
     if ws is not None:
         terminal_frame(
             ws,
@@ -856,9 +988,38 @@ def terminal_start(ws, root: Path, provider: str) -> None:
         return
 
     terminal_stop(ws, reason="replaced")
+    if pty is None:
+        terminal_frame(
+            ws,
+            event="error",
+            provider=provider,
+            message="interactive Glass terminals are not supported on this platform",
+        )
+        return
+    try:
+        from core.maintenance import MaintenanceCoordinator
+
+        coordinator = MaintenanceCoordinator(root)
+        maintenance_activity = coordinator.acquire_activity(
+            "glass_terminal",
+            activity_id=f"interactive-{provider}",
+        )
+    except Exception:
+        maintenance_activity = None
+        coordinator = None
+    if maintenance_activity is None:
+        terminal_frame(
+            ws,
+            event="error",
+            provider=provider,
+            message="Silicon is preparing an update; new terminal sessions are paused.",
+        )
+        return
     try:
         master_fd, slave_fd = pty.openpty()
     except OSError as exc:
+        if coordinator is not None:
+            coordinator.release(maintenance_activity)
         terminal_frame(ws, event="error", provider=provider, message=str(exc))
         return
 
@@ -877,6 +1038,8 @@ def terminal_start(ws, root: Path, provider: str) -> None:
             start_new_session=True,
         )
     except Exception as exc:
+        if coordinator is not None:
+            coordinator.release(maintenance_activity)
         try:
             os.close(master_fd)
             os.close(slave_fd)
@@ -892,7 +1055,13 @@ def terminal_start(ws, root: Path, provider: str) -> None:
     session_id = secrets.token_hex(8)
     with TERMINAL_LOCK:
         TERMINAL_SESSION.update(
-            {"id": session_id, "provider": provider, "proc": proc, "fd": master_fd}
+            {
+                "id": session_id,
+                "provider": provider,
+                "proc": proc,
+                "fd": master_fd,
+                "maintenance_activity": maintenance_activity.reference(),
+            }
         )
     terminal_frame(
         ws,
@@ -907,6 +1076,22 @@ def terminal_start(ws, root: Path, provider: str) -> None:
         daemon=True,
     )
     thread.start()
+    def heartbeat_terminal():
+        while proc.poll() is None:
+            with TERMINAL_LOCK:
+                if TERMINAL_SESSION.get("id") != session_id:
+                    return
+            if coordinator is None or not coordinator.heartbeat(
+                maintenance_activity
+            ):
+                return
+            time.sleep(20)
+
+    threading.Thread(
+        target=heartbeat_terminal,
+        name=f"glass-terminal-lease-{session_id}",
+        daemon=True,
+    ).start()
 
 
 def terminal_input(ws, data: str) -> None:
@@ -941,19 +1126,58 @@ def handle_terminal_message(ws, msg: dict, root: Path) -> None:
         terminal_frame(ws, event="error", message="unknown terminal action")
 
 
+def _spawn_silicon_cli(root: Path, action: str, *, delay: float = 0) -> None:
+    """Run the platform CLI from this instance without shell-injected targets."""
+
+    if action not in {"start", "stop", "restart"}:
+        raise ValueError("Unsupported Silicon lifecycle action.")
+    child = (
+        "import os,shutil,subprocess,sys,time;"
+        "time.sleep(float(sys.argv[1]));"
+        "cli=shutil.which('silicon') or 'silicon';"
+        "cmd=([os.environ.get('COMSPEC','cmd.exe'),'/d','/s','/c',cli,sys.argv[3]]"
+        " if os.name=='nt' and cli.lower().endswith(('.cmd','.bat'))"
+        " else [cli,sys.argv[3]]);"
+        "raise SystemExit(subprocess.call(cmd,cwd=sys.argv[2],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))"
+    )
+    kwargs: dict[str, object] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child,
+            str(max(0, delay)),
+            str(root),
+            action,
+        ],
+        **kwargs,
+    )
+
+
 def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
     action = command.get("command", "")
     if action in {"backup", "backup_now"}:
         return run_backup(root, note=f"glass command {command.get('id') or ''}".strip())
     if action == "start":
         try:
-            subprocess.Popen(["silicon", "start", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            _spawn_silicon_cli(root, "start")
             return "done", "started"
         except Exception as exc:
             return "failed", str(exc)
     if action == "stop":
         try:
-            subprocess.Popen(["silicon", "stop", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            _spawn_silicon_cli(root, "stop")
             return "done", "stopped"
         except Exception as exc:
             return "failed", str(exc)
@@ -968,57 +1192,92 @@ def execute_command(command: dict, root: Path, name: str) -> tuple[str, str]:
         }
         return "done", dependency_summary_text(report)
     if action in {"dependency_update", "dependencies_update"}:
-        report = update_dependencies(root)
+        report = dependency_report(root)
         command["_status_patch"] = {
             "dependencies": report,
             "dependency_check_at": report.get("checked_at"),
-            "dependency_update_at": report.get("updated_at"),
         }
-        failed = int((report.get("summary") or {}).get("failed_installs") or 0)
-        status = "failed" if failed else "done"
-        return status, dependency_summary_text(report, updated=True)
+        return (
+            "failed",
+            "in-process dependency mutation is disabled; run "
+            "`silicon update <name>` from the host so silicon-cli drains the "
+            "Silicon and hydrates dependencies transactionally",
+        )
     if action in {"fetch_latest", "update_check", "update", "git_update"}:
-        # Git-based, pull-only update: merge upstream while preserving the
-        # silicon's own code + living data, then restart to load it. The version
-        # rides in via the merged silicon.info; the status frame sent right after
-        # this command reports it to Glass (which is what the rollout polls).
+        # The running instance may check release status, but source mutation is
+        # owned exclusively by the host silicon-cli transactional updater.
         try:
-            proc = subprocess.run(
-                [
-                    sys.executable, "-c",
-                    "import json,sys; sys.path.insert(0, '.'); "
-                    "from core.git_update import git_apply; print(json.dumps(git_apply()))",
-                ],
-                cwd=str(root), capture_output=True, text=True, timeout=1800,
-            )
-            lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
-            result = json.loads(lines[-1]) if lines else {}
-        except Exception as exc:
-            return "failed", f"git update error: {exc}"
+            from update import trigger_system_update_check
 
-        st = result.get("status")
-        if st == "up_to_date":
-            command["_agent_reexec"] = True
-            return "done", f"already on {result.get('version')}"
-        if st == "updated":
-            # Restart silicon + agent to load the new code. Delay a few seconds
-            # so this command's status/result frames reach Glass before the stop
-            # tears us down. Pass `name` as $1 so it can't be shell-injected.
-            command["_agent_reexec"] = True
-            try:
-                subprocess.Popen(
-                    ["sh", "-c", 'sleep 3; silicon restart "$1"', "_", name],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                )
-            except Exception as exc:
-                return "done", f"updated to {result.get('version')} (restart failed: {exc})"
-            mode = result.get("mode")
-            return "done", f"updated to {result.get('version')}{f' ({mode})' if mode else ''}; restarting"
-        return "failed", result.get("detail") or "git update failed"
+            result = trigger_system_update_check(force=True)
+        except Exception as exc:
+            return "failed", f"update check failed: {exc}"
+
+        if result.get("status") == "error":
+            return "failed", str(result.get("error") or "update check failed")
+        local = str(result.get("local_version") or "unversioned")
+        latest = str(result.get("latest_version") or "")
+        if not result.get("update_available"):
+            return "done", f"already on {local}"
+        detail = (
+            f"update {local} → {latest} is available; run "
+            "`silicon update <name>` from the host (it drains, stops, and "
+            "restarts the Silicon safely)"
+        )
+        if action in {"fetch_latest", "update_check"}:
+            return "done", detail
+        return "failed", detail
     return "failed", f"unknown command: {action}"
 
 
-def handle_message(ws, msg: dict, root: Path, name: str) -> None:
+def _team_context_change_reason(msg: dict) -> str:
+    kind = re.sub(r"[^a-z0-9_.-]+", "-", str(msg.get("kind") or "").lower()).strip("-")
+    return f"websocket-invalidation:{kind}" if kind else "websocket-invalidation"
+
+
+def _request_team_context_reconcile(
+    reconciler: TeamContextReconciler | None,
+    *,
+    force: bool = False,
+    reason: str,
+) -> None:
+    if reconciler is None:
+        return
+    try:
+        reconciler.request(force=force, reason=reason)
+    except Exception as exc:
+        print(
+            f"[glass-agent] team context scheduling deferred: {str(exc)[:300]}",
+            flush=True,
+        )
+
+
+def _request_trust_reconcile(
+    reconciler: TrustPolicyReconciler | None,
+    *,
+    force: bool = False,
+    reason: str,
+) -> None:
+    if reconciler is None:
+        return
+    try:
+        reconciler.request(force=force, reason=reason)
+    except Exception as exc:
+        print(
+            f"[glass-agent] trust scheduling deferred: {str(exc)[:300]}",
+            flush=True,
+        )
+
+
+def handle_message(
+    ws,
+    msg: dict,
+    root: Path,
+    name: str,
+    config: dict | None = None,
+    team_context_reconciler: TeamContextReconciler | None = None,
+    trust_policy_reconciler: TrustPolicyReconciler | None = None,
+) -> None:
     msg_type = msg.get("type")
     if msg_type == "welcome":
         print("[glass-agent] welcome", flush=True)
@@ -1027,6 +1286,50 @@ def handle_message(ws, msg: dict, root: Path, name: str) -> None:
         print(f"[glass-agent] billing: {msg.get('status') or msg.get('message') or 'ok'}", flush=True)
         return
     if msg_type == "pong":
+        return
+    if msg_type == "team_context.changed":
+        _request_team_context_reconcile(
+            team_context_reconciler,
+            reason=_team_context_change_reason(msg),
+        )
+        return
+    if msg_type == "trust.changed":
+        _request_trust_reconcile(
+            trust_policy_reconciler,
+            reason="websocket-invalidation:trust",
+        )
+        return
+    if msg_type == "diag.rollup.ack":
+        try:
+            from core.glass_diag_push import acknowledge, resolve_db_path
+
+            settings = config or {}
+            db_path = resolve_db_path(root, settings.get("diag_db"))
+            stored = bool(msg.get("stored"))
+            acknowledge(
+                db_path,
+                msg.get("run_id", ""),
+                stored=stored,
+                reason=msg.get("reason", ""),
+            )
+            if not stored:
+                rejection = str(msg.get("reason") or "invalid rollup")[:300]
+                print(
+                    f"[glass-agent] diagnostic rejected run_id={msg.get('run_id', '')}: "
+                    f"{rejection}",
+                    flush=True,
+                )
+                send_json(ws, {
+                    "type": "log",
+                    "level": "error",
+                    "source": "diagnostics",
+                    "msg": (
+                        f"Diagnostic rollup rejected for run "
+                        f"{str(msg.get('run_id') or '')[:64]}: {rejection}"
+                    ),
+                })
+        except Exception as exc:
+            print(f"[glass-agent] diagnostic ack deferred: {exc}", flush=True)
         return
     if msg_type == "terminal":
         handle_terminal_message(ws, msg, root)
@@ -1060,34 +1363,90 @@ def handle_message(ws, msg: dict, root: Path, name: str) -> None:
         os.execv(sys.executable, [sys.executable, "-u", str(Path(__file__).resolve())])
 
 
-def run_live(root: Path, config: dict, running: list[bool]) -> None:
+def run_live(
+    root: Path,
+    config: dict,
+    running: list[bool],
+    *,
+    team_context_reconciler: TeamContextReconciler | None = None,
+    trust_policy_reconciler: TrustPolicyReconciler | None = None,
+    on_connected=None,
+) -> None:
     from websockets.sync.client import connect
 
     name = silicon_name(root)
-    url = ws_url(config["server_url"], config["api_key"])
+    url = ws_url(config["server_url"])
+    key = glass_api_key(config)
+    if not key:
+        raise RuntimeError("Glass API key is unavailable.")
     print(f"[glass-agent] connecting to {config['server_url'].rstrip('/')}/ws/glass/agent/", flush=True)
+    connect_options = {
+        "close_timeout": 5,
+        "open_timeout": 10,
+        "additional_headers": {"X-Silicon-Key": key},
+    }
+    if url.lower().startswith("wss://"):
+        connect_options["ssl"] = ssl_context()
+
+    owned_reconciler = team_context_reconciler is None
+    reconciler = team_context_reconciler or TeamContextReconciler(root)
+    owned_trust_reconciler = trust_policy_reconciler is None
+    trust_reconciler = trust_policy_reconciler or TrustPolicyReconciler(root)
     try:
-        with connect(url, close_timeout=5, open_timeout=10, ssl=ssl_context()) as ws:
+        with connect(url, **connect_options) as ws:
             print("[glass-agent] connected", flush=True)
+            if on_connected is not None:
+                on_connected()
+            _request_team_context_reconcile(
+                reconciler,
+                force=True,
+                reason="websocket-connect",
+            )
+            _request_trust_reconcile(
+                trust_reconciler,
+                force=True,
+                reason="websocket-connect",
+            )
             send_json(ws, {
                 "type": "handshake",
                 "name": name,
                 "version": local_version(root),
                 "hostname": os.uname().nodename if hasattr(os, "uname") else "",
                 "pid": os.getpid(),
+                "capabilities": ["trust_policy_v1"],
             })
             send_json(ws, status_payload(root))
-            next_status = time.time() + STATUS_INTERVAL
-            next_ping = time.time() + PING_INTERVAL
+            drain_diagnostics(ws, root, config)
+            now = time.monotonic()
+            next_status = now + STATUS_INTERVAL
+            next_ping = now + PING_INTERVAL
+            next_diagnostics = now + DIAGNOSTICS_INTERVAL
+            next_team_context = now + TEAM_CONTEXT_INTERVAL
+            next_trust_policy = now + TRUST_POLICY_INTERVAL
 
             while running[0]:
-                now = time.time()
+                now = time.monotonic()
                 if now >= next_status:
                     send_json(ws, status_payload(root))
                     next_status = now + STATUS_INTERVAL
                 if now >= next_ping:
-                    send_json(ws, {"type": "ping", "ts": int(now)})
+                    send_json(ws, {"type": "ping", "ts": int(time.time())})
                     next_ping = now + PING_INTERVAL
+                if now >= next_diagnostics:
+                    drain_diagnostics(ws, root, config)
+                    next_diagnostics = now + DIAGNOSTICS_INTERVAL
+                if now >= next_team_context:
+                    _request_team_context_reconcile(
+                        reconciler,
+                        reason="websocket-safety",
+                    )
+                    next_team_context = now + TEAM_CONTEXT_INTERVAL
+                if now >= next_trust_policy:
+                    _request_trust_reconcile(
+                        trust_reconciler,
+                        reason="websocket-safety",
+                    )
+                    next_trust_policy = now + TRUST_POLICY_INTERVAL
 
                 try:
                     raw = ws.recv(timeout=2)
@@ -1100,9 +1459,21 @@ def run_live(root: Path, config: dict, running: list[bool]) -> None:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(msg, dict):
-                    handle_message(ws, msg, root, name)
+                    handle_message(
+                        ws,
+                        msg,
+                        root,
+                        name,
+                        config,
+                        team_context_reconciler=reconciler,
+                        trust_policy_reconciler=trust_reconciler,
+                    )
     finally:
         terminal_stop()
+        if owned_reconciler:
+            reconciler.stop()
+        if owned_trust_reconciler:
+            trust_reconciler.stop()
 
 
 def main() -> None:
@@ -1112,10 +1483,9 @@ def main() -> None:
     if not config:
         print("[glass-agent] No .glass.json found. Exiting.", flush=True)
         sys.exit(1)
-    if not config.get("server_url") or not config.get("api_key"):
+    if not config.get("server_url") or not glass_api_key(config):
         print("[glass-agent] Missing server_url or api_key in .glass.json. Exiting.", flush=True)
         sys.exit(1)
-
     pid_file = root / ".glass_agent.pid"
     pid_file.write_text(str(os.getpid()), encoding="utf-8")
     running = [True]
@@ -1127,18 +1497,65 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
 
     backoff = 1
+    reconciler = TeamContextReconciler(root)
+    trust_reconciler = TrustPolicyReconciler(root)
     print(f"[glass-agent] started for '{silicon_name(root)}'", flush=True)
-    while running[0]:
-        try:
-            run_live(root, config, running)
-            backoff = 1
-        except Exception as exc:
-            if running[0]:
-                print(f"[glass-agent] disconnected: {exc}; reconnecting in {backoff}s", flush=True)
-                time.sleep(backoff)
-                backoff = min(backoff * 2, MAX_BACKOFF)
+    try:
+        while running[0]:
+            config = load_config(root)
+            key = glass_api_key(config)
+            if not config.get("server_url") or not key:
+                print("[glass-agent] credentials unavailable; checking again in 300s", flush=True)
+                wait_for_retry(
+                    root,
+                    running,
+                    AUTH_REJECTION_BACKOFF,
+                    key,
+                    str(config.get("server_url") or ""),
+                )
+                continue
+            connected = False
 
-    pid_file.unlink(missing_ok=True)
+            def mark_connected():
+                nonlocal backoff, connected
+                connected = True
+                backoff = 1
+
+            try:
+                run_live(
+                    root,
+                    config,
+                    running,
+                    team_context_reconciler=reconciler,
+                    trust_policy_reconciler=trust_reconciler,
+                    on_connected=mark_connected,
+                )
+                backoff = 1
+            except Exception as exc:
+                if running[0]:
+                    rejected = is_authentication_rejection(exc)
+                    delay = AUTH_REJECTION_BACKOFF if rejected else backoff
+                    reason = "authentication rejected" if rejected else str(exc)
+                    print(f"[glass-agent] disconnected: {reason}; reconnecting in {delay}s", flush=True)
+                    wait_for_retry(
+                        root,
+                        running,
+                        delay,
+                        key if rejected else "",
+                        str(config.get("server_url") or "") if rejected else None,
+                    )
+                    if rejected:
+                        backoff = 1
+                    elif connected:
+                        # A live connection broke, so the next attempt starts at
+                        # the minimum delay rather than inheriting old failures.
+                        backoff = 2
+                    else:
+                        backoff = min(backoff * 2, MAX_BACKOFF)
+    finally:
+        reconciler.stop()
+        trust_reconciler.stop()
+        pid_file.unlink(missing_ok=True)
     print("[glass-agent] stopped", flush=True)
 
 

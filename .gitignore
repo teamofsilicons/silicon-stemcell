@@ -1,4 +1,9 @@
 venv/
+.venv/
+.home/
+.local/
+.tools/
+.silicon-interface/
 
 __pycache__/
 *.pyc
@@ -8,19 +13,41 @@ __pycache__/
 # Interface runtime state (contains local trust, rooms, media, watermarks)
 core/interface_state/
 
+# Glass-generated advertising-memory contents
+prompts/advertising/*
+!prompts/advertising/.gitkeep
+
 # Worker outputs (generated at runtime)
 worker/outputs/*.txt
 worker/outputs/_active_workers.json
+worker/outputs/_archive_meta.json
 worker/outputs/_browser_queue.json
 worker/outputs/_worker_registry.json
+core/cron/checkbacks.json
+core/cron/*.json.lock
+worker/outputs/*.json.lock
+core/cron/history.json
 
 # Session files (generated at runtime)
 sessions/
 
 # Runtime state
+.silicon/
+.glass.json
+.env
 .restart_pending
+.silicon.pid
+.silicon.pid.meta.json
+.silicon.stop
+.silicon.log
+.silicon.err.log
 .glass_agent.pid
+.glass_agent.pid.meta.json
+.glass_agent.log
+.glass_agent.err.log
 .glass-push.pid
+.glass-push.pid.meta.json
+.glass-push.log
 *.tar.gz
 .DS_Store
 .silicon-upstream/
@@ -28,7 +55,7 @@ sessions/
 # Daily activity logs (generated at runtime; backed up via .backupsilicon)
 logs/
 
-# >>> silicon-managed (auto-synced from .backupsilicon) >>>
+# Living data protected from source updates and version control
 core/interface_state/contacts.json
 logs/**
 prompts/CONTACTS.md
@@ -36,4 +63,3 @@ prompts/LORE.md
 prompts/MEMORY.md
 prompts/memory/**
 silicon.json
-# <<< silicon-managed <<<

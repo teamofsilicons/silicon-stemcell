@@ -1,5 +1,5 @@
 requests
-google-genai
 websockets
 croniter
 certifi
+silicon-extend==0.1.1

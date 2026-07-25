@@ -1,41 +1,81 @@
-"""Hourly silicon system update checks + the brain-driven apply.
+"""Read-only release checks and Silicon credential maintenance.
 
-The updater does not mutate the codebase mechanically. It fetches the latest
-Glass release metadata, compares it with ``silicon.info``, and when the local
-version is behind it spawns a dedicated, detached **update brain** (its own
-claude session, no permission prompts — the same way the silicon itself is
-initiated) which diffs the codebases, reads the release description, applies
-the update, and bumps ``silicon.info`` to the exact new version.
+Source mutation is owned exclusively by the host ``silicon-cli`` transactional
+updater. The running Stemcell may discover and report a newer release, but it
+never rewrites its own code, delegates mutation to another agent, or changes
+Git configuration.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
+import secrets
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 import requests
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+from core.glass import GlassConfigurationError, validate_authenticated_origin
+from core.runtime_paths import CODE_ROOT, DATA_ROOT
+
+PROJECT_ROOT = DATA_ROOT
 DOTENV_FILE = PROJECT_ROOT / ".env"
 ENV_PY_FILE = PROJECT_ROOT / "env.py"
 GLASS_CONFIG_FILE = PROJECT_ROOT / ".glass.json"
 SILICON_CONFIG_FILE = PROJECT_ROOT / "silicon.json"
-SILICON_INFO_FILE = PROJECT_ROOT / "silicon.info"
+SILICON_INFO_FILE = CODE_ROOT / "silicon.info"
 UPDATE_STATE_FILE = PROJECT_ROOT / "core" / "interface_state" / "system_update.json"
 
 DEFAULT_GLASS_SERVER_URL = "https://glass.teamofsilicons.com"
+DEFAULT_STEMCELL_REPO = "teamofsilicons/silicon-stemcell"
 UPDATE_CHECK_INTERVAL_SECONDS = 60 * 60
-UPDATE_AUTH_PASSWORD = os.environ.get(
-    "SILICON_UPDATE_AUTH_PASSWORD",
-    "silicon-update-shared-password-v1",
-)
-LATEST_PATH = "/api/v1/silicon-version/latest"
 AUTH_KEY_PATH = "/api/v1/silicon-version/auth-key"
+AUTH_IDENTITY_PATH = "/api/v1/silicons/me"
 REQUEST_TIMEOUT = 30
+GIT_TIMEOUT = 45
+MAX_GIT_RELEASE_REFS = 100_000
+MAX_GIT_RELEASE_METADATA_BYTES = 16 * 1024 * 1024
+PENDING_AUTH_KEY_NAME = "SILICON_UPDATE_PENDING_AUTH_KEY"
+AUTH_KEY_LOCK_NAME = ".silicon-update-auth-key.lock"
+_SILICON_KEY_TEXT_RE = re.compile(r"scs_live_[A-Za-z0-9_-]+")
+_STABLE_TAG_RE = re.compile(
+    r"\Av(0|[1-9][0-9]{0,2})\."
+    r"(0|[1-9][0-9]{0,2})\."
+    r"(0|[1-9][0-9]{0,2})\Z"
+)
+_STABLE_VERSION_RE = re.compile(
+    r"\A(0|[1-9][0-9]{0,2})\."
+    r"(0|[1-9][0-9]{0,2})\."
+    r"(0|[1-9][0-9]{0,2})\Z"
+)
+
+
+class UpdateAuthenticationError(RuntimeError):
+    """The updater cannot authenticate; an owner must reprovision the Silicon."""
+
+
+def _safe_error_text(exc: Exception) -> str:
+    """Bound and redact operator-facing failures; credentials never reach logs."""
+
+    text = str(exc).replace("\r", " ").replace("\n", " ")
+    text = _SILICON_KEY_TEXT_RE.sub("[REDACTED SILICON KEY]", text)
+    try:
+        configured_secrets = {_auth_key(), _pending_auth_key()}
+    except Exception:
+        configured_secrets = set()
+    for configured_secret in sorted(
+        (secret for secret in configured_secrets if secret),
+        key=len,
+        reverse=True,
+    ):
+        text = text.replace(configured_secret, "[REDACTED SILICON KEY]")
+    return text[:500]
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -54,7 +94,8 @@ def _write_json(path: Path, data: Any) -> None:
     tmp.replace(path)
 
 
-def _read_dotenv(path: Path = DOTENV_FILE) -> dict[str, str]:
+def _read_dotenv(path: Path | None = None) -> dict[str, str]:
+    path = DOTENV_FILE if path is None else path
     values: dict[str, str] = {}
     if not path.exists():
         return values
@@ -70,7 +111,8 @@ def _read_dotenv(path: Path = DOTENV_FILE) -> dict[str, str]:
     return values
 
 
-def _read_env_py(path: Path = ENV_PY_FILE) -> dict[str, str]:
+def _read_env_py(path: Path | None = None) -> dict[str, str]:
+    path = ENV_PY_FILE if path is None else path
     values: dict[str, str] = {}
     if not path.exists():
         return values
@@ -80,6 +122,70 @@ def _read_env_py(path: Path = ENV_PY_FILE) -> dict[str, str]:
         if match:
             values[match.group(1)] = match.group(3)
     return values
+
+
+def _atomic_write_secret(path: Path, content: str) -> None:
+    """Atomically replace a local credential file with owner-only durability."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        path.chmod(0o600)
+        try:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            # Directory fsync is unavailable on some supported platforms. The
+            # file itself was still flushed before the atomic replacement.
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def _auth_key_lock():
+    """Serialize recovery/rotation across updater processes on this install."""
+
+    lock_path = UPDATE_STATE_FILE.parent / AUTH_KEY_LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    locked = False
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        if os.name == "nt":  # pragma: no cover - exercised on Windows installs
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
+        if locked:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows installs
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _upsert_key_value(path: Path, key: str, value: str, *, python_string: bool = False) -> None:
@@ -101,16 +207,149 @@ def _upsert_key_value(path: Path, key: str, value: str, *, python_string: bool =
     if not replaced:
         out.append(rendered)
 
-    path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    _atomic_write_secret(path, "\n".join(out).rstrip() + "\n")
+
+
+def _replace_json_auth_key(
+    path: Path,
+    auth_key: str,
+    *,
+    nested: bool = False,
+    create: bool = False,
+    defaults: dict[str, Any] | None = None,
+) -> None:
+    if not path.exists():
+        if not create:
+            return
+        payload: Any = dict(defaults or {})
+    else:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Cannot safely update malformed credential file {path.name}."
+            ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Cannot safely update malformed credential file {path.name}.")
+
+    target = payload
+    if nested:
+        existing = payload.get("glass")
+        if existing is None:
+            return
+        if not isinstance(existing, dict):
+            raise RuntimeError(f"Cannot safely update malformed credential file {path.name}.")
+        target = existing
+
+    target["api_key"] = auth_key
+    if "silicon_api_key" in target:
+        target["silicon_api_key"] = auth_key
+    _atomic_write_secret(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _remove_key_value(path: Path, key: str) -> None:
+    if not path.exists():
+        return
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    lines = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not pattern.match(line)
+    ]
+    _atomic_write_secret(path, "\n".join(lines).rstrip() + ("\n" if lines else ""))
+
+
+def _remove_json_auth_keys(path: Path, *, nested: bool = False) -> None:
+    if not path.exists():
+        return
+    payload = _read_json(path, None)
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Cannot safely scrub malformed credential file {path.name}."
+        )
+    target = payload
+    if nested:
+        target = payload.get("glass")
+        if not isinstance(target, dict):
+            return
+    changed = False
+    for key in ("api_key", "silicon_api_key"):
+        if key in target:
+            target.pop(key, None)
+            changed = True
+    if changed:
+        _atomic_write_secret(
+            path,
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        )
+
+
+def _canonical_glass_defaults() -> dict[str, str]:
+    """Carry legacy origin/identity metadata into a newly canonical config."""
+
+    silicon = _silicon_config()
+    nested = silicon.get("glass") if isinstance(silicon.get("glass"), dict) else {}
+    defaults = {"server_url": _authenticated_server_url()}
+    candidates = {
+        "silicon_id": (
+            nested.get("silicon_id"),
+            silicon.get("silicon_id"),
+        ),
+        "silicon_username": (
+            nested.get("silicon_username"),
+            silicon.get("silicon_username"),
+            silicon.get("address"),
+        ),
+        "address": (
+            nested.get("address"),
+            silicon.get("address"),
+        ),
+    }
+    for key, values in candidates.items():
+        value = next(
+            (
+                str(candidate).strip()
+                for candidate in values
+                if candidate and str(candidate).strip()
+            ),
+            "",
+        )
+        if value:
+            defaults[key] = value
+    return defaults
 
 
 def _persist_auth_key(auth_key: str) -> None:
     if not auth_key:
         return
-    _upsert_key_value(DOTENV_FILE, "SILICON_UPDATE_AUTH_KEY", auth_key)
-    _upsert_key_value(DOTENV_FILE, "GLASS_API_KEY", auth_key)
+    # `.glass.json` is the canonical source for messaging, backup, remote
+    # browser, and provider-key traffic. Update it first once Glass has proven
+    # the candidate active. The ignored pending dotenv entry remains a crash
+    # journal until legacy duplicate locations have been scrubbed.
+    _replace_json_auth_key(
+        GLASS_CONFIG_FILE,
+        auth_key,
+        create=True,
+        defaults=_canonical_glass_defaults(),
+    )
+    _remove_json_auth_keys(SILICON_CONFIG_FILE, nested=True)
+    _remove_key_value(DOTENV_FILE, "SILICON_UPDATE_AUTH_KEY")
+    _remove_key_value(DOTENV_FILE, "GLASS_API_KEY")
     if ENV_PY_FILE.exists():
-        _upsert_key_value(ENV_PY_FILE, "GLASS_API_KEY", auth_key, python_string=True)
+        _remove_key_value(ENV_PY_FILE, "SILICON_UPDATE_AUTH_KEY")
+        _upsert_key_value(ENV_PY_FILE, "GLASS_API_KEY", "", python_string=True)
+
+
+def _pending_auth_key() -> str:
+    return str(_read_dotenv().get(PENDING_AUTH_KEY_NAME) or "").strip()
+
+
+def _stage_auth_key(auth_key: str) -> None:
+    _upsert_key_value(DOTENV_FILE, PENDING_AUTH_KEY_NAME, auth_key)
+
+
+def _clear_pending_auth_key() -> None:
+    _remove_key_value(DOTENV_FILE, PENDING_AUTH_KEY_NAME)
 
 
 def _glass_config() -> dict[str, Any]:
@@ -121,127 +360,397 @@ def _silicon_config() -> dict[str, Any]:
     return _read_json(SILICON_CONFIG_FILE, {})
 
 
-def _server_url() -> str:
-    dotenv = _read_dotenv()
-    glass = _glass_config()
-    silicon = _silicon_config()
-    nested_glass = silicon.get("glass") if isinstance(silicon.get("glass"), dict) else {}
-    return (
-        os.environ.get("GLASS_SERVER_URL")
-        or dotenv.get("GLASS_SERVER_URL")
-        or glass.get("server_url")
-        or nested_glass.get("server_url")
-        or DEFAULT_GLASS_SERVER_URL
-    ).rstrip("/")
+def _configured_auth_pair() -> tuple[str, str]:
+    """Return an origin/key pair from one credential authority.
 
+    Once `.glass.json` contains a key it is canonical for both values; stale
+    legacy environment entries must never redirect that canonical credential.
+    """
 
-def _auth_key() -> str:
     dotenv = _read_dotenv()
     env_py = _read_env_py()
     glass = _glass_config()
     silicon = _silicon_config()
     nested_glass = silicon.get("glass") if isinstance(silicon.get("glass"), dict) else {}
-    for value in (
-        os.environ.get("SILICON_UPDATE_AUTH_KEY"),
-        os.environ.get("GLASS_API_KEY"),
-        dotenv.get("SILICON_UPDATE_AUTH_KEY"),
-        dotenv.get("GLASS_API_KEY"),
-        env_py.get("SILICON_UPDATE_AUTH_KEY"),
-        env_py.get("GLASS_API_KEY"),
-        glass.get("api_key"),
-        glass.get("silicon_api_key"),
-        nested_glass.get("api_key"),
-        nested_glass.get("silicon_api_key"),
-    ):
-        if value:
-            return str(value).strip()
-    return ""
+
+    glass_key = str(
+        glass.get("api_key") or glass.get("silicon_api_key") or ""
+    ).strip()
+    if glass_key:
+        return str(glass.get("server_url") or "").rstrip("/"), glass_key
+
+    nested_key = str(
+        nested_glass.get("api_key")
+        or nested_glass.get("silicon_api_key")
+        or ""
+    ).strip()
+    if nested_key:
+        server = (
+            nested_glass.get("server_url")
+            or glass.get("server_url")
+            or dotenv.get("GLASS_SERVER_URL")
+            or DEFAULT_GLASS_SERVER_URL
+        )
+        return str(server).rstrip("/"), nested_key
+
+    dotenv_key = str(
+        dotenv.get("SILICON_UPDATE_AUTH_KEY")
+        or dotenv.get("GLASS_API_KEY")
+        or ""
+    ).strip()
+    if dotenv_key:
+        server = dotenv.get("GLASS_SERVER_URL") or DEFAULT_GLASS_SERVER_URL
+        return str(server).rstrip("/"), dotenv_key
+
+    env_py_key = str(
+        env_py.get("SILICON_UPDATE_AUTH_KEY")
+        or env_py.get("GLASS_API_KEY")
+        or ""
+    ).strip()
+    if env_py_key:
+        server = dotenv.get("GLASS_SERVER_URL") or DEFAULT_GLASS_SERVER_URL
+        return str(server).rstrip("/"), env_py_key
+
+    environment_key = str(
+        os.environ.get("SILICON_UPDATE_AUTH_KEY")
+        or os.environ.get("GLASS_API_KEY")
+        or ""
+    ).strip()
+    if environment_key:
+        server = os.environ.get("GLASS_SERVER_URL") or DEFAULT_GLASS_SERVER_URL
+        return str(server).rstrip("/"), environment_key
+
+    server = (
+        glass.get("server_url")
+        or nested_glass.get("server_url")
+        or dotenv.get("GLASS_SERVER_URL")
+        or os.environ.get("GLASS_SERVER_URL")
+        or DEFAULT_GLASS_SERVER_URL
+    )
+    return str(server).rstrip("/"), ""
 
 
-def _identity_payload() -> dict[str, str]:
-    dotenv = _read_dotenv()
+def _server_url() -> str:
+    return _configured_auth_pair()[0]
+
+
+def _authenticated_server_url() -> str:
+    """Return a credential-safe Glass origin (HTTPS, or local-loopback HTTP)."""
+
+    try:
+        return validate_authenticated_origin(_server_url())
+    except GlassConfigurationError as exc:
+        raise UpdateAuthenticationError(
+            "Refusing to send a Silicon API key to a non-HTTPS, non-loopback Glass URL."
+        ) from exc
+
+
+def _auth_key() -> str:
+    return _configured_auth_pair()[1]
+
+
+def _get_identity_with_key(auth_key: str):
+    return requests.get(
+        _authenticated_server_url() + AUTH_IDENTITY_PATH,
+        headers={"X-Silicon-Key": auth_key},
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+
+
+def _reject_redirect(response, operation: str) -> None:
+    if 300 <= int(response.status_code) < 400:
+        raise UpdateAuthenticationError(
+            f"Glass redirected the authenticated {operation}; refusing to forward the Silicon key."
+        )
+
+
+def _configured_silicon_identities() -> set[str]:
     glass = _glass_config()
     silicon = _silicon_config()
-    nested_glass = silicon.get("glass") if isinstance(silicon.get("glass"), dict) else {}
-    payload: dict[str, str] = {}
-    candidates = {
-        "silicon_id": (
-            os.environ.get("SILICON_ID"),
-            dotenv.get("SILICON_ID"),
+    nested = silicon.get("glass") if isinstance(silicon.get("glass"), dict) else {}
+    return {
+        str(value).strip()
+        for value in (
             glass.get("silicon_id"),
-            nested_glass.get("silicon_id"),
-            silicon.get("silicon_id"),
-        ),
-        "silicon_username": (
-            os.environ.get("SILICON_USERNAME"),
-            dotenv.get("SILICON_USERNAME"),
             glass.get("silicon_username"),
-            nested_glass.get("silicon_username"),
-        ),
-        "address": (
-            os.environ.get("SILICON_ADDRESS"),
-            dotenv.get("SILICON_ADDRESS"),
-            glass.get("address"),
-            nested_glass.get("address"),
+            nested.get("silicon_id"),
+            nested.get("silicon_username"),
+            silicon.get("silicon_id"),
             silicon.get("address"),
-        ),
-        "name": (
-            os.environ.get("SILICON_NAME"),
-            dotenv.get("SILICON_NAME"),
-            silicon.get("name"),
-        ),
+        )
+        if value and str(value).strip()
     }
-    for key, values in candidates.items():
-        for value in values:
-            if value:
-                payload[key] = str(value).strip()
-                break
-    return payload
 
 
-def _request_auth_key() -> str:
-    payload = {"password": UPDATE_AUTH_PASSWORD}
-    payload.update(_identity_payload())
-    if not any(payload.get(k) for k in ("silicon_id", "silicon_username", "address", "name")):
-        return ""
+def _identity_response_is_authoritative(response) -> bool:
+    if response.status_code != 200:
+        return False
+    try:
+        body = response.json()
+    except (ValueError, TypeError) as exc:
+        raise UpdateAuthenticationError(
+            "Glass key verification did not return a valid Silicon identity."
+        ) from exc
+    silicon_id = str(body.get("silicon_id") or "").strip() if isinstance(body, dict) else ""
+    expected = _configured_silicon_identities()
+    if not silicon_id or (expected and silicon_id not in expected):
+        raise UpdateAuthenticationError(
+            "Glass key verification returned the wrong Silicon identity."
+        )
+    return True
 
-    response = requests.post(
-        _server_url() + AUTH_KEY_PATH,
-        json=payload,
-        timeout=REQUEST_TIMEOUT,
+
+def _recover_pending_auth_key(current_key: str) -> str:
+    """Resolve a rotation whose POST response may have been lost.
+
+    The candidate is staged before Glass is called. A 200 from the authenticated
+    Silicon identity endpoint proves Glass installed it; a generic 404 is never
+    treated as authentication truth.
+    """
+    pending = _pending_auth_key()
+    if not pending:
+        return current_key
+
+    candidate_response = _get_identity_with_key(pending)
+    _reject_redirect(candidate_response, "key verification")
+    if _identity_response_is_authoritative(candidate_response):
+        _persist_auth_key(pending)
+        _clear_pending_auth_key()
+        return pending
+    if candidate_response.status_code not in {401, 403}:
+        candidate_response.raise_for_status()
+
+    if current_key:
+        current_response = _get_identity_with_key(current_key)
+        _reject_redirect(current_response, "key verification")
+        if _identity_response_is_authoritative(current_response):
+            _clear_pending_auth_key()
+            return current_key
+        if current_response.status_code not in {401, 403}:
+            current_response.raise_for_status()
+
+    raise UpdateAuthenticationError(
+        "Silicon key rotation is unresolved. Ask the Silicon owner to reprovision its API key."
     )
-    if response.status_code not in {200, 201}:
-        response.raise_for_status()
-    body = response.json()
-    auth_key = str(body.get("auth_key") or body.get("plaintext") or "").strip()
-    _persist_auth_key(auth_key)
-    return auth_key
+
+
+def _rotate_auth_key_locked() -> str:
+    pending_before_recovery = _pending_auth_key()
+    current_key = _recover_pending_auth_key(_auth_key())
+    if pending_before_recovery and current_key == pending_before_recovery:
+        return current_key
+    if not current_key:
+        raise UpdateAuthenticationError(
+            "No Silicon API key is configured. Ask the Silicon owner to reprovision it."
+        )
+
+    server_url = _authenticated_server_url()
+    replacement = "scs_live_" + secrets.token_urlsafe(32)
+    _stage_auth_key(replacement)
+    try:
+        response = requests.post(
+            server_url + AUTH_KEY_PATH,
+            headers={"X-Silicon-Key": current_key},
+            json={"replacement_key": replacement},
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
+        )
+    except requests.RequestException:
+        # The server may have committed before the connection failed. Probe the
+        # staged candidate rather than retrying a potentially revoked key.
+        recovered = _recover_pending_auth_key(current_key)
+        if recovered == replacement:
+            return replacement
+        raise
+
+    _reject_redirect(response, "key rotation")
+    if response.status_code in {200, 201}:
+        # Never trust acknowledgement alone: prove the staged key authenticates
+        # before replacing every local credential copy.
+        recovered = _recover_pending_auth_key(current_key)
+        if recovered == replacement:
+            return replacement
+        raise RuntimeError("Glass acknowledged rotation but the replacement key is not active.")
+    if response.status_code in {401, 403}:
+        recovered = _recover_pending_auth_key(current_key)
+        if recovered == replacement:
+            return replacement
+        raise UpdateAuthenticationError(
+            "Glass rejected the configured Silicon key. Ask the Silicon owner to reprovision it."
+        )
+
+    # A concurrent/ambiguous result can still have committed. Resolve it from
+    # authentication truth before surfacing the server error.
+    recovered = _recover_pending_auth_key(current_key)
+    if recovered == replacement:
+        return replacement
+    response.raise_for_status()
+    raise RuntimeError("Glass rejected Silicon key rotation.")
+
+
+def _rotate_auth_key() -> str:
+    """Rotate with the current key, without ever relying on a shared credential."""
+
+    with _auth_key_lock():
+        return _rotate_auth_key_locked()
+
+
+def _stemcell_git_url() -> str:
+    repository = os.environ.get(
+        "SILICON_STEMCELL_REPO",
+        DEFAULT_STEMCELL_REPO,
+    ).strip()
+    repository_parts = repository.split("/")
+    if (
+        re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        is None
+        or len(repository_parts) != 2
+        or any(
+            part in {".", ".."} or len(part) > 100
+            for part in repository_parts
+        )
+    ):
+        raise RuntimeError(
+            "SILICON_STEMCELL_REPO must be one GitHub owner/repository pair"
+        )
+    return f"https://github.com/{repository}.git"
+
+
+def _git_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    for key in (
+        "GIT_ALLOW_PROTOCOL",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_ASKPASS",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_EXEC_PATH",
+        "GIT_INDEX_FILE",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PROXY_COMMAND",
+        "GIT_PROTOCOL",
+        "GIT_PROTOCOL_FROM_USER",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_SSL_CAINFO",
+        "GIT_SSL_CAPATH",
+        "GIT_SSL_NO_VERIFY",
+        "GIT_TEMPLATE_DIR",
+        "GIT_WORK_TREE",
+        "SSH_ASKPASS",
+    ):
+        environment.pop(key, None)
+    for key in tuple(environment):
+        if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            environment.pop(key, None)
+    environment.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "7",
+            "GIT_CONFIG_KEY_0": "credential.helper",
+            "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_KEY_1": "core.hooksPath",
+            "GIT_CONFIG_VALUE_1": os.devnull,
+            "GIT_CONFIG_KEY_2": "core.autocrlf",
+            "GIT_CONFIG_VALUE_2": "false",
+            "GIT_CONFIG_KEY_3": "core.eol",
+            "GIT_CONFIG_VALUE_3": "lf",
+            "GIT_CONFIG_KEY_4": "http.sslVerify",
+            "GIT_CONFIG_VALUE_4": "true",
+            "GIT_CONFIG_KEY_5": "protocol.allow",
+            "GIT_CONFIG_VALUE_5": "never",
+            "GIT_CONFIG_KEY_6": "protocol.https.allow",
+            "GIT_CONFIG_VALUE_6": "always",
+        }
+    )
+    return environment
 
 
 def _fetch_latest_version() -> dict[str, Any] | None:
-    auth_key = _auth_key() or _request_auth_key()
-    if not auth_key:
-        return None
+    """Resolve the highest published stable Stemcell Git tag."""
 
-    def do_get(key: str):
-        return requests.get(
-            _server_url() + LATEST_PATH,
-            headers={"X-Silicon-Key": key},
-            timeout=REQUEST_TIMEOUT,
+    if shutil.which("git") is None:
+        raise RuntimeError("Git is required to check published Silicon releases")
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", _stemcell_git_url()],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=GIT_TIMEOUT,
+            env=_git_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Git release check timed out") from exc
+    except UnicodeError as exc:
+        raise RuntimeError("Git returned non-UTF-8 release metadata") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not run Git: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Could not list published Silicon releases: "
+            + (result.stderr.strip() or "Git exited unsuccessfully")
         )
 
-    response = do_get(auth_key)
-    if response.status_code in {401, 403}:
-        auth_key = _request_auth_key()
-        if not auth_key:
-            return None
-        response = do_get(auth_key)
+    if len(result.stdout.encode("utf-8")) > MAX_GIT_RELEASE_METADATA_BYTES:
+        raise RuntimeError("Git returned too much release metadata")
+    references: dict[str, str] = {}
+    for raw_line in result.stdout.splitlines():
+        if len(references) >= MAX_GIT_RELEASE_REFS:
+            raise RuntimeError("Git returned too many release references")
+        fields = raw_line.split()
+        if len(fields) != 2:
+            raise RuntimeError("Git returned malformed release metadata")
+        object_id, reference = fields
+        object_id = object_id.lower()
+        if (
+            len(object_id) != 40
+            or any(character not in "0123456789abcdef" for character in object_id)
+            or not reference.startswith("refs/tags/")
+        ):
+            raise RuntimeError("Git returned invalid release metadata")
+        previous = references.setdefault(reference, object_id)
+        if previous != object_id:
+            raise RuntimeError(
+                f"Git advertised conflicting objects for {reference}"
+            )
+    for reference in references:
+        if reference.endswith("^{}") and reference[:-3] not in references:
+            raise RuntimeError(f"Git advertised an orphan peeled tag: {reference}")
 
-    if response.status_code == 404:
+    candidates: list[tuple[tuple[int, int, int], str, str]] = []
+    for reference, tag_object in references.items():
+        if reference.endswith("^{}"):
+            continue
+        tag = reference.removeprefix("refs/tags/")
+        match = _STABLE_TAG_RE.fullmatch(tag)
+        if match is None:
+            continue
+        parts = tuple(int(value) for value in match.groups())
+        revision = references.get(f"{reference}^{{}}", tag_object)
+        candidates.append((parts, tag, revision))
+    if not candidates:
         return None
-    response.raise_for_status()
-    body = response.json()
-    return body if isinstance(body, dict) else None
+
+    parts, tag, revision = max(candidates, key=lambda candidate: candidate[0])
+    return {
+        "version": ".".join(str(value) for value in parts),
+        "tag": tag,
+        "revision": revision,
+        "source": _stemcell_git_url(),
+    }
 
 
 def _local_version() -> str:
@@ -253,70 +762,36 @@ def _latest_version_id(latest: dict[str, Any]) -> str:
     return str(latest.get("version_id") or latest.get("version") or "").strip()
 
 
-def _update_message(latest: dict[str, Any], latest_version_number: str) -> str:
-    update_description = str(latest.get("description") or "").strip()
-    codebase_link = str(
-        latest.get("codebase_url") or latest.get("codebase_link") or latest.get("download_url") or ""
-    ).strip()
-    return (
-        "There has been a silicon system update. The updated version is: "
-        f"{latest_version_number}. Your current version is in silicon.info.\n\n"
-        "Just do a simple diff between the codebases and refer to the description "
-        "below to understand the update, then update yourself to the latest version.\n\n"
-        "The description of the update is:\n"
-        f"{update_description}\n\n"
-        "And the latest codebase is:\n"
-        f"{codebase_link}\n\n"
-        "Download it, diff it against your current files, and apply the changes — "
-        "preserving your own memory, prompts, env.py, .glass.json, and local state. "
-        "Make all the required decisions yourself. Once the update is successfully "
-        "done, update the version number in the silicon.info file to exactly "
-        f"{latest_version_number}.\n"
-    )
+def _stable_version(
+    value: str,
+    *,
+    allow_legacy_two_part: bool = False,
+) -> tuple[int, int, int] | None:
+    text = value
+    if allow_legacy_two_part and re.fullmatch(
+        r"(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})",
+        text,
+    ):
+        text += ".0"
+    match = _STABLE_VERSION_RE.fullmatch(text)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
 
 
-def _apply_in_progress(state: dict[str, Any]) -> bool:
-    """True when a previously spawned update brain is still alive."""
-    pid = int(state.get("apply_pid") or 0)
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+def _check_system_update(now: float | None = None) -> dict[str, Any]:
+    """Return release status without mutating the Stemcell source tree."""
 
-
-def _spawn_update_brain() -> int:
-    """Launch ``update.py apply`` fully detached, so the update brain survives
-    even if the silicon restarts itself mid-update. Returns the pid."""
-    import subprocess
-    import sys
-
-    log_path = PROJECT_ROOT / "core" / "interface_state" / "system_update.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "ab") as log:
-        proc = subprocess.Popen(
-            [sys.executable, str(PROJECT_ROOT / "update.py"), "apply"],
-            cwd=str(PROJECT_ROOT),
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    return proc.pid
-
-
-def check_for_system_update(now: float | None = None) -> dict[str, str]:
-    """Check Glass for a newer release; spawn the update brain when behind.
-
-    Returns {} always — the update no longer rides a contact manager session;
-    it runs in its own detached brain with no permission prompts.
-    """
     now = time.time() if now is None else now
     state = _read_json(UPDATE_STATE_FILE, {"version": 1})
     last_checked = float(state.get("last_checked_at") or 0)
     if now - last_checked < UPDATE_CHECK_INTERVAL_SECONDS:
-        return {}
+        return {
+            "status": "throttled",
+            "local_version": str(state.get("local_version") or ""),
+            "latest_version": str(state.get("latest_seen_version") or ""),
+            "update_available": bool(state.get("update_available")),
+        }
 
     state["last_checked_at"] = now
     _write_json(UPDATE_STATE_FILE, state)
@@ -324,137 +799,115 @@ def check_for_system_update(now: float | None = None) -> dict[str, str]:
     try:
         latest = _fetch_latest_version()
     except Exception as exc:
-        state["last_error"] = str(exc)
+        safe_error = _safe_error_text(exc)
+        state["last_error"] = safe_error
         _write_json(UPDATE_STATE_FILE, state)
-        print(f"[Update] Error checking silicon version: {exc}", flush=True)
-        return {}
+        print(f"[Update] Error checking silicon version: {safe_error}", flush=True)
+        return {
+            "status": "error",
+            "local_version": _local_version(),
+            "latest_version": "",
+            "update_available": False,
+            "error": safe_error,
+        }
 
     local_version = _local_version()
     if not latest:
-        state.update({"local_version": local_version, "latest_seen_version": "", "last_error": ""})
+        state.update(
+            {
+                "local_version": local_version,
+                "latest_seen_version": "",
+                "update_available": False,
+                "last_error": "",
+            }
+        )
         _write_json(UPDATE_STATE_FILE, state)
-        return {}
+        return {
+            "status": "unpublished",
+            "local_version": local_version,
+            "latest_version": "",
+            "update_available": False,
+        }
 
     latest_version = _latest_version_id(latest)
-    state.update({"local_version": local_version, "latest_seen_version": latest_version, "last_error": ""})
-
-    if not latest_version or latest_version == local_version:
-        state["last_triggered_version"] = ""
-        _write_json(UPDATE_STATE_FILE, state)
-        return {}
-
-    already_triggered = state.get("last_triggered_version") or state.get("last_notified_version")
-    if already_triggered == latest_version or _apply_in_progress(state):
-        _write_json(UPDATE_STATE_FILE, state)
-        return {}
-
-    state["last_triggered_version"] = latest_version
-    state["apply_pid"] = _spawn_update_brain()
-    _write_json(UPDATE_STATE_FILE, state)
-    print(
-        f"[Update] {local_version or '?'} → {latest_version}: update brain spawned "
-        f"(pid {state['apply_pid']})",
-        flush=True,
+    local_parts = _stable_version(
+        local_version,
+        allow_legacy_two_part=True,
     )
+    latest_parts = _stable_version(latest_version)
+    available = bool(
+        local_parts is not None
+        and latest_parts is not None
+        and latest_parts > local_parts
+    )
+    state.update(
+        {
+            "local_version": local_version,
+            "latest_seen_version": latest_version,
+            "update_available": available,
+            "last_error": "",
+        }
+    )
+    already_notified = str(state.get("last_notified_version") or "")
+    if available and already_notified != latest_version:
+        state["last_notified_version"] = latest_version
+        print(
+            f"[Update] {local_version or '?'} → {latest_version} is available. "
+            "Run `silicon update <name>`; the CLI will drain, stop, update, "
+            "restart, and verify it safely.",
+            flush=True,
+        )
+    elif not available:
+        state["last_notified_version"] = ""
+    _write_json(UPDATE_STATE_FILE, state)
+
+    return {
+        "status": "available" if available else "up_to_date",
+        "local_version": local_version,
+        "latest_version": latest_version,
+        "update_available": available,
+    }
+
+
+def check_for_system_update(now: float | None = None) -> dict[str, str]:
+    """Periodic event-loop adapter; checks and records status, never prompts."""
+
+    _check_system_update(now=now)
     return {}
 
 
-def trigger_system_update_check(*, force: bool = True) -> dict[str, str]:
+def trigger_system_update_check(*, force: bool = True) -> dict[str, Any]:
     """Run the same update check on demand for CLI-triggered checks."""
+
     now = time.time() + UPDATE_CHECK_INTERVAL_SECONDS if force else None
-    return check_for_system_update(now=now)
-
-
-# ---------------------------------------------------------------------------
-# The update brain — a dedicated claude session that manages the whole update.
-# Runs in its own detached process (see _spawn_update_brain), exactly like the
-# silicon is initiated: no permission prompts, its own session, full autonomy.
-# ---------------------------------------------------------------------------
-def _claude_cmd() -> str:
-    import platform
-    import shutil as _shutil
-
-    if platform.system() == "Windows":
-        return _shutil.which("claude") or _shutil.which("claude.cmd") or "claude"
-    return "claude"
-
-
-def _run_update_brain_once(cmd: list[str], message: str) -> int:
-    import subprocess
-
-    proc = subprocess.run(
-        cmd,
-        input=message,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-        timeout=2 * 60 * 60,
-    )
-    return proc.returncode
+    return _check_system_update(now=now)
 
 
 def apply_update() -> int:
-    """Fetch the latest release and hand the whole update to the update brain."""
-    import uuid
+    """Compatibility command that refuses unsafe live source mutation."""
 
-    from prompts.DNA import get_update_prompt
-
-    latest = _fetch_latest_version()
-    if not latest:
-        print("[Update] No published version to apply.", flush=True)
-        return 0
-    latest_version = _latest_version_id(latest)
-    local_version = _local_version()
-    if not latest_version or latest_version == local_version:
-        print(f"[Update] Already on {local_version or 'unversioned'} — nothing to apply.", flush=True)
-        return 0
-
-    message = _update_message(latest, latest_version)
-    prompt_file = PROJECT_ROOT / "sessions" / "system_update_prompt.md"
-    prompt_file.parent.mkdir(parents=True, exist_ok=True)
-    prompt_file.write_text(get_update_prompt(), encoding="utf-8")
-
-    state = _read_json(UPDATE_STATE_FILE, {"version": 1})
-    session_id = str(state.get("brain_session_id") or "").strip()
-    base = [
-        _claude_cmd(), "-p",
-        "--system-prompt-file", str(prompt_file),
-        "--dangerously-skip-permissions",
-    ]
-
-    print(f"[Update] Applying {local_version or '?'} → {latest_version} via update brain…", flush=True)
-    rc = -1
-    if session_id:
-        rc = _run_update_brain_once(base + ["--resume", session_id], message)
-    if rc != 0:
-        session_id = str(uuid.uuid4())
-        state["brain_session_id"] = session_id
-        _write_json(UPDATE_STATE_FILE, state)
-        rc = _run_update_brain_once(base + ["--session-id", session_id], message)
-
-    after = _local_version()
-    state = _read_json(UPDATE_STATE_FILE, {"version": 1})
-    state.update({"apply_pid": 0, "local_version": after, "last_apply_rc": rc})
-    _write_json(UPDATE_STATE_FILE, state)
-    if after == latest_version:
-        print(f"[Update] Done — now on {after}.", flush=True)
-    else:
-        print(
-            f"[Update] Brain finished (rc={rc}) but silicon.info reports "
-            f"{after or 'unversioned'} (expected {latest_version}).",
-            flush=True,
-        )
-    return 0 if after == latest_version else (rc or 1)
+    print(
+        "[Update] In-process self-update is disabled. Run "
+        "`silicon update <name>` from the host; the CLI performs the "
+        "task-safe stop and restart.",
+        flush=True,
+    )
+    return 2
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Silicon system update check / apply.")
+    parser = argparse.ArgumentParser(
+        description="Silicon release check and credential maintenance."
+    )
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["check", "apply"],
+        choices=["check", "apply", "rotate-key"],
         default="check",
-        help="check: compare versions and spawn the update brain if behind (default). "
-        "apply: run the update brain in this process.",
+        help="check: compare versions without changing source (default). "
+        "apply: deprecated safe refusal; use the host silicon-cli updater. "
+        "rotate-key: replace the configured key using authenticated "
+        "self-rotation.",
     )
     parser.add_argument(
         "--no-force",
@@ -463,8 +916,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.command == "apply":
-        return apply_update()
-    result = trigger_system_update_check(force=not args.no_force)
+        try:
+            return apply_update()
+        except Exception as exc:
+            print(f"[Update] Apply failed: {_safe_error_text(exc)}", flush=True)
+            return 1
+    if args.command == "rotate-key":
+        try:
+            _rotate_auth_key()
+        except Exception as exc:
+            print(f"[Update] Silicon key rotation failed: {_safe_error_text(exc)}", flush=True)
+            return 1
+        print("[Update] Silicon API key rotated and stored.", flush=True)
+        return 0
+    try:
+        result = trigger_system_update_check(force=not args.no_force)
+    except Exception as exc:
+        print(f"[Update] Check failed: {_safe_error_text(exc)}", flush=True)
+        return 1
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

@@ -1,4 +1,4 @@
-import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -16,13 +16,19 @@ class InterfaceStateTest(unittest.TestCase):
         self.old_contacts = interface.CONTACTS_FILE
         self.old_backup = interface.CONTACTS_BACKUP_FILE
         self.old_media = interface.MEDIA_DIR
+        self.old_inbox_consumer = interface.INBOX_CONSUMER_FILE
+        self.old_default_inbox = interface.DEFAULT_INBOX_FILE
         self.old_legacy = interface.LEGACY_TELEGRAM_CONTACTS_FILE
-        self.old_boot_event_sync_done = interface._boot_event_sync_done
         interface.CONTACTS_FILE = root / "contacts.json"
         interface.CONTACTS_BACKUP_FILE = root / "contacts_backup.json"
         interface.MEDIA_DIR = root / "media"
+        interface.INBOX_CONSUMER_FILE = root / "interface_inbox_consumer.json"
+        interface.DEFAULT_INBOX_FILE = root / "inbox.jsonl"
         interface.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy" / "contacts.json"
-        interface._boot_event_sync_done = False
+        with interface._inbox_scan_lock:
+            interface._inbox_scan_state.clear()
+        with interface._activity_condition:
+            interface._activity_pending = 0
         while True:
             try:
                 interface._event_queue.get_nowait()
@@ -33,8 +39,13 @@ class InterfaceStateTest(unittest.TestCase):
         interface.CONTACTS_FILE = self.old_contacts
         interface.CONTACTS_BACKUP_FILE = self.old_backup
         interface.MEDIA_DIR = self.old_media
+        interface.INBOX_CONSUMER_FILE = self.old_inbox_consumer
+        interface.DEFAULT_INBOX_FILE = self.old_default_inbox
         interface.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
-        interface._boot_event_sync_done = self.old_boot_event_sync_done
+        with interface._inbox_scan_lock:
+            interface._inbox_scan_state.clear()
+        with interface._activity_condition:
+            interface._activity_pending = 0
         self.tmp.cleanup()
 
     def test_first_carbon_is_central_and_ids_are_fixed(self):
@@ -109,6 +120,28 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual(state["rooms"]["room-a"], "carbon-a")
         self.assertEqual(state["contacts"]["carbon-a"]["display_name"], "Carbon A")
         self.assertEqual(state["contacts"]["carbon-a"]["trust_level"], "ultimate")
+
+    def test_room_discovery_identity_update_preserves_concurrent_state(self):
+        class FakeClient:
+            def whoami(self):
+                interface.upsert_contact(
+                    "carbon",
+                    "arrived-during-whoami",
+                    room_id="room-concurrent",
+                )
+                return {"silicon_id": "self-si"}
+
+            def rooms_list(self):
+                return []
+
+        state = interface.discover_rooms(FakeClient(), force=True)
+
+        self.assertEqual(state["own_ids"], ["self-si"])
+        self.assertIn("arrived-during-whoami", state["contacts"])
+        self.assertEqual(
+            state["rooms"]["room-concurrent"],
+            "arrived-during-whoami",
+        )
 
     def test_remote_browser_result_uses_posted_branded_url(self):
         posted = {
@@ -290,6 +323,10 @@ class InterfaceStateTest(unittest.TestCase):
             def read(self, room_id, event_id):
                 calls.append(("read", room_id, event_id))
 
+        def run_immediately(function, *args, **_kwargs):
+            function(*args)
+            return True
+
         event = {
             "type": "m.text",
             "event_id": "evt-1",
@@ -301,7 +338,12 @@ class InterfaceStateTest(unittest.TestCase):
             },
         }
 
-        processed = interface.process_incoming_event(event, client=FakeClient())
+        with mock.patch.object(
+            interface,
+            "submit_best_effort",
+            side_effect=run_immediately,
+        ):
+            processed = interface.process_incoming_event(event, client=FakeClient())
 
         self.assertIsNotNone(processed)
         contact_id, context = processed
@@ -310,29 +352,61 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertIn("take_back_request_id: tb-1", context)
         self.assertEqual(calls, [("read", "room-a", "evt-1")])
 
-    def test_polled_events_are_stamped_with_public_room_id(self):
+    def test_attachment_metadata_lookup_is_reused_for_bookkeeping(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
 
         class FakeClient:
-            def events_list(self, room_id, since=""):
-                return [
-                    {
-                        "type": "m.text",
-                        "event_id": "evt-1",
-                        "room": 10,
-                        "content": {"body": "hello"},
-                    }
-                ]
+            def __init__(self):
+                self.media_lookups = 0
+
+            def media_show(self, media_id):
+                self.media_lookups += 1
+                self.assert_media_id = media_id
+                return {
+                    "download_url": "https://download.example/media-1",
+                    "s3_url": "https://cdn.example/media-1",
+                    "filename": "report.pdf",
+                }
 
             def read(self, room_id, event_id):
                 pass
 
-        events = interface._poll_room_events(FakeClient(), interface.get_contacts())
+        def run_immediately(function, *args, **_kwargs):
+            function(*args)
+            return True
 
-        self.assertEqual(events[0]["room_id"], "room-a")
-        self.assertEqual(
-            interface.process_incoming_event(events[0], client=FakeClient())[0],
+        client = FakeClient()
+        local_path = str(Path(self.tmp.name) / "media" / "evt-media_report.pdf")
+        with (
+            mock.patch.object(interface, "_download_url", return_value=local_path),
+            mock.patch.object(interface, "submit_best_effort", side_effect=run_immediately),
+            mock.patch("core.activity_log.incoming") as log_incoming,
+            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
+            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
+        ):
+            processed = interface.process_incoming_event(
+                {
+                    "type": "m.file",
+                    "event_id": "evt-media",
+                    "room_id": "room-a",
+                    "content": {
+                        "media_id": "media-1",
+                        "filename": "report.pdf",
+                    },
+                },
+                client=client,
+            )
+
+        self.assertEqual(processed[0], "carbon-a")
+        self.assertEqual(client.media_lookups, 1)
+        self.assertEqual(client.assert_media_id, "media-1")
+        log_incoming.assert_called_once_with(
             "carbon-a",
+            "m.file",
+            body="",
+            media_id="media-1",
+            attachment_url="https://cdn.example/media-1",
+            event_id="evt-media",
         )
 
     def test_ignored_events_update_local_watermark(self):
@@ -344,7 +418,7 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertIsNone(processed)
         contact = interface.get_contact("carbon-a")
         self.assertEqual(contact["last_polled_event_id"], "evt-progress")
-        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-progress")
+        self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-progress")
 
     def test_self_sender_handle_updates_watermark_and_drops_echo(self):
         state = interface.get_contacts()
@@ -362,7 +436,7 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertIsNone(processed)
         self.assertIn("evt-self", interface.get_contacts()["processed_events"]["room-a"])
-        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-self")
+        self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-self")
 
     def test_interface_new_command_maps_to_session_command(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
@@ -377,13 +451,11 @@ class InterfaceStateTest(unittest.TestCase):
         )
 
         self.assertEqual(processed, ("carbon-a", "[COMMAND: NEW_SESSION]"))
-        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-new")
+        self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-new")
 
-    def test_get_unread_events_uses_global_sync_without_room_polling(self):
+    def test_get_unread_events_consumes_and_commits_durable_inbox(self):
         class FakeClient:
             def __init__(self):
-                self.sync_calls = []
-                self.poll_calls = []
                 self.read_calls = []
 
             def whoami(self):
@@ -403,46 +475,110 @@ class InterfaceStateTest(unittest.TestCase):
                     ]
                 }
 
-            def events_sync(self, after="", limit=interface.EVENT_SYNC_LIMIT):
-                self.sync_calls.append((after, limit))
-                return {
-                    "frames": [
-                        {
-                            "type": "event",
-                            "room_id": "room-a",
-                            "event": {
-                                "type": "m.text",
-                                "event_id": "evt-sync",
-                                "content": {"body": "hello from sync"},
-                            },
-                        }
-                    ],
-                    "next": "evt-sync",
-                    "has_more": False,
-                }
-
-            def events_list(self, room_id, since=""):
-                self.poll_calls.append((room_id, since))
-                raise AssertionError("per-room polling should not run")
-
             def read(self, room_id, event_id):
                 self.read_calls.append((room_id, event_id))
 
+        frame = {
+            "type": "event",
+            "room_id": "room-a",
+            "event": {
+                "type": "m.text",
+                "event_id": "evt-sync",
+                "content": {"body": "hello from durable inbox"},
+            },
+        }
+        interface.DEFAULT_INBOX_FILE.write_text(
+            json.dumps(frame) + "\n",
+            encoding="utf-8",
+        )
+        interface._queue_inbox_records(
+            interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        )
         fake = FakeClient()
         with mock.patch.object(interface, "InterfaceClient", return_value=fake), mock.patch.object(interface, "start_listener"):
             contexts = interface.get_unread_events()
 
-        self.assertEqual(fake.sync_calls, [("", interface.EVENT_SYNC_LIMIT)])
-        self.assertEqual(fake.poll_calls, [])
         self.assertIn("carbon-a", contexts)
-        self.assertIn("hello from sync", contexts["carbon-a"])
-        self.assertEqual(interface.get_contacts()["last_event_cursor"], "evt-sync")
+        self.assertIn("hello from durable inbox", contexts["carbon-a"])
+        self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-sync")
+        consumer = json.loads(
+            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            consumer["offset"],
+            interface.DEFAULT_INBOX_FILE.stat().st_size,
+        )
 
-    def test_listener_process_uses_one_socket_without_cli_sync(self):
+    def test_uncommitted_inbox_record_replays_after_restart(self):
+        frames = [
+            {"type": "event", "room_id": "room-a", "event": {"event_id": "evt-1"}},
+            {"type": "event", "room_id": "room-a", "event": {"event_id": "evt-2"}},
+        ]
+        interface.DEFAULT_INBOX_FILE.write_text(
+            "".join(json.dumps(frame) + "\n" for frame in frames),
+            encoding="utf-8",
+        )
+
+        records = interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        self.assertEqual([r.frame["event"]["event_id"] for r in records], ["evt-1", "evt-2"])
+        interface._commit_inbox_record(records[0])
+
+        with interface._inbox_scan_lock:
+            interface._inbox_scan_state.clear()
+        replay = interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+
+        self.assertEqual([r.frame["event"]["event_id"] for r in replay], ["evt-2"])
+
+    def test_initial_snapshot_timeline_is_routed_through_same_dedupe_path(self):
+        interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
+        snapshot = {
+            "type": "initial.snapshot",
+            "rooms": [
+                {
+                    "room_id": "room-a",
+                    "timeline": {
+                        "events": [
+                            {
+                                "type": "m.text",
+                                "event_id": "evt-snapshot",
+                                "content": {"body": "recovered at the barrier"},
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        fake = mock.Mock()
+        fake.whoami.return_value = {"silicon_id": "self-si"}
+        fake.rooms_list.return_value = {"rooms": []}
+        interface._event_queue.put(interface.InboxRecord(snapshot))
+
+        with (
+            mock.patch.object(interface, "InterfaceClient", return_value=fake),
+            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(interface, "discover_rooms", return_value=interface.get_contacts()),
+        ):
+            contexts = interface.get_unread_events()
+
+        self.assertIn("recovered at the barrier", contexts["carbon-a"])
+
+    def test_foreground_listener_keeps_cli_v2_sync_enabled(self):
         client = interface.InterfaceClient.__new__(interface.InterfaceClient)
         with mock.patch.object(interface.InterfaceClient, "popen") as popen:
             client.listen_all_process()
-        popen.assert_called_once_with(["listen", "all", "--once", "--no-sync"])
+        popen.assert_called_once_with(["listen", "all"])
+
+    def test_daemon_status_rejects_pre_v2_contract(self):
+        client = interface.InterfaceClient.__new__(interface.InterfaceClient)
+        with mock.patch.object(client, "run", return_value={"text": "unknown command"}):
+            with self.assertRaisesRegex(interface.InterfaceError, "CLI v2"):
+                client.daemon_status()
+
+    def test_runtime_wakeup_is_not_lost_before_wait_begins(self):
+        interface.notify_runtime_activity()
+
+        self.assertTrue(interface.wait_for_runtime_activity(0))
+        self.assertFalse(interface.wait_for_runtime_activity(0))
 
     def test_reply_segments_keep_order_and_report_missing_files(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
@@ -452,7 +588,7 @@ class InterfaceStateTest(unittest.TestCase):
         calls = []
 
         class FakeClient:
-            def send(self, room_id, message):
+            def send(self, room_id, message, **_kwargs):
                 calls.append(("send", room_id, message))
 
             def send_file(self, room_id, path):
@@ -530,15 +666,34 @@ class InterfaceClientTest(unittest.TestCase):
                 client.whoami()
                 client.room_members("room-1")
                 client.ensure_direct_room("carbon", "saket")
-                client.events_list("room-1", since="evt-1")
-                client.progress("room-1", "manager", "thinking", "running")
+                client.progress(
+                    "room-1",
+                    "manager",
+                    "thinking",
+                    "running",
+                    "frame-1",
+                )
 
             commands = [call.args[0] for call in run.call_args_list]
             self.assertIn([str(exe), "--json", "me"], commands)
             self.assertIn([str(exe), "--json", "rooms", "show", "room-1", "--limit", "0"], commands)
             self.assertIn([str(exe), "--json", "rooms", "direct", "carbon", "saket"], commands)
-            self.assertIn([str(exe), "--json", "messages", "list", "room-1", "--limit", "200"], commands)
-            self.assertIn([str(exe), "--json", "progress", "room-1", "thinking", "--group", "manager", "--note", "running"], commands)
+            self.assertIn(
+                [
+                    str(exe),
+                    "--json",
+                    "progress",
+                    "room-1",
+                    "thinking",
+                    "--group",
+                    "manager",
+                    "--note",
+                    "running",
+                    "--frame",
+                    "frame-1",
+                ],
+                commands,
+            )
 
     def test_json_parser_uses_last_json_line(self):
         self.assertEqual(interface._parse_json_output("noise\n{\"ok\": true}\n"), {"ok": True})
@@ -586,12 +741,62 @@ class GlassProfileSyncTest(InterfaceStateTest):
                 "name": "Ada Silicon",
                 "tagline": "designs systems",
                 "description": "Handles inbound sales emails.",
+                "architecture_node_id": "SALES",
+                "job_description": "Qualify inbound leads and own sales follow-up.",
+                "advertising_memory_path": "prompts/advertising/self.md",
+                "owner_team_slug": "revenue",
                 "central_carbon": None,
             }
         )
         profile = interface.get_own_profile()
+        self.assertEqual(profile["silicon_id"], "self")
         self.assertEqual(profile["description"], "Handles inbound sales emails.")
+        self.assertEqual(profile["architecture_node_id"], "SALES")
+        self.assertEqual(
+            profile["job_description"],
+            "Qualify inbound leads and own sales follow-up.",
+        )
+        self.assertEqual(
+            profile["advertising_memory_path"],
+            "prompts/advertising/self.md",
+        )
+        self.assertEqual(profile["owner_team_slug"], "revenue")
+        self.assertEqual(profile["team"], "revenue")
         self.assertEqual(profile["central_carbon"], None)
+
+    def test_partial_profile_payload_preserves_last_known_role_metadata(self):
+        interface._sync_profile_from_glass(
+            {
+                "silicon_id": "self",
+                "name": "Ada Silicon",
+                "description": "Handles inbound sales emails.",
+                "job_description": "Qualify inbound leads.",
+                "owner_team_slug": "revenue",
+                "advertising_memory_path": "prompts/advertising/self.md",
+                "central_carbon": {
+                    "carbon_id": "alice",
+                    "name": "Alice",
+                },
+            }
+        )
+
+        interface._sync_profile_from_glass(
+            {
+                "silicon_id": "self",
+                "tagline": "available",
+            }
+        )
+
+        profile = interface.get_own_profile()
+        self.assertEqual(profile["description"], "Handles inbound sales emails.")
+        self.assertEqual(profile["job_description"], "Qualify inbound leads.")
+        self.assertEqual(profile["owner_team_slug"], "revenue")
+        self.assertEqual(
+            profile["advertising_memory_path"],
+            "prompts/advertising/self.md",
+        )
+        self.assertEqual(profile["central_carbon"]["carbon_id"], "alice")
+        self.assertEqual(profile["tagline"], "available")
 
     def test_discover_rooms_reconciles_from_whoami(self):
         class FakeClient:

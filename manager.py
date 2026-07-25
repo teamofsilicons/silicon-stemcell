@@ -1,27 +1,34 @@
 import subprocess
 import os
 import json
-import re
 import time
 import uuid
 import platform
 import shutil
-import threading
 import queue
+from contextlib import nullcontext
 
 from prompts.DNA import get_manager_prompt
+from core.codex_app_server import CodexAppServer as _SharedCodexAppServer
+from core.runtime_paths import CODE_ROOT, DATA_ROOT
 from core.progress import (
+    DONE,
     claude_progress_events,
     codex_progress_event,
+    contains_advertising_memory_reference,
+    contains_private_manager_tool,
+    diagnostic_error_summary,
+    progress_is_error,
     progress_display_line,
-    write_progress_line,
+    redact_diagnostic_text,
+    usage_from_done_event,
 )
 
 IS_WINDOWS = platform.system() == "Windows"
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-SESSIONS_DIR = os.path.join(PROJECT_ROOT, "sessions")
-MANAGER_STREAMS_DIR = os.path.join(SESSIONS_DIR, "manager_streams")
+PROJECT_ROOT = os.fspath(CODE_ROOT)
+INSTANCE_ROOT = os.fspath(DATA_ROOT)
+SESSIONS_DIR = os.path.join(INSTANCE_ROOT, "sessions")
 
 # On Windows, find the full path to claude so we don't need shell=True
 # (which has an 8191 char command line limit via cmd.exe)
@@ -44,7 +51,7 @@ MANAGER_TIMEOUT = 30 * 60  # 30 minutes
 TIMEOUT_MSG = "SYSTEM: You timed out (30 min limit). You were taking too long. Delegate long-running tasks to a worker instead of doing them yourself. If this task truly cannot be delegated, you may continue now — but be quick."
 
 
-SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
+SILICON_CONFIG_FILE = os.path.join(INSTANCE_ROOT, "silicon.json")
 
 
 def _read_silicon_config():
@@ -148,6 +155,53 @@ def _is_rate_limit(text):
     ])
 
 
+def _safe_manager_error_tools(value):
+    """Build a Carbon-visible provider error without echoing private material."""
+    detail = redact_diagnostic_text(value, limit=300)
+    if detail in {
+        "[private manager tool invocation omitted]",
+        "[advertising memory content omitted]",
+    }:
+        detail = "provider call failed"
+    detail = detail or "provider call failed"
+    return json.dumps({
+        "tools": [
+            {"tool": "reply", "message": f"Manager error: {detail}"},
+            {"tool": "do_nothing"},
+        ]
+    })
+
+
+def _provider_span(trace, provider):
+    """Return a provider span context without allowing diagnostics failures out."""
+    if trace is None:
+        return nullcontext()
+    try:
+        span = trace.span("provider_call")
+        span.set_meta(provider=provider)
+        return span
+    except Exception:
+        return nullcontext()
+
+
+def _attach_usage_to_span(span, progress):
+    if span is None or not progress or progress.get("kind") != DONE:
+        return
+    try:
+        span.set_tokens(**usage_from_done_event(progress))
+        span.set_meta(
+            provider_status=str(progress.get("status") or ""),
+            provider_is_error=bool(progress_is_error(progress)),
+        )
+        if progress_is_error(progress):
+            span.status = "error"
+            summary = diagnostic_error_summary(progress)
+            if summary:
+                span.set_meta(error=summary)
+    except Exception:
+        pass
+
+
 def _display_stream_event(event, tag, state=None, progress_events=None):
     """Print a stream-json event to terminal."""
     progress_events = progress_events if progress_events is not None else claude_progress_events(event, state)
@@ -172,10 +226,9 @@ def _display_stream_event(event, tag, state=None, progress_events=None):
             if bt == "text":
                 txt = block.get("text", "").strip()
                 if txt:
-                    preview = txt[:150].replace("\n", " ")
-                    if len(txt) > 150:
-                        preview += "…"
-                    print(f"  [{tag}] {preview}", flush=True)
+                    # Do not stream manager prose/tool JSON into process logs.
+                    # The centralized executor emits a redacted result later.
+                    print(f"  [{tag}] assistant response", flush=True)
             elif bt == "tool_use":
                 name = block.get("name", "?")
                 print(f"  [{tag}] tool: {name}", flush=True)
@@ -212,136 +265,16 @@ def _notify_progress(on_progress, progress):
         pass
 
 
-def _compact_preview(text, limit=180):
-    text = " ".join(str(text or "").split())
-    if len(text) > limit:
-        return text[:limit - 1] + "…"
-    return text
-
-
-def _codex_item_label(item):
-    item_type = item.get("type", "")
-
-    if item_type == "agentMessage":
-        phase = item.get("phase")
-        return f"assistant{f' ({phase})' if phase else ''}"
-
-    if item_type == "commandExecution":
-        command = item.get("command") or item.get("cmd") or item.get("argv") or ""
-        if isinstance(command, list):
-            command = " ".join(str(part) for part in command)
-        return f"command: {_compact_preview(command, 120)}" if command else "command"
-
-    if item_type == "mcpToolCall":
-        name = item.get("name") or item.get("toolName") or item.get("serverName") or "mcp tool"
-        return f"tool: {name}"
-
-    if item_type == "fileChange":
-        path = item.get("path") or item.get("filePath") or item.get("relativePath") or ""
-        return f"file change: {path}" if path else "file change"
-
-    if item_type == "userMessage":
-        return "user message"
-
-    if item_type:
-        return item_type
-    return "item"
-
-
 def _display_codex_stream_event(msg, tag, state):
     """Print useful Codex app-server notifications as a live activity trace."""
     progress = codex_progress_event(msg, state)
     line = progress_display_line(progress)
     if line:
         print(f"  [{tag}] {line}", flush=True)
-    return
-
-    method = msg.get("method", "")
-    params = msg.get("params", {})
-
-    if method == "thread/started":
-        thread = params.get("thread", {})
-        tid = thread.get("id", "")[:8]
-        model = thread.get("modelProvider", "")
-        print(f"  [{tag}] codex thread {tid}" + (f" | {model}" if model else ""), flush=True)
-
-    elif method == "turn/started":
-        turn_id = params.get("turn", {}).get("id", "")[:8]
-        print(f"  [{tag}] turn started {turn_id}", flush=True)
-
-    elif method == "item/started":
-        item = params.get("item", {})
-        label = _codex_item_label(item)
-        item_id = item.get("id") or params.get("itemId")
-        if item_id:
-            state.setdefault("item_labels", {})[item_id] = label
-        if item.get("type") != "userMessage":
-            print(f"  [{tag}] started {label}", flush=True)
-
-    elif method == "item/completed":
-        item = params.get("item", {})
-        item_type = item.get("type", "")
-        if item_type == "agentMessage":
-            text = _compact_preview(item.get("text", ""), 160)
-            if text:
-                print(f"  [{tag}] assistant done: {text}", flush=True)
-        elif item_type != "userMessage":
-            label = _codex_item_label(item)
-            status = item.get("status") or item.get("exitCode")
-            suffix = f" ({status})" if status not in (None, "") else ""
-            print(f"  [{tag}] completed {label}{suffix}", flush=True)
-
-    elif method == "item/commandExecution/outputDelta":
-        item_id = params.get("itemId", "")
-        delta = params.get("delta", "")
-        if not delta:
-            return
-        buffers = state.setdefault("command_output", {})
-        buffers[item_id] = buffers.get(item_id, "") + delta
-        now = time.time()
-        last_key = f"command_output:{item_id}"
-        last = state.get("last_print_at", {}).get(last_key, 0)
-        if now - last >= 3:
-            preview = _compact_preview(buffers[item_id], 180)
-            if preview:
-                print(f"  [{tag}] command output: {preview}", flush=True)
-                state.setdefault("last_print_at", {})[last_key] = now
-
-    elif method in ("item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded"):
-        # Print summaries only, not raw reasoning text.
-        delta = params.get("delta") or params.get("text") or ""
-        if delta:
-            print(f"  [{tag}] reasoning summary: {_compact_preview(delta, 180)}", flush=True)
-        else:
-            print(f"  [{tag}] reasoning summary updated", flush=True)
-
-    elif method == "item/plan/delta":
-        delta = params.get("delta", "")
-        if delta:
-            print(f"  [{tag}] plan: {_compact_preview(delta, 180)}", flush=True)
-
-    elif method == "item/fileChange/patchUpdated":
-        path = params.get("path") or params.get("filePath") or ""
-        print(f"  [{tag}] patch updated" + (f": {path}" if path else ""), flush=True)
-
-    elif method == "thread/tokenUsage/updated":
-        usage = params.get("tokenUsage", {}).get("total", {})
-        total = usage.get("totalTokens")
-        if total is not None:
-            print(
-                f"  [{tag}] tokens total={total} input={usage.get('inputTokens')} output={usage.get('outputTokens')}",
-                flush=True,
-            )
-
-    elif method == "turn/completed":
-        turn = params.get("turn", {})
-        status = turn.get("status", "completed")
-        duration = turn.get("durationMs")
-        suffix = f" in {duration / 1000:.1f}s" if duration is not None else ""
-        print(f"  [{tag}] turn {status}{suffix}", flush=True)
 
 
-def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None, progress_log_path=None, on_progress=None):
+def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
+                   on_progress=None, diag_span=None):
     """Run claude CLI with stream-json, show events on terminal.
     on_tools(tools_list) is called for tool JSON found in intermediate assistant texts.
     Returns (result_text, rate_limit_msg_or_None, returncode, executed_tools)."""
@@ -392,7 +325,7 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
             event = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             # Not JSON — could be plain text output
-            print(f"  [{tag}] (raw) {line[:200]}", flush=True)
+            print(f"  [{tag}] raw provider output omitted", flush=True)
             all_texts.append(line)
             if _is_rate_limit(line):
                 rate_limit_msg = line
@@ -400,7 +333,7 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
 
         progress_events = claude_progress_events(event, progress_state)
         for progress in progress_events:
-            write_progress_line(progress_log_path, progress)
+            _attach_usage_to_span(diag_span, progress)
             _notify_progress(on_progress, progress)
         _display_stream_event(event, tag, progress_state, progress_events)
 
@@ -416,7 +349,7 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
                 errors = event.get("errors", [])
                 if errors:
                     result_error_msg = errors[0]
-                    print(f"  [{tag}] error: {result_error_msg}", flush=True)
+                    print(f"  [{tag}] provider error details omitted", flush=True)
 
         elif etype == "assistant":
             for block in event.get("message", {}).get("content", []):
@@ -429,7 +362,7 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
 
                         # Try to parse as tool JSON and execute mid-stream
                         if on_tools:
-                            tools_data = parse_manager_output(txt)
+                            tools_data = parse_manager_output(txt, debug=False)
                             if tools_data and "tools" in tools_data:
                                 tools_list = tools_data["tools"]
                                 succeeded = on_tools(tools_list)
@@ -440,7 +373,7 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
     rc = proc.wait()
 
     if stderr:
-        print(f"  [{tag}] stderr: {stderr.strip()[:300]}", flush=True)
+        print(f"  [{tag}] provider stderr omitted", flush=True)
         if _is_rate_limit(stderr):
             if not rate_limit_msg:
                 rate_limit_msg = stderr.strip()
@@ -452,10 +385,18 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
     if not result_text and all_texts:
         result_text = all_texts[-1]
 
-    return result_text, rate_limit_msg, rc, executed_tools, stderr.strip() if stderr else "", result_error_subtype, result_error_msg
+    return (
+        result_text,
+        rate_limit_msg,
+        rc,
+        executed_tools,
+        "[provider stderr omitted]" if stderr else "",
+        result_error_subtype,
+        result_error_msg,
+    )
 
 
-def claude_code(text, carbon_id, on_tools=None, on_progress=None):
+def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None):
     """Invoke the Manager via claude CLI with streaming JSON.
     on_tools(tools_list) is called for mid-stream tool JSON in assistant texts.
     Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
@@ -463,7 +404,6 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None):
     system_prompt = get_manager_prompt(carbon_id)
     prompt_file = _write_prompt_file(carbon_id, system_prompt)
     tag = f"manager:{carbon_id}"
-    progress_log_path = _codex_manager_progress_file(_codex_manager_stream_file(carbon_id))
 
     # Stream with --resume
     cmd = [
@@ -481,14 +421,14 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None):
             text,
             tag,
             on_tools=on_tools,
-            progress_log_path=progress_log_path,
             on_progress=on_progress,
+            diag_span=diag_span,
         )
         if rc == 0 and result_text.strip():
             return result_text.strip(), rate_limit, executed_tools
         # Session not found — check the exact error message
         if rc != 0 and "no" in error_msg.lower() and "found" in error_msg.lower() and session_id in error_msg:
-            print(f"  [{tag}] {error_msg} — creating new session...", flush=True)
+            print(f"  [{tag}] manager session missing — creating new session...", flush=True)
             # MUST pass brain="claude": this is the claude path and needs a claude
             # UUID. Without it, new_session() defaults to the silicon's configured
             # brain — for a codex-brain silicon that returns the codex placeholder
@@ -509,8 +449,8 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None):
                 text,
                 tag,
                 on_tools=on_tools,
-                progress_log_path=progress_log_path,
                 on_progress=on_progress,
+                diag_span=diag_span,
             )
             if rc == 0 and result_text.strip():
                 return result_text.strip(), rate_limit, executed_tools
@@ -552,148 +492,169 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None):
         reply_contact("hold on, still working on this...", carbon_id)
         return TIMEOUT_MSG, None, []
     except Exception as e:
-        return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}', None, []
+        return _safe_manager_error_tools(e), None, []
 
 
-class _CodexAppServer:
-    """Minimal JSON-RPC client for `codex app-server` over stdio."""
+def _redact_codex_agent_message(line, private_item_ids=None):
+    """Remove assistant and advertising payloads from durable app-server traces."""
+    private_item_ids = private_item_ids if private_item_ids is not None else set()
+    try:
+        payload = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return json.dumps(
+            {"type": "provider.raw", "redacted": True},
+            separators=(",", ":"),
+        )
+    if not isinstance(payload, dict):
+        return json.dumps(
+            {"type": "provider.raw", "redacted": True},
+            separators=(",", ":"),
+        )
+
+    if str(payload.get("type") or "") in {
+        "codex.stderr",
+        "silicon.codex_app_error",
+    }:
+        return json.dumps(
+            {
+                "type": str(payload.get("type") or "provider.error"),
+                "redacted": True,
+            },
+            separators=(",", ":"),
+        )
+    if "error" in payload and not payload.get("method"):
+        safe_payload = {"error": {"redacted": True}}
+        if "id" in payload:
+            safe_payload["id"] = payload["id"]
+        return json.dumps(safe_payload, separators=(",", ":"))
+    if contains_private_manager_tool(json.dumps(payload, ensure_ascii=False)):
+        return json.dumps(
+            {"type": "provider.private", "redacted": True},
+            separators=(",", ":"),
+        )
+
+    method = str(payload.get("method") or "")
+    params = payload.get("params")
+    item_id = ""
+    item = None
+    if isinstance(params, dict):
+        item = params.get("item")
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or params.get("itemId") or "")
+        else:
+            item_id = str(params.get("itemId") or "")
+    command_execution = (
+        method.startswith("item/commandExecution/")
+        or (
+            isinstance(item, dict)
+            and str(item.get("type") or "") == "commandExecution"
+        )
+    )
+    current_is_private = (
+        command_execution
+        or method == "error"
+        or contains_private_manager_tool(
+            json.dumps(params, ensure_ascii=False)
+            if isinstance(params, (dict, list))
+            else params
+        )
+        or contains_advertising_memory_reference(
+            json.dumps(params, ensure_ascii=False)
+            if isinstance(params, (dict, list))
+            else params
+        )
+        or (item_id and item_id in private_item_ids)
+    )
+    if current_is_private and item_id:
+        private_item_ids.add(item_id)
+    if current_is_private:
+        safe_params = {"redacted": True}
+        if item_id:
+            safe_params["itemId"] = item_id
+        if isinstance(item, dict):
+            safe_params["item"] = {
+                key: item[key]
+                for key in ("id", "type", "phase", "status")
+                if key in item
+            }
+            safe_params["item"]["redacted"] = True
+        return json.dumps(
+            {"method": method, "params": safe_params},
+            separators=(",", ":"),
+        )
+
+    if method.startswith("item/agentMessage/"):
+        safe_params = {}
+        if isinstance(params, dict) and params.get("itemId"):
+            safe_params["itemId"] = params["itemId"]
+        safe_params["redacted"] = True
+        return json.dumps(
+            {"method": method, "params": safe_params},
+            separators=(",", ":"),
+        )
+
+    if method in {"item/started", "item/completed"} and isinstance(params, dict):
+        item = params.get("item")
+        if isinstance(item, dict) and item.get("type") == "agentMessage":
+            safe_item = {
+                key: item[key]
+                for key in ("id", "type", "phase", "status")
+                if key in item
+            }
+            safe_item["redacted"] = True
+            safe_params = {
+                key: value
+                for key, value in params.items()
+                if key != "item"
+            }
+            safe_params["item"] = safe_item
+            return json.dumps(
+                {"method": method, "params": safe_params},
+                separators=(",", ":"),
+            )
+    return line
+
+
+class _CodexAppServer(_SharedCodexAppServer):
+    """Manager presentation hooks around the shared app-server transport."""
 
     def __init__(self, tag, timeout=180, stream_log_path=None):
         self.tag = tag
-        self.timeout = timeout
         self.stream_log_path = stream_log_path
-        self.next_id = 1
-        self.messages = queue.Queue()
-        self.stderr_lines = []
-        self.proc = subprocess.Popen(
-            [
-                CODEX_CMD, "app-server",
-                "--listen", "stdio://",
-                "--config", 'sandbox_mode="danger-full-access"',
-                "--config", 'approval_policy="never"',
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=PROJECT_ROOT,
-            bufsize=1,
+        self._private_stream_item_ids = set()
+        super().__init__(
+            PROJECT_ROOT,
+            command=CODEX_CMD,
+            timeout=timeout,
         )
-        threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
 
-    def _read_stdout(self):
-        for line in self.proc.stdout:
-            line = line.rstrip("\n")
-            self._write_stream_log(line)
-            self.messages.put(("stdout", line))
+    def _handle_stdout_line(self, line):
+        self._write_stream_log(line)
 
-    def _read_stderr(self):
-        for line in self.proc.stderr:
-            line = line.rstrip("\n")
-            self.stderr_lines.append(line)
-            self._write_stream_log(json.dumps({"type": "codex.stderr", "message": line}))
-            self.messages.put(("stderr", line))
+    def _handle_stderr_line(self, line):
+        self._write_stream_log(
+            json.dumps({"type": "codex.stderr", "message": line})
+        )
 
     def _write_stream_log(self, line):
         if not self.stream_log_path or not line:
             return
         try:
+            private_item_ids = getattr(self, "_private_stream_item_ids", None)
+            if private_item_ids is None:
+                private_item_ids = set()
+                self._private_stream_item_ids = private_item_ids
+            line = _redact_codex_agent_message(
+                line,
+                private_item_ids,
+            )
             with open(self.stream_log_path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except Exception:
             pass
 
-    def close(self):
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-
-    def send(self, method, params=None, msg_id=None):
-        if msg_id is None:
-            msg_id = self.next_id
-            self.next_id += 1
-        payload = {"id": msg_id, "method": method}
-        if params is not None:
-            payload["params"] = params
-        self.proc.stdin.write(json.dumps(payload) + "\n")
-        self.proc.stdin.flush()
-        return msg_id
-
-    def respond(self, msg_id, result):
-        self.proc.stdin.write(json.dumps({"id": msg_id, "result": result}) + "\n")
-        self.proc.stdin.flush()
-
-    def _handle_server_request(self, msg):
-        method = msg.get("method", "")
-        msg_id = msg.get("id")
-        if msg_id is None:
-            return False
-
-        if method == "item/commandExecution/requestApproval":
-            self.respond(msg_id, {"decision": "acceptForSession"})
-            return True
-        if method == "item/fileChange/requestApproval":
-            self.respond(msg_id, {"decision": "acceptForSession"})
-            return True
-        if method == "item/tool/requestUserInput":
-            self.respond(msg_id, {"canceled": True})
-            return True
-        if method == "mcpServer/elicitation/request":
-            self.respond(msg_id, {"action": "cancel"})
-            return True
-        return False
-
-    def request(self, method, params=None, timeout=None):
-        req_id = self.send(method, params)
-        deadline = time.time() + (timeout or self.timeout)
-
-        while time.time() < deadline:
-            try:
-                source, line = self.messages.get(timeout=0.25)
-            except queue.Empty:
-                if self.proc.poll() is not None:
-                    raise RuntimeError(self._process_exit_message())
-                continue
-
-            if source == "stderr":
-                continue
-
-            try:
-                msg = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-            if self._handle_server_request(msg):
-                continue
-            if msg.get("id") == req_id:
-                return msg
-
-        raise subprocess.TimeoutExpired([CODEX_CMD, "app-server"], timeout or self.timeout)
-
-    def _process_exit_message(self):
-        detail = "\n".join(self.stderr_lines[-5:]).strip()
-        return f"codex app-server exited with code {self.proc.returncode}" + (f": {detail}" if detail else "")
-
-
 def _codex_thread_file(carbon_id):
     return _session_file(carbon_id, "codex")
-
-
-def _codex_manager_stream_file(carbon_id):
-    os.makedirs(MANAGER_STREAMS_DIR, exist_ok=True)
-    safe_carbon_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", carbon_id)
-    return os.path.join(MANAGER_STREAMS_DIR, f"{safe_carbon_id}-{int(time.time() * 1000)}.jsonl")
-
-
-def _codex_manager_progress_file(stream_log_path):
-    if stream_log_path.endswith(".jsonl"):
-        return stream_log_path[:-6] + ".progress.jsonl"
-    return stream_log_path + ".progress"
 
 
 def _read_codex_thread_id(carbon_id):
@@ -726,7 +687,11 @@ def _codex_start_or_resume_thread(client, carbon_id, system_prompt):
     if thread_id:
         resp = client.request("thread/resume", {**params, "threadId": thread_id}, timeout=60)
         if "result" in resp:
-            return resp["result"]["thread"]["id"]
+            result = resp["result"]
+            return result["thread"]["id"], {
+                "model": result.get("model", ""),
+                "model_provider": result.get("modelProvider", ""),
+            }
         print(f"  [manager:{carbon_id}] codex resume failed; creating new thread", flush=True)
 
     resp = client.request("thread/start", {**params, "ephemeral": False}, timeout=60)
@@ -734,10 +699,13 @@ def _codex_start_or_resume_thread(client, carbon_id, system_prompt):
         raise RuntimeError(resp["error"].get("message", "codex thread/start failed"))
     thread_id = resp["result"]["thread"]["id"]
     _write_codex_thread_id(carbon_id, thread_id)
-    return thread_id
+    return thread_id, {
+        "model": resp["result"].get("model", ""),
+        "model_provider": resp["result"].get("modelProvider", ""),
+    }
 
 
-def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
+def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span=None):
     """Invoke the Manager through Codex app-server.
     Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
     tag = f"manager:{carbon_id}"
@@ -750,17 +718,19 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
     seen_tool_keys = set()
     error_msg = ""
     last_preview_at = 0
-    stream_log_path = _codex_manager_stream_file(carbon_id)
-    progress_log_path = _codex_manager_progress_file(stream_log_path)
     stream_display_state = {}
 
     try:
-        client = _CodexAppServer(tag, stream_log_path=stream_log_path)
+        client = _CodexAppServer(tag)
         client.request("initialize", {
             "clientInfo": {"name": "silicon", "version": "0.1.0"},
             "capabilities": {"experimentalApi": True},
         }, timeout=30)
-        thread_id = _codex_start_or_resume_thread(client, carbon_id, system_prompt)
+        thread_id, codex_context = _codex_start_or_resume_thread(client, carbon_id, system_prompt)
+        codex_progress_event(
+            {"type": "silicon.codex_context", **codex_context},
+            stream_display_state,
+        )
 
         turn_resp = client.request("turn/start", {
             "threadId": thread_id,
@@ -797,7 +767,7 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
             method = msg.get("method", "")
             params = msg.get("params", {})
             progress = codex_progress_event(msg, stream_display_state)
-            write_progress_line(progress_log_path, progress)
+            _attach_usage_to_span(diag_span, progress)
             _notify_progress(on_progress, progress)
             _display_codex_stream_event(msg, tag, stream_display_state)
 
@@ -806,9 +776,8 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
                 if delta:
                     streamed_text += delta
                     now = time.time()
-                    preview = streamed_text.strip()[:150].replace("\n", " ")
-                    if preview and now - last_preview_at >= 5:
-                        print(f"  [{tag}] {preview}", flush=True)
+                    if now - last_preview_at >= 5:
+                        print(f"  [{tag}] assistant response streaming", flush=True)
                         last_preview_at = now
                     if _is_rate_limit(streamed_text):
                         rate_limit_msg = streamed_text
@@ -850,15 +819,9 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
         if output and _is_rate_limit(output):
             rate_limit_msg = output
         if output:
-            print(f"  [{tag}] stream log: {stream_log_path}", flush=True)
-            print(f"  [{tag}] progress log: {progress_log_path}", flush=True)
             return output, rate_limit_msg, executed_tools
         if error_msg:
-            print(f"  [{tag}] stream log: {stream_log_path}", flush=True)
-            print(f"  [{tag}] progress log: {progress_log_path}", flush=True)
-            return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {error_msg}"}}, {{"tool": "do_nothing"}}]}}', rate_limit_msg, executed_tools
-        print(f"  [{tag}] stream log: {stream_log_path}", flush=True)
-        print(f"  [{tag}] progress log: {progress_log_path}", flush=True)
+            return _safe_manager_error_tools(error_msg), rate_limit_msg, executed_tools
         return "", rate_limit_msg, executed_tools
 
     except subprocess.TimeoutExpired:
@@ -866,13 +829,13 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None):
         reply_contact("hold on, still working on this...", carbon_id)
         return TIMEOUT_MSG, None, []
     except Exception as e:
-        return f'{{"tools": [{{"tool": "reply", "message": "Manager error: {e}"}}, {{"tool": "do_nothing"}}]}}', None, []
+        return _safe_manager_error_tools(e), None, []
     finally:
         if client:
             client.close()
 
 
-def manager_code(text, carbon_id, on_tools=None, on_progress=None):
+def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None):
     """Invoke the configured manager brain.
 
     Fallback providers are only tried after the provider above returns a
@@ -884,13 +847,20 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None):
     errors = []
     for provider in get_brain_order():
         try:
-            if provider == "codex":
-                result = codex_app_server(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
-            else:
-                result = claude_code(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
+            with _provider_span(trace, provider) as diag_span:
+                if provider == "codex":
+                    result = codex_app_server(
+                        text, carbon_id, on_tools=on_tools,
+                        on_progress=on_progress, diag_span=diag_span,
+                    )
+                else:
+                    result = claude_code(
+                        text, carbon_id, on_tools=on_tools,
+                        on_progress=on_progress, diag_span=diag_span,
+                    )
         except Exception as exc:
             result = (
-                f'{{"tools": [{{"tool": "reply", "message": "Manager error: {exc}"}}, {{"tool": "do_nothing"}}]}}',
+                _safe_manager_error_tools(exc),
                 None,
                 [],
             )
@@ -899,7 +869,11 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None):
         output, rate_limit, _executed_tools = result
         if not _manager_provider_failed(output, rate_limit):
             return result
-        errors.append(f"{provider}: {str(output or rate_limit)[:200]}")
+        safe_failure = (
+            redact_diagnostic_text(output or rate_limit, limit=200)
+            or "provider failed"
+        )
+        errors.append(f"{provider}: {safe_failure}")
 
     if last is not None:
         if errors:
@@ -909,19 +883,42 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None):
 
 
 def _manager_provider_failed(output, rate_limit):
-    if rate_limit:
-        return True
     text = (output or "").strip()
     if not text:
         return True
     if text == TIMEOUT_MSG:
         return True
+    # A complete tool invocation is usable even when its ordinary Markdown
+    # happens to contain a phrase such as "rate limit". The one exception is
+    # our own structured provider-error reply, which must still trigger the
+    # configured fallback.
+    parsed = parse_manager_output(text, debug=False)
+    if parsed:
+        for tool in parsed.get("tools", []):
+            if (
+                isinstance(tool, dict)
+                and tool.get("tool") == "reply"
+                and "Manager error:" in str(tool.get("message") or "")
+            ):
+                return True
+        return False
+    if rate_limit:
+        return True
     if "Manager error:" in text:
+        return True
+    lowered = text.lower()
+    if any(marker in lowered for marker in (
+        "failed to authenticate",
+        "authentication failed",
+        "oauth session expired",
+        "login required",
+        "not logged in",
+    )):
         return True
     return False
 
 
-def parse_manager_output(output, debug=True):
+def parse_manager_output(output, debug=False):
     """Extract ALL tools JSON blocks from manager's text output.
     The manager may output one or more JSON blocks like: {"tools": [...]}
     Returns a merged {"tools": [...]} with all tools from all blocks, or None."""
@@ -932,47 +929,30 @@ def parse_manager_output(output, debug=True):
     if not output:
         return None
 
-    # Strip markdown code blocks if present (```json ... ``` or ``` ... ```)
-    cleaned = re.sub(r'```(?:json)?\s*', '', output)
-    cleaned = re.sub(r'```', '', cleaned)
-
     all_tools = []
-
-    # Find ALL JSON objects with "tools" key
-    for text in [cleaned, output]:
-        brace_depth = 0
-        start = -1
-        for i, ch in enumerate(text):
-            if ch == '{':
-                if brace_depth == 0:
-                    start = i
-                brace_depth += 1
-            elif ch == '}':
-                brace_depth -= 1
-                if brace_depth == 0 and start != -1:
-                    candidate = text[start:i+1]
-                    try:
-                        parsed = json.loads(candidate)
-                        if "tools" in parsed:
-                            all_tools.extend(parsed["tools"])
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    start = -1
-
-        # If we found tools in the cleaned version, don't re-scan the raw output
-        if all_tools:
+    text = str(output)
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        start = text.find("{", index)
+        if start < 0:
             break
-
-    # Fallback: try the whole output as JSON
-    if not all_tools:
-        for text in [cleaned, output]:
-            try:
-                parsed = json.loads(text.strip())
-                if "tools" in parsed:
-                    all_tools.extend(parsed["tools"])
-                    break
-            except (json.JSONDecodeError, ValueError):
-                pass
+        try:
+            parsed, consumed = decoder.raw_decode(text[start:])
+        except (json.JSONDecodeError, ValueError):
+            index = start + 1
+            continue
+        index = start + max(consumed, 1)
+        if not isinstance(parsed, dict):
+            continue
+        tools = parsed.get("tools")
+        if not isinstance(tools, list):
+            continue
+        all_tools.extend(
+            tool_spec
+            for tool_spec in tools
+            if isinstance(tool_spec, dict)
+        )
 
     if all_tools:
         return {"tools": all_tools}

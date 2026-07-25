@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,25 +10,21 @@ from zoneinfo import ZoneInfo
 
 from core.cron.checkback import get_checkback_jobs
 from core.interface import InterfaceClient, InterfaceError, ensure_contact_for_target
+from core.runtime_paths import DATA_ROOT
+from core.state_store import file_lock, read_json, update_json, write_json
 
 CRON_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CRON_DIR.parents[1]
-CHECKBACK_HISTORY_FILE = CRON_DIR / "history.json"
+PROJECT_ROOT = DATA_ROOT
+CHECKBACK_HISTORY_FILE = PROJECT_ROOT / "core" / "cron" / "history.json"
 CRON_STATE_FILE = PROJECT_ROOT / "core" / "interface_state" / "crons.json"
 
 
 def _read_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, ValueError):
-        return default
+    return read_json(path, default)
 
 
 def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(path, data)
 
 
 def _utc_now() -> datetime:
@@ -63,43 +58,49 @@ def _save_checkback_history(history: dict[str, Any]) -> None:
 
 
 def _check_checkbacks() -> dict[str, str]:
-    history = _load_checkback_history()
     results_by_contact: dict[str, list[str]] = {}
-
-    for job in get_checkback_jobs():
-        name = job["name"]
-        contact_id = job.get("carbon_id")
-        if not contact_id:
-            continue
-        try:
-            should_run = job["trigger"](history.get(name))
-        except Exception:
-            should_run = False
-        if not should_run:
-            continue
-        try:
-            output = job["execute"]()
-            if output:
-                instructions = job.get("instructions", "")
-                parts = [f"Checkback '{name}'"]
-                if instructions:
-                    parts.append(f"Instructions: {instructions}")
-                parts.append(f"Output: {output}")
-                results_by_contact.setdefault(contact_id, []).append("\n".join(parts))
-            history[name] = {"last_run": time.time()}
-            cleanup = job.get("_cleanup")
-            if cleanup:
-                cleanup()
-        except Exception as exc:
-            on_error = job.get("on_error")
-            if on_error:
-                try:
-                    on_error(str(exc))
-                except Exception:
-                    pass
-            history[name] = {"last_run": time.time(), "error": str(exc)}
-
-    _save_checkback_history(history)
+    # Claim and finish one-shot checkbacks under a cross-process lock. These
+    # jobs are local operational state; duplicate execution is worse than
+    # briefly serializing two cron sweepers.
+    with file_lock(CHECKBACK_HISTORY_FILE):
+        history = _load_checkback_history()
+        for job in get_checkback_jobs():
+            name = job["name"]
+            contact_id = job.get("carbon_id")
+            if not contact_id:
+                continue
+            try:
+                should_run = job["trigger"](history.get(name))
+            except Exception:
+                should_run = False
+            if not should_run:
+                continue
+            # Persist the claim before executing so a second process cannot run
+            # the same one-shot while this process is checking the worker.
+            history[name] = {"claimed_at": time.time()}
+            _save_checkback_history(history)
+            try:
+                output = job["execute"]()
+                if output:
+                    instructions = job.get("instructions", "")
+                    parts = [f"Checkback '{name}'"]
+                    if instructions:
+                        parts.append(f"Instructions: {instructions}")
+                    parts.append(f"Output: {output}")
+                    results_by_contact.setdefault(contact_id, []).append("\n".join(parts))
+                history[name] = {"last_run": time.time()}
+                cleanup = job.get("_cleanup")
+                if cleanup:
+                    cleanup()
+            except Exception as exc:
+                on_error = job.get("on_error")
+                if on_error:
+                    try:
+                        on_error(str(exc))
+                    except Exception:
+                        pass
+                history[name] = {"last_run": time.time(), "error": str(exc)}
+        _save_checkback_history(history)
     return {contact_id: "\n\n".join(parts) for contact_id, parts in results_by_contact.items()}
 
 
@@ -277,40 +278,53 @@ def _check_glass_crons(now: datetime | None = None, client: InterfaceClient | No
     if not isinstance(records, list):
         return {}
 
-    state = _load_cron_state()
+    due: list[tuple[dict[str, Any], datetime, int, str]] = []
     results: dict[str, list[str]] = {}
 
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        cron_id = _cron_id(record)
-        trigger = _cron_trigger(record)
-        if not cron_id or not trigger:
-            continue
+    # Advance watermarks atomically before resolving targets. A concurrent
+    # sweeper sees the claimed watermark and cannot enqueue the same fire.
+    with file_lock(CRON_STATE_FILE):
+        state = _load_cron_state()
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            cron_id = _cron_id(record)
+            trigger = _cron_trigger(record)
+            if not cron_id or not trigger:
+                continue
 
-        entry = state.setdefault("crons", {}).setdefault(cron_id, {})
-        entry["last_checked_utc"] = _iso(now)
-        if "watermark_utc" not in entry:
-            entry["watermark_utc"] = _iso(now)
-            entry.setdefault("missed_run_count", 0)
-            continue
+            entry = state.setdefault("crons", {}).setdefault(cron_id, {})
+            entry["last_checked_utc"] = _iso(now)
+            if "watermark_utc" not in entry:
+                entry["watermark_utc"] = _iso(now)
+                entry.setdefault("missed_run_count", 0)
+                continue
 
-        if not _cron_active(record):
-            continue
+            if not _cron_active(record):
+                continue
 
-        watermark = _parse_iso(entry.get("watermark_utc")) or now
-        fires = fire_times_between(trigger, watermark, now, _cron_timezone(record))
-        if not fires:
-            continue
+            watermark = _parse_iso(entry.get("watermark_utc")) or now
+            fires = fire_times_between(trigger, watermark, now, _cron_timezone(record))
+            if not fires:
+                continue
 
-        latest = fires[-1]
-        entry["watermark_utc"] = _iso(latest)
-        entry["last_run_utc"] = _iso(latest)
-        if len(fires) > 1:
-            entry["missed_run_count"] = int(entry.get("missed_run_count") or 0) + len(fires)
-        entry["last_result"] = {"status": "queued", "count": len(fires)}
+            latest = fires[-1]
+            entry["watermark_utc"] = _iso(latest)
+            entry["last_run_utc"] = _iso(latest)
+            if len(fires) > 1:
+                entry["missed_run_count"] = int(entry.get("missed_run_count") or 0) + len(fires)
+            entry["last_result"] = {"status": "queued", "count": len(fires)}
+            due.append(
+                (
+                    dict(record),
+                    latest,
+                    len(fires),
+                    _format_cron_context(record, latest, len(fires)),
+                )
+            )
+        _save_cron_state(state)
 
-        context = _format_cron_context(record, latest, len(fires))
+    for record, _latest, _fire_count, context in due:
         for target in _targets(record):
             try:
                 contact = ensure_contact_for_target(target["kind"], target["id"], client=client)
@@ -320,13 +334,17 @@ def _check_glass_crons(now: datetime | None = None, client: InterfaceClient | No
             contact_id = contact.get("silicon_id") if contact.get("contact_type") == "silicon" else contact.get("carbon_id")
             if contact_id:
                 results.setdefault(contact_id, []).append(context)
-
-    _save_cron_state(state)
     return {contact_id: "\n\n".join(parts) for contact_id, parts in results.items()}
 
 
 def check_crons() -> dict[str, str]:
     """Check local worker checkbacks and due Glass cron records."""
+    # Do not claim checkbacks or advance Glass cron watermarks while an update
+    # fence is active. They remain due and are picked up after maintenance.
+    from core.maintenance import accepting_new_roots
+
+    if not accepting_new_roots():
+        return {}
     merged: dict[str, list[str]] = {}
     for source in (_check_checkbacks(), _check_glass_crons()):
         for contact_id, context in source.items():
@@ -366,9 +384,12 @@ def execute_cron_tool(tool_spec: dict[str, Any]) -> str:
         if not cron_id:
             return "Tool 'cron/delete': Error: cron_id is required"
         payload = client.cron_delete(cron_id)
-        state = _load_cron_state()
-        state.setdefault("crons", {}).pop(cron_id, None)
-        _save_cron_state(state)
+
+        def remove_cron(state):
+            if isinstance(state, dict):
+                state.setdefault("crons", {}).pop(cron_id, None)
+
+        update_json(CRON_STATE_FILE, {"version": 1, "crons": {}}, remove_cron)
         return "Tool 'cron/delete': " + json.dumps(payload, sort_keys=True)
 
     if tool == "cron/list":

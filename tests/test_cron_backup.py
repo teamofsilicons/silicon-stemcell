@@ -9,6 +9,7 @@ from unittest import mock
 
 import core.backup as backup
 import core.cron as cron
+from core import glass
 
 
 class FakeCronClient:
@@ -110,13 +111,24 @@ class BackupManifestTest(unittest.TestCase):
             self.assertIn("prompts/memory/carbons/a.md", tar_names)
             self.assertNotIn("other.txt", tar_names)
 
-    def test_manifest_must_be_file_not_directory(self):
+    def test_legacy_manifest_directory_is_archived_and_replaced(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / ".backupsilicon").mkdir()
+            (root / ".backupsilicon" / "old.txt").write_text(
+                "legacy",
+                encoding="utf-8",
+            )
 
-            with self.assertRaises(IsADirectoryError):
-                backup.read_manifest(root)
+            patterns = backup.read_manifest(root)
+
+            self.assertEqual(patterns, list(backup.DEFAULT_MANIFEST))
+            archives = list(root.glob(".backupsilicon.archive.*"))
+            self.assertEqual(len(archives), 1)
+            self.assertEqual(
+                (archives[0] / "old.txt").read_text(encoding="utf-8"),
+                "legacy",
+            )
 
     def test_run_backup_uses_prod_upload_contract(self):
         with tempfile.TemporaryDirectory() as td:
@@ -131,17 +143,82 @@ class BackupManifestTest(unittest.TestCase):
 
             fake_response = mock.Mock(status_code=201)
             fake_response.json.return_value = {"seq": 7}
-            with mock.patch.object(backup.requests, "post", return_value=fake_response) as post:
+            with mock.patch.object(
+                glass.requests,
+                "request",
+                return_value=fake_response,
+            ) as request, mock.patch.object(
+                backup,
+                "garbage_collect_referenced_snapshots",
+            ) as collect:
                 ok = backup.run_backup(root, note="test", logger=lambda _msg: None)
 
         self.assertTrue(ok)
-        post.assert_called_once()
-        _url, kwargs = post.call_args.args[0], post.call_args.kwargs
+        request.assert_called_once()
+        method, _url = request.call_args.args
+        kwargs = request.call_args.kwargs
+        self.assertEqual(method, "POST")
         self.assertEqual(_url, "https://glass.example/api/v1/silicon-backups/")
-        self.assertEqual(kwargs["headers"], {"X-Silicon-Key": "scs_live_test"})
+        self.assertEqual(
+            kwargs["headers"],
+            {
+                "Accept": "application/json",
+                "X-Silicon-Key": "scs_live_test",
+            },
+        )
         self.assertIn("file", kwargs["files"])
         self.assertNotIn("archive", kwargs["files"])
         self.assertEqual(kwargs["files"]["file"][0], "backup.tar.gz")
+        self.assertFalse(kwargs["allow_redirects"])
+        snapshot_manifest = json.loads(kwargs["data"]["snapshot_manifest"])
+        collect.assert_not_called()
+        self.assertEqual(
+            kwargs["data"]["root_hash"],
+            snapshot_manifest["root_hash"],
+        )
+        self.assertEqual(
+            kwargs["data"]["release_id"],
+            snapshot_manifest["release_id"],
+        )
+        self.assertEqual(
+            kwargs["data"]["snapshot_manifest"],
+            json.dumps(
+                snapshot_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        self.assertEqual(snapshot_manifest["schema"], backup.SNAPSHOT_SCHEMA)
+        self.assertIn("manifest", kwargs["data"])
+
+    def test_run_backup_rejects_remote_plaintext_before_sending_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".backupsilicon").write_text(
+                "prompts/MEMORY.md\n",
+                encoding="utf-8",
+            )
+            (root / ".glass.json").write_text(
+                json.dumps(
+                    {
+                        "server_url": "http://glass.example",
+                        "api_key": "scs_live_test",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "prompts").mkdir()
+            (root / "prompts" / "MEMORY.md").write_text(
+                "memory",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(glass.requests, "request") as request, \
+                 self.assertRaises(glass.GlassConfigurationError):
+                backup.run_backup(root, note="test", logger=lambda _msg: None)
+
+        request.assert_not_called()
 
 
 if __name__ == "__main__":

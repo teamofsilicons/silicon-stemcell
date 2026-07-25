@@ -1,55 +1,75 @@
 # Installing Silicon
 
-## One-liner
+## Install the Silicon CLI
 
-Mac / Linux:
+macOS / Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/main/install.sh | bash
+python3 -m pip install --upgrade silicon-cli
 ```
 
-Windows PowerShell:
+Windows:
 
 ```powershell
-irm https://raw.githubusercontent.com/unlikefraction/silicon-stemcell/main/install.ps1 | iex
+py -m pip install --upgrade silicon-cli
 ```
+
+The PyPI package installs the `silicon` command. Pull a complete Glass team with:
+
+```bash
+silicon pull
+```
+
+Paste the team setup token generated in Glass when prompted. The command creates
+one local instance per team Silicon, hydrates the current Stemcell, writes its
+Glass configuration, installs its runtime dependencies, registers it, and
+starts it.
 
 ## Requirements
 
 - Python 3.9+
-- Node.js
-- Claude Code CLI or Codex
-- `silicon-browser`
-- Silicon Interface CLI (`./.silicon-interface/bin/si`, `si`, or `silicon-interface`)
-- `.glass.json` for Glass-connected instances
+- A Glass team setup token
+- Docker for the default isolated runtime
 
-## Manual Install
+The default Docker runtime includes Node.js 22, Silicon Interface CLI, Silicon
+Browser, Claude Code, Codex, Python, and Git. On supported Linux hosts,
+`silicon pull` can install and configure Docker when it is missing.
+
+To opt into the host-local runtime instead:
 
 ```bash
-git clone https://github.com/unlikefraction/silicon-stemcell.git ~/silicon
-cd ~/silicon
-python3 -m pip install -r requirements.txt
-npm install -g @anthropic-ai/claude-code
-npm install -g @openai/codex
-npm install -g silicon-browser
-python3 main.py
+SILICON_RUNTIME=local silicon pull
 ```
 
-Set `BROWSER_PROFILE` in `env.py` if you want a profile name other than `silicon`.
+Host-local installs require Node.js 22+, npm, Silicon Browser, and at least one
+authenticated manager backend (Claude Code or Codex) on the host.
 
-Silicon Interface and Glass provide contact transport, media, STT/TTS, crons, take-back, remote browser events, backups, and control.
+## Day-to-day commands
 
-## CLI
+Use `silicon help` as the canonical command reference. The core lifecycle is:
 
 ```bash
-silicon
+silicon list
 silicon start <name>
-silicon stop <name>
-silicon browser <name>
-silicon pull <name>
-silicon status <name>
 silicon update <name>
-silicon help
+silicon update status <name>
 ```
 
-The installer is idempotent. It skips installed prerequisites, updates registry entries, and preserves local Interface state.
+`silicon stop` stops the main Silicon but deliberately leaves its Glass agent
+online for remote status and restart commands. Use `silicon stop --full` or
+`silicon agent stop` when the sidecar must also stop.
+
+`silicon update <name>` is the complete instance-update operation. It resolves
+the highest stable `vMAJOR.MINOR.PATCH` tag from the canonical Stemcell Git
+repository, pins and verifies its exact commit and contents, and fully
+pre-stages code and dependencies while the Silicon remains available. It then
+announces maintenance to Glass, waits for active tasks to reach a safe
+boundary, creates and verifies a recovery checkpoint, stops, activates,
+restarts, and health-checks the Silicon. Do not manually stop it first: the
+updater needs the running process to perform the task-safe drain. Upgrade the
+machine-level CLI independently with
+`python3 -m pip install --upgrade silicon-cli` or `silicon script update`.
+
+Glass credentials pulled into an instance are stored in `.glass.json`. Silicon
+Interface and Glass provide contact transport, media, STT/TTS, crons,
+take-back, remote-browser events, backups, and control.

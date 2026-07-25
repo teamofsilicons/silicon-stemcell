@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import platform
@@ -9,6 +10,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from core.state_store import file_lock, read_json, update_json, write_json
 from prompts.DNA import get_worker_prompt
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -19,16 +22,22 @@ if IS_WINDOWS:
     if _claude_path:
         CLAUDE_CMD = _claude_path
 
-WORKER_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(WORKER_DIR)
+CODE_WORKER_DIR = os.fspath(CODE_ROOT / "worker")
+PROJECT_ROOT = os.fspath(DATA_ROOT)
+WORKSPACE_ROOT = os.fspath(CODE_ROOT)
+WORKER_DIR = os.path.join(PROJECT_ROOT, "worker")
 OUTPUTS_DIR = os.path.join(WORKER_DIR, "outputs")
 SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
-CODEX_APP_WORKER = os.path.join(WORKER_DIR, "codex_app_worker.py")
+CODEX_APP_WORKER = os.path.join(CODE_WORKER_DIR, "codex_app_worker.py")
 
 ACTIVE_FILE = os.path.join(OUTPUTS_DIR, "_active_workers.json")
 BROWSER_QUEUE_FILE = os.path.join(OUTPUTS_DIR, "_browser_queue.json")
 ARCHIVE_META_FILE = os.path.join(OUTPUTS_DIR, "_archive_meta.json")
 WORKER_REGISTRY_FILE = os.path.join(OUTPUTS_DIR, "_worker_registry.json")
+PROFILED_BROWSER_LOCK_FILE = os.path.join(
+    OUTPUTS_DIR,
+    ".profiled-browser-launch.json",
+)
 
 BROWSER_WORKER_MODEL = "sonnet"
 WORKER_PROVIDER_FALLBACKS = {
@@ -37,62 +46,223 @@ WORKER_PROVIDER_FALLBACKS = {
     "writer": ["claude"],
 }
 VALID_WORKER_PROVIDERS = {"claude", "codex", "chatgpt"}
+EXTEND_ACTING_CARBON_ENV = "SILICON_EXTEND_ACTING_CARBON_ID"
+EXTEND_ROOM_ENV = "SILICON_EXTEND_ROOM_ID"
+EXTEND_CONTACT_ENV = "SILICON_EXTEND_CONTACT_ID"
 
-try:
-    from env import BROWSER_PROFILE as _BROWSER_PROFILE
-except ImportError:
-    _BROWSER_PROFILE = "silicon"
+def _legacy_browser_profile():
+    """Read the one supported legacy env.py value without executing the file."""
+
+    path = DATA_ROOT / "env.py"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError):
+        return "silicon"
+    for node in tree.body:
+        if (
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and isinstance(getattr(node, "value", None), ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            names = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+            )
+            if any(
+                isinstance(name, ast.Name) and name.id == "BROWSER_PROFILE"
+                for name in names
+            ):
+                return node.value.value
+    return "silicon"
+
+
+_BROWSER_PROFILE = _legacy_browser_profile()
 SILICON_BROWSER_PROFILE = _BROWSER_PROFILE
+
+
+def _worker_process_env(contact_id):
+    """Return a worker environment bound to its originating contact.
+
+    The contact is inherited by the worker process instead of appearing in its
+    command line.  Always overwrite (or remove) a parent value so a stale
+    manager environment cannot leak one Carbon's context into another worker.
+    """
+
+    env = os.environ.copy()
+    for key in (
+        EXTEND_ACTING_CARBON_ENV,
+        EXTEND_ROOM_ENV,
+        EXTEND_CONTACT_ENV,
+    ):
+        env.pop(key, None)
+    value = str(contact_id or "").strip()
+    acting_carbon_id = value
+    room_id = ""
+    if value:
+        try:
+            from core.interface import get_contact
+
+            contact = get_contact(value) or {}
+        except Exception:
+            contact = {}
+        if contact.get("contact_type") == "silicon":
+            acting_carbon_id = ""
+        else:
+            acting_carbon_id = str(
+                contact.get("carbon_id") or value
+            ).strip()
+        room_id = str(contact.get("room_id") or "").strip()
+        if not room_id:
+            try:
+                from core.diagnostics import Diagnostics
+
+                trace = Diagnostics.get_active_run(value)
+                room_id = str(
+                    getattr(trace, "room_id", "") or ""
+                ).strip()
+            except Exception:
+                room_id = ""
+    if acting_carbon_id:
+        env[EXTEND_ACTING_CARBON_ENV] = acting_carbon_id
+        # One-release compatibility for the old worker bridge.
+        env[EXTEND_CONTACT_ENV] = acting_carbon_id
+    if room_id:
+        env[EXTEND_ROOM_ENV] = room_id
+    return env
+
+
+def _maintenance_reference():
+    try:
+        from core.maintenance import current_activity
+
+        activity = current_activity()
+        return activity.reference() if activity is not None else {}
+    except Exception:
+        return {}
+
+
+def _maintenance_activity(reference):
+    try:
+        from core.maintenance import activity_from_reference
+
+        return activity_from_reference(reference)
+    except Exception:
+        return None
+
+
+def _heartbeat_maintenance_activity(reference):
+    activity = _maintenance_activity(reference)
+    if activity is None:
+        return None
+    try:
+        from core.maintenance import heartbeat_activity
+
+        return activity if heartbeat_activity(activity) else None
+    except Exception:
+        return None
+
+
+def _release_maintenance_activity(reference):
+    activity = _maintenance_activity(reference)
+    if activity is None:
+        return False
+    try:
+        from core.maintenance import release_activity
+
+        return release_activity(activity)
+    except Exception:
+        return False
+
+
+def reconcile_maintenance_activities():
+    """Attach leases to legacy active/queued worker records before draining."""
+    try:
+        from core.maintenance import COORDINATOR
+    except Exception:
+        return 0
+
+    adopted = 0
+    with file_lock(ACTIVE_FILE):
+        active = _load_active()
+        changed = False
+        for worker_id, info in active.items():
+            if not isinstance(info, dict):
+                continue
+            reference = info.get("maintenance_activity") or {}
+            if _heartbeat_maintenance_activity(reference) is not None:
+                continue
+            activity = COORDINATOR.adopt_prefence_activity(
+                "worker",
+                activity_id=str(worker_id),
+                contact_id=str(info.get("carbon_id") or ""),
+                started_at=_number_or_zero(info.get("started")),
+            )
+            if activity is not None:
+                info["maintenance_activity"] = activity.reference()
+                adopted += 1
+                changed = True
+        if changed:
+            _save_active(active)
+
+    with file_lock(BROWSER_QUEUE_FILE):
+        queue = _load_browser_queue()
+        changed = False
+        for info in queue:
+            if not isinstance(info, dict):
+                continue
+            reference = info.get("maintenance_activity") or {}
+            if _heartbeat_maintenance_activity(reference) is not None:
+                continue
+            activity = COORDINATOR.adopt_prefence_activity(
+                "worker",
+                activity_id=str(info.get("worker_id") or ""),
+                contact_id=str(info.get("carbon_id") or ""),
+                started_at=_number_or_zero(info.get("queued_at")),
+            )
+            if activity is not None:
+                info["maintenance_activity"] = activity.reference()
+                adopted += 1
+                changed = True
+        if changed:
+            _save_browser_queue(queue)
+    return adopted
+
+
+def _number_or_zero(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # --- State persistence ---
 
 def _load_active():
-    if os.path.exists(ACTIVE_FILE):
-        try:
-            with open(ACTIVE_FILE) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return {}
-    return {}
+    value = read_json(ACTIVE_FILE, {})
+    return value if isinstance(value, dict) else {}
 
 
 def _save_active(active):
-    os.makedirs(OUTPUTS_DIR, exist_ok=True)
-    with open(ACTIVE_FILE, "w") as f:
-        json.dump(active, f, indent=2)
+    write_json(ACTIVE_FILE, active)
 
 
 def _load_browser_queue():
-    if os.path.exists(BROWSER_QUEUE_FILE):
-        try:
-            with open(BROWSER_QUEUE_FILE) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return []
-    return []
+    value = read_json(BROWSER_QUEUE_FILE, [])
+    return value if isinstance(value, list) else []
 
 
 def _save_browser_queue(queue):
-    os.makedirs(OUTPUTS_DIR, exist_ok=True)
-    with open(BROWSER_QUEUE_FILE, "w") as f:
-        json.dump(queue, f, indent=2)
+    write_json(BROWSER_QUEUE_FILE, queue)
 
 
 def _load_archive_meta():
-    if os.path.exists(ARCHIVE_META_FILE):
-        try:
-            with open(ARCHIVE_META_FILE) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return {}
-    return {}
+    value = read_json(ARCHIVE_META_FILE, {})
+    return value if isinstance(value, dict) else {}
 
 
 def _save_archive_meta(meta):
-    os.makedirs(OUTPUTS_DIR, exist_ok=True)
-    with open(ARCHIVE_META_FILE, "w") as f:
-        json.dump(meta, f, indent=2)
+    write_json(ARCHIVE_META_FILE, meta)
 
 
 def _migrate_worker_record(worker_id, record):
@@ -121,30 +291,88 @@ def _migrate_worker_record(worker_id, record):
 
 
 def _load_worker_registry():
-    if not os.path.exists(WORKER_REGISTRY_FILE):
-        return {}
+    with file_lock(WORKER_REGISTRY_FILE):
+        registry = read_json(WORKER_REGISTRY_FILE, {})
+        if not isinstance(registry, dict):
+            return {}
 
-    try:
-        with open(WORKER_REGISTRY_FILE) as f:
-            registry = json.load(f)
-    except (json.JSONDecodeError, ValueError):
-        return {}
+        changed = False
+        for worker_id, record in registry.items():
+            _, record_changed = _migrate_worker_record(worker_id, record)
+            changed = changed or record_changed
 
-    changed = False
-    for worker_id, record in registry.items():
-        _, record_changed = _migrate_worker_record(worker_id, record)
-        changed = changed or record_changed
+        if changed:
+            _save_worker_registry(registry)
 
-    if changed:
-        _save_worker_registry(registry)
-
-    return registry
+        return registry
 
 
 def _save_worker_registry(registry):
-    os.makedirs(OUTPUTS_DIR, exist_ok=True)
-    with open(WORKER_REGISTRY_FILE, "w") as f:
-        json.dump(registry, f, indent=2)
+    write_json(WORKER_REGISTRY_FILE, registry)
+
+
+def _remove_worker_record(worker_id):
+    def remove(registry):
+        if isinstance(registry, dict):
+            registry.pop(worker_id, None)
+
+    update_json(WORKER_REGISTRY_FILE, {}, remove)
+
+
+def _worker_launch_lock_path(worker_id):
+    safe_id = "".join(
+        char if char.isalnum() or char in "-_." else "-"
+        for char in str(worker_id or "worker")
+    )[:80]
+    return os.path.join(OUTPUTS_DIR, f".launch-{safe_id}.json")
+
+
+def _remove_active_worker(worker_id, expected_run_id="", expected_claim_token=""):
+    removed = {}
+
+    def remove(active):
+        if not isinstance(active, dict):
+            return
+        current = active.get(worker_id)
+        if not isinstance(current, dict):
+            return
+        if expected_run_id and str(current.get("run_id") or "") != str(expected_run_id):
+            return
+        if (
+            expected_claim_token
+            and str(current.get("_completion_claim_token") or "")
+            != str(expected_claim_token)
+        ):
+            return
+        removed.update(current)
+        active.pop(worker_id, None)
+
+    update_json(ACTIVE_FILE, {}, remove)
+    return removed
+
+
+def _claim_completed_worker(worker_id, expected_run_id=""):
+    claimed = {}
+    claim_token = uuid.uuid4().hex
+    now = time.time()
+
+    def claim(active):
+        if not isinstance(active, dict):
+            return
+        current = active.get(worker_id)
+        if not isinstance(current, dict):
+            return
+        if expected_run_id and str(current.get("run_id") or "") != str(expected_run_id):
+            return
+        claimed_at = float(current.get("_completion_claimed_at") or 0)
+        if claimed_at and now - claimed_at < 60:
+            return
+        current["_completion_claimed_at"] = now
+        current["_completion_claim_token"] = claim_token
+        claimed.update(current)
+
+    update_json(ACTIVE_FILE, {}, claim)
+    return claimed
 
 
 def _utc_timestamp_slug():
@@ -164,10 +392,6 @@ def _get_worker_record(worker_id):
 
 
 def _create_worker_record(worker_id, worker_type, carbon_id, incognito=False):
-    registry = _load_worker_registry()
-    if worker_id in registry:
-        return None, f"Error: Worker '{worker_id}' already exists. Use worker/message to prompt it again."
-
     now = time.time()
     record = {
         "worker_id": worker_id,
@@ -181,17 +405,27 @@ def _create_worker_record(worker_id, worker_type, carbon_id, incognito=False):
         "provider": "",
         "session_id": "",
     }
-    registry[worker_id] = record
-    _save_worker_registry(registry)
+    created = False
+
+    def create(registry):
+        nonlocal created
+        if not isinstance(registry, dict) or worker_id in registry:
+            return
+        registry[worker_id] = record
+        created = True
+
+    update_json(WORKER_REGISTRY_FILE, {}, create)
+    if not created:
+        return None, f"Error: Worker '{worker_id}' already exists. Use worker/message to prompt it again."
     return record, ""
 
 
 def _update_worker_record(worker_id, **updates):
-    registry = _load_worker_registry()
-    if worker_id not in registry:
-        return
-    registry[worker_id].update(updates)
-    _save_worker_registry(registry)
+    def update(registry):
+        if isinstance(registry, dict) and worker_id in registry:
+            registry[worker_id].update(updates)
+
+    update_json(WORKER_REGISTRY_FILE, {}, update)
 
 
 def _read_silicon_config():
@@ -249,8 +483,7 @@ def _archive_active_output(worker_id, worker_info, carbon_id):
     if os.path.abspath(output_path) != os.path.abspath(archive_path):
         os.rename(output_path, archive_path)
 
-    meta = _load_archive_meta()
-    meta[archive_id] = {
+    archive_record = {
         "worker_id": worker_id,
         "run_id": run_id,
         "provider": worker_info.get("provider", ""),
@@ -262,7 +495,12 @@ def _archive_active_output(worker_id, worker_info, carbon_id):
         "archived_at": time.time(),
         "incognito": worker_info.get("incognito", False),
     }
-    _save_archive_meta(meta)
+
+    def remember(meta):
+        if isinstance(meta, dict):
+            meta[archive_id] = archive_record
+
+    update_json(ARCHIVE_META_FILE, {}, remember)
     return archive_id
 
 
@@ -351,7 +589,11 @@ def _get_popen_kwargs(env, output_file):
         stderr=subprocess.PIPE,
         env=env,
         text=True,
-        cwd=PROJECT_ROOT,
+        # Workers execute against the same active source generation as the
+        # manager. Relative self-edits are therefore live, restartable, and
+        # captured by updater/backup customization overlays. Runtime state
+        # continues to use the explicit DATA_ROOT paths above.
+        cwd=WORKSPACE_ROOT,
     )
     if IS_WINDOWS:
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -423,10 +665,11 @@ def _sync_codex_session_id(worker_id, worker_info=None):
     if not session_id:
         return ""
 
-    active = _load_active()
-    if worker_id in active:
-        active[worker_id]["session_id"] = session_id
-        _save_active(active)
+    def remember_session(active):
+        if isinstance(active, dict) and worker_id in active:
+            active[worker_id]["session_id"] = session_id
+
+    update_json(ACTIVE_FILE, {}, remember_session)
 
     _update_worker_record(worker_id, session_id=session_id)
     return session_id
@@ -458,8 +701,19 @@ def _wait_for_codex_session_id(worker_id, process, output_path, timeout_seconds=
 
 
 def _record_active_run(worker_id, provider, session_id, process, task, worker_type, carbon_id, output_path, incognito, run_id):
-    active = _load_active()
-    active[worker_id] = {
+    diag_parent_run_id = ""
+    diag_room_id = ""
+    diag_message_ids = []
+    try:
+        from core.diagnostics import Diagnostics
+        parent_trace = Diagnostics.get_active_run(carbon_id)
+        if parent_trace:
+            diag_parent_run_id = parent_trace.run_id
+            diag_room_id = parent_trace.room_id
+            diag_message_ids = list(parent_trace.message_ids)
+    except Exception:
+        pass
+    active_record = {
         "pid": process.pid,
         "started": time.time(),
         "task": task,
@@ -470,8 +724,17 @@ def _record_active_run(worker_id, provider, session_id, process, task, worker_ty
         "provider": provider,
         "session_id": session_id,
         "run_id": run_id,
+        "diag_parent_run_id": diag_parent_run_id,
+        "diag_room_id": diag_room_id,
+        "diag_message_ids": diag_message_ids,
+        "maintenance_activity": _maintenance_reference(),
     }
-    _save_active(active)
+
+    def remember_active(active):
+        if isinstance(active, dict):
+            active[worker_id] = active_record
+
+    update_json(ACTIVE_FILE, {}, remember_active)
     _update_worker_record(
         worker_id,
         provider=provider,
@@ -509,7 +772,7 @@ def _launch_claude_worker_process(worker_id, task, worker_type, carbon_id, incog
         cmd.extend(["--model", BROWSER_WORKER_MODEL])
     cmd.append(task)
 
-    env = os.environ.copy()
+    env = _worker_process_env(carbon_id)
     if worker_type == "browser":
         if incognito:
             # Ephemeral: fresh session, no shared profile/cookies.
@@ -568,13 +831,13 @@ def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incogn
     cmd = [
         sys.executable,
         CODEX_APP_WORKER,
-        "--cwd", PROJECT_ROOT,
+        "--cwd", WORKSPACE_ROOT,
         "--system-prompt-file", prompt_path,
     ]
     if session_id:
         cmd.extend(["--thread-id", session_id])
 
-    env = os.environ.copy()
+    env = _worker_process_env(carbon_id)
     if worker_type == "browser":
         if incognito:
             # Ephemeral: fresh session, no shared profile/cookies.
@@ -642,37 +905,98 @@ def _launch_worker_process(worker_id, task, worker_type, carbon_id, incognito=Fa
 
 
 def _process_browser_queue():
-    if _is_profiled_browser_active():
-        return None, None
+    # Keep the profiled-browser availability check, dequeue, and launch in one
+    # cross-process transaction. Otherwise two manager threads can both see an
+    # idle profile and launch competing sessions.
+    with file_lock(PROFILED_BROWSER_LOCK_FILE), file_lock(BROWSER_QUEUE_FILE):
+        if _is_profiled_browser_active():
+            return None, None
 
-    queue = _load_browser_queue()
-    if not queue:
-        return None, None
+        queue = _load_browser_queue()
+        if not queue:
+            return None, None
 
-    next_job = queue.pop(0)
-    _save_browser_queue(queue)
-
-    if next_job.get("resume"):
-        ok, result = _launch_worker_process(
-            next_job["worker_id"],
-            next_job["task"],
-            "browser",
-            next_job.get("carbon_id", "unknown"),
-            incognito=next_job.get("incognito", False),
-            resume=True,
-            provider=next_job.get("provider", "claude"),
-            session_id=next_job.get("session_id", ""),
+        next_job = queue[0]
+        activity = _heartbeat_maintenance_activity(
+            next_job.get("maintenance_activity")
         )
-    else:
-        ok, result = _launch_with_provider_order(
-            next_job["worker_id"],
-            next_job["task"],
-            "browser",
+        try:
+            from core.maintenance import (
+                acquire_descendant_activity,
+                bind_activity,
+                public_status,
+            )
+
+            phase = public_status().get("phase")
+        except Exception:
+            acquire_descendant_activity = None
+            bind_activity = None
+            phase = "available"
+
+        # A legacy/unleased queued job cannot cross a newly raised fence.  It
+        # remains durable and will be admitted when the runtime is available.
+        if activity is None and phase != "available":
+            return None, None
+        if activity is None and acquire_descendant_activity is not None:
+            activity = acquire_descendant_activity(
+                "worker",
+                activity_id=str(next_job.get("worker_id") or ""),
+                contact_id=str(next_job.get("carbon_id") or ""),
+            )
+            if activity is None:
+                return None, None
+            next_job["maintenance_activity"] = activity.reference()
+
+        queue.pop(0)
+        _save_browser_queue(queue)
+
+        scope = bind_activity(activity) if bind_activity is not None else None
+        if scope is not None:
+            scope.__enter__()
+        try:
+            if next_job.get("resume"):
+                ok, result = _launch_worker_process(
+                    next_job["worker_id"],
+                    next_job["task"],
+                    "browser",
+                    next_job.get("carbon_id", "unknown"),
+                    incognito=next_job.get("incognito", False),
+                    resume=True,
+                    provider=next_job.get("provider", "claude"),
+                    session_id=next_job.get("session_id", ""),
+                )
+            else:
+                ok, result = _launch_with_provider_order(
+                    next_job["worker_id"],
+                    next_job["task"],
+                    "browser",
+                    next_job.get("carbon_id", "unknown"),
+                    incognito=next_job.get("incognito", False),
+                    providers=next_job.get("providers"),
+                )
+        finally:
+            if scope is not None:
+                scope.__exit__(None, None, None)
+        if not ok and activity is not None:
+            try:
+                from core.maintenance import release_activity
+
+                release_activity(activity)
+            except Exception:
+                pass
+    try:
+        from core.work_updates import record_worker_state
+
+        record_worker_state(
             next_job.get("carbon_id", "unknown"),
-            incognito=next_job.get("incognito", False),
-            providers=next_job.get("providers"),
+            next_job["worker_id"],
+            "in_progress" if ok else "failed",
+            "Browser worker is running" if ok else "Browser worker failed to launch",
         )
-    return f"[Browser Queue] Dequeued and started: {result}", next_job.get("carbon_id", "unknown")
+    except Exception:
+        pass
+    outcome = "Dequeued and started" if ok else "Dequeued but failed to start"
+    return f"[Browser Queue] {outcome}: {result}", next_job.get("carbon_id", "unknown")
 
 
 # --- Public API: starting workers ---
@@ -713,103 +1037,111 @@ def _is_provider_launch_failure(result):
 
 
 def start_browser_worker(worker_id, task, carbon_id, incognito=False, resume=False):
-    active = _load_active()
-    if worker_id in active:
-        return f"Error: Worker '{worker_id}' is already active."
-
-    worker_record = _get_worker_record(worker_id)
-    session_id = worker_record.get("session_id", "") if worker_record else ""
-    provider = _normalize_provider(worker_record.get("provider", "")) if worker_record else ""
-
     if incognito:
-        if resume:
-            _, result = _launch_worker_process(
-                worker_id, task, "browser", carbon_id, incognito=True, resume=True, provider=provider or "claude", session_id=session_id
-            )
-        else:
-            _, result = _launch_with_provider_order(worker_id, task, "browser", carbon_id, incognito=True)
-        return result
+        with file_lock(_worker_launch_lock_path(worker_id)):
+            if worker_id in _load_active():
+                return f"Error: Worker '{worker_id}' is already active."
+            worker_record = _get_worker_record(worker_id)
+            session_id = worker_record.get("session_id", "") if worker_record else ""
+            provider = _normalize_provider(worker_record.get("provider", "")) if worker_record else ""
+            if resume:
+                _, result = _launch_worker_process(
+                    worker_id, task, "browser", carbon_id, incognito=True, resume=True, provider=provider or "claude", session_id=session_id
+                )
+            else:
+                _, result = _launch_with_provider_order(worker_id, task, "browser", carbon_id, incognito=True)
+            return result
 
-    queue = _load_browser_queue()
-    if any(q["worker_id"] == worker_id for q in queue):
-        return f"Error: Worker '{worker_id}' is already in the browser queue."
+    with file_lock(PROFILED_BROWSER_LOCK_FILE), file_lock(BROWSER_QUEUE_FILE):
+        active = _load_active()
+        if worker_id in active:
+            return f"Error: Worker '{worker_id}' is already active."
 
-    if not _is_profiled_browser_active():
-        if resume:
-            _, result = _launch_worker_process(
-                worker_id, task, "browser", carbon_id, incognito=False, resume=True, provider=provider or "claude", session_id=session_id
-            )
-        else:
-            _, result = _launch_with_provider_order(worker_id, task, "browser", carbon_id, incognito=False)
-        return result
+        worker_record = _get_worker_record(worker_id)
+        session_id = worker_record.get("session_id", "") if worker_record else ""
+        provider = _normalize_provider(worker_record.get("provider", "")) if worker_record else ""
 
-    providers = [_normalize_provider(provider)] if resume and provider else _get_worker_provider_order("browser")
-    queue.append({
-        "worker_id": worker_id,
-        "task": task,
-        "carbon_id": carbon_id,
-        "queued_at": time.time(),
-        "incognito": False,
-        "resume": resume,
-        "session_id": session_id,
-        "provider": provider,
-        "providers": providers,
-    })
-    _save_browser_queue(queue)
+        queue = _load_browser_queue()
+        if any(q["worker_id"] == worker_id for q in queue):
+            return f"Error: Worker '{worker_id}' is already in the browser queue."
 
-    position = len(queue)
-    action = "resume" if resume else "start"
-    return f"Done. Worker '{worker_id}' (browser) queued at position {position}. Will {action} when current profiled browser worker finishes."
+        if not _is_profiled_browser_active():
+            if resume:
+                _, result = _launch_worker_process(
+                    worker_id, task, "browser", carbon_id, incognito=False, resume=True, provider=provider or "claude", session_id=session_id
+                )
+            else:
+                _, result = _launch_with_provider_order(worker_id, task, "browser", carbon_id, incognito=False)
+            return result
+
+        providers = [_normalize_provider(provider)] if resume and provider else _get_worker_provider_order("browser")
+        queue.append({
+            "worker_id": worker_id,
+            "task": task,
+            "carbon_id": carbon_id,
+            "queued_at": time.time(),
+            "incognito": False,
+            "resume": resume,
+            "session_id": session_id,
+            "provider": provider,
+            "providers": providers,
+            "maintenance_activity": _maintenance_reference(),
+        })
+        _save_browser_queue(queue)
+
+        position = len(queue)
+        action = "resume" if resume else "start"
+        return f"Done. Worker '{worker_id}' (browser) queued at position {position}. Will {action} when current profiled browser worker finishes."
 
 
 def start_terminal_worker(worker_id, task, carbon_id, resume=False):
-    active = _load_active()
-    if worker_id in active:
-        return f"Error: Worker '{worker_id}' is already active."
+    with file_lock(_worker_launch_lock_path(worker_id)):
+        active = _load_active()
+        if worker_id in active:
+            return f"Error: Worker '{worker_id}' is already active."
 
-    worker_record = _get_worker_record(worker_id)
-    if not worker_record:
-        return f"Error: Worker '{worker_id}' is not registered."
+        worker_record = _get_worker_record(worker_id)
+        if not worker_record:
+            return f"Error: Worker '{worker_id}' is not registered."
 
-    if resume:
-        provider = _normalize_provider(worker_record.get("provider", "claude"))
-        session_id = worker_record.get("session_id", "")
-        ok, result = _launch_worker_process(
-            worker_id,
-            task,
-            "terminal",
-            carbon_id,
-            resume=True,
-            provider=provider,
-            session_id=session_id,
-        )
-        return result
+        if resume:
+            provider = _normalize_provider(worker_record.get("provider", "claude"))
+            session_id = worker_record.get("session_id", "")
+            _ok, result = _launch_worker_process(
+                worker_id,
+                task,
+                "terminal",
+                carbon_id,
+                resume=True,
+                provider=provider,
+                session_id=session_id,
+            )
+            return result
 
-    ok, result = _launch_with_provider_order(worker_id, task, "terminal", carbon_id)
+        ok, result = _launch_with_provider_order(worker_id, task, "terminal", carbon_id)
     if ok:
         return result
 
-    registry = _load_worker_registry()
-    registry.pop(worker_id, None)
-    _save_worker_registry(registry)
+    _remove_worker_record(worker_id)
     return result
 
 
 def start_writer_worker(worker_id, task, carbon_id, resume=False):
-    active = _load_active()
-    if worker_id in active:
-        return f"Error: Worker '{worker_id}' is already active."
+    with file_lock(_worker_launch_lock_path(worker_id)):
+        active = _load_active()
+        if worker_id in active:
+            return f"Error: Worker '{worker_id}' is already active."
 
-    worker_record = _get_worker_record(worker_id)
-    session_id = worker_record.get("session_id", "") if worker_record else ""
-    provider = _normalize_provider(worker_record.get("provider", "")) if worker_record else ""
-    if resume:
-        _, result = _launch_worker_process(
-            worker_id, task, "writer", carbon_id, resume=True, provider=provider or "claude", session_id=session_id
-        )
-    else:
-        _, result = _launch_with_provider_order(worker_id, task, "writer", carbon_id)
-    return result
+        worker_record = _get_worker_record(worker_id)
+        session_id = worker_record.get("session_id", "") if worker_record else ""
+        provider = _normalize_provider(worker_record.get("provider", "")) if worker_record else ""
+        if resume:
+            _, result = _launch_worker_process(
+                worker_id, task, "writer", carbon_id, resume=True, provider=provider or "claude", session_id=session_id
+            )
+        else:
+            _, result = _launch_with_provider_order(worker_id, task, "writer", carbon_id)
+        return result
 
 
 def start_worker(worker_id, task, worker_type, carbon_id, incognito=False):
@@ -817,31 +1149,78 @@ def start_worker(worker_id, task, worker_type, carbon_id, incognito=False):
         return "Error: worker_type is required. Available types: browser, terminal, writer"
 
     worker_type = worker_type.lower()
-    _, err = _create_worker_record(worker_id, worker_type, carbon_id, incognito=incognito)
-    if err:
-        return err
+    try:
+        from core.maintenance import (
+            acquire_descendant_activity,
+            bind_activity,
+            release_activity,
+        )
 
-    if worker_type == "browser":
-        result = start_browser_worker(worker_id, task, carbon_id, incognito=incognito, resume=False)
-        if result.startswith("Error:"):
-            registry = _load_worker_registry()
-            registry.pop(worker_id, None)
-            _save_worker_registry(registry)
-        return result
-    if worker_type == "terminal":
-        return start_terminal_worker(worker_id, task, carbon_id, resume=False)
-    if worker_type == "writer":
-        result = start_writer_worker(worker_id, task, carbon_id, resume=False)
-        if result.startswith("Error:"):
-            registry = _load_worker_registry()
-            registry.pop(worker_id, None)
-            _save_worker_registry(registry)
-        return result
+        activity = acquire_descendant_activity(
+            "worker",
+            activity_id=worker_id,
+            contact_id=carbon_id,
+        )
+    except Exception:
+        activity = None
+        bind_activity = None
+        release_activity = None
+    if activity is None:
+        return (
+            "Error: Silicon is preparing an update. New workers are paused; "
+            "the manager task will resume after maintenance."
+        )
 
-    registry = _load_worker_registry()
-    registry.pop(worker_id, None)
-    _save_worker_registry(registry)
-    return f"Error: invalid worker_type '{worker_type}'. Available types: browser, terminal, writer"
+    result = ""
+    scope = bind_activity(activity)
+    scope.__enter__()
+    try:
+        _, err = _create_worker_record(
+            worker_id,
+            worker_type,
+            carbon_id,
+            incognito=incognito,
+        )
+        if err:
+            result = err
+        elif worker_type == "browser":
+            result = start_browser_worker(
+                worker_id,
+                task,
+                carbon_id,
+                incognito=incognito,
+                resume=False,
+            )
+            if result.startswith("Error:"):
+                _remove_worker_record(worker_id)
+        elif worker_type == "terminal":
+            result = start_terminal_worker(
+                worker_id,
+                task,
+                carbon_id,
+                resume=False,
+            )
+        elif worker_type == "writer":
+            result = start_writer_worker(
+                worker_id,
+                task,
+                carbon_id,
+                resume=False,
+            )
+            if result.startswith("Error:"):
+                _remove_worker_record(worker_id)
+        else:
+            _remove_worker_record(worker_id)
+            result = (
+                f"Error: invalid worker_type '{worker_type}'. "
+                "Available types: browser, terminal, writer"
+            )
+    finally:
+        scope.__exit__(None, None, None)
+
+    if result.startswith("Error:") and release_activity is not None:
+        release_activity(activity)
+    return result
 
 
 def message_worker(worker_id, task, carbon_id):
@@ -862,13 +1241,60 @@ def message_worker(worker_id, task, carbon_id):
     if any(q["worker_id"] == worker_id for q in queue):
         return f"Error: Worker '{worker_id}' is already in the browser queue."
 
-    if worker_type == "browser":
-        return start_browser_worker(worker_id, task, carbon_id, incognito=incognito, resume=True)
-    if worker_type == "terminal":
-        return start_terminal_worker(worker_id, task, carbon_id, resume=True)
-    if worker_type == "writer":
-        return start_writer_worker(worker_id, task, carbon_id, resume=True)
-    return f"Error: Worker '{worker_id}' has invalid worker_type '{worker_type}'."
+    try:
+        from core.maintenance import (
+            acquire_descendant_activity,
+            bind_activity,
+            release_activity,
+        )
+
+        activity = acquire_descendant_activity(
+            "worker",
+            activity_id=worker_id,
+            contact_id=carbon_id,
+        )
+    except Exception:
+        activity = None
+        bind_activity = None
+        release_activity = None
+    if activity is None:
+        return (
+            "Error: Silicon is preparing an update. Worker resumes are paused "
+            "until maintenance finishes."
+        )
+
+    scope = bind_activity(activity)
+    scope.__enter__()
+    try:
+        if worker_type == "browser":
+            result = start_browser_worker(
+                worker_id,
+                task,
+                carbon_id,
+                incognito=incognito,
+                resume=True,
+            )
+        elif worker_type == "terminal":
+            result = start_terminal_worker(
+                worker_id,
+                task,
+                carbon_id,
+                resume=True,
+            )
+        elif worker_type == "writer":
+            result = start_writer_worker(
+                worker_id,
+                task,
+                carbon_id,
+                resume=True,
+            )
+        else:
+            result = f"Error: Worker '{worker_id}' has invalid worker_type '{worker_type}'."
+    finally:
+        scope.__exit__(None, None, None)
+    if result.startswith("Error:") and release_activity is not None:
+        release_activity(activity)
+    return result
 
 
 # --- Public API: querying, stopping, listing ---
@@ -923,35 +1349,53 @@ def get_worker_status(worker_id, carbon_id):
 
 
 def stop_worker(worker_id, carbon_id):
-    queue = _load_browser_queue()
     found_in_queue = False
-    for q in queue:
-        if q["worker_id"] == worker_id:
-            if q.get("carbon_id") != carbon_id:
-                return f"Error: Worker '{worker_id}' does not belong to you."
-            found_in_queue = True
-            break
+    queued_activity = {}
+    with file_lock(BROWSER_QUEUE_FILE):
+        queue = _load_browser_queue()
+        for q in queue:
+            if q["worker_id"] == worker_id:
+                if q.get("carbon_id") != carbon_id:
+                    return f"Error: Worker '{worker_id}' does not belong to you."
+                found_in_queue = True
+                queued_activity = q.get("maintenance_activity") or {}
+                break
+        if found_in_queue:
+            _save_browser_queue(
+                [q for q in queue if q["worker_id"] != worker_id]
+            )
 
     if found_in_queue:
-        new_queue = [q for q in queue if q["worker_id"] != worker_id]
-        _save_browser_queue(new_queue)
+        _release_maintenance_activity(queued_activity)
         try:
             from core.cron.checkback import remove_checkback
             remove_checkback(worker_id)
         except Exception:
             pass
+        try:
+            from core.work_updates import record_worker_state
+
+            record_worker_state(
+                carbon_id,
+                worker_id,
+                "cancelled",
+                "Worker was removed from the queue",
+            )
+        except Exception:
+            pass
         return f"Done. Worker '{worker_id}' removed from browser queue."
 
-    active = _load_active()
-    if worker_id not in active:
-        return f"Error: Worker '{worker_id}' is not active."
-    if active[worker_id].get("carbon_id") != carbon_id:
-        return f"Error: Worker '{worker_id}' does not belong to you."
+    with file_lock(ACTIVE_FILE):
+        active = _load_active()
+        if worker_id not in active:
+            return f"Error: Worker '{worker_id}' is not active."
+        if active[worker_id].get("carbon_id") != carbon_id:
+            return f"Error: Worker '{worker_id}' does not belong to you."
 
-    worker_info = active[worker_id]
-    if _is_codex_provider(worker_info.get("provider")):
-        _sync_codex_session_id(worker_id, worker_info)
-        worker_info = _load_active().get(worker_id, worker_info)
+        worker_info = active[worker_id]
+        if _is_codex_provider(worker_info.get("provider")):
+            _sync_codex_session_id(worker_id, worker_info)
+            worker_info = _load_active().get(worker_id, worker_info)
 
     try:
         if IS_WINDOWS:
@@ -963,12 +1407,23 @@ def stop_worker(worker_id, carbon_id):
 
     _cleanup_silicon_browser_session(worker_id, worker_info)
 
-    del active[worker_id]
-    _save_active(active)
+    _remove_active_worker(worker_id, worker_info.get("run_id", ""))
+    _release_maintenance_activity(worker_info.get("maintenance_activity") or {})
 
     try:
         from core.cron.checkback import remove_checkback
         remove_checkback(worker_id)
+    except Exception:
+        pass
+    try:
+        from core.work_updates import record_worker_state
+
+        record_worker_state(
+            carbon_id,
+            worker_id,
+            "cancelled",
+            "Worker was stopped",
+        )
     except Exception:
         pass
 
@@ -1065,8 +1520,110 @@ def _has_completion_event(output_path, provider):
     return any(event.get("type") == "result" for event in events)
 
 
+def _worker_terminal_state(raw, provider):
+    """Return the real terminal state without publishing raw worker output."""
+    events = _extract_json_events(raw)
+    if _is_codex_provider(provider):
+        if any(event.get("type") == "silicon.codex_app_error" for event in events):
+            return "failed"
+        completed = [
+            event
+            for event in events
+            if event.get("type") == "turn.completed"
+            or event.get("method") == "turn/completed"
+        ]
+        if not completed:
+            return "failed"
+        terminal = completed[-1]
+        turn = (terminal.get("params") or {}).get("turn") or {}
+        status = str(turn.get("status") or terminal.get("status") or "").lower()
+        return "completed" if status in {"", "completed", "success"} else "failed"
+
+    completed = [event for event in events if event.get("type") == "result"]
+    if not completed:
+        return "failed"
+    terminal = completed[-1]
+    status = str(terminal.get("subtype") or "").lower()
+    failed = bool(terminal.get("is_error")) or any(
+        marker in status for marker in ("error", "failed", "timeout", "cancel")
+    )
+    return "failed" if failed else "completed"
+
+
+def _worker_completion_context(completion):
+    return (
+        f"Worker '{completion['worker_id']}' "
+        f"({completion['worker_type']}, {completion['provider']}) completed:\n"
+        f"Result: {completion['result']}\n"
+        "Complete worker output archived with id: "
+        f"{completion['archive_id']}"
+    )
+
+
 _sweep_call_counter = 0
 _SWEEP_INTERVAL = 10
+
+
+def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, output_path):
+    """Create a child run linked back to every message that spawned the worker."""
+    try:
+        from core.diagnostics import Diagnostics
+        from core.progress import (
+            DONE, claude_progress_events, codex_progress_event,
+            usage_from_done_event,
+        )
+        parent_run_id = worker_info.get("diag_parent_run_id")
+        if not parent_run_id:
+            return
+        child_trace = Diagnostics.start_run(
+            trigger="worker",
+            carbon_id=carbon_id,
+            parent_run_id=parent_run_id,
+            room_id=worker_info.get("diag_room_id", ""),
+            message_ids=worker_info.get("diag_message_ids") or [],
+            meta={"worker_id": worker_id},
+        )
+        raw = _read_text_file(output_path)
+        events = _extract_json_events(raw)
+        state = {}
+        done_events = []
+        with child_trace.span("worker.execution") as worker_span:
+            worker_span.set_meta(
+                worker_id=worker_id,
+                worker_type=worker_info.get("worker_type", "unknown"),
+                provider=provider,
+                worker_run_id=worker_info.get("run_id", ""),
+                started_at_ms=int(float(worker_info.get("started") or time.time()) * 1000),
+            )
+            with child_trace.span("provider_call") as provider_span:
+                provider_span.set_meta(provider=provider, worker_id=worker_id)
+                sequence = 0
+                for event in events:
+                    if _is_codex_provider(provider):
+                        out = codex_progress_event(event, state)
+                        normalized = [out] if out else []
+                    else:
+                        normalized = claude_progress_events(event, state)
+                    for item in normalized:
+                        sequence += 1
+                        child_trace.event(
+                            "worker.progress",
+                            sequence=sequence,
+                            kind=str(item.get("kind") or ""),
+                            status=str(item.get("status") or ""),
+                            item_id=str(item.get("item_id") or ""),
+                            tool_name=str(item.get("tool_name") or ""),
+                            path=str(item.get("path") or "")[:500],
+                            query=str(item.get("query") or "")[:500],
+                            command=str(item.get("command") or "")[:500],
+                        )
+                        if item.get("kind") == DONE:
+                            done_events.append(item)
+                for item in done_events:
+                    provider_span.set_tokens(**usage_from_done_event(item))
+        child_trace.close()
+    except Exception:
+        pass
 
 
 def check_completed_workers():
@@ -1076,36 +1633,101 @@ def check_completed_workers():
         _sweep_call_counter = 0
         sweep_orphaned_daemons()
 
+    # Worker subprocesses cannot update the coordinator themselves. The
+    # runtime sweep heartbeats both active and profiled-browser queued work so
+    # a long accepted task remains a hard blocker for maintenance.
+    for queued in _load_browser_queue():
+        if isinstance(queued, dict):
+            _heartbeat_maintenance_activity(
+                queued.get("maintenance_activity") or {}
+            )
+
     active = _load_active()
+    for worker_info in active.values():
+        if isinstance(worker_info, dict):
+            _heartbeat_maintenance_activity(
+                worker_info.get("maintenance_activity") or {}
+            )
     completed_by_carbon = {}
 
-    for worker_id in list(active.keys()):
-        worker_info = active[worker_id]
+    for worker_id, initial_info in list(active.items()):
+        worker_info = initial_info
         provider = worker_info.get("provider", "claude")
         output_path = worker_info.get("output_path")
 
         if _is_codex_provider(provider):
             _sync_codex_session_id(worker_id, worker_info)
-            active = _load_active()
-            worker_info = active.get(worker_id, worker_info)
+            worker_info = _load_active().get(worker_id, worker_info)
             output_path = worker_info.get("output_path")
 
         process_running = _is_process_running(worker_info.get("pid"))
         if process_running and not _has_completion_event(output_path, provider):
             continue
 
+        worker_info = _claim_completed_worker(
+            worker_id,
+            worker_info.get("run_id", ""),
+        )
+        if not worker_info:
+            continue
+
         worker_type = worker_info.get("worker_type", "unknown")
         carbon_id = worker_info.get("carbon_id", "unknown")
+        _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, output_path)
 
         _cleanup_silicon_browser_session(worker_id, worker_info)
 
         raw = _read_text_file(output_path)
         result_text = _parse_worker_output(raw, provider)
+        terminal_state = _worker_terminal_state(raw, provider)
+        try:
+            from core.work_updates import record_worker_state
+
+            record_worker_state(
+                carbon_id,
+                worker_id,
+                terminal_state,
+                (
+                    "Worker completed"
+                    if terminal_state == "completed"
+                    else "Worker execution failed"
+                ),
+            )
+        except Exception:
+            pass
         archive_id = _archive_active_output(worker_id, worker_info, carbon_id)
         if archive_id:
             _update_worker_record(worker_id, last_archive_id=archive_id, last_used_at=time.time())
 
-        del active[worker_id]
+        completion = {
+            "worker_id": worker_id,
+            "worker_type": worker_type,
+            "provider": provider,
+            "carbon_id": carbon_id,
+            "archive_id": archive_id,
+            "result": result_text,
+        }
+        activity_reference = worker_info.get("maintenance_activity") or {}
+        continuation_queued = False
+        if activity_reference:
+            try:
+                from core.maintenance import COORDINATOR
+
+                continuation_queued = COORDINATOR.enqueue_continuation(
+                    carbon_id,
+                    _worker_completion_context(completion),
+                    activity_reference,
+                )
+            except Exception:
+                continuation_queued = False
+
+        _remove_active_worker(
+            worker_id,
+            worker_info.get("run_id", ""),
+            worker_info.get("_completion_claim_token", ""),
+        )
+        if not continuation_queued:
+            _release_maintenance_activity(activity_reference)
 
         try:
             from core.cron.checkback import remove_checkback
@@ -1113,17 +1735,8 @@ def check_completed_workers():
         except Exception:
             pass
 
-        completed_by_carbon.setdefault(carbon_id, []).append({
-            "worker_id": worker_id,
-            "worker_type": worker_type,
-            "provider": provider,
-            "carbon_id": carbon_id,
-            "archive_id": archive_id,
-            "result": result_text,
-        })
-
-    if completed_by_carbon:
-        _save_active(active)
+        completion["maintenance_continuation_queued"] = continuation_queued
+        completed_by_carbon.setdefault(carbon_id, []).append(completion)
 
     queue_result, queue_carbon_id = _process_browser_queue()
     if queue_result and queue_carbon_id:
@@ -1150,13 +1763,14 @@ def check_completed_workers_formatted():
         for c in completed:
             if c["worker_id"] == "[queue]":
                 parts.append(c["result"])
+            elif c.get("maintenance_continuation_queued"):
+                # The durable maintenance queue now owns this accepted
+                # continuation, including during a drain.
+                continue
             else:
-                parts.append(
-                    f"Worker '{c['worker_id']}' ({c['worker_type']}, {c['provider']}) completed:\n"
-                    f"Result: {c['result']}\n"
-                    f"Complete worker output archived with id: {c['archive_id']}"
-                )
-        result[carbon_id] = "\n\n".join(parts)
+                parts.append(_worker_completion_context(c))
+        if parts:
+            result[carbon_id] = "\n\n".join(parts)
     return result
 
 
@@ -1165,8 +1779,7 @@ def clean_old_archives(archive_for_seconds):
         return {}
 
     now = time.time()
-    meta = _load_archive_meta()
-    meta_changed = False
+    removed_archive_ids = []
 
     for fname in os.listdir(OUTPUTS_DIR):
         if fname.startswith("_") or fname == ".gitkeep":
@@ -1177,12 +1790,15 @@ def clean_old_archives(archive_for_seconds):
             if age > archive_for_seconds:
                 os.remove(fpath)
                 base = fname.replace(".txt", "")
-                if base in meta:
-                    del meta[base]
-                    meta_changed = True
+                removed_archive_ids.append(base)
 
-    if meta_changed:
-        _save_archive_meta(meta)
+    if removed_archive_ids:
+        def remove_meta(meta):
+            if isinstance(meta, dict):
+                for archive_id in removed_archive_ids:
+                    meta.pop(archive_id, None)
+
+        update_json(ARCHIVE_META_FILE, {}, remove_meta)
 
     return {}
 

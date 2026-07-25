@@ -14,7 +14,9 @@ import datetime
 import json
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from core.runtime_paths import DATA_ROOT
+
+PROJECT_ROOT = DATA_ROOT
 LOGS_DIR = PROJECT_ROOT / "logs"
 _MAX_FIELD = 2000
 
@@ -68,9 +70,42 @@ def log(category: str, message: str = "", **fields) -> None:
 
 
 def tool_call(carbon_id: str, tool: str, args=None, result=None) -> None:
-    extra = args
-    if isinstance(args, dict):
+    if tool == "advertising_memory/update":
+        # The complete model-supplied object is untrusted. Keep no fields:
+        # unknown aliases could otherwise duplicate the advertised content.
+        extra = {}
+        result = "[Advertising memory result omitted]"
+    elif tool == "extend" or tool.startswith("extend/"):
+        # Extend arguments may contain messages, records, or provider data.
+        # Retain only routing metadata through a strict allowlist.
+        extra = {}
+        if isinstance(args, dict):
+            for key in ("type", "name", "key"):
+                if key in args:
+                    extra[key] = args[key]
+        result = "[Extend result omitted]"
+    elif tool == "work_update":
+        # Work cards can contain files, browser sessions, blocker answers, and
+        # full manager/Silicon transcripts. Glass already stores the visible
+        # event; do not duplicate that content into local process logs.
+        extra = {}
+        if isinstance(args, dict):
+            for key in (
+                "action",
+                "task_id",
+                "todo_id",
+                "blocker_id",
+                "group_id",
+                "invocation_id",
+                "call_id",
+            ):
+                if key in args:
+                    extra[key] = args[key]
+        result = "[Work update result omitted]"
+    elif isinstance(args, dict):
         extra = {k: v for k, v in args.items() if k != "tool"}
+    else:
+        extra = args
     log("TOOL", tool, contact=carbon_id, args=extra, result=result)
 
 

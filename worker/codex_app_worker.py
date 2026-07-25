@@ -1,161 +1,49 @@
 import argparse
 import json
 import os
-import queue
 import shutil
-import subprocess
 import sys
-import threading
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.codex_app_server import CodexAppServer as _SharedCodexAppServer
 from core.progress import codex_progress_event
 
 
 CODEX_CMD = shutil.which("codex") or shutil.which("codex.cmd") or "codex"
 
 
-class CodexAppServer:
+class CodexAppServer(_SharedCodexAppServer):
+    """Worker output hooks around the shared app-server transport."""
+
     def __init__(self, cwd):
-        self.cwd = cwd
-        self.next_id = 1
-        self.messages = queue.Queue()
-        self.proc = subprocess.Popen(
-            [
-                CODEX_CMD,
-                "app-server",
-                "--listen",
-                "stdio://",
-                "--config",
-                'sandbox_mode="danger-full-access"',
-                "--config",
-                'approval_policy="never"',
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            bufsize=1,
-        )
-        threading.Thread(target=self._read_stdout, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
         self.progress_state = {}
+        super().__init__(cwd, command=CODEX_CMD, timeout=60)
 
     def _emit(self, payload):
         print(json.dumps(payload, separators=(",", ":")), flush=True)
 
-    def _read_stdout(self):
-        for line in self.proc.stdout:
-            line = line.rstrip("\n")
-            if line:
-                print(line, flush=True)
-                try:
-                    msg = json.loads(line)
-                    progress = codex_progress_event(msg, self.progress_state)
-                    if progress:
-                        print(json.dumps(progress, ensure_ascii=False, separators=(",", ":")), flush=True)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                self.messages.put(("stdout", line))
+    def _handle_stdout_line(self, line):
+        if not line:
+            return
+        print(line, flush=True)
+        try:
+            msg = json.loads(line)
+            progress = codex_progress_event(msg, self.progress_state)
+            if progress:
+                print(
+                    json.dumps(
+                        progress,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    def _read_stderr(self):
-        for line in self.proc.stderr:
-            line = line.rstrip("\n")
-            if line:
-                self._emit({"type": "codex.stderr", "message": line})
-                self.messages.put(("stderr", line))
-
-    def close(self):
-        if self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
-
-    def send(self, method, params=None):
-        msg_id = self.next_id
-        self.next_id += 1
-        payload = {"id": msg_id, "method": method}
-        if params is not None:
-            payload["params"] = params
-        self.proc.stdin.write(json.dumps(payload) + "\n")
-        self.proc.stdin.flush()
-        return msg_id
-
-    def respond(self, msg_id, result):
-        self.proc.stdin.write(json.dumps({"id": msg_id, "result": result}) + "\n")
-        self.proc.stdin.flush()
-
-    def _handle_server_request(self, msg):
-        method = msg.get("method", "")
-        msg_id = msg.get("id")
-        if msg_id is None:
-            return False
-
-        if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
-            self.respond(msg_id, {"decision": "acceptForSession"})
-            return True
-        if method == "item/tool/requestUserInput":
-            self.respond(msg_id, {"canceled": True})
-            return True
-        if method == "mcpServer/elicitation/request":
-            self.respond(msg_id, {"action": "cancel"})
-            return True
-        return False
-
-    def request(self, method, params=None, timeout=60):
-        req_id = self.send(method, params)
-        deadline = time.time() + timeout
-
-        while time.time() < deadline:
-            if self.proc.poll() is not None:
-                raise RuntimeError(f"codex app-server exited with code {self.proc.returncode}")
-            try:
-                source, line = self.messages.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            if source != "stdout":
-                continue
-            try:
-                msg = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if self._handle_server_request(msg):
-                continue
-            if msg.get("id") == req_id:
-                if "error" in msg:
-                    raise RuntimeError(msg["error"].get("message", f"{method} failed"))
-                return msg.get("result", {})
-
-        raise subprocess.TimeoutExpired([CODEX_CMD, "app-server", method], timeout)
-
-    def run_until_turn_completed(self, timeout):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.proc.poll() is not None:
-                raise RuntimeError(f"codex app-server exited with code {self.proc.returncode}")
-            try:
-                source, line = self.messages.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            if source != "stdout":
-                continue
-            try:
-                msg = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if self._handle_server_request(msg):
-                continue
-            if msg.get("method") == "turn/completed":
-                turn = msg.get("params", {}).get("turn", {})
-                if turn.get("status") == "failed":
-                    err = turn.get("error") or {}
-                    raise RuntimeError(err.get("message", "Codex turn failed"))
-                return
-        raise subprocess.TimeoutExpired([CODEX_CMD, "app-server", "turn"], timeout)
+    def _handle_stderr_line(self, line):
+        if line:
+            self._emit({"type": "codex.stderr", "message": line})
 
 
 def read_file(path):
@@ -176,7 +64,7 @@ def main():
     client = CodexAppServer(args.cwd)
 
     try:
-        client.request(
+        client.request_result(
             "initialize",
             {
                 "clientInfo": {"name": "silicon-worker", "version": "0.1.0"},
@@ -192,19 +80,25 @@ def main():
             "sandbox": "danger-full-access",
         }
         if args.thread_id:
-            thread = client.request(
+            thread_result = client.request_result(
                 "thread/resume",
                 {**thread_params, "threadId": args.thread_id},
                 timeout=60,
-            )["thread"]
+            )
         else:
-            thread = client.request(
+            thread_result = client.request_result(
                 "thread/start",
                 {**thread_params, "ephemeral": False},
                 timeout=60,
-            )["thread"]
+            )
+        thread = thread_result["thread"]
+        client._emit({
+            "type": "silicon.codex_context",
+            "model": thread_result.get("model", ""),
+            "model_provider": thread_result.get("modelProvider", ""),
+        })
 
-        client.request(
+        client.request_result(
             "turn/start",
             {
                 "threadId": thread["id"],

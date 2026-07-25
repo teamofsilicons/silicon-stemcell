@@ -5,52 +5,50 @@ When a manager starts a worker with checkback_in (minutes), a one-time cron job 
 When it triggers, it runs the worker's status check and returns the result to the manager.
 When the worker completes, the checkback is automatically removed.
 
-Checkbacks are stored in a JSON file and unpacked into cron JOBS.
+Checkbacks are stored in a JSON file and returned as due one-shot jobs.
 """
 
 import os
-import json
 import time
 
+from core.runtime_paths import DATA_ROOT
+from core.state_store import read_json, update_json
 from worker.handler import get_worker_status
 
-CHECKBACK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkbacks.json")
+CHECKBACK_FILE = os.fspath(DATA_ROOT / "core" / "cron" / "checkbacks.json")
 
 
 def _load_checkbacks():
-    if os.path.exists(CHECKBACK_FILE):
-        with open(CHECKBACK_FILE) as f:
-            return json.load(f)
-    return {}
-
-
-def _save_checkbacks(checkbacks):
-    with open(CHECKBACK_FILE, "w") as f:
-        json.dump(checkbacks, f, indent=2)
+    value = read_json(CHECKBACK_FILE, {})
+    return value if isinstance(value, dict) else {}
 
 
 def add_checkback(worker_id, carbon_id, checkback_in_minutes):
     """Add a checkback for a worker. checkback_in_minutes from now."""
-    checkbacks = _load_checkbacks()
     trigger_at = time.time() + (checkback_in_minutes * 60)
-    checkbacks[worker_id] = {
-        "carbon_id": carbon_id,
-        "trigger_at": trigger_at,
-        "checkback_minutes": checkback_in_minutes,
-    }
-    _save_checkbacks(checkbacks)
+
+    def add(checkbacks):
+        if isinstance(checkbacks, dict):
+            checkbacks[worker_id] = {
+                "carbon_id": carbon_id,
+                "trigger_at": trigger_at,
+                "checkback_minutes": checkback_in_minutes,
+            }
+
+    update_json(CHECKBACK_FILE, {}, add)
 
 
 def remove_checkback(worker_id):
     """Remove a checkback for a worker (e.g. when the worker finishes)."""
-    checkbacks = _load_checkbacks()
-    if worker_id in checkbacks:
-        del checkbacks[worker_id]
-        _save_checkbacks(checkbacks)
+    def remove(checkbacks):
+        if isinstance(checkbacks, dict):
+            checkbacks.pop(worker_id, None)
+
+    update_json(CHECKBACK_FILE, {}, remove)
 
 
 def get_checkback_jobs():
-    """Convert active checkbacks into cron job dicts that can be unpacked into JOBS."""
+    """Convert active checkbacks into cron job dictionaries for the cron loop."""
     checkbacks = _load_checkbacks()
     jobs = []
 

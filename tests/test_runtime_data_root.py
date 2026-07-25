@@ -1,0 +1,231 @@
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+
+CODE_ROOT = Path(__file__).resolve().parents[1]
+
+
+class RuntimeDataRootTests(unittest.TestCase):
+    def test_generation_keeps_runtime_state_in_instance_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary).resolve()
+            release_root = (
+                data_root / ".silicon" / "releases" / "test-generation"
+            )
+            for directory in ("core", "prompts", "templates", "worker"):
+                shutil.copytree(
+                    CODE_ROOT / directory,
+                    release_root / directory,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                )
+            for filename in (
+                ".silicon-data-root-v1",
+                "config.py",
+                "glass_agent.py",
+                "main.py",
+                "manager.py",
+                "silicon.info",
+                "update.py",
+            ):
+                shutil.copy2(CODE_ROOT / filename, release_root / filename)
+            (data_root / "prompts").mkdir()
+            (data_root / "prompts" / "MEMORY.md").write_text(
+                "instance memory\n",
+                encoding="utf-8",
+            )
+            (data_root / "silicon.json").write_text(
+                '{"brain":"claude"}\n',
+                encoding="utf-8",
+            )
+            (data_root / ".backupsilicon").write_text("", encoding="utf-8")
+
+            script = textwrap.dedent(
+                """
+                import json
+                import os
+                import sys
+                import types
+                from pathlib import Path
+
+                # This test environment may not install runtime HTTP
+                # dependencies. Path initialization does not use the network.
+                requests = types.ModuleType("requests")
+                class RequestException(Exception):
+                    pass
+                requests.RequestException = RequestException
+                requests.get = lambda *args, **kwargs: None
+                requests.post = lambda *args, **kwargs: None
+                sys.modules.setdefault("requests", requests)
+
+                from core.runtime_paths import CODE_ROOT, DATA_ROOT
+                from core import (
+                    activity_log,
+                    backup,
+                    diagnostics,
+                    glass,
+                    interface,
+                    living_files,
+                    messages,
+                    team_context,
+                    work_updates,
+                )
+                from core import cron
+                from core.cron import checkback
+                from core.maintenance import MaintenanceCoordinator
+                from prompts import DNA
+                import glass_agent
+                import main
+                import manager
+                import update
+                from worker import handler
+
+                data = DATA_ROOT
+                messages._save_manager_messages({"carbon-a": [{"message": "hi"}]})
+                checkback.add_checkback("worker-a", "carbon-a", 5)
+                manager.new_session("carbon-a", brain="claude")
+                handler._save_active({"worker-a": {"pid": 1}})
+                activity_log.log("TEST", "runtime root")
+                living_files.seed_living_files()
+                MaintenanceCoordinator().request_drain(
+                    maintenance_id="update-test",
+                    deadline_seconds=30,
+                )
+                snapshot = backup.create_local_snapshot(
+                    data,
+                    release_id="release-test",
+                )
+
+                result = {
+                    "code_root": str(CODE_ROOT),
+                    "data_root": str(DATA_ROOT),
+                    "interface_state": str(interface.STATE_DIR),
+                    "glass_root": str(glass.PROJECT_ROOT),
+                    "team_root": str(team_context.PROJECT_ROOT),
+                    "cron_state": str(cron.CRON_STATE_FILE),
+                    "diagnostics": str(diagnostics.DEFAULT_DIAG_DIR),
+                    "work_updates": str(work_updates.WORK_UPDATES_FILE),
+                    "manager_sessions": str(Path(manager.SESSIONS_DIR)),
+                    "manager_config": str(Path(manager.SILICON_CONFIG_FILE)),
+                    "worker_outputs": str(Path(handler.OUTPUTS_DIR)),
+                    "worker_code": str(Path(handler.CODEX_APP_WORKER)),
+                    "worker_workspace": str(Path(handler.WORKSPACE_ROOT)),
+                    "backup_default": str(backup._instance_root()),
+                    "update_state": str(update.UPDATE_STATE_FILE),
+                    "update_info": str(update.SILICON_INFO_FILE),
+                    "restart_flag": str(main.RESTART_FLAG),
+                    "glass_agent_root": str(glass_agent.silicon_dir()),
+                    "memory_prompt": DNA._read_prompt("MEMORY.md"),
+                    "manager_prompt_path": DNA._prompt_path("MANAGER.md"),
+                    "ownership_prompt": DNA._persistent_runtime_paths_section(),
+                    "worker_ownership_prompt": DNA.get_worker_prompt("terminal")[0],
+                    "snapshot_paths": [
+                        item["path"] for item in snapshot.manifest["files"]
+                    ],
+                }
+                print(json.dumps(result, sort_keys=True))
+                """
+            )
+            environment = dict(os.environ)
+            environment["SILICON_DATA_ROOT"] = str(data_root)
+            environment["SILICON_RELEASE_ROOT"] = str(release_root)
+            environment["PYTHONPATH"] = str(release_root)
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                cwd=release_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            result = json.loads(completed.stdout.strip().splitlines()[-1])
+
+            self.assertEqual(Path(result["code_root"]), release_root)
+            self.assertEqual(Path(result["data_root"]), data_root)
+            self.assertEqual(
+                (release_root / ".silicon-data-root-v1").read_text(
+                    encoding="utf-8"
+                ).strip(),
+                "1",
+            )
+            for key in (
+                "interface_state",
+                "glass_root",
+                "team_root",
+                "cron_state",
+                "diagnostics",
+                "work_updates",
+                "manager_sessions",
+                "manager_config",
+                "worker_outputs",
+                "backup_default",
+                "update_state",
+                "restart_flag",
+                "glass_agent_root",
+            ):
+                self.assertTrue(
+                    Path(result[key]).is_relative_to(data_root),
+                    (key, result[key]),
+                )
+            self.assertTrue(
+                Path(result["worker_code"]).is_relative_to(release_root)
+            )
+            self.assertEqual(Path(result["worker_workspace"]), release_root)
+            self.assertTrue(
+                Path(result["update_info"]).is_relative_to(release_root)
+            )
+            self.assertIn("instance memory", result["memory_prompt"])
+            self.assertIn(str(data_root), result["ownership_prompt"])
+            self.assertIn(
+                str(release_root),
+                result["worker_ownership_prompt"],
+            )
+            self.assertTrue(
+                Path(result["manager_prompt_path"]).is_relative_to(
+                    release_root / "prompts"
+                )
+            )
+            self.assertIn("prompts/MEMORY.md", result["snapshot_paths"])
+
+            self.assertTrue(
+                (
+                    data_root
+                    / "core"
+                    / "interface_state"
+                    / "manager_queue.json"
+                ).is_file()
+            )
+            self.assertTrue(
+                (data_root / "core" / "cron" / "checkbacks.json").is_file()
+            )
+            self.assertTrue(
+                (data_root / "core" / "interface_state" / "maintenance.json").is_file()
+            )
+            self.assertTrue((data_root / "sessions" / "carbon-a.txt").is_file())
+            self.assertTrue(
+                (data_root / "worker" / "outputs" / "_active_workers.json").is_file()
+            )
+            self.assertTrue(any((data_root / "logs").glob("*.txt")))
+
+    def test_rejects_relative_or_release_store_data_root(self):
+        from core.runtime_paths import RuntimePathError, validated_data_root
+
+        with self.assertRaisesRegex(RuntimePathError, "absolute"):
+            validated_data_root("relative-instance")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            release = Path(temporary) / ".silicon" / "releases" / "generation"
+            release.mkdir(parents=True)
+            with self.assertRaisesRegex(RuntimePathError, "releases"):
+                validated_data_root(release)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,206 @@
+import threading
+import time
+import unittest
+from unittest import mock
+
+import config
+import main
+
+
+class TeamContextLifecycleTest(unittest.TestCase):
+    def setUp(self):
+        with config._TEAM_CONTEXT_LOCK:
+            config._TEAM_CONTEXT_RUNNING = False
+            config._TEAM_CONTEXT_PENDING_NOTICE = ""
+            config._TEAM_CONTEXT_LAST_NOTICE = ""
+
+    def test_startup_sync_precedes_restart_manager_turn(self):
+        calls = []
+        dispatcher = mock.Mock()
+        dispatcher.submit.side_effect = lambda context: calls.append(
+            ("manager", context)
+        )
+
+        with (
+            mock.patch.object(main, "_install_diagnostic_shutdown_hooks"),
+            mock.patch.object(main, "start_listener"),
+            mock.patch.object(main, "stop_listener"),
+            mock.patch.object(main, "ManagerDispatcher", return_value=dispatcher),
+            mock.patch.object(
+                main,
+                "_bootstrap_team_context",
+                side_effect=lambda: calls.append("team-context"),
+            ),
+            mock.patch.object(
+                main,
+                "_check_restart_flag",
+                side_effect=lambda: (
+                    calls.append("restart-check") or ("restarted", "carbon-a")
+                ),
+            ),
+            mock.patch.object(
+                main,
+                "validate_contacts_integrity",
+                side_effect=KeyboardInterrupt,
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            main.main()
+
+        self.assertEqual(
+            calls[:3],
+            [
+                "team-context",
+                "restart-check",
+                ("manager", {"carbon-a": "restarted"}),
+            ],
+        )
+        dispatcher.shutdown.assert_called_once_with(wait=False)
+
+    def test_existing_ten_second_loop_runs_team_context_tick(self):
+        self.assertEqual(config.LOOP_TICK, 10)
+        self.assertEqual(config.EVENT_LOOP[0]["name"], "check_team_context")
+        finished = threading.Event()
+
+        with mock.patch(
+            "core.team_context.team_context_tick",
+            side_effect=lambda: (
+                finished.set()
+                or {
+                    "ok": True,
+                    "status": "current",
+                    "own_status": "unchanged",
+                }
+            ),
+        ) as tick:
+            self.assertIsNone(config.check_team_context())
+            self.assertTrue(finished.wait(2))
+
+        tick.assert_called_once_with()
+
+    def test_manager_dispatcher_serializes_one_contact_without_blocking_another(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        other_finished = threading.Event()
+        calls = []
+        lock = threading.Lock()
+
+        def runner(context):
+            contact_id = next(iter(context))
+            with lock:
+                calls.append((contact_id, context[contact_id]))
+            if contact_id == "carbon-a" and not first_started.is_set():
+                first_started.set()
+                release_first.wait(2)
+            if contact_id == "carbon-b":
+                other_finished.set()
+
+        dispatcher = main.ManagerDispatcher(runner=runner)
+        dispatcher.submit({"carbon-a": "first"})
+        self.assertTrue(first_started.wait(2))
+        dispatcher.submit({"carbon-a": "second", "carbon-b": "independent"})
+
+        self.assertTrue(other_finished.wait(2))
+        release_first.set()
+        self.assertTrue(dispatcher.wait_for_idle(2))
+
+        carbon_a = [body for contact, body in calls if contact == "carbon-a"]
+        self.assertEqual(carbon_a, ["first", "second"])
+        self.assertIn(("carbon-b", "independent"), calls)
+
+    def test_tick_is_nonblocking_and_coalesces_while_running(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_tick():
+            started.set()
+            release.wait(2)
+            return {"ok": True, "status": "current"}
+
+        with mock.patch(
+            "core.team_context.team_context_tick",
+            side_effect=slow_tick,
+        ) as tick:
+            before = time.monotonic()
+            self.assertIsNone(config.check_team_context())
+            self.assertLess(time.monotonic() - before, 0.25)
+            self.assertTrue(started.wait(2))
+            self.assertIsNone(config.check_team_context())
+            self.assertEqual(tick.call_count, 1)
+            release.set()
+
+        deadline = time.monotonic() + 2
+        while config._TEAM_CONTEXT_RUNNING and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(config._TEAM_CONTEXT_RUNNING)
+
+    def test_conflict_notice_is_delivered_once_to_central_manager(self):
+        finished = threading.Event()
+
+        def conflict_tick():
+            finished.set()
+            return {
+                "ok": False,
+                "status": "conflict",
+                "local_saved": True,
+                "actual_revision": 7,
+            }
+
+        with (
+            mock.patch(
+                "core.team_context.team_context_tick",
+                side_effect=conflict_tick,
+            ),
+            mock.patch(
+                "core.interface.get_central_contact_id",
+                return_value="central-carbon",
+            ),
+        ):
+            self.assertIsNone(config.check_team_context())
+            self.assertTrue(finished.wait(2))
+            deadline = time.monotonic() + 2
+            while config._TEAM_CONTEXT_RUNNING and time.monotonic() < deadline:
+                time.sleep(0.01)
+            notice = config.check_team_context()
+
+        self.assertEqual(list(notice), ["central-carbon"])
+        self.assertIn("conflicts with a newer Glass revision", notice["central-carbon"])
+
+    def test_authorization_loss_notice_explains_fail_closed_cleanup(self):
+        notice = config._team_context_notice({"ok": False, "status": "unauthorized"})
+
+        self.assertIn("no longer authorizes", notice)
+        self.assertIn("hidden the cached TEAM.md", notice)
+
+    def test_notice_waits_until_a_central_contact_exists(self):
+        with config._TEAM_CONTEXT_LOCK:
+            config._TEAM_CONTEXT_PENDING_NOTICE = "Action is required."
+            config._TEAM_CONTEXT_RUNNING = True
+
+        with mock.patch(
+            "core.interface.get_central_contact_id",
+            side_effect=["", "central-carbon"],
+        ):
+            self.assertIsNone(config.check_team_context())
+            with config._TEAM_CONTEXT_LOCK:
+                self.assertEqual(
+                    config._TEAM_CONTEXT_PENDING_NOTICE,
+                    "Action is required.",
+                )
+            delivered = config.check_team_context()
+
+        self.assertEqual(
+            delivered,
+            {
+                "central-carbon": (
+                    "Team context synchronization notice:\nAction is required."
+                )
+            },
+        )
+        with config._TEAM_CONTEXT_LOCK:
+            self.assertEqual(config._TEAM_CONTEXT_PENDING_NOTICE, "")
+            config._TEAM_CONTEXT_RUNNING = False
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -12,13 +12,14 @@ This file is runtime state. It stores:
 - `contact_type`
 - fixed `carbon_id` or `silicon_id`
 - `room_id`
-- local `trust_level`
+- the last Glass-confirmed effective `trust_level`
 - central-carbon flag
 - display/timezone metadata
 - local notes
 - last processed Interface event ids
 
-Glass and Interface do not own trust. Stemcell owns trust locally.
+Glass owns canonical trust policy. Stemcell keeps a revisioned local cache and
+enforces the effective value during manager turns.
 
 ## Identity Rules
 
@@ -31,7 +32,10 @@ Glass and Interface do not own trust. Stemcell owns trust locally.
   claim it.
 - Until Glass reports a claim, the first carbon discovered is treated as
   central locally; Glass's answer overrides on the next sync.
-- Later contacts start as `very_low`.
+- Once a Glass policy has been confirmed, unknown contacts start as `very_low`.
+- Before the first successful Glass trust bootstrap, the legacy first-carbon
+  central flag is provisional. Glass's central-carbon and trust snapshots
+  replace it.
 
 ## Memory
 
@@ -47,12 +51,26 @@ Trust levels:
 `very_low < low < ok < high < very_high < ultimate`
 
 Rules:
-- Trust is local stemcell data.
+- Effective trust is resolved in this order:
+  active central Carbon → per-Silicon override → Team base trust → `very_low`.
+- Team base trust is configured in Glass and applies to every Team Silicon.
+- A per-Silicon override affects only this Silicon.
+- A local Silicon trust decision and a Glass per-Silicon edit update the same
+  canonical override record; they are not competing layers.
 - Only a carbon with HIGHER trust can approve a trust level change
 - A carbon can only promote someone up to their OWN trust level (not higher)
-- Trust level changes must be done by editing contacts.json (requested by the carbon's manager)
+- Use the `trust/set` manager tool for trust changes. Never edit
+  `core/interface_state/contacts.json` to change trust.
+- `trust/set` commits through Glass first. Stemcell applies only the confirmed
+  revision. If Glass is unavailable, the previous confirmed value remains in
+  force.
+- Stale local changes are rejected and refreshed from Glass instead of silently
+  overwriting a newer console or local decision.
 - The central carbon (ultimate) can promote anyone to any level
 - Demotion follows the same rules
+- Trust keys are typed immutable identities: `carbon:<carbon_id>` or
+  `silicon:<silicon_id>`. Never resolve trust by name, email, phone, or room
+  label.
 
 ## Communication Between Managers
 Each carbon has their own manager instance. Managers do NOT share context unless asked.
@@ -60,15 +78,7 @@ Each carbon has their own manager instance. Managers do NOT share context unless
 - Never access another manager's workers, archives, or session directly. this is illegal and can ban the carbon from the system.
 - All cross-carbon communication goes through message_manager
 
-# Contacts
-
-Store all contacts here so you know who to refer when a carbon is talking.
-Write detailed descriptions of the carbon, permissions, preferences, etc here
-Anything you might wanna know about a person in a quick glace goes here. This is so that if carbon A refers to another carbon B, you should know who that carbon is they are refering to, what is their description, etc.
-
-Edit both this file (CONTACTS.md) and core/interface_state/contacts.json
-
-# Current Contacts
+## Current contacts
 
 The first carbon to message Silicon becomes the central Carbon with ultimate
 trust (Glass tracks this; lords setting Silicon up don't count).
