@@ -591,6 +591,33 @@ that contact's next serialized turn; other contacts are never held behind it.
 
 ---
 
+### Inspect Glass Trust
+
+Refresh and list this Silicon's complete effective trust policy:
+
+```json
+{
+    "tool": "trust/list"
+}
+```
+
+Refresh and inspect one typed identity:
+
+```json
+{
+    "tool": "trust/get",
+    "silicon_id": "target-silicon-id"
+}
+```
+
+`trust/list` and `trust/get` read through the authenticated Glass policy
+endpoint. The result includes the Glass revision, effective level, Team base,
+per-Silicon override, and resolution source. Use these tools when exact
+provenance or a just-in-time refresh matters. Never infer trust from a role,
+name, TEAM.md, or an editable local file.
+
+---
+
 ### Set Contact Trust
 
 Commit a trust decision for a Carbon:

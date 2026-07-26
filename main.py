@@ -138,6 +138,27 @@ def _bootstrap_team_context():
         return None
 
 
+def _bootstrap_trust_policy():
+    """Best-effort Glass trust sync before any manager can receive a turn."""
+    try:
+        from core.trust import reconcile_trust_policy
+
+        result = reconcile_trust_policy(
+            PROJECT_ROOT,
+            force=True,
+            reason="startup",
+        )
+        if result.get("status") == "deferred":
+            log(
+                "[Silicon] Trust policy startup sync deferred; managers will "
+                "fail closed at very_low until Glass confirms it."
+            )
+        return result
+    except Exception as exc:
+        log(f"[Silicon] Trust policy startup sync skipped: {exc}")
+        return None
+
+
 PROVIDER_PROGRESS_STATES = {
     "reading_file",
     "writing_file",
@@ -377,6 +398,9 @@ def _tool_progress_note(tool_spec):
     if tool_name == "advertising_memory/update":
         return "updating team-visible advertising memory"
 
+    if tool_name in {"trust/list", "trust/get"}:
+        return "refreshing the Glass trust policy"
+
     if tool_name == "trust/set":
         target = tool_spec.get("carbon_id") or tool_spec.get("silicon_id") or "unknown"
         return f"updating trust for {target}"
@@ -459,6 +483,7 @@ def _tool_progress_state(tool_spec):
 def _is_private_manager_tool_name(tool_name):
     return (
         tool_name == "advertising_memory/update"
+        or tool_name in {"trust/list", "trust/get"}
         or tool_name == "trust/set"
         or tool_name == "work_update"
         or tool_name == "extend"
@@ -657,6 +682,40 @@ def _execute_single_tool(tool_spec, carbon_id):
             )
 
         return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
+
+    elif tool_name in {"trust/list", "trust/get"}:
+        target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
+        target_silicon_id = str(tool_spec.get("silicon_id") or "").strip()
+        if tool_name == "trust/get" and (
+            bool(target_carbon_id) == bool(target_silicon_id)
+        ):
+            return (
+                "Tool 'trust/get': Error: provide exactly one of carbon_id "
+                "or silicon_id"
+            )
+        if tool_name == "trust/list" and target_carbon_id and target_silicon_id:
+            return (
+                "Tool 'trust/list': Error: provide at most one of carbon_id "
+                "or silicon_id"
+            )
+        try:
+            from core.trust import inspect_trust_policy
+
+            policy = inspect_trust_policy(
+                kind=(
+                    "carbon"
+                    if target_carbon_id
+                    else "silicon"
+                    if target_silicon_id
+                    else ""
+                ),
+                public_id=target_carbon_id or target_silicon_id,
+                root=PROJECT_ROOT,
+                refresh=True,
+            )
+        except Exception as exc:
+            return f"Tool '{tool_name}': Error: {exc}"
+        return f"Tool '{tool_name}': {json.dumps(policy, sort_keys=True)}"
 
     elif tool_name == "trust/set":
         target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
@@ -965,6 +1024,7 @@ def _tool_results_for_log(all_tools, results_by_carbon):
         if str(tool_spec.get("tool") or "") == "extend"
         or str(tool_spec.get("tool") or "").startswith("extend/")
         or str(tool_spec.get("tool") or "") == "advertising_memory/update"
+        or str(tool_spec.get("tool") or "") in {"trust/list", "trust/get"}
         or str(tool_spec.get("tool") or "") == "trust/set"
         or str(tool_spec.get("tool") or "") == "work_update"
     }
@@ -985,6 +1045,7 @@ def _manager_output_for_log(output, tools_data):
         str(tool_spec.get("tool") or "") == "extend"
         or str(tool_spec.get("tool") or "").startswith("extend/")
         or str(tool_spec.get("tool") or "") == "advertising_memory/update"
+        or str(tool_spec.get("tool") or "") in {"trust/list", "trust/get"}
         or str(tool_spec.get("tool") or "") == "trust/set"
         or str(tool_spec.get("tool") or "") == "work_update"
         for tool_spec in tools
@@ -1551,6 +1612,7 @@ def main():
     log(f"[Silicon] Periodic tick interval: {LOOP_TICK}s; Interface wakeups are immediate")
 
     _bootstrap_team_context()
+    _bootstrap_trust_policy()
     start_listener()
     dispatcher = ManagerDispatcher()
     start_runtime_health(

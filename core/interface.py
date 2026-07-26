@@ -135,8 +135,10 @@ def _migrate_legacy_contacts() -> dict[str, Any] | None:
             "silicon_id": fixed_id if contact_type == "silicon" else "",
             "fixed_id": fixed_id,
             "room_id": str(info.get("room_id") or ""),
-            "trust_level": info.get("trust_level", "very_low"),
-            "is_central_carbon": bool(info.get("is_central_carbon", False)),
+            # Legacy local trust was never authoritative. New Stemcells retain
+            # identity metadata only and wait for Glass's confirmed projection.
+            "trust_level": "very_low",
+            "is_central_carbon": False,
             "local_notes": info.get("local_notes", ""),
             "relation": info.get("relation", ""),
             "description": info.get("description", ""),
@@ -235,8 +237,15 @@ def apply_glass_trust_policy(entries: dict[str, Any]) -> int:
 
 
 def get_central_contact_id() -> str:
+    try:
+        from core.trust import cached_trust_entry
+    except Exception:
+        return ""
     for contact_id, info in _load_state().get("contacts", {}).items():
-        if info.get("contact_type") == "carbon" and info.get("is_central_carbon"):
+        if info.get("contact_type") != "carbon":
+            continue
+        entry = cached_trust_entry("carbon", contact_id)
+        if entry.get("central_carbon"):
             return contact_id
     return ""
 
@@ -738,18 +747,13 @@ def upsert_contact(
     is_new = fixed_id not in contacts
 
     if is_new:
-        first_carbon = contact_type == "carbon" and not any(
-            c.get("contact_type") == "carbon" and c.get("is_central_carbon")
-            for c in contacts.values()
-        )
         try:
-            from core.trust import cached_trust_level, has_confirmed_policy
+            from core.trust import cached_trust_entry
 
-            glass_trust = cached_trust_level(contact_type, fixed_id)
-            glass_confirmed = has_confirmed_policy()
+            glass_entry = cached_trust_entry(contact_type, fixed_id)
         except Exception:
-            glass_trust = "very_low"
-            glass_confirmed = False
+            glass_entry = {}
+        glass_trust = str(glass_entry.get("level") or "very_low")
         contact = {
             "contact_type": contact_type,
             "carbon_id": fixed_id if contact_type == "carbon" else "",
@@ -757,15 +761,14 @@ def upsert_contact(
             "fixed_id": fixed_id,
             "room_id": room_id,
             "trust_level": (
-                "ultimate"
-                if first_carbon and not glass_confirmed
-                else (
-                    glass_trust
-                    if glass_trust in VALID_TRUST_LEVELS
-                    else "very_low"
-                )
+                glass_trust
+                if glass_trust in VALID_TRUST_LEVELS
+                else "very_low"
             ),
-            "is_central_carbon": bool(first_carbon),
+            "trust_source": str(glass_entry.get("source") or "glass_default"),
+            "is_central_carbon": bool(
+                contact_type == "carbon" and glass_entry.get("central_carbon")
+            ),
             "local_notes": "",
             "relation": "",
             "description": "",
@@ -979,14 +982,10 @@ def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False
 
 @_state_serialized
 def _sync_profile_from_glass(payload: Any) -> None:
-    """Cache the silicon's own Glass profile and reconcile the central carbon.
+    """Cache the Silicon's own Glass profile.
 
-    Glass claims the central carbon when the first non-lord carbon actually
-    messages the silicon — lords (platform setup) never claim. When the
-    whoami payload carries a `central_carbon` key, it overrides the local
-    first-contact bootstrap: the matching carbon contact is flagged (and
-    raised to ultimate trust on a fresh claim), every other carbon is
-    unflagged. An absent key (older Glass) leaves local state untouched.
+    Central-carbon identity is useful profile data, but trust fields are
+    projected exclusively by the revisioned Glass trust-policy endpoint.
     """
     if not isinstance(payload, dict):
         return
@@ -1024,20 +1023,6 @@ def _sync_profile_from_glass(payload: Any) -> None:
             central_raw if isinstance(central_raw, dict) else None
         )
     state["profile"] = profile
-    if "central_carbon" in payload:
-        central_id = str((central_raw or {}).get("carbon_id") or "").strip()
-        for fixed_id, contact in state.get("contacts", {}).items():
-            if contact.get("contact_type") != "carbon":
-                continue
-            should_be_central = bool(central_id) and fixed_id == central_id
-            if should_be_central and not contact.get("is_central_carbon"):
-                contact["is_central_carbon"] = True
-                contact["trust_level"] = "ultimate"
-                contact["updated_at"] = _utc_iso()
-            elif not should_be_central and contact.get("is_central_carbon"):
-                # Trust is local/user-managed — only the flag is withdrawn.
-                contact["is_central_carbon"] = False
-                contact["updated_at"] = _utc_iso()
     _save_state(state)
 
 

@@ -30,12 +30,10 @@ enforces the effective value during manager turns.
   you claims it (and gets `ultimate` trust). Lords — the creators, the carbons
   who built the platform, who may talk to you first to set you up — never
   claim it.
-- Until Glass reports a claim, the first carbon discovered is treated as
-  central locally; Glass's answer overrides on the next sync.
-- Once a Glass policy has been confirmed, unknown contacts start as `very_low`.
-- Before the first successful Glass trust bootstrap, the legacy first-carbon
-  central flag is provisional. Glass's central-carbon and trust snapshots
-  replace it.
+- Unknown contacts and contacts awaiting the first successful Glass trust sync
+  are always `very_low`; Stemcell never grants provisional local trust.
+- `contacts.json` and `trust_policy.json` are read-only runtime projections for
+  trust purposes. Editing either file never constitutes a trust decision.
 
 ## Memory
 

@@ -76,6 +76,54 @@ class ManagerToolExecutionTest(unittest.TestCase):
         )
         self.assertEqual(missing_task, "Tool 'worker/new' (researcher): Error: task is required")
 
+    def test_trust_list_refreshes_the_canonical_glass_projection(self):
+        snapshot = {
+            "status": "current",
+            "revision": "7:2",
+            "entries": [
+                {
+                    "kind": "silicon",
+                    "id": "peer-si",
+                    "level": "high",
+                    "source": "team_base",
+                }
+            ],
+        }
+        with (
+            mock.patch(
+                "core.trust.inspect_trust_policy",
+                return_value=snapshot,
+            ) as inspect,
+            mock.patch.object(main, "send_progress"),
+        ):
+            result = main.execute_single_tool(
+                {"tool": "trust/list"},
+                "carbon-a",
+            )
+
+        inspect.assert_called_once_with(
+            kind="",
+            public_id="",
+            root=main.PROJECT_ROOT,
+            refresh=True,
+        )
+        self.assertIn('"revision": "7:2"', result)
+        self.assertIn('"id": "peer-si"', result)
+
+    def test_trust_get_requires_one_typed_identity(self):
+        result = main.execute_single_tool(
+            {"tool": "trust/get"},
+            "carbon-a",
+        )
+
+        self.assertEqual(
+            result,
+            (
+                "Tool 'trust/get': Error: provide exactly one of carbon_id "
+                "or silicon_id"
+            ),
+        )
+
     def test_worker_new_dispatches_documented_fields(self):
         spec = {
             "tool": "worker/browser",
@@ -618,6 +666,9 @@ class ManagerToolExecutionTest(unittest.TestCase):
         for tool_name in (
             "advertising_memory/update",
             "work_update",
+            "trust/list",
+            "trust/get",
+            "trust/set",
             "extend",
             "extend/request_setup",
         ):

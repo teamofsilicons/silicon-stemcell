@@ -48,14 +48,14 @@ class InterfaceStateTest(unittest.TestCase):
             interface._activity_pending = 0
         self.tmp.cleanup()
 
-    def test_first_carbon_is_central_and_ids_are_fixed(self):
+    def test_new_contacts_fail_closed_and_ids_are_fixed(self):
         first, first_new = interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
         second, second_new = interface.upsert_contact("carbon", "carbon-b", room_id="room-b")
 
         self.assertTrue(first_new)
         self.assertTrue(second_new)
-        self.assertEqual(first["trust_level"], "ultimate")
-        self.assertTrue(first["is_central_carbon"])
+        self.assertEqual(first["trust_level"], "very_low")
+        self.assertFalse(first["is_central_carbon"])
         self.assertEqual(second["trust_level"], "very_low")
         self.assertFalse(second["is_central_carbon"])
 
@@ -64,7 +64,7 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual(state["rooms"]["room-b"], "carbon-b")
         self.assertEqual(state["contacts"]["carbon-a"]["carbon_id"], "carbon-a")
 
-    def test_legacy_contacts_import_preserves_local_trust(self):
+    def test_legacy_contacts_import_discards_local_trust_authority(self):
         interface.LEGACY_TELEGRAM_CONTACTS_FILE.parent.mkdir(parents=True)
         interface.LEGACY_TELEGRAM_CONTACTS_FILE.write_text(
             '{"contacts":{"old-carbon":{"carbon_id":"old-carbon","contact_type":"carbon","trust_level":"high","is_central_carbon":true,"name":"Old Carbon"}}}',
@@ -73,8 +73,8 @@ class InterfaceStateTest(unittest.TestCase):
 
         state = interface.get_contacts()
 
-        self.assertEqual(state["contacts"]["old-carbon"]["trust_level"], "high")
-        self.assertTrue(state["contacts"]["old-carbon"]["is_central_carbon"])
+        self.assertEqual(state["contacts"]["old-carbon"]["trust_level"], "very_low")
+        self.assertFalse(state["contacts"]["old-carbon"]["is_central_carbon"])
         self.assertEqual(state["contacts"]["old-carbon"]["display_name"], "Old Carbon")
 
     def test_silicon_contact_uses_silicon_id_key(self):
@@ -119,7 +119,7 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertEqual(state["rooms"]["room-a"], "carbon-a")
         self.assertEqual(state["contacts"]["carbon-a"]["display_name"], "Carbon A")
-        self.assertEqual(state["contacts"]["carbon-a"]["trust_level"], "ultimate")
+        self.assertEqual(state["contacts"]["carbon-a"]["trust_level"], "very_low")
 
     def test_room_discovery_identity_update_preserves_concurrent_state(self):
         class FakeClient:
@@ -707,32 +707,28 @@ class InterfaceClientTest(unittest.TestCase):
 
 
 class GlassProfileSyncTest(InterfaceStateTest):
-    def test_glass_central_carbon_overrides_local_first_contact(self):
-        # A lord DMs first — the local bootstrap wrongly flags them central.
+    def test_profile_central_carbon_does_not_bypass_trust_policy_projection(self):
         interface.upsert_contact("carbon", "lord-1", room_id="room-lord")
         interface.upsert_contact("carbon", "alice", room_id="room-alice")
-        self.assertTrue(interface.get_contact("lord-1")["is_central_carbon"])
 
-        # Glass says: still unclaimed (the lord never claims) → flag withdrawn.
-        interface._sync_profile_from_glass({"silicon_id": "self", "central_carbon": None})
-        self.assertFalse(interface.get_contact("lord-1")["is_central_carbon"])
-        self.assertEqual(interface.get_central_contact_id(), "")
-
-        # Alice sends the first real message — Glass reports the claim.
         interface._sync_profile_from_glass(
             {"silicon_id": "self", "central_carbon": {"carbon_id": "alice", "username": "alice", "name": "Alice"}}
         )
-        alice = interface.get_contact("alice")
-        self.assertTrue(alice["is_central_carbon"])
-        self.assertEqual(alice["trust_level"], "ultimate")
-        self.assertFalse(interface.get_contact("lord-1")["is_central_carbon"])
-        # The lord's locally granted trust is preserved — only the flag moves.
-        self.assertEqual(interface.get_contact("lord-1")["trust_level"], "ultimate")
 
-    def test_absent_central_carbon_key_keeps_local_state(self):
+        self.assertFalse(interface.get_contact("alice")["is_central_carbon"])
+        self.assertEqual(interface.get_contact("alice")["trust_level"], "very_low")
+        self.assertFalse(interface.get_contact("lord-1")["is_central_carbon"])
+        self.assertEqual(interface.get_contact("lord-1")["trust_level"], "very_low")
+        self.assertEqual(
+            interface.get_own_profile()["central_carbon"]["carbon_id"],
+            "alice",
+        )
+
+    def test_absent_central_carbon_key_keeps_trust_projection_unchanged(self):
         interface.upsert_contact("carbon", "alice", room_id="room-a")
         interface._sync_profile_from_glass({"silicon_id": "self", "name": "Ada Silicon"})
-        self.assertTrue(interface.get_contact("alice")["is_central_carbon"])
+        self.assertFalse(interface.get_contact("alice")["is_central_carbon"])
+        self.assertEqual(interface.get_contact("alice")["trust_level"], "very_low")
 
     def test_profile_caches_description_for_prompts(self):
         interface._sync_profile_from_glass(
@@ -830,10 +826,11 @@ class GlassProfileSyncTest(InterfaceStateTest):
                 }
 
         state = interface.discover_rooms(FakeClient(), force=True)
-        # carbon-a was discovered first (local bootstrap), but Glass says carbon-b.
+        # The profile is cached, but only the trust-policy endpoint can grant
+        # central/ultimate trust.
         self.assertFalse(state["contacts"]["carbon-a"]["is_central_carbon"])
-        self.assertTrue(state["contacts"]["carbon-b"]["is_central_carbon"])
-        self.assertEqual(state["contacts"]["carbon-b"]["trust_level"], "ultimate")
+        self.assertFalse(state["contacts"]["carbon-b"]["is_central_carbon"])
+        self.assertEqual(state["contacts"]["carbon-b"]["trust_level"], "very_low")
         self.assertEqual(state["profile"]["description"], "Sales silicon.")
 
 

@@ -83,11 +83,15 @@ class TrustPolicyTests(unittest.TestCase):
         snapshot["entries"][0]["effective_level"] = "ultimate"
         snapshot["entries"][0]["effective_source"] = "central_carbon"
         validated = trust._validate_policy(snapshot)
-        changed = interface.apply_glass_trust_policy(validated["entries"])
+        changed = trust._apply_confirmed_policy(
+            self.root,
+            snapshot,
+        )["changed_contacts"]
 
-        self.assertEqual(changed, 3)
+        self.assertEqual(changed, 2)
         self.assertEqual(interface.get_contact("alice")["trust_level"], "ultimate")
         self.assertTrue(interface.get_contact("alice")["is_central_carbon"])
+        self.assertEqual(interface.get_central_contact_id(), "alice")
         self.assertEqual(interface.get_contact("peer-si")["trust_level"], "low")
         self.assertEqual(interface.get_contact("unknown")["trust_level"], "very_low")
         self.assertFalse(interface.get_contact("unknown")["is_central_carbon"])
@@ -129,6 +133,7 @@ class TrustPolicyTests(unittest.TestCase):
                 "/api/v1/silicons/me/trust-ack",
             ],
         )
+        self.assertEqual(calls[0][2]["json_body"], {"contacts": []})
         state = trust._load_state(self.root)
         self.assertTrue(state["server_bootstrapped"])
         self.assertEqual(state["revision"], "2:3")
@@ -190,6 +195,56 @@ class TrustPolicyTests(unittest.TestCase):
                 )
 
         self.assertEqual(interface.get_contact("alice")["trust_level"], "very_high")
+
+    def test_invalidation_fails_closed_until_advertised_revision_is_confirmed(self):
+        interface.upsert_contact("carbon", "alice", room_id="room-a")
+        trust._apply_confirmed_policy(
+            self.root,
+            policy("high", team_revision=2, silicon_revision=3),
+        )
+        self.assertEqual(
+            trust.cached_trust_level("carbon", "alice", root=self.root),
+            "high",
+        )
+
+        trust.mark_trust_policy_invalidated(
+            team_revision=3,
+            silicon_revision=3,
+            root=self.root,
+        )
+
+        self.assertFalse(trust.has_confirmed_policy(root=self.root))
+        self.assertEqual(
+            trust.cached_trust_level("carbon", "alice", root=self.root),
+            "very_low",
+        )
+        self.assertEqual(
+            trust.confirmed_trust_policy_snapshot(root=self.root)["status"],
+            "refresh_pending",
+        )
+
+        trust._apply_confirmed_policy(
+            self.root,
+            policy("very_high", team_revision=3, silicon_revision=3),
+        )
+        self.assertTrue(trust.has_confirmed_policy(root=self.root))
+        self.assertEqual(
+            trust.cached_trust_level("carbon", "alice", root=self.root),
+            "very_high",
+        )
+
+    def test_snapshot_exposes_names_and_resolution_provenance(self):
+        trust._apply_confirmed_policy(self.root, policy("high"))
+
+        snapshot = trust.confirmed_trust_policy_snapshot(root=self.root)
+
+        self.assertEqual(snapshot["status"], "current")
+        alice = next(
+            entry for entry in snapshot["entries"] if entry["id"] == "alice"
+        )
+        self.assertEqual(alice["name"], "Alice")
+        self.assertEqual(alice["level"], "high")
+        self.assertEqual(alice["source"], "silicon_override")
 
 
 if __name__ == "__main__":

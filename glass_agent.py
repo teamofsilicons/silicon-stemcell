@@ -1432,10 +1432,32 @@ def handle_message(
             team_context_reconciler,
             reason=_team_context_change_reason(msg),
         )
+        if str(msg.get("kind") or "") == "team_context":
+            # Team membership changes also change the complete effective-trust
+            # roster, even when no explicit trust row changed.
+            _request_trust_reconcile(
+                trust_policy_reconciler,
+                force=True,
+                reason="websocket-invalidation:trust-roster",
+            )
         return
     if msg_type == "trust.changed":
+        try:
+            from core.trust import mark_trust_policy_invalidated
+
+            mark_trust_policy_invalidated(
+                team_revision=msg.get("team_revision"),
+                silicon_revision=msg.get("silicon_revision"),
+                root=root,
+            )
+        except Exception as exc:
+            print(
+                f"[glass-agent] trust invalidation marker deferred: {str(exc)[:300]}",
+                flush=True,
+            )
         _request_trust_reconcile(
             trust_policy_reconciler,
+            force=True,
             reason="websocket-invalidation:trust",
         )
         return

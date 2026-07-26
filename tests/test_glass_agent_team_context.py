@@ -92,6 +92,58 @@ class TeamContextReconcilerTests(unittest.TestCase):
             [(False, "websocket-invalidation:advertising_memory")],
         )
 
+    def test_trust_invalidation_marks_pending_revision_and_forces_refresh(self):
+        reconciler = _RecordingReconciler()
+        marked = []
+        module = types.ModuleType("core.trust")
+        module.mark_trust_policy_invalidated = lambda **kwargs: marked.append(kwargs)
+
+        with mock.patch.dict(sys.modules, {"core.trust": module}):
+            glass_agent.handle_message(
+                _FakeWebSocket(),
+                {
+                    "type": "trust.changed",
+                    "team_revision": 8,
+                    "silicon_revision": 3,
+                },
+                Path("/tmp/silicon"),
+                "Test Silicon",
+                trust_policy_reconciler=reconciler,
+            )
+
+        self.assertEqual(
+            marked,
+            [
+                {
+                    "team_revision": 8,
+                    "silicon_revision": 3,
+                    "root": Path("/tmp/silicon"),
+                }
+            ],
+        )
+        self.assertEqual(
+            reconciler.requests,
+            [(True, "websocket-invalidation:trust")],
+        )
+
+    def test_team_roster_invalidation_also_forces_trust_refresh(self):
+        team_reconciler = _RecordingReconciler()
+        trust_reconciler = _RecordingReconciler()
+
+        glass_agent.handle_message(
+            _FakeWebSocket(),
+            {"type": "team_context.changed", "kind": "team_context"},
+            Path("/tmp/silicon"),
+            "Test Silicon",
+            team_context_reconciler=team_reconciler,
+            trust_policy_reconciler=trust_reconciler,
+        )
+
+        self.assertEqual(
+            trust_reconciler.requests,
+            [(True, "websocket-invalidation:trust-roster")],
+        )
+
     def test_requests_are_backgrounded_and_coalesced(self):
         started = threading.Event()
         release = threading.Event()

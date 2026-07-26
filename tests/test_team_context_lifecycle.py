@@ -33,6 +33,11 @@ class TeamContextLifecycleTest(unittest.TestCase):
             ),
             mock.patch.object(
                 main,
+                "_bootstrap_trust_policy",
+                side_effect=lambda: calls.append("trust-policy"),
+            ),
+            mock.patch.object(
+                main,
                 "_check_restart_flag",
                 side_effect=lambda: (
                     calls.append("restart-check") or ("restarted", "carbon-a")
@@ -48,9 +53,10 @@ class TeamContextLifecycleTest(unittest.TestCase):
             main.main()
 
         self.assertEqual(
-            calls[:3],
+            calls[:4],
             [
                 "team-context",
+                "trust-policy",
                 "restart-check",
                 ("manager", {"carbon-a": "restarted"}),
             ],

@@ -14,12 +14,15 @@ from typing import Any
 
 from core.glass import silicon_api_request
 from core.runtime_paths import DATA_ROOT
-from core.state_store import read_json, write_json
+from core.state_store import file_lock, read_json, write_json
 
 STATE_FILE = "core/interface_state/trust_policy.json"
 VALID_LEVELS = ("very_low", "low", "ok", "high", "very_high", "ultimate")
 VALID_KINDS = ("carbon", "silicon")
+VALID_SOURCES = ("central_carbon", "silicon_override", "team_base", "default")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
+MAX_POLICY_ENTRIES = 10_000
+MAX_TARGET_NAME_BYTES = 512
 
 
 class TrustSyncError(RuntimeError):
@@ -46,11 +49,13 @@ def _default_state() -> dict[str, Any]:
         "entries": {},
         "last_confirmed_at": 0,
         "last_error": "",
+        "pending_team_revision": 0,
+        "pending_silicon_revision": 0,
+        "invalidated_at": 0,
     }
 
 
-def _load_state(root: Path) -> dict[str, Any]:
-    raw = read_json(_state_path(root), _default_state())
+def _normalise_state(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict) or raw.get("version") != 1:
         return _default_state()
     state = _default_state()
@@ -60,13 +65,50 @@ def _load_state(root: Path) -> dict[str, Any]:
     return state
 
 
+def _load_state(root: Path) -> dict[str, Any]:
+    return _normalise_state(read_json(_state_path(root), _default_state()))
+
+
 def _save_state(root: Path, state: dict[str, Any]) -> None:
     state["version"] = 1
     write_json(_state_path(root), state)
 
 
+def _update_state(root: Path, update) -> dict[str, Any]:
+    """Serialize a state transition across the run process and Glass sidecar."""
+
+    path = _state_path(root)
+    with file_lock(path):
+        state = _load_state(root)
+        update(state)
+        _save_state(root, state)
+        return state
+
+
 def _key(kind: str, public_id: str) -> str:
     return f"{kind}:{public_id}"
+
+
+def _nonnegative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _nonnegative_float(value: object) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _one_line_name(value: object) -> str:
+    text = " ".join(str(value or "").replace("\x00", "").split())
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_TARGET_NAME_BYTES:
+        return text
+    return encoded[:MAX_TARGET_NAME_BYTES].decode("utf-8", errors="ignore").rstrip() + "…"
 
 
 def _validate_policy(payload: object) -> dict[str, Any]:
@@ -85,6 +127,8 @@ def _validate_policy(payload: object) -> dict[str, Any]:
     raw_entries = payload.get("entries")
     if not isinstance(raw_entries, list):
         raise TrustSyncError("Glass returned invalid trust entries.")
+    if len(raw_entries) > MAX_POLICY_ENTRIES:
+        raise TrustSyncError("Glass returned too many trust entries.")
 
     entries: dict[str, dict[str, Any]] = {}
     for raw in raw_entries:
@@ -96,12 +140,17 @@ def _validate_policy(payload: object) -> dict[str, Any]:
         kind = str(target.get("kind") or "")
         public_id = str(target.get("id") or "")
         level = str(raw.get("effective_level") or "")
+        source_label = str(raw.get("effective_source") or "")
         if (
             kind not in VALID_KINDS
             or not ID_RE.fullmatch(public_id)
             or level not in VALID_LEVELS
+            or source_label not in VALID_SOURCES
         ):
             raise TrustSyncError("Glass returned an invalid typed trust target.")
+        base_level = raw.get("base_level")
+        if base_level is not None and base_level not in VALID_LEVELS:
+            raise TrustSyncError("Glass returned an invalid base trust value.")
         override_level = raw.get("override_level")
         if override_level is not None and override_level not in VALID_LEVELS:
             raise TrustSyncError("Glass returned an invalid trust override.")
@@ -112,9 +161,10 @@ def _validate_policy(payload: object) -> dict[str, Any]:
         entries[_key(kind, public_id)] = {
             "kind": kind,
             "id": public_id,
+            "name": _one_line_name(target.get("name") or public_id),
             "level": level,
-            "source": str(raw.get("effective_source") or ""),
-            "base_level": raw.get("base_level"),
+            "source": source_label,
+            "base_level": base_level,
             "override_level": override_level,
             "override_revision": max(0, override_revision),
             "central_carbon": bool(raw.get("central_carbon")),
@@ -128,24 +178,47 @@ def _validate_policy(payload: object) -> dict[str, Any]:
     }
 
 
-def _contacts_for_bootstrap(root: Path) -> list[dict[str, str]]:
-    from core.interface import get_contacts
+def _pending_revision_is_newer(state: dict[str, Any]) -> bool:
+    return (
+        _nonnegative_int(state.get("pending_team_revision"))
+        > _nonnegative_int(state.get("team_revision"))
+        or _nonnegative_int(state.get("pending_silicon_revision"))
+        > _nonnegative_int(state.get("silicon_revision"))
+    )
 
-    state = get_contacts()
-    contacts = state.get("contacts", {}) if isinstance(state, dict) else {}
-    out = []
-    for fixed_id, contact in contacts.items():
-        if not isinstance(contact, dict):
-            continue
-        kind = str(contact.get("contact_type") or "")
-        level = str(contact.get("trust_level") or "")
-        if (
-            kind in VALID_KINDS
-            and ID_RE.fullmatch(str(fixed_id))
-            and level in VALID_LEVELS
-        ):
-            out.append({"kind": kind, "id": str(fixed_id), "level": level})
-    return out
+
+def mark_trust_policy_invalidated(
+    *,
+    team_revision: object = 0,
+    silicon_revision: object = 0,
+    root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Record a Glass revision nudge before scheduling its HTTP reconciliation.
+
+    Manager prompts and cached lookups fail closed while a newer advertised
+    revision is pending, closing the event-to-fetch race.
+    """
+
+    project_root = _root(root)
+    try:
+        team_value = max(0, int(team_revision or 0))
+        silicon_value = max(0, int(silicon_revision or 0))
+    except (TypeError, ValueError):
+        team_value = 0
+        silicon_value = 0
+
+    def update(state: dict[str, Any]) -> None:
+        state["pending_team_revision"] = max(
+            _nonnegative_int(state.get("pending_team_revision")),
+            team_value,
+        )
+        state["pending_silicon_revision"] = max(
+            _nonnegative_int(state.get("pending_silicon_revision")),
+            silicon_value,
+        )
+        state["invalidated_at"] = time.time()
+
+    return _update_state(project_root, update)
 
 
 def _apply_confirmed_policy(
@@ -159,13 +232,19 @@ def _apply_confirmed_policy(
     from core.interface import apply_glass_trust_policy
 
     changed = apply_glass_trust_policy(validated["entries"])
-    state = _load_state(root)
-    state.update(validated)
-    state["etag"] = str(etag or "")
-    state["server_bootstrapped"] = bool(bootstrapped)
-    state["last_confirmed_at"] = time.time()
-    state["last_error"] = ""
-    _save_state(root, state)
+
+    def update(state: dict[str, Any]) -> None:
+        state.update(validated)
+        state["etag"] = str(etag or "")
+        state["server_bootstrapped"] = bool(bootstrapped)
+        state["last_confirmed_at"] = time.time()
+        state["last_error"] = ""
+        if not _pending_revision_is_newer(state):
+            state["pending_team_revision"] = 0
+            state["pending_silicon_revision"] = 0
+            state["invalidated_at"] = 0
+
+    _update_state(root, update)
     return {"changed_contacts": changed, **validated}
 
 
@@ -199,11 +278,14 @@ def reconcile_trust_policy(
                 "POST",
                 "/api/v1/silicons/me/trust-bootstrap",
                 start=project_root,
-                json_body={"contacts": _contacts_for_bootstrap(project_root)},
+                # New Stemcells never seed authority from editable local state.
+                # The endpoint retains legacy import support for old clients,
+                # but Glass is the sole source for this runtime.
+                json_body={"contacts": []},
                 timeout=30,
             )
             if bootstrap.status_code != 200:
-                raise TrustSyncError("Glass did not accept the local trust bootstrap.")
+                raise TrustSyncError("Glass did not accept the trust bootstrap.")
             body = bootstrap.json() or {}
             result = _apply_confirmed_policy(
                 project_root,
@@ -225,11 +307,23 @@ def reconcile_trust_policy(
             timeout=20,
         )
         if response.status_code == 304:
+            state = _load_state(project_root)
+            if _pending_revision_is_newer(state):
+                raise TrustSyncError(
+                    "Glass returned an unchanged policy while a newer revision is pending."
+                )
             # The full confirmed snapshot is retained locally, so a prior crash
             # between cache and contacts application can still self-repair.
             from core.interface import apply_glass_trust_policy
 
             changed = apply_glass_trust_policy(state.get("entries", {}))
+            _update_state(
+                project_root,
+                lambda current: current.update(
+                    last_confirmed_at=time.time(),
+                    last_error="",
+                ),
+            )
             _ack(project_root, state)
             return {
                 "status": "unchanged",
@@ -247,13 +341,15 @@ def reconcile_trust_policy(
         _ack(project_root, result)
         return {"status": "updated", "reason": reason, **result}
     except Exception as exc:
-        state = _load_state(project_root)
-        state["last_error"] = str(exc)[:300]
-        _save_state(project_root, state)
+        error_text = str(exc)[:300]
+        state = _update_state(
+            project_root,
+            lambda current: current.update(last_error=error_text),
+        )
         return {
             "status": "deferred",
             "reason": reason,
-            "error": str(exc)[:300],
+            "error": error_text,
             "revision": state.get("revision", "0:0"),
         }
 
@@ -265,21 +361,145 @@ def cached_trust_level(
     root: str | Path | None = None,
 ) -> str:
     """Return only a last-confirmed Glass value; unknown identities fail closed."""
-    if kind not in VALID_KINDS or not ID_RE.fullmatch(str(public_id or "")):
-        return "very_low"
-    entry = _load_state(_root(root)).get("entries", {}).get(_key(kind, public_id))
-    if not isinstance(entry, dict):
-        return "very_low"
+    entry = cached_trust_entry(kind, public_id, root=root)
     level = str(entry.get("level") or "")
     return level if level in VALID_LEVELS else "very_low"
 
 
-def has_confirmed_policy(*, root: str | Path | None = None) -> bool:
+def cached_trust_entry(
+    kind: str,
+    public_id: str,
+    *,
+    root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return one current Glass projection; stale and unknown values fail closed."""
+
+    public_id = str(public_id or "")
+    if kind not in VALID_KINDS or not ID_RE.fullmatch(public_id):
+        return {}
     state = _load_state(_root(root))
+    if not _state_has_current_policy(state):
+        return {}
+    return _cached_entry_from_state(state, kind, public_id)
+
+
+def _cached_entry_from_state(
+    state: dict[str, Any],
+    kind: str,
+    public_id: str,
+) -> dict[str, Any]:
+    entry = state.get("entries", {}).get(_key(kind, public_id))
+    if not isinstance(entry, dict):
+        return {}
+    level = str(entry.get("level") or "")
+    source = str(entry.get("source") or "")
+    if level not in VALID_LEVELS or source not in VALID_SOURCES:
+        return {}
+    return {
+        "kind": kind,
+        "id": public_id,
+        "name": _one_line_name(entry.get("name") or public_id),
+        "level": level,
+        "source": source,
+        "base_level": (
+            entry.get("base_level")
+            if entry.get("base_level") in VALID_LEVELS
+            else None
+        ),
+        "override_level": (
+            entry.get("override_level")
+            if entry.get("override_level") in VALID_LEVELS
+            else None
+        ),
+        "override_revision": _nonnegative_int(entry.get("override_revision")),
+        "central_carbon": bool(entry.get("central_carbon")),
+    }
+
+
+def _state_has_current_policy(state: dict[str, Any]) -> bool:
+    confirmed_at = _nonnegative_float(state.get("last_confirmed_at"))
     return bool(
         state.get("server_bootstrapped")
-        and float(state.get("last_confirmed_at") or 0) > 0
+        and confirmed_at > 0
+        and not _pending_revision_is_newer(state)
     )
+
+
+def confirmed_trust_policy_snapshot(
+    *,
+    root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return a prompt/tool-safe view of the current Glass-confirmed policy."""
+
+    project_root = _root(root)
+    state = _load_state(project_root)
+    current = _state_has_current_policy(state)
+    entries = []
+    if current:
+        for key in sorted(state.get("entries", {})):
+            raw = state["entries"].get(key)
+            if not isinstance(raw, dict):
+                continue
+            entry = _cached_entry_from_state(
+                state,
+                str(raw.get("kind") or ""),
+                str(raw.get("id") or ""),
+            )
+            if entry:
+                entries.append(entry)
+    return {
+        "status": (
+            "current"
+            if current
+            else "refresh_pending"
+            if _pending_revision_is_newer(state)
+            else "unavailable"
+        ),
+        "source_silicon_id": str(state.get("source_silicon_id") or ""),
+        "team_revision": _nonnegative_int(state.get("team_revision")),
+        "silicon_revision": _nonnegative_int(state.get("silicon_revision")),
+        "revision": str(state.get("revision") or "0:0"),
+        "last_confirmed_at": _nonnegative_float(state.get("last_confirmed_at")),
+        "entries": entries,
+    }
+
+
+def inspect_trust_policy(
+    *,
+    kind: str = "",
+    public_id: str = "",
+    root: str | Path | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Read the canonical projection, optionally refreshing it from Glass first."""
+
+    project_root = _root(root)
+    refresh_result = None
+    if refresh:
+        refresh_result = reconcile_trust_policy(
+            project_root,
+            force=True,
+            reason="manager-inspection",
+        )
+    snapshot = confirmed_trust_policy_snapshot(root=project_root)
+    if kind or public_id:
+        if kind not in VALID_KINDS or not ID_RE.fullmatch(str(public_id or "")):
+            raise ValueError("A valid typed trust target is required.")
+        snapshot["entries"] = [
+            entry
+            for entry in snapshot["entries"]
+            if entry["kind"] == kind and entry["id"] == public_id
+        ]
+    if refresh_result is not None:
+        snapshot["refresh_status"] = refresh_result.get("status", "")
+        if refresh_result.get("error"):
+            snapshot["refresh_error"] = str(refresh_result["error"])[:300]
+    return snapshot
+
+
+def has_confirmed_policy(*, root: str | Path | None = None) -> bool:
+    state = _load_state(_root(root))
+    return _state_has_current_policy(state)
 
 
 def set_contact_trust(
@@ -299,6 +519,18 @@ def set_contact_trust(
         raise ValueError("invalid target identity")
     if level is not None and level not in VALID_LEVELS:
         raise ValueError("invalid trust level")
+    if not has_confirmed_policy(root=project_root):
+        refreshed = reconcile_trust_policy(
+            project_root,
+            force=True,
+            reason="before-local-mutation",
+        )
+        if refreshed.get("status") == "deferred" or not has_confirmed_policy(
+            root=project_root
+        ):
+            raise TrustSyncError(
+                "Glass trust policy is not current; no trust change was made."
+            )
     state = _load_state(project_root)
     entry = state.get("entries", {}).get(_key(kind, public_id), {})
     expected_revision = (

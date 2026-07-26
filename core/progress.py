@@ -82,6 +82,7 @@ def contains_private_manager_tool(value):
             if (
                 tool == "advertising_memory/update"
                 or tool == "work_update"
+                or tool in {"trust/list", "trust/get", "trust/set"}
                 or tool == "extend"
                 or tool.startswith("extend/")
             ):
@@ -93,6 +94,12 @@ def contains_private_manager_tool(value):
         or bool(
             re.search(
                 r"""["']tool["']\s*:\s*["']work_update["']""",
+                normalized_text,
+            )
+        )
+        or bool(
+            re.search(
+                r"""["']tool["']\s*:\s*["']trust/(?:list|get|set)["']""",
                 normalized_text,
             )
         )
