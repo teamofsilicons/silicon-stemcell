@@ -15,6 +15,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -125,6 +126,7 @@ _CLASS_BY_NAME: Mapping[str, OwnershipClass] = MappingProxyType(
     {item.name: item for item in MANDATORY_CLASSES}
 )
 _GLOB_MAGIC = frozenset("*?[")
+_ATOMIC_WRITE_TEMP_RE = re.compile(r"^\..+\.[0-9]+\.[0-9]+\.tmp$")
 _FORBIDDEN_PREFIXES = (
     ".git",
     ".silicon/snapshots",
@@ -211,7 +213,11 @@ def _ensure_entry_type(path: Path) -> os.stat_result:
 
 def _sorted_children(directory: Path) -> list[Path]:
     return sorted(
-        (Path(entry.path) for entry in os.scandir(directory)),
+        (
+            Path(entry.path)
+            for entry in os.scandir(directory)
+            if not _ATOMIC_WRITE_TEMP_RE.fullmatch(entry.name)
+        ),
         key=lambda item: item.name,
     )
 

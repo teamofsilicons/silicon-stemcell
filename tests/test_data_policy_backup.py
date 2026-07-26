@@ -261,6 +261,32 @@ class DataPolicyTest(unittest.TestCase):
                 ("task_delivery",),
             )
 
+    def test_atomic_state_write_temporaries_are_not_protected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "core" / "interface_state"
+            state.mkdir(parents=True)
+            (state / "maintenance.json").write_text("{}", encoding="utf-8")
+            atomic_temporary = state / ".maintenance.json.26.133064281805504.tmp"
+            atomic_temporary.write_text("incomplete", encoding="utf-8")
+            ordinary_temporary = state / "operator-notes.tmp"
+            ordinary_temporary.write_text("keep", encoding="utf-8")
+
+            protected = {
+                item.relative_path
+                for item in data_policy.load_data_policy(
+                    root,
+                    legacy_patterns=[],
+                ).resolve(root)
+            }
+
+            self.assertIn("core/interface_state/maintenance.json", protected)
+            self.assertIn("core/interface_state/operator-notes.tmp", protected)
+            self.assertNotIn(
+                "core/interface_state/.maintenance.json.26.133064281805504.tmp",
+                protected,
+            )
+
     def test_release_sequence_floor_is_mandatory_security_state(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
