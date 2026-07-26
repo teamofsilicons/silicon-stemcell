@@ -358,6 +358,7 @@ def get_manager_prompt(carbon_id):
         _persistent_runtime_paths_section(),
         _read_prompt("SOUL.md"),
         _read_prompt("SILICON.md"),
+        _read_prompt("CARBON_MESSAGING.md"),
         _read_prompt("LORE.md"),
         _read_prompt("CONTACTS.md"),
         # f"## Current Contacts\n{_get_contacts_summary()}",
