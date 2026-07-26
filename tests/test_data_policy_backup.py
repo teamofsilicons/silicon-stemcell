@@ -6,10 +6,11 @@ import tarfile
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from core import backup, data_policy
+from core import backup, data_policy, state_store
 
 
 def write_release_floor(
@@ -348,6 +349,62 @@ class LocalSnapshotTest(unittest.TestCase):
             self.assertIn("self_customization", entry["classes"])
             self.assertEqual(
                 len(list((root / ".silicon" / "snapshots" / "manifests").iterdir())), 1
+            )
+
+    def test_snapshot_uses_maintenance_writer_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "core" / "interface_state"
+            state.mkdir(parents=True)
+            maintenance = state / "maintenance.json"
+            maintenance.write_text('{"phase":"draining"}', encoding="utf-8")
+            attempted = threading.Event()
+            finished = threading.Event()
+            results = []
+            errors = []
+            original_lock = backup.state_file_lock
+
+            @contextmanager
+            def tracking_lock(path):
+                if Path(path).resolve() == maintenance.resolve():
+                    attempted.set()
+                with original_lock(path):
+                    yield
+
+            def create_snapshot():
+                try:
+                    results.append(
+                        backup.create_local_snapshot(
+                            root,
+                            release_id="release-locked",
+                            policy=self._policy(root),
+                        )
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    finished.set()
+
+            with mock.patch.object(
+                backup,
+                "state_file_lock",
+                tracking_lock,
+            ), state_store.file_lock(maintenance):
+                worker = threading.Thread(target=create_snapshot)
+                worker.start()
+                self.assertTrue(attempted.wait(timeout=2))
+                self.assertFalse(finished.wait(timeout=0.1))
+
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(
+                next(
+                    item["path"]
+                    for item in results[0].manifest["files"]
+                    if item["path"] == backup.MAINTENANCE_STATE
+                ),
+                backup.MAINTENANCE_STATE,
             )
 
     def test_release_identity_is_part_of_the_root_hash(self):

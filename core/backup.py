@@ -21,7 +21,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import BinaryIO, Callable, Iterable, Iterator, Mapping, Sequence
@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - Unix/macOS
 from core import data_policy
 from core.glass import load_glass_config, silicon_api_request
 from core.runtime_paths import DATA_ROOT
+from core.state_store import file_lock as state_file_lock
 
 MANIFEST_NAME = ".backupsilicon"
 MANIFEST_ARCHIVE_PREFIX = ".backupsilicon.archive"
@@ -72,6 +73,7 @@ IN_PLACE_RESTORE_JOURNAL = Path(".silicon") / "restore-in-place.json"
 IN_PLACE_RESTORE_LATEST = Path(".silicon") / "last-restored-snapshot.json"
 RELEASE_SEQUENCE_FLOOR = ".silicon/release-sequence-floor.json"
 RELEASE_SEQUENCE_FLOOR_LOCK = ".silicon/release-sequence-floor.lock"
+MAINTENANCE_STATE = "core/interface_state/maintenance.json"
 MAX_RELEASE_SEQUENCE_FLOOR_BYTES = 4096
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_RELEASE_VERSION_RE = re.compile(
@@ -745,32 +747,38 @@ def _copy_source_to_object(
         temporary = Path(temporary_name)
         try:
             _chmod_open_file(descriptor, temporary, 0o600)
-            source, before = _safe_source_open(root, protected.relative_path)
-            try:
-                if before.st_size > limits.max_file_size:
-                    raise SnapshotLimitError(
-                        f"{protected.relative_path} exceeds max_file_size."
-                    )
-                digest = hashlib.sha256()
-                copied = 0
-                with os.fdopen(descriptor, "wb") as destination:
-                    descriptor = -1
-                    while True:
-                        chunk = source.read(limits.chunk_size)
-                        if not chunk:
-                            break
-                        copied += len(chunk)
-                        if copied > limits.max_file_size:
-                            raise SnapshotLimitError(
-                                f"{protected.relative_path} exceeds max_file_size."
-                            )
-                        digest.update(chunk)
-                        destination.write(chunk)
-                    destination.flush()
-                    os.fsync(destination.fileno())
-                after = os.fstat(source.fileno())
-            finally:
-                source.close()
+            lock = (
+                state_file_lock(root / protected.relative_path)
+                if protected.relative_path == MAINTENANCE_STATE
+                else nullcontext()
+            )
+            with lock:
+                source, before = _safe_source_open(root, protected.relative_path)
+                try:
+                    if before.st_size > limits.max_file_size:
+                        raise SnapshotLimitError(
+                            f"{protected.relative_path} exceeds max_file_size."
+                        )
+                    digest = hashlib.sha256()
+                    copied = 0
+                    with os.fdopen(descriptor, "wb") as destination:
+                        descriptor = -1
+                        while True:
+                            chunk = source.read(limits.chunk_size)
+                            if not chunk:
+                                break
+                            copied += len(chunk)
+                            if copied > limits.max_file_size:
+                                raise SnapshotLimitError(
+                                    f"{protected.relative_path} exceeds max_file_size."
+                                )
+                            digest.update(chunk)
+                            destination.write(chunk)
+                        destination.flush()
+                        os.fsync(destination.fileno())
+                    after = os.fstat(source.fileno())
+                finally:
+                    source.close()
             if copied != before.st_size or _stat_signature(before) != _stat_signature(
                 after
             ):
