@@ -34,6 +34,32 @@ def write_release_floor(
     os.chmod(path, 0o600)
 
 
+def write_release_floor_v2(
+    root: Path,
+    version: str,
+    tree_sha256: str,
+) -> None:
+    major, minor, patch = (int(part) for part in version.split("."))
+    sequence = major * 1_000_000 + minor * 1_000 + patch + 1
+    path = root / backup.RELEASE_SEQUENCE_FLOOR
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "sequence": sequence,
+                "version": version,
+                "trust": "git-semver-tag",
+                "tree_sha256": tree_sha256,
+                "recorded_at": float(sequence),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
+
+
 class DataPolicyTest(unittest.TestCase):
     def test_mandatory_classes_survive_local_additions_and_legacy_import(self):
         with tempfile.TemporaryDirectory() as td:
@@ -402,6 +428,43 @@ class LocalSnapshotTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = self._root_with_memory(td)
             write_release_floor(root, 0, "a" * 64)
+
+            with self.assertRaisesRegex(
+                backup.SnapshotIntegrityError,
+                "release sequence floor.*invalid",
+            ):
+                backup.create_local_snapshot(
+                    root,
+                    release_id="release-1",
+                    policy=self._policy(root),
+                )
+
+    def test_snapshot_accepts_current_versioned_release_floor(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root_with_memory(td)
+            write_release_floor_v2(root, "2.0.1", "a" * 64)
+
+            result = backup.create_local_snapshot(
+                root,
+                release_id="release-1",
+                policy=self._policy(root),
+            )
+
+            floor_entry = next(
+                entry
+                for entry in result.manifest["files"]
+                if entry["path"] == backup.RELEASE_SEQUENCE_FLOOR
+            )
+            self.assertEqual(floor_entry["classes"], ["security_state"])
+
+    def test_snapshot_rejects_versioned_floor_with_wrong_sequence(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = self._root_with_memory(td)
+            write_release_floor_v2(root, "2.0.1", "a" * 64)
+            path = root / backup.RELEASE_SEQUENCE_FLOOR
+            value = json.loads(path.read_text(encoding="utf-8"))
+            value["sequence"] += 1
+            path.write_text(json.dumps(value) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(
                 backup.SnapshotIntegrityError,

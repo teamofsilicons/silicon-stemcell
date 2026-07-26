@@ -74,6 +74,12 @@ RELEASE_SEQUENCE_FLOOR = ".silicon/release-sequence-floor.json"
 RELEASE_SEQUENCE_FLOOR_LOCK = ".silicon/release-sequence-floor.lock"
 MAX_RELEASE_SEQUENCE_FLOOR_BYTES = 4096
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_RELEASE_VERSION_RE = re.compile(
+    r"^(0|[1-9][0-9]{0,2})\."
+    r"(0|[1-9][0-9]{0,2})\."
+    r"(0|[1-9][0-9]{0,2})$"
+)
+_RELEASE_FLOOR_TRUST = {"git-semver-tag", "signed-ed25519"}
 _MANIFEST_FILE_RE = re.compile(r"^([0-9a-f]{64})\.json$")
 _OBJECT_PREFIX_RE = re.compile(r"^[0-9a-f]{2}$")
 _OBJECT_SUFFIX_RE = re.compile(r"^[0-9a-f]{62}$")
@@ -1051,9 +1057,22 @@ def _validate_release_sequence_floor(
     sequence = value.get("sequence")
     tree_sha256 = value.get("tree_sha256")
     recorded_at = value.get("recorded_at")
+    schema = value.get("schema")
+    expected = (
+        {"schema", "sequence", "tree_sha256", "recorded_at"}
+        if schema == 1
+        else {
+            "schema",
+            "sequence",
+            "version",
+            "trust",
+            "tree_sha256",
+            "recorded_at",
+        }
+    )
     if (
-        set(value) != {"schema", "sequence", "tree_sha256", "recorded_at"}
-        or value.get("schema") != 1
+        schema not in {1, 2}
+        or set(value) != expected
         or not isinstance(sequence, int)
         or isinstance(sequence, bool)
         or sequence <= 0
@@ -1065,6 +1084,25 @@ def _validate_release_sequence_floor(
         or float(recorded_at) <= 0
     ):
         raise SnapshotIntegrityError(f"{label} is invalid.")
+    if schema == 2:
+        version = value.get("version")
+        trust = value.get("trust")
+        if (
+            not isinstance(version, str)
+            or not version
+            or len(version) > 64
+            or "\x00" in version
+            or trust not in _RELEASE_FLOOR_TRUST
+        ):
+            raise SnapshotIntegrityError(f"{label} is invalid.")
+        if trust == "git-semver-tag":
+            match = _GIT_RELEASE_VERSION_RE.fullmatch(version)
+            if match is None:
+                raise SnapshotIntegrityError(f"{label} is invalid.")
+            major, minor, patch = (int(part) for part in match.groups())
+            expected_sequence = major * 1_000_000 + minor * 1_000 + patch + 1
+            if sequence != expected_sequence:
+                raise SnapshotIntegrityError(f"{label} is invalid.")
     return sequence, tree_sha256
 
 
