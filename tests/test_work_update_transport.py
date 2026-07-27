@@ -1,7 +1,17 @@
 import unittest
 from unittest import mock
 
-from core.interface import InterfaceClient
+from core.interface import InterfaceClient, InterfaceError
+
+
+class FakeGlassResponse:
+    def __init__(self, status_code, payload, headers=None):
+        self.status_code = status_code
+        self.payload = payload
+        self.headers = headers or {}
+
+    def json(self):
+        return self.payload
 
 
 class WorkUpdateTransportTest(unittest.TestCase):
@@ -161,8 +171,6 @@ class WorkUpdateTransportTest(unittest.TestCase):
         )
         self.client.work_call_create("task-1", payload)
         self.client.work_call_patch("task-1", "call-1", payload)
-        self.client.work_standalone_call_create(payload)
-        self.client.work_standalone_call_patch("call-standalone", payload)
 
         expected_prefixes = [
             ["work", "task", "create"],
@@ -185,8 +193,6 @@ class WorkUpdateTransportTest(unittest.TestCase):
             ],
             ["work", "call", "create", "task-1"],
             ["work", "call", "patch", "task-1", "call-1"],
-            ["work", "call", "create"],
-            ["work", "call", "patch", "call-standalone"],
         ]
         self.assertEqual(
             self.run.call_args_list,
@@ -196,6 +202,94 @@ class WorkUpdateTransportTest(unittest.TestCase):
             ],
         )
         self.assertEqual(payload["client_id"], "caller-owned-id")
+
+    @mock.patch("core.glass.silicon_api_request")
+    def test_standalone_call_mutations_use_authenticated_glass_transport(
+        self,
+        request,
+    ):
+        request.side_effect = [
+            FakeGlassResponse(201, {"call_id": "call:standalone"}),
+            FakeGlassResponse(
+                200,
+                {"call_id": "call:standalone", "state": "completed"},
+            ),
+        ]
+        create_payload = {
+            "call_id": "call:standalone",
+            "state": "connecting",
+            "client_id": "create-call:standalone",
+        }
+        patch_payload = {"state": "completed", "revision": 0}
+
+        created = self.client.work_standalone_call_create(create_payload)
+        patched = self.client.work_standalone_call_patch(
+            "call:standalone",
+            patch_payload,
+        )
+
+        self.assertEqual(created, {"call_id": "call:standalone"})
+        self.assertEqual(
+            patched,
+            {"call_id": "call:standalone", "state": "completed"},
+        )
+        self.assertEqual(
+            request.call_args_list,
+            [
+                mock.call(
+                    "POST",
+                    "/api/v1/work/calls",
+                    json_body=create_payload,
+                    timeout=60,
+                ),
+                mock.call(
+                    "PATCH",
+                    "/api/v1/work/calls/call%3Astandalone",
+                    json_body=patch_payload,
+                    timeout=60,
+                ),
+            ],
+        )
+        self.run.assert_not_called()
+
+    @mock.patch("core.glass.silicon_api_request")
+    def test_standalone_call_mutation_surfaces_glass_error_detail(self, request):
+        request.return_value = FakeGlassResponse(
+            404,
+            {"detail": "Room is unavailable."},
+        )
+
+        with self.assertRaisesRegex(InterfaceError, "Room is unavailable"):
+            self.client.work_standalone_call_create({"room_id": "missing"})
+
+        self.run.assert_not_called()
+
+    @mock.patch("core.interface.time.sleep")
+    @mock.patch("core.glass.silicon_api_request")
+    def test_standalone_call_create_retries_transient_glass_failure(
+        self,
+        request,
+        sleep,
+    ):
+        request.side_effect = [
+            FakeGlassResponse(
+                503,
+                {"detail": "Temporarily unavailable."},
+                {"Retry-After": "0"},
+            ),
+            FakeGlassResponse(201, {"call_id": "call-standalone"}),
+        ]
+        payload = {
+            "room_id": "room-1",
+            "client_id": "create-call-standalone",
+        }
+
+        result = self.client.work_standalone_call_create(payload)
+
+        self.assertEqual(result, {"call_id": "call-standalone"})
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(0.0)
+        self.run.assert_not_called()
 
     def test_task_transition_wrappers_build_exact_argv(self):
         payload = {"client_id": "transition-id", "body": "Finished"}

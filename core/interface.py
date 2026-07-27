@@ -15,9 +15,11 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -495,6 +497,112 @@ class InterfaceClient:
             timeout=60,
         )
 
+    @staticmethod
+    def _standalone_work_call_mutation(
+        method: str,
+        path: str,
+        payload: dict[str, Any],
+    ) -> Any:
+        """Persist a taskless call without depending on the installed CLI version."""
+        from core.glass import silicon_api_request
+
+        idempotent = str(method).upper() == "POST" and bool(payload.get("client_id"))
+        max_attempts = 5 if idempotent else 1
+        for attempt in range(max_attempts):
+            try:
+                response = silicon_api_request(
+                    method,
+                    path,
+                    json_body=payload,
+                    timeout=60,
+                )
+            except requests.RequestException as exc:
+                if attempt + 1 < max_attempts:
+                    time.sleep(min(0.5 * (2**attempt), 15.0))
+                    continue
+                raise InterfaceError(
+                    f"Standalone call update could not reach Glass: {exc}"
+                ) from exc
+            except Exception as exc:
+                raise InterfaceError(
+                    f"Standalone call update could not reach Glass: {exc}"
+                ) from exc
+
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            if 300 <= status_code < 400:
+                raise InterfaceError(
+                    "Glass redirected an authenticated standalone call update."
+                )
+
+            try:
+                result = response.json()
+            except (TypeError, ValueError) as exc:
+                raise InterfaceError(
+                    "Glass returned an invalid standalone call update response."
+                ) from exc
+
+            if 200 <= status_code < 300:
+                return result
+
+            failure = (
+                result.get("failure")
+                if isinstance(result, dict)
+                and isinstance(result.get("failure"), dict)
+                else {}
+            )
+            retryable = status_code in {429, 502, 503, 504} or (
+                failure.get("automatic") is True
+                and failure.get("retryable") is True
+            )
+            if retryable and attempt + 1 < max_attempts:
+                retry_after = InterfaceClient._work_retry_after_seconds(
+                    response,
+                    result,
+                )
+                delay = (
+                    retry_after
+                    if retry_after is not None
+                    else 0.5 * (2**attempt)
+                )
+                time.sleep(min(max(0.0, delay), 15.0))
+                continue
+
+            detail = (
+                str(result.get("detail") or "").strip()
+                if isinstance(result, dict)
+                else ""
+            )
+            raise InterfaceError(
+                detail
+                or f"Standalone call update failed with HTTP {status_code}."
+            )
+
+        raise InterfaceError("Standalone call update exhausted its retry budget.")
+
+    @staticmethod
+    def _work_retry_after_seconds(response: Any, result: Any) -> float | None:
+        headers = getattr(response, "headers", {}) or {}
+        value = headers.get("Retry-After") or headers.get("retry-after")
+        if value not in (None, ""):
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                try:
+                    retry_at = parsedate_to_datetime(str(value))
+                    return max(0.0, retry_at.timestamp() - time.time())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        if isinstance(result, dict):
+            failure = result.get("failure")
+            body_value = result.get("retry_after_seconds")
+            if body_value is None and isinstance(failure, dict):
+                body_value = failure.get("retry_after_seconds")
+            try:
+                return max(0.0, float(body_value))
+            except (TypeError, ValueError):
+                pass
+        return None
+
     def work_task_create(self, payload: dict[str, Any]) -> Any:
         return self._work_mutation(["work", "task", "create"], payload)
 
@@ -617,8 +725,9 @@ class InterfaceClient:
         )
 
     def work_standalone_call_create(self, payload: dict[str, Any]) -> Any:
-        return self._work_mutation(
-            ["work", "call", "create"],
+        return self._standalone_work_call_mutation(
+            "POST",
+            "/api/v1/work/calls",
             payload,
         )
 
@@ -638,8 +747,9 @@ class InterfaceClient:
         call_id: str,
         payload: dict[str, Any],
     ) -> Any:
-        return self._work_mutation(
-            ["work", "call", "patch", call_id],
+        return self._standalone_work_call_mutation(
+            "PATCH",
+            f"/api/v1/work/calls/{quote(call_id, safe='')}",
             payload,
         )
 
