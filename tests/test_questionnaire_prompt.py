@@ -20,10 +20,14 @@ class QuestionnairePromptTest(unittest.TestCase):
             prompt = DNA.get_manager_prompt("carbon-1")
 
         self.assertEqual(prompt.count("prompts/QUESTIONNAIRE.md"), 1)
+        self.assertEqual(prompt.count("prompts/CARBON_RESPONSE_CHECK.md"), 1)
         questionnaire = DNA._read_prompt("QUESTIONNAIRE.md").strip()
-        self.assertTrue(prompt.rstrip().endswith(questionnaire))
+        response_check = DNA._read_prompt("CARBON_RESPONSE_CHECK.md").strip()
+        self.assertLess(prompt.index(questionnaire), prompt.index(response_check))
+        self.assertTrue(prompt.rstrip().endswith(response_check))
         silicon_prompt = DNA._read_prompt("SILICON.md")
         self.assertNotIn("QUESTIONNAIRE.md", silicon_prompt)
+        self.assertNotIn("CARBON_RESPONSE_CHECK.md", silicon_prompt)
 
 
 if __name__ == "__main__":

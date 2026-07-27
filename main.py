@@ -59,8 +59,11 @@ from core.maintenance import (
 )
 from core.runtime_health import start_runtime_health, stop_runtime_health
 from core.extend import (
+    execute_direct_integration_tool,
     execute_tool as execute_extend_tool,
+    inspect_integration_for_manager,
     inspect_extend_for_manager,
+    request_direct_integration_setup,
     request_setup as request_extend_setup,
 )
 from worker.handler import (
@@ -329,6 +332,7 @@ def _parse_worker_tool(tool_spec):
 
 
 _EXTEND_DISCOVERY_ACTIONS = {
+    "integrations",
     "list",
     "ready",
     "needs_setup",
@@ -374,6 +378,26 @@ def _parse_extend_tool(tool_spec):
     if not key and suffix and suffix not in action_names:
         key = suffix
     return action, key
+
+
+def _parse_integration_tool(tool_spec):
+    tool_name = str(tool_spec.get("tool") or "")
+    integration_key = (
+        tool_name.removeprefix("integration/")
+        if tool_name.startswith("integration/")
+        else ""
+    )
+    explicit_action = (
+        str(tool_spec.get("type") or "").strip().lower().replace("-", "_")
+    )
+    action = explicit_action or (
+        "execute"
+        if tool_spec.get("name") or tool_spec.get("key") or "arguments" in tool_spec
+        else "list"
+    )
+    action = _EXTEND_ACTION_ALIASES.get(action, action)
+    tool_key = str(tool_spec.get("name") or tool_spec.get("key") or "").strip()
+    return integration_key, action, tool_key
 
 
 def _tool_progress_note(tool_spec):
@@ -425,6 +449,16 @@ def _tool_progress_note(tool_spec):
         if action in {"connections", "requests"}:
             return f"checking Extend {action}"
         return f"called Extend tool: {key or 'unknown'}"
+
+    if tool_name.startswith("integration/"):
+        integration_key, action, key = _parse_integration_tool(tool_spec)
+        if action in {"list", "ready", "needs_setup", "pending"}:
+            return f"listing {integration_key} tools"
+        if action == "show":
+            return f"inspecting {integration_key} tool: {key or 'unknown'}"
+        if action == "request_setup":
+            return f"requesting {integration_key} setup"
+        return f"called {integration_key} tool: {key or 'unknown'}"
 
     if tool_name.startswith("cron/") or tool_name == "cron/list":
         return f"called tool: {tool_name}"
@@ -503,6 +537,7 @@ def _is_private_manager_tool_name(tool_name):
         or tool_name == "work_update"
         or tool_name == "extend"
         or tool_name.startswith("extend/")
+        or tool_name.startswith("integration/")
     )
 
 
@@ -549,7 +584,11 @@ def execute_single_tool(tool_spec, carbon_id):
                 result_status = "error" if "Error" in str(result) else "ok"
                 result_summary = (
                     "[Extend result omitted]"
-                    if tool_name == "extend" or tool_name.startswith("extend/")
+                    if (
+                        tool_name == "extend"
+                        or tool_name.startswith("extend/")
+                        or tool_name.startswith("integration/")
+                    )
                     else "[Advertising memory result omitted]"
                     if tool_name == "advertising_memory/update"
                     else "[Work update result omitted]"
@@ -877,6 +916,37 @@ def _execute_single_tool(tool_spec, carbon_id):
         arguments = tool_spec.get("arguments", {})
         return execute_extend_tool(key, arguments, carbon_id=carbon_id)
 
+    elif tool_name.startswith("integration/"):
+        integration_key, action, key = _parse_integration_tool(tool_spec)
+        if not integration_key:
+            return "Tool 'integration': Error: integration key is required"
+        if action == "request_setup":
+            return request_direct_integration_setup(
+                integration_key,
+                key,
+                note=tool_spec.get("note", ""),
+                carbon_id=carbon_id,
+            )
+        if action in {"list", "ready", "needs_setup", "pending", "show"}:
+            return inspect_integration_for_manager(
+                integration_key,
+                action,
+                tool_key=key,
+                page=tool_spec.get("page", 1),
+                limit=tool_spec.get("limit", 100),
+            )
+        if action != "execute":
+            return (
+                f"Tool 'integration/{integration_key}': "
+                f"Error: unknown type '{action}'"
+            )
+        return execute_direct_integration_tool(
+            integration_key,
+            key,
+            tool_spec.get("arguments", {}),
+            carbon_id=carbon_id,
+        )
+
     elif tool_name.startswith("cron/"):
         try:
             return execute_cron_tool(tool_spec)
@@ -1056,6 +1126,7 @@ def _tool_results_for_log(all_tools, results_by_carbon):
         for carbon_id, tool_spec in all_tools
         if str(tool_spec.get("tool") or "") == "extend"
         or str(tool_spec.get("tool") or "").startswith("extend/")
+        or str(tool_spec.get("tool") or "").startswith("integration/")
         or str(tool_spec.get("tool") or "") == "advertising_memory/update"
         or str(tool_spec.get("tool") or "") in {"trust/list", "trust/get"}
         or str(tool_spec.get("tool") or "") == "trust/set"
@@ -1077,6 +1148,7 @@ def _manager_output_for_log(output, tools_data):
     parsed_private = any(
         str(tool_spec.get("tool") or "") == "extend"
         or str(tool_spec.get("tool") or "").startswith("extend/")
+        or str(tool_spec.get("tool") or "").startswith("integration/")
         or str(tool_spec.get("tool") or "") == "advertising_memory/update"
         or str(tool_spec.get("tool") or "") in {"trust/list", "trust/get"}
         or str(tool_spec.get("tool") or "") == "trust/set"

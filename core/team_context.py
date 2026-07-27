@@ -47,6 +47,8 @@ VISIBILITY_BLOCK_PATH = "core/interface_state/team_context.blocked"
 
 MAX_ADVERTISING_MEMORY_LINES = 100
 MAX_ADVERTISING_MEMORY_BYTES = 64 * 1024
+MAX_ADVERTISED_MEMORY_LINES = 600
+MAX_ADVERTISED_MEMORY_BYTES = 256 * 1024
 MAX_TEAM_CONTEXT_BYTES = 256 * 1024
 RECONCILE_INTERVAL_SECONDS = 60
 LOCK_TIMEOUT_SECONDS = 10
@@ -101,6 +103,24 @@ def validate_advertising_memory(content: str) -> str:
     if len(content.encode("utf-8")) > MAX_ADVERTISING_MEMORY_BYTES:
         raise ValueError(
             f"Advertising memory cannot exceed {MAX_ADVERTISING_MEMORY_BYTES} UTF-8 bytes."
+        )
+    return content
+
+
+def validate_advertised_memory(content: str) -> str:
+    """Validate a Glass-composed peer memory with its managed integration block."""
+
+    if not isinstance(content, str):
+        raise ValueError("Advertising memory content must be a string.")
+    if "\x00" in content:
+        raise ValueError("Advertising memory cannot contain NUL characters.")
+    if len(content.splitlines()) > MAX_ADVERTISED_MEMORY_LINES:
+        raise ValueError(
+            f"Advertised memory cannot exceed {MAX_ADVERTISED_MEMORY_LINES} lines."
+        )
+    if len(content.encode("utf-8")) > MAX_ADVERTISED_MEMORY_BYTES:
+        raise ValueError(
+            "Advertised memory exceeds the Glass-managed mirror size limit."
         )
     return content
 
@@ -864,12 +884,21 @@ def _read_regular_bytes(
         os.close(fd)
 
 
-def _read_local_memory(root: Path, path: Path) -> tuple[str, str]:
+def _read_local_memory(
+    root: Path,
+    path: Path,
+    *,
+    allow_managed: bool = False,
+) -> tuple[str, str]:
     try:
         raw = _read_regular_bytes(
             root,
             path,
-            max_bytes=MAX_ADVERTISING_MEMORY_BYTES,
+            max_bytes=(
+                MAX_ADVERTISED_MEMORY_BYTES
+                if allow_managed
+                else MAX_ADVERTISING_MEMORY_BYTES
+            ),
         )
     except (ValueError, TeamContextError) as exc:
         if isinstance(exc, TeamContextError):
@@ -877,15 +906,24 @@ def _read_local_memory(root: Path, path: Path) -> tuple[str, str]:
                 "Advertising memory path must remain inside the Silicon root."
             ) from exc
         if "size limit" in str(exc):
+            maximum = (
+                MAX_ADVERTISED_MEMORY_BYTES
+                if allow_managed
+                else MAX_ADVERTISING_MEMORY_BYTES
+            )
             raise ValueError(
-                f"Advertising memory cannot exceed {MAX_ADVERTISING_MEMORY_BYTES} UTF-8 bytes."
+                f"Advertising memory cannot exceed {maximum} UTF-8 bytes."
             ) from exc
         raise
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Advertising memory must be valid UTF-8.") from exc
-    validate_advertising_memory(content)
+    (
+        validate_advertised_memory(content)
+        if allow_managed
+        else validate_advertising_memory(content)
+    )
     return content, _sha256(raw)
 
 
@@ -894,6 +932,7 @@ def _validate_memory_payload(
     silicon_id: str,
     *,
     expected: dict[str, Any] | None = None,
+    allow_managed: bool = False,
 ) -> dict[str, Any]:
     if str(payload.get("silicon_id") or "") != silicon_id:
         raise TeamContextError(
@@ -907,7 +946,11 @@ def _validate_memory_payload(
         raise TeamContextError("Glass returned an invalid advertising-memory revision.")
     content = payload.get("content")
     try:
-        validate_advertising_memory(content)
+        (
+            validate_advertised_memory(content)
+            if allow_managed
+            else validate_advertising_memory(content)
+        )
     except ValueError as exc:
         raise TeamContextError(str(exc)) from exc
     digest = str(payload.get("sha256") or "").lower()
@@ -957,7 +1000,12 @@ def _fetch_peer(
         return None, _etag(response) or etag
     payload = _response_json(response, "peer advertising-memory request")
     return (
-        _validate_memory_payload(payload, entry["silicon_id"], expected=entry),
+        _validate_memory_payload(
+            payload,
+            entry["silicon_id"],
+            expected=entry,
+            allow_managed=True,
+        ),
         _etag(response),
     )
 
@@ -974,7 +1022,11 @@ def _sync_peer(
 
     path = _advertising_file(root, entry["silicon_id"])
     try:
-        _content, local_digest = _read_local_memory(root, path)
+        _content, local_digest = _read_local_memory(
+            root,
+            path,
+            allow_managed=True,
+        )
     except (OSError, ValueError):
         local_digest = ""
     if local_digest == entry["sha256"]:
@@ -1020,6 +1072,7 @@ def _peer_file_matches_record(
         _content, local_digest = _read_local_memory(
             root,
             _advertising_file(root, silicon_id),
+            allow_managed=True,
         )
         return local_digest == validated["sha256"]
     except (OSError, ValueError, TeamContextError):
@@ -2230,6 +2283,7 @@ def _reconcile_locked(
                     _content, published_digest = _read_local_memory(
                         root,
                         _advertising_file(root, silicon_id),
+                        allow_managed=True,
                     )
                 except (OSError, ValueError):
                     published_digest = ""
@@ -2849,3 +2903,66 @@ def read_verified_team_markdown(
         return raw.decode("utf-8")
     except (OSError, UnicodeDecodeError, ValueError, TeamContextError):
         return ""
+
+
+def read_verified_team_advertising_memories(
+    root: str | Path | None = None,
+    *,
+    expected_team_revision: str = "",
+) -> list[dict[str, Any]]:
+    """Return every locally mirrored advertising memory verified by Glass.
+
+    The team manifest supplies the expected Silicon ID, path, revision, and
+    digest. Prompt assembly receives a memory only when the local regular file
+    still matches that manifest and the cached identity remains scoped to the
+    configured Glass origin and credential. Missing, stale, malformed, or
+    locally modified mirrors are omitted rather than exposed.
+    """
+
+    project_root = _normalise_root(root)
+    try:
+        if not read_verified_team_markdown(project_root):
+            return []
+        if os.path.lexists(_visibility_block_file(project_root)):
+            return []
+        config, configured_origin = _load_config_snapshot(project_root)
+        configured_fingerprint = _credential_fingerprint(config)
+        state = _load_state(project_root)
+        identity = _cached_identity(state)
+        context = state.get("context") or {}
+        if (
+            identity is None
+            or (
+                expected_team_revision
+                and context.get("revision") != expected_team_revision
+            )
+            or configured_origin != identity["server_origin"]
+            or configured_fingerprint != identity["credential_fingerprint"]
+            or context.get("team_slug") != identity["team_slug"]
+            or context.get("server_origin") != identity["server_origin"]
+            or context.get("credential_fingerprint")
+            != identity["credential_fingerprint"]
+        ):
+            return []
+        manifest = _normalise_manifest(context.get("advertising_memories"))
+        own_id = identity["silicon_id"]
+        if own_id not in manifest:
+            return []
+
+        memories: list[dict[str, Any]] = []
+        for silicon_id in sorted(manifest):
+            entry = manifest[silicon_id]
+            try:
+                content, digest = _read_local_memory(
+                    project_root,
+                    _advertising_file(project_root, silicon_id),
+                    allow_managed=silicon_id != own_id,
+                )
+            except (OSError, ValueError, TeamContextError):
+                continue
+            if digest != entry["sha256"]:
+                continue
+            memories.append({**entry, "content": content})
+        return memories
+    except (OSError, ValueError, TeamContextError):
+        return []

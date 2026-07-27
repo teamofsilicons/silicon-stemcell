@@ -85,6 +85,7 @@ def contains_private_manager_tool(value):
                 or tool in {"trust/list", "trust/get", "trust/set"}
                 or tool == "extend"
                 or tool.startswith("extend/")
+                or tool.startswith("integration/")
             ):
                 return True
     # Fail closed for incomplete/plain private invocations that still use the
@@ -106,6 +107,12 @@ def contains_private_manager_tool(value):
         or bool(
             re.search(
                 r"""["']tool["']\s*:\s*["']extend(?:/|["'])""",
+                normalized_text,
+            )
+        )
+        or bool(
+            re.search(
+                r"""["']tool["']\s*:\s*["']integration/""",
                 normalized_text,
             )
         )

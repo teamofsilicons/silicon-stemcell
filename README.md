@@ -196,8 +196,10 @@ and an empty `advertising/` directory, so both paths exist before the first
 Glass connection. After a successful fetch, `TEAM.md` contains the current
 hierarchy plus each active Silicon's name, description, job description, and
 advertising-memory path. It never embeds the advertising-memory contents. The
-manager prompt receives only hash-verified `TEAM.md` data; the placeholder is
-not injected. Teammate advertising files are read only when relevant.
+manager prompt receives the hash-verified `TEAM.md` data together with every
+currently hash-verified team advertising-memory mirror; the placeholder,
+missing mirrors, stale mirrors, and locally modified peer files are not
+injected.
 
 Stemcell reconciles the complete context at startup and after reconnecting to
 Glass, responds to `team_context.changed` invalidations, and performs a

@@ -75,7 +75,11 @@ def tool_call(carbon_id: str, tool: str, args=None, result=None) -> None:
         # unknown aliases could otherwise duplicate the advertised content.
         extra = {}
         result = "[Advertising memory result omitted]"
-    elif tool == "extend" or tool.startswith("extend/"):
+    elif (
+        tool == "extend"
+        or tool.startswith("extend/")
+        or tool.startswith("integration/")
+    ):
         # Extend arguments may contain messages, records, or provider data.
         # Retain only routing metadata through a strict allowlist.
         extra = {}

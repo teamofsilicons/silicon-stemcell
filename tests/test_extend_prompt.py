@@ -8,11 +8,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GUIDE_PATH = PROJECT_ROOT / "prompts" / "EXTEND_TOOLS.md"
 MANAGER_TOOLS_PATH = PROJECT_ROOT / "prompts" / "MANAGER_TOOLS.md"
 CATALOG = (
-    "## Enabled Silicon Extend catalog\n"
+    "## Enabled Silicon Extend integrations\n"
     "<silicon-extend-catalog>\n"
-    "- `dope.dopes.list` — List dopes\n"
-    "  setup_status: `ready`\n"
-    "  input: `{\"type\":\"object\"}`\n"
+    "- `integration/gmail` — Gmail\n"
+    "  access: This Silicon has access to Gmail.\n"
     "</silicon-extend-catalog>"
 )
 
@@ -35,12 +34,12 @@ class ExtendPromptAssemblyTest(unittest.TestCase):
 
         manager_tools_at = prompt.index("prompts/MANAGER_TOOLS.md")
         extend_guide_at = prompt.index("prompts/EXTEND_TOOLS.md")
-        catalog_at = prompt.index("## Enabled Silicon Extend catalog")
+        catalog_at = prompt.index("## Enabled Silicon Extend integrations")
 
         self.assertLess(manager_tools_at, extend_guide_at)
         self.assertLess(extend_guide_at, catalog_at)
         self.assertEqual(prompt.count("prompts/EXTEND_TOOLS.md"), 1)
-        self.assertEqual(prompt.count("## Enabled Silicon Extend catalog"), 1)
+        self.assertEqual(prompt.count("## Enabled Silicon Extend integrations"), 1)
 
     def test_every_worker_loads_the_same_guide_and_exact_live_catalog(self):
         for worker_type in DNA.VALID_WORKER_TYPES:
@@ -56,7 +55,7 @@ class ExtendPromptAssemblyTest(unittest.TestCase):
                 self.assertEqual(prompt.count(CATALOG), 1)
                 self.assertLess(
                     prompt.index("prompts/EXTEND_TOOLS.md"),
-                    prompt.index("## Enabled Silicon Extend catalog"),
+                    prompt.index("## Enabled Silicon Extend integrations"),
                 )
 
     def test_guide_remains_when_the_live_catalog_is_unavailable(self):
@@ -71,8 +70,8 @@ class ExtendPromptAssemblyTest(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertIn("prompts/EXTEND_TOOLS.md", manager_prompt)
         self.assertIn("prompts/EXTEND_TOOLS.md", worker_prompt)
-        self.assertNotIn("## Enabled Silicon Extend catalog", manager_prompt)
-        self.assertNotIn("## Enabled Silicon Extend catalog", worker_prompt)
+        self.assertNotIn("## Enabled Silicon Extend integrations", manager_prompt)
+        self.assertNotIn("## Enabled Silicon Extend integrations", worker_prompt)
 
     def test_guide_keeps_manager_and_worker_invocation_contracts_distinct(self):
         text = GUIDE_PATH.read_text(encoding="utf-8")
@@ -117,8 +116,12 @@ class ExtendPromptAssemblyTest(unittest.TestCase):
         self.assertIn('"type": "requests"', text)
         self.assertIn('"type": "execute"', text)
         self.assertIn('"type": "request_setup"', text)
-        self.assertIn("every tool currently enabled for your team", text)
-        self.assertIn("system-wide Glass catalog", text)
+        self.assertIn("Fetch all tools enabled for this Silicon", text)
+        self.assertIn('"type": "integrations"', text)
+        self.assertIn('"tool": "integration/gmail"', text)
+        self.assertIn("Silicon has access", text)
+        self.assertIn("not expose every operation", text)
+        self.assertIn("Glass manages the full system catalog", text)
 
     def test_guide_documents_inline_setup_without_credentials_or_glass_redirect(self):
         text = " ".join(GUIDE_PATH.read_text(encoding="utf-8").split())

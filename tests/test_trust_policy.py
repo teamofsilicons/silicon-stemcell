@@ -196,7 +196,7 @@ class TrustPolicyTests(unittest.TestCase):
 
         self.assertEqual(interface.get_contact("alice")["trust_level"], "very_high")
 
-    def test_invalidation_fails_closed_until_advertised_revision_is_confirmed(self):
+    def test_invalidation_keeps_last_confirmed_policy_until_new_revision_arrives(self):
         interface.upsert_contact("carbon", "alice", room_id="room-a")
         trust._apply_confirmed_policy(
             self.root,
@@ -213,14 +213,33 @@ class TrustPolicyTests(unittest.TestCase):
             root=self.root,
         )
 
-        self.assertFalse(trust.has_confirmed_policy(root=self.root))
+        self.assertTrue(trust.has_confirmed_policy(root=self.root))
         self.assertEqual(
             trust.cached_trust_level("carbon", "alice", root=self.root),
-            "very_low",
+            "high",
         )
+        pending = trust.confirmed_trust_policy_snapshot(root=self.root)
+        self.assertEqual(pending["status"], "refresh_pending")
         self.assertEqual(
-            trust.confirmed_trust_policy_snapshot(root=self.root)["status"],
-            "refresh_pending",
+            next(entry for entry in pending["entries"] if entry["id"] == "alice")[
+                "level"
+            ],
+            "high",
+        )
+
+        with mock.patch(
+            "core.trust.silicon_api_request",
+            return_value=FakeResponse(status_code=503),
+        ):
+            deferred = trust.reconcile_trust_policy(
+                self.root,
+                force=True,
+                reason="test-refresh-failure",
+            )
+        self.assertEqual(deferred["status"], "deferred")
+        self.assertEqual(
+            trust.cached_trust_level("carbon", "alice", root=self.root),
+            "high",
         )
 
         trust._apply_confirmed_policy(
@@ -231,6 +250,34 @@ class TrustPolicyTests(unittest.TestCase):
         self.assertEqual(
             trust.cached_trust_level("carbon", "alice", root=self.root),
             "very_high",
+        )
+
+    def test_pending_policy_must_refresh_before_a_trust_mutation(self):
+        trust._apply_confirmed_policy(
+            self.root,
+            policy("high", team_revision=2, silicon_revision=3),
+        )
+        trust.mark_trust_policy_invalidated(
+            team_revision=3,
+            silicon_revision=3,
+            root=self.root,
+        )
+
+        with mock.patch(
+            "core.trust.reconcile_trust_policy",
+            return_value={"status": "deferred"},
+        ):
+            with self.assertRaises(trust.TrustSyncError):
+                trust.set_contact_trust(
+                    "carbon",
+                    "alice",
+                    "low",
+                    root=self.root,
+                )
+
+        self.assertEqual(
+            trust.cached_trust_level("carbon", "alice", root=self.root),
+            "high",
         )
 
     def test_snapshot_exposes_names_and_resolution_provenance(self):

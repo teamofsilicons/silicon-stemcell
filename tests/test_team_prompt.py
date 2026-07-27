@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class TeamContextPromptTests(unittest.TestCase):
     @staticmethod
-    def _write_verified_team(root, content):
+    def _write_verified_team(root, content, advertising_contents=None):
         (root / ".glass.json").write_text(
             json.dumps(
                 {
@@ -28,6 +28,34 @@ class TeamContextPromptTests(unittest.TestCase):
         team_file.write_bytes(content)
         state_dir = root / "core" / "interface_state"
         state_dir.mkdir(parents=True, exist_ok=True)
+        credential_fingerprint = hashlib.sha256(
+            b"team-context-credential\0scs_live_test"
+        ).hexdigest()
+        advertising_manifest = []
+        peers = {}
+        own = {}
+        for silicon_id, advertising_content in (advertising_contents or {}).items():
+            advertising_path = f"prompts/advertising/{silicon_id}.md"
+            advertising_bytes = advertising_content.encode("utf-8")
+            advertising_digest = hashlib.sha256(advertising_bytes).hexdigest()
+            (root / advertising_path).write_bytes(advertising_bytes)
+            entry = {
+                "silicon_id": silicon_id,
+                "path": advertising_path,
+                "revision": 1,
+                "sha256": advertising_digest,
+                "updated_at": "2026-07-27T00:00:00+00:00",
+            }
+            advertising_manifest.append(entry)
+            if silicon_id == "self-si":
+                own = {
+                    "silicon_id": silicon_id,
+                    "base_revision": 1,
+                    "base_sha256": advertising_digest,
+                    "status": "synced",
+                }
+            else:
+                peers[silicon_id] = entry
         (state_dir / "team_context.json").write_text(
             json.dumps(
                 {
@@ -36,19 +64,19 @@ class TeamContextPromptTests(unittest.TestCase):
                         "silicon_id": "self-si",
                         "team_slug": "alpha",
                         "server_origin": "https://glass.example",
-                        "credential_fingerprint": hashlib.sha256(
-                            b"team-context-credential\0scs_live_test"
-                        ).hexdigest(),
+                        "credential_fingerprint": credential_fingerprint,
                         "access_valid": True,
                     },
                     "context": {
                         "revision": hashlib.sha256(content).hexdigest(),
                         "team_slug": "alpha",
                         "server_origin": "https://glass.example",
-                        "credential_fingerprint": hashlib.sha256(
-                            b"team-context-credential\0scs_live_test"
-                        ).hexdigest(),
+                        "credential_fingerprint": credential_fingerprint,
+                        "advertising_memories": advertising_manifest,
                     },
+                    "peers": peers,
+                    "managed_peer_ids": sorted(peers),
+                    "own": own,
                 }
             ),
             encoding="utf-8",
@@ -63,7 +91,7 @@ class TeamContextPromptTests(unittest.TestCase):
             (PROJECT_ROOT / "prompts" / "advertising" / ".gitkeep").is_file()
         )
 
-    def test_manager_prompt_includes_raw_team_but_not_advertising_contents(self):
+    def test_manager_prompt_includes_team_and_verified_advertising_contents(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             prompts = root / "prompts"
@@ -78,9 +106,13 @@ class TeamContextPromptTests(unittest.TestCase):
                 "- Peer: `prompts/advertising/peer-1.md`\n"
                 "- Literal marker: {load-ref!private.txt}\n"
             ).encode()
-            self._write_verified_team(root, team_content)
-            (advertising / "peer-1.md").write_text(
-                "PEER ADVERTISING CONTENT", encoding="utf-8"
+            self._write_verified_team(
+                root,
+                team_content,
+                {
+                    "self-si": "OWN ADVERTISING CONTENT",
+                    "peer-1": "PEER ADVERTISING CONTENT",
+                },
             )
 
             with (
@@ -96,7 +128,43 @@ class TeamContextPromptTests(unittest.TestCase):
         self.assertIn("# Acme Silicon Team", prompt)
         self.assertIn("{load-ref!private.txt}", prompt)
         self.assertNotIn("LOCAL PRIVATE VALUE", prompt)
-        self.assertNotIn("PEER ADVERTISING CONTENT", prompt)
+        self.assertIn("OWN ADVERTISING CONTENT", prompt)
+        self.assertIn("PEER ADVERTISING CONTENT", prompt)
+        self.assertIn("## Team advertising memories", prompt)
+
+    def test_unverified_or_tampered_advertising_content_is_not_passed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompts = root / "prompts"
+            advertising = prompts / "advertising"
+            advertising.mkdir(parents=True)
+            self._write_verified_team(
+                root,
+                b"# Acme Silicon Team\n",
+                {
+                    "self-si": "OWN VERIFIED CONTENT",
+                    "peer-1": "PEER VERIFIED CONTENT",
+                },
+            )
+            (advertising / "peer-1.md").write_text(
+                "TAMPERED PEER CONTENT",
+                encoding="utf-8",
+            )
+            (advertising / "unknown.md").write_text(
+                "UNVERIFIED LOCAL CONTENT",
+                encoding="utf-8",
+            )
+
+            with (
+                mock.patch.object(DNA, "PROMPTS_DIR", str(prompts)),
+                mock.patch.object(DNA, "PROJECT_ROOT", str(root)),
+            ):
+                section = DNA._glass_team_context_section()
+
+        self.assertIn("OWN VERIFIED CONTENT", section)
+        self.assertNotIn("PEER VERIFIED CONTENT", section)
+        self.assertNotIn("TAMPERED PEER CONTENT", section)
+        self.assertNotIn("UNVERIFIED LOCAL CONTENT", section)
 
     def test_oversized_or_invalid_team_file_is_not_injected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,15 +294,33 @@ class TeamContextPromptTests(unittest.TestCase):
         self.assertEqual(section.count("</glass-trust-policy>"), 1)
         self.assertIn("&lt;/glass-trust-policy>", section)
 
-    def test_pending_trust_policy_is_explicitly_fail_closed(self):
+    def test_pending_trust_policy_keeps_last_confirmed_values_active(self):
         with mock.patch(
             "core.trust.confirmed_trust_policy_snapshot",
-            return_value={"status": "refresh_pending", "entries": []},
+            return_value={
+                "status": "refresh_pending",
+                "source_silicon_id": "self-si",
+                "revision": "12:4",
+                "entries": [
+                    {
+                        "kind": "carbon",
+                        "id": "alice",
+                        "name": "Alice",
+                        "level": "high",
+                        "source": "silicon_override",
+                        "base_level": "ok",
+                        "override_level": "high",
+                        "central_carbon": False,
+                    },
+                ],
+            },
         ):
             section = DNA._glass_trust_policy_section()
 
         self.assertIn("synchronization is still in progress", section)
-        self.assertIn("Treat every identity as `very_low`", section)
+        self.assertIn("Continue enforcing the last confirmed policy", section)
+        self.assertIn("effective `high`", section)
+        self.assertNotIn("Treat every identity as `very_low`", section)
 
     def test_manager_session_trust_comes_from_glass_cache_not_contact_file(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -32,13 +32,45 @@ Silicon Extend is the team-configured layer for external services and
 system-wide internal tools. It is separate from the private manager tools in
 this file.
 
-Glass manages the full system catalog and proactively enables tools for each
-team. From a Silicon, `list` means every tool currently enabled for your team;
-it does not mean every tool in the system-wide Glass catalog.
+Glass manages the full system catalog, team enablement, and the editable
+`Accessible by` Silicon audience for each integration. The live catalog below
+shows direct integration tools granted to this Silicon. It intentionally does
+not expose every operation until you call that integration.
+
+#### Use a granted integration directly
+
+For example, if the live catalog contains `integration/gmail`, fetch only its
+available Gmail operations and schemas with:
+
+```json
+{
+    "tool": "integration/gmail",
+    "type": "list"
+}
+```
+
+Then execute one exact returned operation through the same direct integration:
+
+```json
+{
+    "tool": "integration/gmail",
+    "type": "execute",
+    "name": "gmail.messages.send",
+    "arguments": {
+        "to": "person@example.com",
+        "subject": "Hello",
+        "body": "Message text"
+    }
+}
+```
+
+Calling a direct integration without `type`, `name`, or `arguments` is the same
+as `type: list`. A direct integration result explicitly confirms that this
+Silicon has access. Glass still rechecks access on every execution.
 
 #### Discover tools and setup state
 
-Fetch all team-enabled tools:
+Fetch all tools enabled for this Silicon across its granted integrations:
 
 ```json
 {
@@ -129,6 +161,20 @@ Inspect setup requests created by this Silicon:
 
 The `requests` action accepts an optional `status` field when you need only one
 request state, for example `"status": "pending"`.
+
+Fetch every possible integration visible to this team, including integrations
+that have not been granted to this Silicon:
+
+```json
+{
+    "tool": "extend",
+    "type": "integrations"
+}
+```
+
+Each result includes `has_access`, `integrated`, and a plain-language access
+message. This integration listing does not eagerly include its individual
+tools.
 
 #### Execute a tool
 

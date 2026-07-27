@@ -195,8 +195,8 @@ def mark_trust_policy_invalidated(
 ) -> dict[str, Any]:
     """Record a Glass revision nudge before scheduling its HTTP reconciliation.
 
-    Manager prompts and cached lookups fail closed while a newer advertised
-    revision is pending, closing the event-to-fetch race.
+    The last confirmed revision remains active while the newer advertised
+    revision is fetched, validated, and applied.
     """
 
     project_root = _root(root)
@@ -372,13 +372,13 @@ def cached_trust_entry(
     *,
     root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Return one current Glass projection; stale and unknown values fail closed."""
+    """Return the last confirmed Glass projection; unknown values fail closed."""
 
     public_id = str(public_id or "")
     if kind not in VALID_KINDS or not ID_RE.fullmatch(public_id):
         return {}
     state = _load_state(_root(root))
-    if not _state_has_current_policy(state):
+    if not _state_has_confirmed_policy(state):
         return {}
     return _cached_entry_from_state(state, kind, public_id)
 
@@ -416,11 +416,17 @@ def _cached_entry_from_state(
     }
 
 
-def _state_has_current_policy(state: dict[str, Any]) -> bool:
+def _state_has_confirmed_policy(state: dict[str, Any]) -> bool:
     confirmed_at = _nonnegative_float(state.get("last_confirmed_at"))
     return bool(
         state.get("server_bootstrapped")
         and confirmed_at > 0
+    )
+
+
+def _state_has_current_policy(state: dict[str, Any]) -> bool:
+    return bool(
+        _state_has_confirmed_policy(state)
         and not _pending_revision_is_newer(state)
     )
 
@@ -433,9 +439,10 @@ def confirmed_trust_policy_snapshot(
 
     project_root = _root(root)
     state = _load_state(project_root)
+    confirmed = _state_has_confirmed_policy(state)
     current = _state_has_current_policy(state)
     entries = []
-    if current:
+    if confirmed:
         for key in sorted(state.get("entries", {})):
             raw = state["entries"].get(key)
             if not isinstance(raw, dict):
@@ -499,7 +506,7 @@ def inspect_trust_policy(
 
 def has_confirmed_policy(*, root: str | Path | None = None) -> bool:
     state = _load_state(_root(root))
-    return _state_has_current_policy(state)
+    return _state_has_confirmed_policy(state)
 
 
 def set_contact_trust(
@@ -519,14 +526,15 @@ def set_contact_trust(
         raise ValueError("invalid target identity")
     if level is not None and level not in VALID_LEVELS:
         raise ValueError("invalid trust level")
-    if not has_confirmed_policy(root=project_root):
+    if not _state_has_current_policy(_load_state(project_root)):
         refreshed = reconcile_trust_policy(
             project_root,
             force=True,
             reason="before-local-mutation",
         )
-        if refreshed.get("status") == "deferred" or not has_confirmed_policy(
-            root=project_root
+        if (
+            refreshed.get("status") == "deferred"
+            or not _state_has_current_policy(_load_state(project_root))
         ):
             raise TrustSyncError(
                 "Glass trust policy is not current; no trust change was made."
