@@ -616,6 +616,12 @@ class InterfaceClient:
             payload,
         )
 
+    def work_standalone_call_create(self, payload: dict[str, Any]) -> Any:
+        return self._work_mutation(
+            ["work", "call", "create"],
+            payload,
+        )
+
     def work_call_patch(
         self,
         task_id: str,
@@ -624,6 +630,16 @@ class InterfaceClient:
     ) -> Any:
         return self._work_mutation(
             ["work", "call", "patch", task_id, call_id],
+            payload,
+        )
+
+    def work_standalone_call_patch(
+        self,
+        call_id: str,
+        payload: dict[str, Any],
+    ) -> Any:
+        return self._work_mutation(
+            ["work", "call", "patch", call_id],
             payload,
         )
 
@@ -1280,16 +1296,17 @@ def _remember_work_event_reference(event: dict[str, Any]) -> None:
     content = _event_content(event)
     task_id = _first_text(content.get("task_id"), event.get("task_id"))
     kind = _first_text(content.get("kind"), event.get("kind"))
-    if not event_id or not room_id or not task_id or not kind:
+    if not event_id or not room_id or not kind:
         return
     reference = {
-        "task_id": task_id,
         "kind": kind,
         "work_event_id": _first_text(
             content.get("work_event_id"),
             event.get("work_event_id"),
         ),
     }
+    if task_id:
+        reference["task_id"] = task_id
     for key in ("blocker_id", "group_id", "call_id"):
         value = _first_text(content.get(key), event.get(key))
         if value:

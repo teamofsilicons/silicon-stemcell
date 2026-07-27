@@ -23,6 +23,130 @@ class ManagerToolsDocTest(unittest.TestCase):
                 json.loads(block)
 
 
+class ManagerActivityVisibilityTest(unittest.TestCase):
+    @staticmethod
+    def _run_root(trigger):
+        trace = mock.Mock()
+        trace.trigger = trigger
+        trace.run_id = f"run-{trigger}"
+        trace.meta = {}
+        context = (
+            "room_id: room-a\nevent_id: event-a\nmessage:\nhello"
+            if trigger == "message"
+            else "internal manager work"
+        )
+        pending_contexts = (
+            [
+                {
+                    "handoff_id": "handoff-a",
+                    "source_run_id": "source-a",
+                    "target_type": "silicon",
+                    "target_id": "carbon-a",
+                }
+            ]
+            if trigger == "handoff"
+            else []
+        )
+        terminal = (
+            json.dumps({"tools": [{"tool": "do_nothing"}]}),
+            None,
+            [],
+        )
+        with (
+            mock.patch.object(main, "handle_commands", side_effect=lambda value: value),
+            mock.patch.object(
+                main.Diagnostics,
+                "consume_pending_contexts",
+                return_value=pending_contexts,
+            ),
+            mock.patch.object(main.Diagnostics, "get_active_run", return_value=None),
+            mock.patch.object(main.Diagnostics, "start_run", return_value=trace),
+            mock.patch.object(main.Diagnostics, "register_active"),
+            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(
+                main,
+                "_instrumented_manager_call",
+                return_value=terminal,
+            ),
+            mock.patch.object(
+                main,
+                "begin_manager_activity",
+                return_value=f"group-{trigger}",
+            ) as begin_activity,
+            mock.patch.object(main, "settle_manager_activity") as settle_activity,
+            mock.patch.object(main, "set_active_task_timer"),
+            mock.patch.object(main, "send_progress") as send_progress,
+        ):
+            main.run_all_managers({"carbon-a": context})
+        return begin_activity, settle_activity, send_progress
+
+    def test_direct_carbon_root_exposes_one_settled_activity_group(self):
+        begin_activity, settle_activity, send_progress = self._run_root("message")
+
+        begin_activity.assert_called_once_with("carbon-a", "run-message")
+        settle_activity.assert_called_once_with("carbon-a", "group-message")
+        self.assertEqual(
+            [call.args[2:4] for call in send_progress.call_args_list],
+            [
+                ("thinking", "calling manager"),
+                ("done", "manager finished"),
+            ],
+        )
+
+    def test_internal_roots_do_not_expose_manager_activity(self):
+        for trigger in ("handoff", "manager_loop"):
+            with self.subTest(trigger=trigger):
+                begin_activity, settle_activity, send_progress = self._run_root(
+                    trigger
+                )
+                begin_activity.assert_not_called()
+                settle_activity.assert_not_called()
+                send_progress.assert_not_called()
+
+    def test_internal_run_keeps_provider_and_tool_progress_diagnostic_only(self):
+        trace = mock.Mock()
+        trace.meta = {"_manager_running": True}
+        with (
+            mock.patch.object(
+                main,
+                "current_manager_activity_group",
+                return_value="",
+            ),
+            mock.patch.object(main.Diagnostics, "get_active_run", return_value=trace),
+            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(
+                main,
+                "execute_work_update",
+                return_value="Done. internal update",
+            ),
+        ):
+            handler = main._make_provider_progress_handler("carbon-a", "")
+            handler(
+                {
+                    "provider": "codex",
+                    "kind": "command",
+                    "status": "started",
+                    "item_id": "command-a",
+                },
+                "running internal command",
+            )
+            result = main._execute_single_tool(
+                {"tool": "work_update", "action": "task/update"},
+                "carbon-a",
+            )
+            failure = main._message_failure_status(
+                "carbon-a",
+                "silicon",
+                "peer-a",
+                "offline",
+            )
+
+        send_progress.assert_not_called()
+        trace.event.assert_called_once()
+        self.assertIn("Done. internal update", result)
+        self.assertIn("offline", failure)
+
+
 class ManagerToolExecutionTest(unittest.TestCase):
     def test_parser_preserves_braces_quotes_and_fences_in_advertising_content(self):
         contents = [
@@ -239,6 +363,72 @@ class ManagerToolExecutionTest(unittest.TestCase):
         )
         self.assertIn("task_id=task-fitness", result)
         self.assertIn("call_id=call-review", result)
+
+    def test_message_manager_does_not_claim_rejected_call_card_identity(self):
+        work_call = {
+            "owner_contact_id": "carbon-a",
+            "task_id": "task-fitness",
+            "work_event_id": "event-review",
+            "call_id": "call-review",
+        }
+        targets = (
+            (
+                {"carbon_id": "carbon-b"},
+                {
+                    "contact_type": "carbon",
+                    "carbon_id": "carbon-b",
+                    "display_name": "B",
+                },
+            ),
+            (
+                {"silicon_id": "silicon-b"},
+                {
+                    "contact_type": "silicon",
+                    "silicon_id": "silicon-b",
+                    "display_name": "Builder",
+                },
+            ),
+        )
+
+        for target, contact in targets:
+            with self.subTest(target=target):
+                spec = {
+                    "tool": "message_manager",
+                    **target,
+                    "message": "Can you review this?",
+                }
+                with (
+                    mock.patch.object(
+                        main,
+                        "ensure_contact_for_target",
+                        return_value=contact,
+                    ),
+                    mock.patch.object(
+                        main,
+                        "prepare_outbound_call",
+                        return_value=work_call,
+                    ),
+                    mock.patch.object(
+                        main,
+                        "enqueue_outbound_call",
+                        return_value=False,
+                    ) as enqueue_outbound,
+                    mock.patch.object(
+                        main,
+                        "send_manager_message",
+                        return_value="Done. queued",
+                    ) as send_manager_message,
+                    mock.patch.object(main, "send_progress"),
+                ):
+                    result = main.execute_single_tool(spec, "carbon-a")
+
+                send_manager_message.assert_called_once()
+                enqueue_outbound.assert_called_once()
+                self.assertIn("Done. queued", result)
+                self.assertNotIn("Work update:", result)
+                self.assertNotIn("task_id=", result)
+                self.assertNotIn("work_event_id=", result)
+                self.assertNotIn("call_id=", result)
 
     def test_message_manager_failure_reports_progress_and_output(self):
         spec = {

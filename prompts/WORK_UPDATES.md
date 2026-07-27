@@ -371,12 +371,15 @@ another Silicon. Create an inbound call when another manager or Silicon
 contacts this manager about the task. Use `target_kind` `manager` or `silicon`
 and direction `inbound` or `outbound`.
 
-The `message_manager` tool automatically creates or appends the call card on
-the active durable task and returns the local `task_id` and `call_id`. Do not
-also create another call for that same message. Use `call/update` with the
-returned local identity when you need to revise its state, append content from
-an interaction outside the automatic bridge, or close the call. Use
-`call/create` directly only when a real call was not already bridged.
+The `message_manager` tool automatically creates or appends the call card. It
+links the card to the active durable task when one exists; otherwise it creates
+a standalone call block in the chat. It returns the local `call_id`, plus a
+`task_id` when linked. Do not also create another call for that same message.
+Use `call/update` with the returned local identity when you need to revise its
+state, append content from an interaction outside the automatic bridge, or
+close the call. A standalone call can be updated with its `call_id` and no
+`task_id`. Use `call/create` directly only when a real call was not already
+bridged.
 
 ```json
 {

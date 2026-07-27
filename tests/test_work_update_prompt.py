@@ -152,6 +152,8 @@ class WorkUpdatePromptTest(unittest.TestCase):
         self.assertIn("Reuse the same identifiers for an exact retry", prose)
         self.assertIn("Never guess a revision", text)
         self.assertIn("do not claim it was published", text)
+        self.assertIn("standalone call block", prose)
+        self.assertIn("updated with its `call_id` and no `task_id`", prose)
 
 
 if __name__ == "__main__":

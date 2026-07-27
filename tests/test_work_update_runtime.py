@@ -265,9 +265,52 @@ class FakeWorkClient:
         self._record("work_call_create", task_id, payload=payload)
         return deepcopy(self._event(task_id, payload))
 
+    def work_standalone_call_create(self, payload):
+        self._record("work_standalone_call_create", payload=payload)
+        event = {
+            "schema_version": 1,
+            "task_id": None,
+            "room_id": payload["room_id"],
+            "task_title": None,
+            "body": "",
+            "blocks": [],
+            "revision": 0,
+            "history": [],
+            "timing": None,
+            "created_at": NOW,
+            "updated_at": NOW,
+        }
+        event.update(
+            {
+                key: deepcopy(value)
+                for key, value in payload.items()
+                if key not in {"client_id", "revision"}
+            }
+        )
+        self.events[("", event["work_event_id"])] = event
+        return deepcopy(event)
+
     def work_call_patch(self, task_id, call_id, payload):
         self._record("work_call_patch", task_id, call_id, payload=payload)
         event = self._event_by(task_id, "call_id", call_id)
+        if "revision" in payload:
+            assert payload["revision"] == event["revision"]
+        for key, value in payload.items():
+            if key in {"revision", "client_id", "transcript"}:
+                continue
+            event[key] = deepcopy(value)
+        existing = {
+            row["transcript_id"]: row for row in event.setdefault("transcript", [])
+        }
+        for row in payload.get("transcript") or []:
+            existing[row["transcript_id"]] = deepcopy(row)
+        event["transcript"] = list(existing.values())
+        event["revision"] += 1
+        return deepcopy(event)
+
+    def work_standalone_call_patch(self, call_id, payload):
+        self._record("work_standalone_call_patch", call_id, payload=payload)
+        event = self._event_by("", "call_id", call_id)
         if "revision" in payload:
             assert payload["revision"] == event["revision"]
         for key, value in payload.items():
@@ -768,9 +811,9 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertEqual(contact_id, "carbon-a")
         self.assertIn("Dequeued but failed to start", result)
 
-    def test_call_bridge_ignores_empty_correlations_then_mirrors_transcript(self):
+    def test_call_bridge_creates_standalone_cards_and_mirrors_transcript(self):
         client = FakeWorkClient()
-        unattached = work_updates.record_outbound_call(
+        outbound = work_updates.record_outbound_call(
             "carbon-a",
             target_kind="manager",
             target_id="carbon-b",
@@ -778,22 +821,182 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             message="No active task yet.",
             client=client,
         )
-        work_updates.record_inbound_call(
+        inbound = work_updates.record_inbound_call(
             "carbon-b",
             source_kind="manager",
             source_id="carbon-a",
             source_name="Ada's manager",
             message="No active task yet.",
-            outbound=unattached,
+            outbound=outbound,
             client=client,
         )
+        continuation = work_updates.record_outbound_call(
+            "carbon-b",
+            target_kind="manager",
+            target_id="carbon-a",
+            target_name="Ada's manager",
+            message="Received.",
+            client=client,
+        )
+
+        self.assertEqual(outbound["task_id"], "")
+        self.assertTrue(outbound["call_id"])
+        self.assertTrue(outbound["work_event_id"])
+        self.assertEqual(inbound["task_id"], "")
+        self.assertTrue(inbound["call_id"])
+        self.assertTrue(continuation["continuation"])
+        self.assertEqual(continuation["call_id"], inbound["call_id"])
+        outbound_event = client._event_by("", "call_id", outbound["call_id"])
+        inbound_event = client._event_by("", "call_id", inbound["call_id"])
+        self.assertEqual(outbound_event["room_id"], "room-a")
+        self.assertEqual(inbound_event["room_id"], "room-b")
+        self.assertEqual(
+            [row["body"] for row in outbound_event["transcript"]],
+            ["No active task yet.", "Received."],
+        )
+        self.assertEqual(
+            [row["body"] for row in inbound_event["transcript"]],
+            ["No active task yet.", "Received."],
+        )
         state = work_updates._read_state()
-        self.assertFalse(
-            state["contacts"].get("carbon-a", {}).get("pending_calls")
+        self.assertTrue(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertTrue(state["contacts"]["carbon-b"]["pending_calls"])
+
+        work_updates.WorkUpdates("carbon-a", client=client).execute(
+            {
+                "action": "call/update",
+                "call_id": outbound["call_id"],
+                "data": {"state": "completed"},
+            }
+        )
+        self.assertEqual(outbound_event["state"], "completed")
+        state = work_updates._read_state()
+        self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
+
+    def test_prepared_standalone_call_persists_after_async_enqueue(self):
+        client = FakeWorkClient()
+        reference = work_updates.prepare_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please review this.",
+        )
+
+        self.assertEqual(reference["task_id"], "")
+        self.assertTrue(reference["call_id"])
+        self.assertTrue(reference["work_event_id"])
+        self.assertTrue(
+            work_updates.enqueue_outbound_call(
+                reference,
+                target_name="Babbage's manager",
+                message="Please review this.",
+                client=client,
+            )
+        )
+        state = work_updates._read_state()
+        correlation = state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"]
+        self.assertEqual(correlation["outbound_call_id"], reference["call_id"])
+        self.assertTrue(flush_best_effort())
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(event["room_id"], "room-a")
+        self.assertEqual(event["transcript"][0]["body"], "Please review this.")
+
+    def test_rejected_inbound_enqueue_discards_unpublished_card_reference(self):
+        outbound = {
+            "owner_contact_id": "carbon-a",
+            "task_id": "",
+            "call_id": "call-outbound",
+            "work_event_id": "event-outbound",
+        }
+        with mock.patch.object(
+            work_updates,
+            "submit_best_effort",
+            return_value=False,
+        ):
+            inbound = work_updates.enqueue_inbound_call(
+                "carbon-b",
+                source_kind="manager",
+                source_id="carbon-a",
+                source_name="Ada's manager",
+                message="Please review this.",
+                outbound=outbound,
+                client=FakeWorkClient(),
+            )
+
+        self.assertEqual(inbound["call_id"], "")
+        self.assertEqual(inbound["work_event_id"], "")
+        state = work_updates._read_state()
+        for owner, peer in (
+            ("carbon-a", "carbon-b"),
+            ("carbon-b", "carbon-a"),
+        ):
+            correlation = state["contacts"][owner]["pending_calls"][peer]
+            self.assertEqual(
+                correlation["outbound_call_id"],
+                "call-outbound",
+            )
+            self.assertEqual(correlation["inbound_call_id"], "")
+            self.assertEqual(correlation["inbound_work_event_id"], "")
+
+    def test_call_update_without_task_id_stays_standalone_after_cache_loss(self):
+        client = FakeWorkClient()
+        runtime = work_updates.WorkUpdates("carbon-a", client=client)
+        runtime.execute(
+            {
+                "action": "call/create",
+                "standalone": True,
+                "data": {
+                    "call_id": "call-standalone",
+                    "work_event_id": "event-standalone",
+                    "target_kind": "manager",
+                    "target_id": "carbon-b",
+                    "target_name": "Babbage's manager",
+                    "state": "in_progress",
+                },
+            }
+        )
+        self._create_task(client, "carbon-a", "unrelated-active-task")
+        state = work_updates._read_state()
+        state["contacts"]["carbon-a"]["standalone_calls"] = {}
+        work_updates._write_state(state)
+
+        runtime.execute(
+            {
+                "action": "call/update",
+                "call_id": "call-standalone",
+                "data": {"state": "completed"},
+            }
+        )
+
+        self.assertEqual(
+            client.requests[-1][0:2],
+            ("work_standalone_call_patch", ("call-standalone",)),
         )
         self.assertFalse(
-            state["contacts"].get("carbon-b", {}).get("pending_calls")
+            any(
+                name == "work_call_patch"
+                for name, _ids, _payload in client.requests
+            )
         )
+
+    def test_standalone_call_publication_failure_is_isolated(self):
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="The real message must remain independent.",
+            client=ExplodingClient(),
+        )
+
+        self.assertEqual(reference, {})
+        state = work_updates._read_state()
+        self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
+
+    def test_task_linked_call_bridge_still_mirrors_transcript(self):
+        client = FakeWorkClient()
 
         self._create_task(client, "carbon-a", "task-a")
         outbound = work_updates.record_outbound_call(
@@ -823,7 +1026,6 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=client,
         )
 
-        self.assertFalse(continuation.get("unattached"))
         self.assertTrue(continuation["continuation"])
         self.assertEqual(continuation["owner_contact_id"], "carbon-b")
         self.assertEqual(continuation["task_id"], "task-b")
@@ -837,6 +1039,30 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertEqual(
             [row["body"] for row in inbound_event["transcript"]],
             ["Can you confirm the colour?", "Use blue."],
+        )
+
+    def test_standalone_call_outer_event_can_be_correlated_for_replies(self):
+        interface._remember_work_event_reference(
+            {
+                "event_id": "outer-call-event",
+                "room_id": "room-a",
+                "type": "m.work_event",
+                "content": {
+                    "task_id": None,
+                    "kind": "call",
+                    "work_event_id": "standalone-call-event",
+                    "call_id": "standalone-call",
+                },
+            }
+        )
+
+        self.assertEqual(
+            interface._work_event_reference("room-a", "outer-call-event"),
+            {
+                "kind": "call",
+                "work_event_id": "standalone-call-event",
+                "call_id": "standalone-call",
+            },
         )
 
     def test_reply_to_outer_blocker_event_reaches_manager_context(self):

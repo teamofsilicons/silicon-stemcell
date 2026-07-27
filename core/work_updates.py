@@ -116,6 +116,30 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 if not updated_at or now - updated_at > PENDING_CALL_TTL_SECONDS:
                     pending.pop(peer_id, None)
 
+        standalone_calls = contact.get("standalone_calls")
+        if isinstance(standalone_calls, dict):
+            for call_id, call in list(standalone_calls.items()):
+                if not isinstance(call, dict):
+                    standalone_calls.pop(call_id, None)
+                    continue
+                cached_at = _timestamp(call.get("_cached_at"))
+                if (
+                    call.get("state") in {"completed", "failed", "cancelled"}
+                    and cached_at
+                    and now - cached_at > TERMINAL_TASK_TTL_SECONDS
+                ):
+                    standalone_calls.pop(call_id, None)
+            if len(standalone_calls) > 200:
+                ordered = sorted(
+                    (
+                        (_timestamp(call.get("_cached_at")), call_id)
+                        for call_id, call in standalone_calls.items()
+                        if isinstance(call, dict)
+                    )
+                )
+                for _cached_at, call_id in ordered[: len(standalone_calls) - 200]:
+                    standalone_calls.pop(call_id, None)
+
         tasks = contact.get("tasks")
         if not isinstance(tasks, dict):
             continue
@@ -162,6 +186,7 @@ def _contact_state(state: dict[str, Any], contact_id: str) -> dict[str, Any]:
             "tasks": {},
             "workers": {},
             "pending_calls": {},
+            "standalone_calls": {},
         },
     )
     contact.setdefault("active_task_id", "")
@@ -169,6 +194,7 @@ def _contact_state(state: dict[str, Any], contact_id: str) -> dict[str, Any]:
     contact.setdefault("tasks", {})
     contact.setdefault("workers", {})
     contact.setdefault("pending_calls", {})
+    contact.setdefault("standalone_calls", {})
     return contact
 
 
@@ -223,9 +249,9 @@ def _public_result(value: Any) -> str:
 
 
 def _has_call_reference(correlation: dict[str, Any], prefix: str) -> bool:
-    return all(
-        correlation.get(f"{prefix}_{field}")
-        for field in ("owner_contact_id", "task_id", "call_id")
+    return bool(
+        correlation.get(f"{prefix}_owner_contact_id")
+        and correlation.get(f"{prefix}_call_id")
     )
 
 
@@ -246,6 +272,9 @@ def _call_reference_for_owner(
                 ),
                 "task_id": str(correlation.get(f"{prefix}_task_id") or ""),
                 "call_id": str(correlation.get(f"{prefix}_call_id") or ""),
+                "work_event_id": str(
+                    correlation.get(f"{prefix}_work_event_id") or ""
+                ),
             }
     return {}
 
@@ -412,6 +441,14 @@ def _task_cache(contact_id: str, task_id: str) -> dict[str, Any]:
         return deepcopy(task) if isinstance(task, dict) else {}
 
 
+def _standalone_call_cache(contact_id: str, call_id: str) -> dict[str, Any]:
+    with _state_guard():
+        state = _read_state()
+        contact = _contact_state(state, contact_id)
+        call = contact["standalone_calls"].get(call_id)
+        return deepcopy(call) if isinstance(call, dict) else {}
+
+
 def _remember_task(contact_id: str, snapshot: dict[str, Any]) -> None:
     task_id = str(snapshot.get("task_id") or "")
     if not task_id:
@@ -453,6 +490,16 @@ def _remember_task(contact_id: str, snapshot: dict[str, Any]) -> None:
 
 def _remember_event(contact_id: str, snapshot: dict[str, Any]) -> None:
     task_id = str(snapshot.get("task_id") or "")
+    kind = str(snapshot.get("kind") or "")
+    if not task_id and kind == "call" and snapshot.get("call_id"):
+        with _state_guard():
+            state = _read_state()
+            contact = _contact_state(state, contact_id)
+            call = deepcopy(snapshot)
+            call["_cached_at"] = time.time()
+            contact["standalone_calls"][str(snapshot["call_id"])] = call
+            _write_state(state)
+        return
     if not task_id:
         return
     with _state_guard():
@@ -471,7 +518,6 @@ def _remember_event(contact_id: str, snapshot: dict[str, Any]) -> None:
         task.setdefault("events", {})
         task.setdefault("worker_groups", {})
         task.setdefault("calls", {})
-        kind = str(snapshot.get("kind") or "")
         work_event_id = str(snapshot.get("work_event_id") or "")
         if work_event_id:
             task["events"][work_event_id] = deepcopy(snapshot)
@@ -798,11 +844,16 @@ class WorkUpdates:
         return result
 
     def _call_create(self, spec: dict[str, Any], payload: dict[str, Any]) -> Any:
-        task_id = self._task_id(spec.get("task_id"))
+        force_standalone = bool(spec.get("standalone"))
+        task_id = (
+            ""
+            if force_standalone
+            else str(spec.get("task_id") or active_task_id(self.contact_id) or "")
+        )
         call_id = str(payload.get("call_id") or _new_id("call", payload.get("target_id")))
         event_id = str(
             payload.get("work_event_id")
-            or _stable_id("call-event", task_id, call_id)
+            or _stable_id("call-event", task_id or self.room_id, call_id)
         )
         payload.update(
             {
@@ -815,28 +866,49 @@ class WorkUpdates:
         payload.setdefault("body", "")
         payload.setdefault("blocks", [])
         payload.setdefault("transcript", [])
-        payload.setdefault("client_id", _stable_id("create-call", task_id, call_id))
-        result = self.client.work_call_create(task_id, payload)
+        payload.setdefault(
+            "client_id",
+            _stable_id("create-call", task_id or self.room_id, call_id),
+        )
+        if task_id:
+            result = self.client.work_call_create(task_id, payload)
+        else:
+            payload["room_id"] = self.room_id
+            result = self.client.work_standalone_call_create(payload)
         _remember_event(self.contact_id, _result_data(result))
-        self._refresh_task(task_id)
+        if task_id:
+            self._refresh_task(task_id)
         return result
 
     def _call_update(self, spec: dict[str, Any], payload: dict[str, Any]) -> Any:
-        task_id = self._task_id(spec.get("task_id"))
         call_id = str(spec.get("call_id") or payload.pop("call_id", ""))
         if not call_id:
             raise WorkUpdateError("call/update requires call_id.")
+        explicit_task_id = str(
+            spec.get("task_id") or payload.pop("task_id", "") or ""
+        )
+        cached_standalone = _standalone_call_cache(self.contact_id, call_id)
+        # Omitted task_id is the standalone route by contract. Never infer an
+        # unrelated active task after local cache/correlation loss.
+        task_id = "" if spec.get("standalone") else explicit_task_id
         if payload.get("state") and payload["state"] not in CALL_STATES:
             raise WorkUpdateError("call/update state is invalid.")
         if "revision" not in payload:
-            cached = _task_cache(self.contact_id, task_id)
-            call = (cached.get("calls") or {}).get(call_id, {})
+            if task_id:
+                cached = _task_cache(self.contact_id, task_id)
+                call = (cached.get("calls") or {}).get(call_id, {})
+            else:
+                call = cached_standalone
             revision = call.get("revision") if isinstance(call, dict) else None
             if isinstance(revision, int) and not isinstance(revision, bool):
                 payload["revision"] = revision
-        result = self.client.work_call_patch(task_id, call_id, payload)
+        if task_id:
+            result = self.client.work_call_patch(task_id, call_id, payload)
+        else:
+            result = self.client.work_standalone_call_patch(call_id, payload)
         _remember_event(self.contact_id, _result_data(result))
-        self._refresh_task(task_id)
+        if task_id:
+            self._refresh_task(task_id)
         if payload.get("state") in {"completed", "failed", "cancelled"}:
             _clear_call_correlations(call_id)
         return result
@@ -934,7 +1006,12 @@ def _discard_call_reference(call_id: str, prefix: str) -> None:
                     or correlation.get(f"{prefix}_call_id") != call_id
                 ):
                     continue
-                for field in ("owner_contact_id", "task_id", "call_id"):
+                for field in (
+                    "owner_contact_id",
+                    "task_id",
+                    "call_id",
+                    "work_event_id",
+                ):
                     correlation[f"{prefix}_{field}"] = ""
                 correlation["updated_at"] = time.time()
                 if not (
@@ -945,6 +1022,38 @@ def _discard_call_reference(call_id: str, prefix: str) -> None:
                 changed = True
         if changed:
             _write_state(state)
+
+
+def _remember_outbound_call_reference(reference: dict[str, Any]) -> None:
+    """Durably retain the local side once primary message delivery is accepted."""
+    contact_id = str(reference.get("owner_contact_id") or "")
+    target_id = str(reference.get("target_id") or "")
+    call_id = str(reference.get("call_id") or "")
+    if (
+        reference.get("continuation")
+        or not contact_id
+        or not target_id
+        or not call_id
+    ):
+        return
+    correlation = {
+        "outbound_owner_contact_id": contact_id,
+        "outbound_task_id": str(reference.get("task_id") or ""),
+        "outbound_call_id": call_id,
+        "outbound_work_event_id": str(reference.get("work_event_id") or ""),
+        "inbound_owner_contact_id": "",
+        "inbound_task_id": "",
+        "inbound_call_id": "",
+        "inbound_work_event_id": "",
+        "source_kind": str(reference.get("target_kind") or ""),
+        "source_id": target_id,
+        "updated_at": time.time(),
+    }
+    with _state_guard():
+        state = _read_state()
+        contact = _contact_state(state, contact_id)
+        contact["pending_calls"][target_id] = correlation
+        _write_state(state)
 
 
 def record_worker_started(
@@ -1100,19 +1209,17 @@ def prepare_outbound_call(
             "target_id": target_id,
             "continuation": True,
         }
-    if not task_id:
-        return {
-            "owner_contact_id": contact_id,
-            "task_id": "",
-            "call_id": "",
-            "target_kind": target_kind,
-            "target_id": target_id,
-            "unattached": True,
-        }
+    call_id = _new_id("call", target_id)
     return {
         "owner_contact_id": contact_id,
         "task_id": task_id,
-        "call_id": _new_id("call", target_id),
+        "call_id": call_id,
+        "work_event_id": _stable_id(
+            "call-event",
+            contact_id,
+            task_id,
+            call_id,
+        ),
         "target_kind": target_kind,
         "target_id": target_id,
     }
@@ -1127,8 +1234,6 @@ def _persist_outbound_call(
 ) -> bool:
     contact_id = str(reference.get("owner_contact_id") or "")
     target_id = str(reference.get("target_id") or "")
-    if reference.get("unattached"):
-        return True
     if reference.get("continuation"):
         with _state_guard():
             state = _read_state()
@@ -1150,8 +1255,9 @@ def _persist_outbound_call(
 
     task_id = str(reference.get("task_id") or "")
     call_id = str(reference.get("call_id") or "")
+    work_event_id = str(reference.get("work_event_id") or "")
     target_kind = str(reference.get("target_kind") or "manager")
-    if not contact_id or not task_id or not call_id:
+    if not contact_id or not call_id:
         return False
     self_name = str(get_own_profile().get("name") or "Silicon manager")
     transcript_id = _new_id("transcript", "outbound")
@@ -1160,14 +1266,11 @@ def _persist_outbound_call(
             {
                 "action": "call/create",
                 "task_id": task_id,
+                "standalone": not bool(task_id),
                 "data": {
                     "call_id": call_id,
-                    "work_event_id": _stable_id(
-                        "call-event",
-                        contact_id,
-                        task_id,
-                        call_id,
-                    ),
+                    "work_event_id": work_event_id
+                    or _stable_id("call-event", contact_id, task_id, call_id),
                     "direction": "outbound",
                     "target_kind": target_kind,
                     "target_id": _safe_fragment(target_id, "unknown"),
@@ -1211,7 +1314,8 @@ def enqueue_outbound_call(
 ) -> bool:
     """Persist a prepared call card after primary delivery has been accepted."""
     owner = str(reference.get("owner_contact_id") or "")
-    return submit_best_effort(
+    _remember_outbound_call_reference(reference)
+    accepted = submit_best_effort(
         _persist_outbound_call,
         dict(reference),
         target_name=target_name,
@@ -1219,6 +1323,9 @@ def enqueue_outbound_call(
         client=client,
         key=f"work-owner:{owner}",
     )
+    if not accepted:
+        _discard_call_reference(str(reference.get("call_id") or ""), "outbound")
+    return accepted
 
 
 def record_outbound_call(
@@ -1240,6 +1347,7 @@ def record_outbound_call(
         message=message,
         task_id=task_id,
     )
+    _remember_outbound_call_reference(reference)
     if not _persist_outbound_call(
         reference,
         target_name=target_name,
@@ -1261,7 +1369,7 @@ def _append_call_entry(
     message: str,
     client: InterfaceClient | None = None,
 ) -> bool:
-    if not owner_contact_id or not task_id or not call_id:
+    if not owner_contact_id or not call_id:
         return False
     try:
         WorkUpdates(owner_contact_id, client=client).execute(
@@ -1269,6 +1377,7 @@ def _append_call_entry(
                 "action": "call/update",
                 "task_id": task_id,
                 "call_id": call_id,
+                "standalone": not bool(task_id),
                 "data": {
                     "state": "in_progress",
                     "transcript": [
@@ -1335,7 +1444,13 @@ def prepare_inbound_call(
     """Allocate and cache both sides of a correlation without network I/O."""
     outbound = dict(outbound or {})
     task_id = active_task_id(contact_id)
-    call_id = _new_id("call", source_id) if task_id else ""
+    call_id = _new_id("call", source_id)
+    work_event_id = _stable_id(
+        "call-event",
+        contact_id,
+        task_id,
+        call_id,
+    )
     correlation = {
         "outbound_owner_contact_id": str(
             outbound.get("owner_contact_id")
@@ -1348,9 +1463,15 @@ def prepare_inbound_call(
         "outbound_call_id": str(
             outbound.get("call_id") or outbound.get("outbound_call_id") or ""
         ),
-        "inbound_owner_contact_id": contact_id if call_id else "",
-        "inbound_task_id": task_id if call_id else "",
+        "outbound_work_event_id": str(
+            outbound.get("work_event_id")
+            or outbound.get("outbound_work_event_id")
+            or ""
+        ),
+        "inbound_owner_contact_id": contact_id,
+        "inbound_task_id": task_id,
         "inbound_call_id": call_id,
+        "inbound_work_event_id": work_event_id,
         "source_kind": source_kind,
         "source_id": source_id,
         "updated_at": time.time(),
@@ -1369,9 +1490,10 @@ def prepare_inbound_call(
                 owner["pending_calls"][contact_id] = deepcopy(correlation)
             _write_state(state)
     reference = {
-        "owner_contact_id": contact_id if call_id else "",
-        "task_id": task_id if call_id else "",
+        "owner_contact_id": contact_id,
+        "task_id": task_id,
         "call_id": call_id,
+        "work_event_id": work_event_id,
         "source_kind": source_kind,
         "source_id": source_id,
         "source_name": source_name,
@@ -1388,8 +1510,9 @@ def _persist_inbound_call(
     contact_id = str(reference.get("owner_contact_id") or "")
     task_id = str(reference.get("task_id") or "")
     call_id = str(reference.get("call_id") or "")
-    if not contact_id or not task_id or not call_id:
-        return True
+    work_event_id = str(reference.get("work_event_id") or "")
+    if not contact_id or not call_id:
+        return False
     source_kind = str(reference.get("source_kind") or "")
     source_id = str(reference.get("source_id") or "")
     source_name = str(reference.get("source_name") or "")
@@ -1400,14 +1523,11 @@ def _persist_inbound_call(
             {
                 "action": "call/create",
                 "task_id": task_id,
+                "standalone": not bool(task_id),
                 "data": {
                     "call_id": call_id,
-                    "work_event_id": _stable_id(
-                        "call-event",
-                        contact_id,
-                        task_id,
-                        call_id,
-                    ),
+                    "work_event_id": work_event_id
+                    or _stable_id("call-event", contact_id, task_id, call_id),
                     "direction": "inbound",
                     "target_kind": speaker_kind,
                     "target_id": _safe_fragment(source_id, "unknown"),
@@ -1460,16 +1580,25 @@ def enqueue_inbound_call(
         message=message,
         outbound=outbound,
     )
-    submit_best_effort(
+    accepted = submit_best_effort(
         _persist_inbound_call,
         reference,
         client=client,
         key=f"work-owner:{contact_id}",
     )
+    if not accepted:
+        _discard_call_reference(str(reference.get("call_id") or ""), "inbound")
+        return {
+            "owner_contact_id": "",
+            "task_id": "",
+            "call_id": "",
+            "work_event_id": "",
+        }
     return {
         "owner_contact_id": str(reference.get("owner_contact_id") or ""),
         "task_id": str(reference.get("task_id") or ""),
         "call_id": str(reference.get("call_id") or ""),
+        "work_event_id": str(reference.get("work_event_id") or ""),
     }
 
 
@@ -1493,11 +1622,17 @@ def record_inbound_call(
         outbound=outbound,
     )
     if not _persist_inbound_call(reference, client=client):
-        return {"owner_contact_id": "", "task_id": "", "call_id": ""}
+        return {
+            "owner_contact_id": "",
+            "task_id": "",
+            "call_id": "",
+            "work_event_id": "",
+        }
     return {
         "owner_contact_id": str(reference.get("owner_contact_id") or ""),
         "task_id": str(reference.get("task_id") or ""),
         "call_id": str(reference.get("call_id") or ""),
+        "work_event_id": str(reference.get("work_event_id") or ""),
     }
 
 

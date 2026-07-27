@@ -113,3 +113,71 @@ class DiagnosticHandoffTests(unittest.TestCase):
         self.assertIn("first", delivered["silicon-b"])
         next_delivery = messages.check_manager_messages()
         self.assertIn("second", next_delivery["silicon-b"])
+
+    def test_lineage_continuation_does_not_create_a_second_inbound_card(self):
+        activity = mock.Mock()
+        activity.reference.return_value = {"activity_id": "lineage-a"}
+        coordinator = mock.Mock()
+        coordinator.acquire_activity.return_value = activity
+        coordinator.enqueue_continuation.return_value = True
+        continuation = {
+            "owner_contact_id": "silicon-b",
+            "task_id": "",
+            "call_id": "call-b",
+            "work_event_id": "event-b",
+            "continuation": True,
+        }
+
+        with (
+            mock.patch(
+                "core.maintenance.current_activity",
+                return_value=object(),
+            ),
+            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch("core.background.submit_best_effort") as submit,
+        ):
+            accepted = messages._queue_lineage_handoff(
+                "silicon-b",
+                "carbon-a",
+                "Here is the answer.",
+                {},
+                continuation,
+            )
+
+        self.assertTrue(accepted)
+        submit.assert_not_called()
+        queued_context = coordinator.enqueue_continuation.call_args.args[1]
+        self.assertIn('"outbound_call_id": "call-b"', queued_context)
+
+    def test_new_lineage_call_still_queues_inbound_card_creation(self):
+        activity = mock.Mock()
+        activity.reference.return_value = {"activity_id": "lineage-a"}
+        coordinator = mock.Mock()
+        coordinator.acquire_activity.return_value = activity
+        coordinator.enqueue_continuation.return_value = True
+        work_call = {
+            "owner_contact_id": "carbon-a",
+            "task_id": "",
+            "call_id": "call-a",
+            "work_event_id": "event-a",
+        }
+
+        with (
+            mock.patch(
+                "core.maintenance.current_activity",
+                return_value=object(),
+            ),
+            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch("core.background.submit_best_effort") as submit,
+        ):
+            accepted = messages._queue_lineage_handoff(
+                "carbon-a",
+                "silicon-b",
+                "Please take a look.",
+                {},
+                work_call,
+            )
+
+        self.assertTrue(accepted)
+        submit.assert_called_once()
+        self.assertIs(submit.call_args.args[0], messages._record_inbound_work_call)

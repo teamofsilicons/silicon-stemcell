@@ -161,6 +161,8 @@ class WorkUpdateTransportTest(unittest.TestCase):
         )
         self.client.work_call_create("task-1", payload)
         self.client.work_call_patch("task-1", "call-1", payload)
+        self.client.work_standalone_call_create(payload)
+        self.client.work_standalone_call_patch("call-standalone", payload)
 
         expected_prefixes = [
             ["work", "task", "create"],
@@ -183,6 +185,8 @@ class WorkUpdateTransportTest(unittest.TestCase):
             ],
             ["work", "call", "create", "task-1"],
             ["work", "call", "patch", "task-1", "call-1"],
+            ["work", "call", "create"],
+            ["work", "call", "patch", "call-standalone"],
         ]
         self.assertEqual(
             self.run.call_args_list,

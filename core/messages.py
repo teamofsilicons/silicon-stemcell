@@ -107,6 +107,7 @@ def _queue_lineage_handoff(
         if isinstance(work_call, dict) and work_call:
             correlation = {
                 "outbound_task_id": work_call.get("task_id"),
+                "outbound_work_event_id": work_call.get("work_event_id"),
                 "outbound_call_id": work_call.get("call_id"),
             }
             values = {key: value for key, value in correlation.items() if value}
@@ -130,7 +131,11 @@ def _queue_lineage_handoff(
                 Diagnostics.register_pending_context(to_contact_id, diagnostics)
             except Exception:
                 pass
-        if isinstance(work_call, dict) and work_call:
+        if (
+            isinstance(work_call, dict)
+            and work_call
+            and not work_call.get("continuation")
+        ):
             try:
                 from core.background import submit_best_effort
 
@@ -273,8 +278,10 @@ def _check_manager_messages():
             if isinstance(work_call, dict) and work_call:
                 correlation = {
                     "outbound_task_id": work_call.get("task_id"),
+                    "outbound_work_event_id": work_call.get("work_event_id"),
                     "outbound_call_id": work_call.get("call_id"),
                     "inbound_task_id": inbound_call.get("task_id"),
+                    "inbound_work_event_id": inbound_call.get("work_event_id"),
                     "inbound_call_id": inbound_call.get("call_id"),
                 }
                 parts.append(

@@ -252,13 +252,14 @@ def _make_provider_progress_handler(carbon_id, group):
                 f"{progress.get('tool_name') or progress.get('path') or progress.get('query') or status}"
             )
         )
-        send_progress(
-            carbon_id,
-            group,
-            _provider_progress_state(progress),
-            note,
-            frame_key=frame_key,
-        )
+        if group:
+            send_progress(
+                carbon_id,
+                group,
+                _provider_progress_state(progress),
+                note,
+                frame_key=frame_key,
+            )
 
     return on_progress
 
@@ -449,13 +450,27 @@ def _tool_progress_note(tool_spec):
 
 def _message_failure_status(carbon_id, target_kind, target_id, error):
     message = f"Message failed: {target_kind} '{target_id}' could not be reached. {error}"
-    send_progress(
-        carbon_id,
-        current_manager_activity_group(carbon_id) or f"manager:{carbon_id}",
-        "calling",
-        message,
-    )
+    group = _manager_progress_group(carbon_id)
+    if group:
+        send_progress(
+            carbon_id,
+            group,
+            "calling",
+            message,
+        )
     return message
+
+
+def _manager_progress_group(carbon_id):
+    """Return the visible group, suppressing private manager continuations."""
+    group = current_manager_activity_group(carbon_id)
+    if group:
+        return group
+    trace = Diagnostics.get_active_run(carbon_id)
+    if trace is not None and trace.meta.get("_manager_running"):
+        return ""
+    # Preserve progress for explicit tool execution outside run_all_managers.
+    return f"manager:{carbon_id}"
 
 
 def _work_reference_suffix(reference, *keys):
@@ -571,12 +586,14 @@ def _execute_single_tool(tool_spec, carbon_id):
 
     progress_note = _tool_progress_note(tool_spec)
     if progress_note:
-        send_progress(
-            carbon_id,
-            current_manager_activity_group(carbon_id) or f"manager:{carbon_id}",
-            _tool_progress_state(tool_spec),
-            progress_note,
-        )
+        group = _manager_progress_group(carbon_id)
+        if group:
+            send_progress(
+                carbon_id,
+                group,
+                _tool_progress_state(tool_spec),
+                progress_note,
+            )
 
     if tool_name == "work_update":
         return f"Tool 'work_update': {execute_work_update(tool_spec, carbon_id)}"
@@ -625,17 +642,25 @@ def _execute_single_tool(tool_spec, carbon_id):
                 target_type="carbon",
                 work_call=work_call,
             )
+            work_call_accepted = False
             try:
-                enqueue_outbound_call(
-                    work_call,
-                    target_name=target_name,
-                    message=message,
+                work_call_accepted = bool(
+                    enqueue_outbound_call(
+                        work_call,
+                        target_name=target_name,
+                        message=message,
+                    )
                 )
             except Exception:
                 pass
             return (
                 f"Tool 'message_manager' (to {target_id}): {status}"
-                + _work_reference_suffix(work_call, "task_id", "call_id")
+                + _work_reference_suffix(
+                    work_call if work_call_accepted else {},
+                    "task_id",
+                    "work_event_id",
+                    "call_id",
+                )
             )
 
         if target_silicon_id:
@@ -668,17 +693,25 @@ def _execute_single_tool(tool_spec, carbon_id):
                 target_type="silicon",
                 work_call=work_call,
             )
+            work_call_accepted = False
             try:
-                enqueue_outbound_call(
-                    work_call,
-                    target_name=target_name,
-                    message=message,
+                work_call_accepted = bool(
+                    enqueue_outbound_call(
+                        work_call,
+                        target_name=target_name,
+                        message=message,
+                    )
                 )
             except Exception:
                 pass
             return (
                 f"Tool 'message_manager' (to {target_id}): {status}"
-                + _work_reference_suffix(work_call, "task_id", "call_id")
+                + _work_reference_suffix(
+                    work_call if work_call_accepted else {},
+                    "task_id",
+                    "work_event_id",
+                    "call_id",
+                )
             )
 
         return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
@@ -1299,25 +1332,31 @@ def run_all_managers(context_by_carbon):
                 for carbon_id, text in pending.items():
                     trace = get_trace(carbon_id, text)
                     group = activity_groups.get(carbon_id)
-                    if not group:
+                    visible_activity = (
+                        trace is None
+                        or str(getattr(trace, "trigger", "") or "") == "message"
+                    )
+                    if not group and visible_activity:
                         group = begin_manager_activity(
                             carbon_id,
                             getattr(trace, "run_id", "") if trace is not None else "",
                         )
                         activity_groups[carbon_id] = group
-                        set_active_task_timer(
-                            carbon_id,
-                            timer_state="running",
-                        )
+                    group = group or ""
+                    set_active_task_timer(
+                        carbon_id,
+                        timer_state="running",
+                    )
                     on_tools = _make_mid_stream_handler(carbon_id)
                     on_progress = _make_provider_progress_handler(carbon_id, group)
-                    send_progress(
-                        carbon_id,
-                        group,
-                        "thinking",
-                        "calling manager",
-                        frame_key=f"manager:round:{iteration}",
-                    )
+                    if group:
+                        send_progress(
+                            carbon_id,
+                            group,
+                            "thinking",
+                            "calling manager",
+                            frame_key=f"manager:round:{iteration}",
+                        )
                     future = executor.submit(
                         _instrumented_manager_call, carbon_id, text, trace,
                         iteration, on_tools, on_progress,
