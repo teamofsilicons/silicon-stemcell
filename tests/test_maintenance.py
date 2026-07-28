@@ -711,3 +711,58 @@ class RuntimeGatingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterruptedDrainUnwindTests(unittest.TestCase):
+    """An update abandoned during drain must be able to unwind on its own.
+
+    A transaction interrupted before the stop boundary never leaves "draining",
+    but the recovery path asks for "rolling_back" regardless. Without that edge
+    the request was refused and the transaction stayed interrupted, so every
+    later update failed preflight with "cannot preflight over an interrupted
+    update" until a human walked the state machine by hand. Five silicons on one
+    host wedged this way.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.coordinator = MaintenanceCoordinator(self.root)
+
+    def _drain(self):
+        status = self.coordinator.request_drain()
+        return status["maintenance_id"]
+
+    def test_a_draining_update_can_roll_back(self):
+        mid = self._drain()
+        self.assertEqual(self.coordinator.public_status()["phase"], "draining")
+
+        status = self.coordinator.transition("rolling_back", maintenance_id=mid)
+        self.assertEqual(status["phase"], "rolling_back")
+
+        status = self.coordinator.transition("available", maintenance_id=mid)
+        self.assertEqual(status["phase"], "available")
+        self.assertEqual(status["last_outcome"], "rolled_back")
+
+    def test_abandoning_a_drain_is_not_reported_as_updated(self):
+        mid = self._drain()
+        status = self.coordinator.transition("available", maintenance_id=mid)
+        self.assertEqual(status["phase"], "available")
+        self.assertEqual(
+            status["last_outcome"],
+            "cancelled",
+            "a Silicon still on its old version must not report 'updated'",
+        )
+
+    def test_a_completed_update_still_reports_updated(self):
+        mid = self._drain()
+        state_path = self.root / "core" / "interface_state" / "maintenance.json"
+        data = json.loads(state_path.read_text())
+        data["safe_to_stop"] = True
+        state_path.write_text(json.dumps(data))
+
+        self.coordinator.transition("updating", maintenance_id=mid)
+        self.coordinator.transition("validating", maintenance_id=mid)
+        status = self.coordinator.transition("available", maintenance_id=mid)
+        self.assertEqual(status["last_outcome"], "updated")

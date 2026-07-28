@@ -445,7 +445,14 @@ class MaintenanceCoordinator:
                 raise RuntimeError("maintenance id does not match the active update")
             current = str(state.get("phase") or "available")
             allowed = {
-                "draining": {"updating", "available"},
+                # A drain that is abandoned must be able to unwind. An update
+                # interrupted before the stop boundary never leaves "draining",
+                # and the recovery path asks for "rolling_back" regardless. With
+                # no such edge the request was refused, the transaction stayed
+                # interrupted, and every later update failed its preflight with
+                # "cannot preflight over an interrupted update" until someone
+                # walked the state machine by hand.
+                "draining": {"updating", "available", "rolling_back"},
                 "updating": {"validating", "rolling_back"},
                 "validating": {"available", "rolling_back"},
                 "rolling_back": {"available"},
@@ -460,9 +467,15 @@ class MaintenanceCoordinator:
             state["phase"] = phase
             state["safe_to_stop"] = False
             if phase == "available":
-                state["last_outcome"] = (
-                    "rolled_back" if current == "rolling_back" else "updated"
-                )
+                # Report what actually happened. Only a run that reached
+                # validation actually updated anything; going straight from
+                # "draining" means the update was abandoned before it touched
+                # the instance, and recording that as "updated" misreports a
+                # Silicon still on its old version as freshly upgraded.
+                state["last_outcome"] = {
+                    "rolling_back": "rolled_back",
+                    "draining": "cancelled",
+                }.get(current, "updated")
                 state["participants"] = {}
                 self._emit(
                     state,
