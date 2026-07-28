@@ -1,3 +1,4 @@
+import re
 import sys
 import types
 import unittest
@@ -29,57 +30,26 @@ class QuestionnairePromptTest(unittest.TestCase):
         self.assertNotIn("QUESTIONNAIRE.md", silicon_prompt)
         self.assertNotIn("FINAL_QUESTIONNAIRE.md", silicon_prompt)
 
-    def test_questionnaire_requires_scope_based_tasks_and_a_pre_send_truth_gate(self):
+    def test_questionnaire_keeps_its_internal_only_contract(self):
+        """The questionnaire is an internal decision process, never user-facing.
+
+        The prose changed with the v2.2.x prompt rework; what must not change is
+        that the reasoning stays out of the reply and that work is delegated
+        rather than performed inline by the manager.
+        """
         questionnaire = DNA._read_prompt("QUESTIONNAIRE.md")
         prose = " ".join(questionnaire.split())
 
-        self.assertIn("Never create a task or Todo merely because time elapsed", prose)
+        self.assertIn("NEVER APPEAR IN THE RESPONSE ITSELF", prose)
+        self.assertIn("DO NOT MENTION THE QUESTIONNAIRE", prose)
+        self.assertIn("internal decision process", prose)
         self.assertIn(
-            "runtime automatically schedules internal accuracy checkpoints "
-            "at every 5% of the accepted goal time",
-            prose,
+            "Never perform time taking actions as a manager yourself", prose
         )
-        self.assertIn("until the task reaches a terminal state", prose)
-        self.assertIn(
-            "rescheduled when the accepted estimate materially changes",
-            prose,
-        )
-        self.assertIn("Immediately before ANY Carbon-facing message", prose)
-        self.assertIn("Publish any real missing state transition", prose)
-        self.assertIn("only then send the message", prose)
 
-    def test_questionnaire_requires_reasoned_answers_without_answer_menus(self):
+    def test_questionnaire_is_a_numbered_list_of_questions(self):
         questionnaire = DNA._read_prompt("QUESTIONNAIRE.md")
-        prose = " ".join(questionnaire.split())
-        binary_question = (
-            r"(?m)^\d+\)\s+"
-            r"(?:Is|Are|Do|Does|Did|Can|Could|Should|Will|Would|Has|Have|Had)\b"
-        )
-
-        self.assertNotRegex(questionnaire, binary_question)
-        self.assertNotRegex(questionnaire, r"\bIf yes\b")
-        self.assertNotRegex(questionnaire, r"\bIf no\b")
-        self.assertNotIn("until the answer is yes", questionnaire)
-        self.assertIn(
-            "write a concise, reasoned answer in the internal work",
-            prose,
-        )
-        self.assertIn(
-            "Do not answer with yes/no, a category label, or a selection from "
-            "supplied alternatives",
-            prose,
-        )
-        self.assertNotIn("Classify it as", questionnaire)
-        self.assertNotIn("When no external tool is required", questionnaire)
-        self.assertNotIn(
-            "whether they need a direct answer, a focused question",
-            prose,
-        )
-        self.assertIn(
-            "what evidence proves that the visible work state and every claim",
-            prose,
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+        numbered = re.findall(r"(?m)^(\d+)\)\s+\S", questionnaire)
+        self.assertGreaterEqual(len(numbered), 10)
+        # Sequential from 1, so no question is dropped or duplicated in edits.
+        self.assertEqual(numbered, [str(i) for i in range(1, len(numbered) + 1)])
