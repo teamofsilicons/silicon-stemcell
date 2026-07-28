@@ -18,6 +18,24 @@ _stop: threading.Event | None = None
 _thread: threading.Thread | None = None
 _ready_at = 0.0
 
+_CALL_RETRY_HEALTH_FIELDS = (
+    "pending",
+    "failed",
+    "dead_letter",
+    "total",
+    "archived_dead_letter",
+    "overflow_count",
+    "last_overflow_at",
+    "oldest_created_at",
+    "next_attempt_at",
+)
+_MANAGER_QUEUE_HEALTH_FIELDS = (
+    "queued",
+    "capacity",
+    "overflow_count",
+    "last_overflow_at",
+)
+
 
 def _phase(provider: Callable[[], str] | None) -> str:
     if provider is None:
@@ -27,6 +45,58 @@ def _phase(provider: Callable[[], str] | None) -> str:
     except Exception:
         value = "unknown"
     return value[:64]
+
+
+def _call_retry_health() -> dict:
+    """Return a fixed, body-free call-delivery health projection."""
+    try:
+        from core.work_updates import pending_call_update_retries
+
+        source = pending_call_update_retries(persist_prune=False)
+    except Exception:
+        return {"available": False}
+    result = {"available": True}
+    for field in _CALL_RETRY_HEALTH_FIELDS:
+        value = source.get(field, 0)
+        if field in {
+            "last_overflow_at",
+            "oldest_created_at",
+            "next_attempt_at",
+        }:
+            try:
+                result[field] = float(value or 0.0)
+            except (TypeError, ValueError):
+                result[field] = 0.0
+        else:
+            try:
+                result[field] = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                result[field] = 0
+    return result
+
+
+def _manager_queue_health() -> dict:
+    """Return a fixed, body-free manager-queue health projection."""
+    try:
+        from core.messages import manager_queue_health
+
+        source = manager_queue_health()
+    except Exception:
+        return {"available": False}
+    result = {"available": True}
+    for field in _MANAGER_QUEUE_HEALTH_FIELDS:
+        value = source.get(field, 0)
+        if field == "last_overflow_at":
+            try:
+                result[field] = float(value or 0.0)
+            except (TypeError, ValueError):
+                result[field] = 0.0
+        else:
+            try:
+                result[field] = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                result[field] = 0
+    return result
 
 
 def publish_runtime_health(
@@ -46,6 +116,8 @@ def publish_runtime_health(
         "ready_at": _ready_at,
         "heartbeat_at": now,
         "phase": _phase(phase_provider),
+        "call_retry": _call_retry_health(),
+        "manager_queue": _manager_queue_health(),
     }
     write_json(HEALTH_FILE, value)
     return value

@@ -6,6 +6,7 @@ state, processed watermarks, and downloaded media paths.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -14,13 +15,11 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
-
 import requests
 
 from core.background import submit_best_effort
@@ -47,6 +46,8 @@ _listener_thread: threading.Thread | None = None
 _listener_lock = threading.Lock()
 _listener_stop: threading.Event | None = None
 _event_queue: "queue.Queue[InboxRecord | dict[str, Any]]" = queue.Queue()
+_inbox_retry_records: "deque[InboxRecord]" = deque()
+_inbox_retry_lock = threading.Lock()
 _activity_condition = threading.Condition()
 _activity_pending = 0
 _last_listener_error = 0.0
@@ -73,6 +74,33 @@ class InboxRecord:
 
 class InterfaceError(RuntimeError):
     pass
+
+
+class WorkCallMutationError(InterfaceError):
+    """Body-free structured failure for retryable call mutations."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int = 0,
+        code: str = "",
+        current_revision: int | None = None,
+        retryable: bool = False,
+    ):
+        self.status_code = int(status_code or 0)
+        self.code = str(code or "")[:80]
+        self.current_revision = current_revision
+        self.retryable = bool(retryable)
+        suffix = f" HTTP {self.status_code}" if self.status_code else ""
+        super().__init__(f"Work call mutation failed{suffix}.")
+
+
+class CallBookkeepingError(InterfaceError):
+    """A body-free signal that a durable call intent was not committed."""
+
+
+class DurableHandoffError(InterfaceError):
+    """A body-free signal that manager-root ownership was not confirmed."""
 
 
 def _state_serialized(func):
@@ -435,8 +463,11 @@ class InterfaceClient:
         message: str,
         progress_group_id: str = "",
         work_continues: bool = False,
+        client_id: str = "",
     ) -> Any:
         args = ["send", room_id, message]
+        if client_id:
+            args.extend(["--client-id", str(client_id)])
         if progress_group_id:
             args.extend(["--group", progress_group_id])
         if work_continues:
@@ -497,111 +528,35 @@ class InterfaceClient:
             timeout=60,
         )
 
-    @staticmethod
-    def _standalone_work_call_mutation(
-        method: str,
-        path: str,
+    def _work_call_patch_mutation(
+        self,
+        args: list[str],
         payload: dict[str, Any],
     ) -> Any:
-        """Persist a taskless call without depending on the installed CLI version."""
-        from core.glass import silicon_api_request
-
-        idempotent = str(method).upper() == "POST" and bool(payload.get("client_id"))
-        max_attempts = 5 if idempotent else 1
-        for attempt in range(max_attempts):
-            try:
-                response = silicon_api_request(
-                    method,
-                    path,
-                    json_body=payload,
-                    timeout=60,
-                )
-            except requests.RequestException as exc:
-                if attempt + 1 < max_attempts:
-                    time.sleep(min(0.5 * (2**attempt), 15.0))
-                    continue
-                raise InterfaceError(
-                    f"Standalone call update could not reach Glass: {exc}"
-                ) from exc
-            except Exception as exc:
-                raise InterfaceError(
-                    f"Standalone call update could not reach Glass: {exc}"
-                ) from exc
-
-            status_code = int(getattr(response, "status_code", 0) or 0)
-            if 300 <= status_code < 400:
-                raise InterfaceError(
-                    "Glass redirected an authenticated standalone call update."
-                )
-
-            try:
-                result = response.json()
-            except (TypeError, ValueError) as exc:
-                raise InterfaceError(
-                    "Glass returned an invalid standalone call update response."
-                ) from exc
-
-            if 200 <= status_code < 300:
-                return result
-
-            failure = (
-                result.get("failure")
-                if isinstance(result, dict)
-                and isinstance(result.get("failure"), dict)
-                else {}
+        try:
+            return self._work_mutation(args, payload)
+        except InterfaceError as exc:
+            # CLI 2.0.2 prints Glass's structured failure after an "api NNN"
+            # prefix. Keep only retry metadata; never retain the command or
+            # transcript-bearing payload in retry state.
+            detail = str(exc)
+            status_match = re.search(r"\bapi\s+([1-5][0-9]{2})\b", detail)
+            revision_match = re.search(
+                r'"current"\s*:\s*\{[^{}]*"revision"\s*:\s*(\d+)',
+                detail,
             )
-            retryable = status_code in {429, 502, 503, 504} or (
-                failure.get("automatic") is True
-                and failure.get("retryable") is True
+            code_match = re.search(r'"code"\s*:\s*"([^"]+)"', detail)
+            status = int(status_match.group(1)) if status_match else 0
+            revision = (
+                int(revision_match.group(1)) if revision_match else None
             )
-            if retryable and attempt + 1 < max_attempts:
-                retry_after = InterfaceClient._work_retry_after_seconds(
-                    response,
-                    result,
-                )
-                delay = (
-                    retry_after
-                    if retry_after is not None
-                    else 0.5 * (2**attempt)
-                )
-                time.sleep(min(max(0.0, delay), 15.0))
-                continue
-
-            detail = (
-                str(result.get("detail") or "").strip()
-                if isinstance(result, dict)
-                else ""
-            )
-            raise InterfaceError(
-                detail
-                or f"Standalone call update failed with HTTP {status_code}."
-            )
-
-        raise InterfaceError("Standalone call update exhausted its retry budget.")
-
-    @staticmethod
-    def _work_retry_after_seconds(response: Any, result: Any) -> float | None:
-        headers = getattr(response, "headers", {}) or {}
-        value = headers.get("Retry-After") or headers.get("retry-after")
-        if value not in (None, ""):
-            try:
-                return max(0.0, float(value))
-            except (TypeError, ValueError):
-                try:
-                    retry_at = parsedate_to_datetime(str(value))
-                    return max(0.0, retry_at.timestamp() - time.time())
-                except (TypeError, ValueError, OverflowError):
-                    pass
-        if isinstance(result, dict):
-            failure = result.get("failure")
-            body_value = result.get("retry_after_seconds")
-            if body_value is None and isinstance(failure, dict):
-                body_value = failure.get("retry_after_seconds")
-            try:
-                return max(0.0, float(body_value))
-            except (TypeError, ValueError):
-                pass
-        return None
+            raise WorkCallMutationError(
+                status_code=status,
+                code=code_match.group(1) if code_match else "",
+                current_revision=revision,
+                retryable=status
+                in {0, 408, 409, 425, 429, 500, 502, 503, 504},
+            ) from exc
 
     def work_task_create(self, payload: dict[str, Any]) -> Any:
         return self._work_mutation(["work", "task", "create"], payload)
@@ -725,9 +680,8 @@ class InterfaceClient:
         )
 
     def work_standalone_call_create(self, payload: dict[str, Any]) -> Any:
-        return self._standalone_work_call_mutation(
-            "POST",
-            "/api/v1/work/calls",
+        return self._work_mutation(
+            ["work", "call", "create"],
             payload,
         )
 
@@ -737,7 +691,7 @@ class InterfaceClient:
         call_id: str,
         payload: dict[str, Any],
     ) -> Any:
-        return self._work_mutation(
+        return self._work_call_patch_mutation(
             ["work", "call", "patch", task_id, call_id],
             payload,
         )
@@ -747,9 +701,8 @@ class InterfaceClient:
         call_id: str,
         payload: dict[str, Any],
     ) -> Any:
-        return self._standalone_work_call_mutation(
-            "PATCH",
-            f"/api/v1/work/calls/{quote(call_id, safe='')}",
+        return self._work_call_patch_mutation(
+            ["work", "call", "patch", call_id],
             payload,
         )
 
@@ -1639,39 +1592,6 @@ def _record_incoming_bookkeeping(
     media_info: dict[str, Any],
 ) -> None:
     """Persist ancillary transcript/activity data off the ingestion path."""
-    if contact.get("contact_type") == "silicon" and body:
-        try:
-            from core.work_updates import (
-                record_contact_call_message,
-                record_inbound_call,
-            )
-
-            appended = record_contact_call_message(
-                contact_id,
-                speaker_kind="silicon",
-                speaker_id=str(contact.get("silicon_id") or contact_id),
-                speaker_name=str(
-                    contact.get("display_name")
-                    or contact.get("name")
-                    or contact_id
-                ),
-                message=body,
-            )
-            if not appended:
-                record_inbound_call(
-                    contact_id,
-                    source_kind="silicon",
-                    source_id=str(contact.get("silicon_id") or contact_id),
-                    source_name=str(
-                        contact.get("display_name")
-                        or contact.get("name")
-                        or contact_id
-                    ),
-                    message=body,
-                )
-        except Exception:
-            pass
-
     try:
         from core.activity_log import incoming as _log_incoming, url_from
 
@@ -1688,6 +1608,60 @@ def _record_incoming_bookkeeping(
         pass
 
 
+def _record_incoming_call_bookkeeping(
+    contact_id: str,
+    contact: dict[str, Any],
+    body: str,
+    event_id: str,
+) -> None:
+    """Journal Silicon call transcript state before the in-memory outbox."""
+    if (
+        contact.get("contact_type") != "silicon"
+        or not body
+        or not event_id
+    ):
+        return
+    try:
+        from core.work_updates import (
+            enqueue_inbound_call,
+            record_contact_call_message,
+        )
+
+        appended = record_contact_call_message(
+            contact_id,
+            speaker_kind="silicon",
+            speaker_id=str(contact.get("silicon_id") or contact_id),
+            speaker_name=str(
+                contact.get("display_name")
+                or contact.get("name")
+                or contact_id
+            ),
+            message=body,
+            idempotency_key=f"incoming-call:{contact_id}:{event_id}",
+            terminal=True,
+        )
+        if not appended:
+            enqueue_inbound_call(
+                contact_id,
+                source_kind="silicon",
+                source_id=str(contact.get("silicon_id") or contact_id),
+                source_name=str(
+                    contact.get("display_name")
+                    or contact.get("name")
+                    or contact_id
+                ),
+                message=body,
+                idempotency_key=f"incoming-call:{contact_id}:{event_id}",
+            )
+    except Exception as exc:
+        # This is intentionally raised before the processed watermark. The
+        # durable inbox record remains uncommitted and will replay with the
+        # same event-derived idempotency key.
+        raise CallBookkeepingError(
+            "Incoming call bookkeeping was not durably committed."
+        ) from exc
+
+
 def _send_read_receipt(client: InterfaceClient, room_id: str, event_id: str) -> None:
     try:
         client.read(room_id, event_id)
@@ -1695,7 +1669,12 @@ def _send_read_receipt(client: InterfaceClient, room_id: str, event_id: str) -> 
         pass
 
 
-def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None = None) -> tuple[str, str] | None:
+def process_incoming_event(
+    event: dict[str, Any],
+    client: InterfaceClient | None = None,
+    *,
+    defer_processed_watermark: bool = False,
+) -> tuple[str, str] | None:
     client = client or InterfaceClient()
     state = _load_state()
     event_id = _event_id(event)
@@ -1707,6 +1686,18 @@ def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None
         except Exception:
             pass
     if _event_is_self(event, state):
+        if event_type == "m.text" and event_id:
+            contact_id, contact, _ = _contact_for_room(room_id, client=client)
+            if (
+                contact_id
+                and isinstance(contact, dict)
+                and contact.get("contact_type") == "silicon"
+            ):
+                _record_sent_call_message(
+                    contact_id,
+                    _event_body(event).strip(),
+                    event_id,
+                )
         _remember_seen_event(room_id, event_id)
         return None
 
@@ -1781,7 +1772,19 @@ def process_incoming_event(event: dict[str, Any], client: InterfaceClient | None
         context = "[COMMAND: START]"
     else:
         context = _format_event_context(contact_id, contact, event, local_paths=local_paths, transcript=transcript)
-    _remember_processed(contact_id, event_id, room_id)
+    try:
+        _record_incoming_call_bookkeeping(
+            contact_id,
+            dict(contact),
+            body,
+            event_id,
+        )
+    except CallBookkeepingError:
+        if ingest_span is not None:
+            ingest_span.__exit__(None, None, None)
+        raise
+    if not defer_processed_watermark:
+        _remember_processed(contact_id, event_id, room_id)
     submit_best_effort(
         _record_incoming_bookkeeping,
         contact_id,
@@ -2040,12 +2043,19 @@ def maintenance_inbox_quiescent() -> bool:
         listener_running = bool(
             _listener_thread and _listener_thread.is_alive()
         )
-    return not listener_running and _event_queue.empty()
+    with _inbox_retry_lock:
+        retry_empty = not _inbox_retry_records
+    return not listener_running and retry_empty and _event_queue.empty()
 
 
 def _drain_listener_events(max_events: int = 500) -> list[InboxRecord]:
     records: list[InboxRecord] = []
+    with _inbox_retry_lock:
+        while _inbox_retry_records and len(records) < max_events:
+            records.append(_inbox_retry_records.popleft())
     for _ in range(max_events):
+        if len(records) >= max_events:
+            break
         try:
             item = _event_queue.get_nowait()
             records.append(item if isinstance(item, InboxRecord) else InboxRecord(item))
@@ -2054,6 +2064,16 @@ def _drain_listener_events(max_events: int = 500) -> list[InboxRecord]:
     if not _event_queue.empty():
         notify_runtime_activity()
     return records
+
+
+def _retry_inbox_batch(records: list[InboxRecord]) -> None:
+    """Put an uncommitted suffix ahead of newer frames for ordered replay."""
+    if not records:
+        return
+    with _inbox_retry_lock:
+        for record in reversed(records):
+            _inbox_retry_records.appendleft(record)
+    notify_runtime_activity()
 
 
 def _event_from_frame(frame: dict[str, Any]) -> dict[str, Any] | None:
@@ -2151,8 +2171,14 @@ def _reconcile_durable_frame(frame: dict[str, Any], client: InterfaceClient) -> 
         _schedule_room_refresh(client)
 
 
-def get_unread_events() -> dict[str, str]:
+def get_unread_events(*, durable_handoff: bool = False) -> dict[str, str]:
     """Consume committed CLI v2 inbox records into manager contexts."""
+    try:
+        from core.work_updates import replay_pending_call_updates
+
+        replay_pending_call_updates()
+    except Exception as exc:
+        print(f"[Work updates] call retry scheduling failed: {exc}", flush=True)
     client = InterfaceClient()
     try:
         discover_rooms(client)
@@ -2169,12 +2195,71 @@ def get_unread_events() -> dict[str, str]:
     except Exception:
         start_listener()
     contexts: dict[str, list[str]] = {}
-    for record in _drain_listener_events():
+    records = _drain_listener_events()
+    for index, record in enumerate(records):
+        retry_record = False
         try:
             _reconcile_durable_frame(record.frame, client)
-            for event in _events_from_durable_frame(record.frame):
+            for event_index, event in enumerate(
+                _events_from_durable_frame(record.frame)
+            ):
                 try:
-                    processed = process_incoming_event(event, client=client)
+                    processed = process_incoming_event(
+                        event,
+                        client=client,
+                        defer_processed_watermark=durable_handoff,
+                    )
+                    if processed and durable_handoff:
+                        contact_id, context = processed
+                        room_id = _event_room_id(event)
+                        event_id = _event_id(event)
+                        if event_id:
+                            ingress_id = f"interface:{room_id}:{event_id}"
+                        elif record.file_id and record.end_offset > 0:
+                            ingress_id = (
+                                f"interface-record:{record.file_id}:"
+                                f"{record.end_offset}:{event_index}"
+                            )
+                        else:
+                            event_digest = hashlib.sha256(
+                                json.dumps(
+                                    event,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                    default=str,
+                                ).encode("utf-8")
+                            ).hexdigest()
+                            ingress_id = f"interface-event:{event_digest}"
+                        try:
+                            from core.maintenance import COORDINATOR
+
+                            accepted = COORDINATOR.enqueue_ingress_root(
+                                contact_id,
+                                context,
+                                ingress_id=ingress_id,
+                            )
+                            if not accepted:
+                                raise DurableHandoffError(
+                                    "Manager-root ownership was not accepted."
+                                )
+                            _remember_processed(
+                                contact_id,
+                                event_id,
+                                room_id,
+                            )
+                        except DurableHandoffError:
+                            raise
+                        except Exception as exc:
+                            raise DurableHandoffError(
+                                "Manager-root ownership was not confirmed."
+                            ) from exc
+                except (CallBookkeepingError, DurableHandoffError):
+                    retry_record = True
+                    print(
+                        "[Interface] durable event handoff deferred",
+                        flush=True,
+                    )
+                    break
                 except Exception as exc:
                     print(
                         f"[Interface] durable event processing failed: {exc}",
@@ -2184,14 +2269,25 @@ def get_unread_events() -> dict[str, str]:
                 if not processed:
                     continue
                 contact_id, context = processed
-                contexts.setdefault(contact_id, []).append(context)
+                if not durable_handoff:
+                    contexts.setdefault(contact_id, []).append(context)
         except Exception as exc:
             print(f"[Interface] durable frame processing failed: {exc}", flush=True)
+        if retry_record:
+            # Committing any later line would also acknowledge this one because
+            # the cursor is an offset. Keep the whole suffix ahead of new work.
+            _retry_inbox_batch(records[index:])
+            break
         # A single malformed/unsupported frame must not poison the durable
         # stream and prevent every later room from being dispatched.
         _commit_inbox_record(record)
 
     return {contact_id: "\n---\n".join(parts) for contact_id, parts in contexts.items() if parts}
+
+
+def get_unread_events_durable() -> dict[str, str]:
+    """Transfer unread events to durable roots before committing the inbox."""
+    return get_unread_events(durable_handoff=True)
 
 
 def _parse_reply_segments(message: str) -> list[tuple[str, str]]:
@@ -2289,20 +2385,75 @@ def _sent_event_id(payload: Any) -> str:
     return _first_text(payload.get("event_id"), payload.get("eventId"), payload.get("id"))
 
 
-def _record_sent_call_message(contact_id: str, message: str) -> None:
+def _reply_segment_client_id(
+    client_id: str,
+    *,
+    index: int,
+    count: int,
+    segment_type: str,
+) -> str:
+    """Derive a stable bounded identity for each parsed reply segment."""
+    client_id = str(client_id or "").strip()
+    if not client_id:
+        return ""
+    if count <= 1:
+        return client_id[:128]
+    suffix = f":segment:{index + 1}:{segment_type}"
+    return f"{client_id[: max(1, 128 - len(suffix))]}{suffix}"[:128]
+
+
+def _record_sent_call_message(
+    contact_id: str,
+    message: str,
+    event_id: str,
+    *,
+    terminal: bool = True,
+) -> None:
+    if not event_id or not message:
+        return
     try:
-        from core.work_updates import record_contact_call_message
+        from core.work_updates import (
+            enqueue_outbound_call,
+            prepare_outbound_call,
+            record_contact_call_message,
+        )
 
         own_profile = get_own_profile()
-        record_contact_call_message(
+        idempotency_key = f"outgoing-call:{contact_id}:{event_id}"
+        appended = record_contact_call_message(
             contact_id,
             speaker_kind="manager",
             speaker_id=str(own_profile.get("silicon_id") or "local-silicon"),
             speaker_name=str(own_profile.get("name") or "Silicon manager"),
             message=message,
+            idempotency_key=idempotency_key,
+            terminal=terminal,
         )
-    except Exception:
-        pass
+        if not appended:
+            contact = get_contact(contact_id) or {}
+            target_name = str(
+                contact.get("display_name")
+                or contact.get("name")
+                or contact_id
+            )
+            reference = prepare_outbound_call(
+                contact_id,
+                target_kind="silicon",
+                target_id=str(contact.get("silicon_id") or contact_id),
+                target_name=target_name,
+                message=message,
+            )
+            if not enqueue_outbound_call(
+                reference,
+                target_name=target_name,
+                message=message,
+                idempotency_key=idempotency_key,
+            ):
+                raise RuntimeError("Outgoing call intent was not accepted.")
+    except Exception as exc:
+        raise CallBookkeepingError(
+            "Outgoing call bookkeeping was not durably committed."
+        ) from exc
 
 
 def reply_contact(
@@ -2311,6 +2462,7 @@ def reply_contact(
     *,
     work_continues: bool = False,
     progress_group_id: str = "",
+    client_id: str = "",
 ) -> str:
     contact, err = _contact_room_or_error(contact_id)
     if err:
@@ -2331,7 +2483,22 @@ def reply_contact(
         trace = Diagnostics.get_active_run(contact_id)
     except Exception:
         trace = None
-    for seg_type, seg_value in _parse_reply_segments(message):
+    segments = _parse_reply_segments(message)
+    final_text_index = max(
+        (
+            index
+            for index, (segment_type, value) in enumerate(segments)
+            if segment_type == "text" and value
+        ),
+        default=-1,
+    )
+    for segment_index, (seg_type, seg_value) in enumerate(segments):
+        segment_client_id = _reply_segment_client_id(
+            client_id,
+            index=segment_index,
+            count=len(segments),
+            segment_type=seg_type,
+        )
         try:
             span_ctx = trace.span("interface.reply_delivery") if trace is not None else None
             if span_ctx is not None:
@@ -2346,14 +2513,8 @@ def reply_contact(
                             seg_value,
                             progress_group_id=progress_group_id,
                             work_continues=work_continues,
+                            client_id=segment_client_id,
                         )
-                        if contact.get("contact_type") == "silicon":
-                            submit_best_effort(
-                                _record_sent_call_message,
-                                contact_id,
-                                seg_value,
-                                key=f"outgoing-bookkeeping:{contact_id}",
-                            )
                 elif seg_type == "file":
                     path = os.path.abspath(os.path.expanduser(seg_value.strip()))
                     if not os.path.exists(path):
@@ -2369,6 +2530,25 @@ def reply_contact(
                 elif seg_type == "voice":
                     sent = client.tts(room_id, seg_value)
                 sent_event_id = _sent_event_id(sent)
+                if (
+                    seg_type == "text"
+                    and contact.get("contact_type") == "silicon"
+                    and sent_event_id
+                ):
+                    try:
+                        _record_sent_call_message(
+                            contact_id,
+                            seg_value,
+                            sent_event_id,
+                            terminal=segment_index == final_text_index,
+                        )
+                    except CallBookkeepingError:
+                        # The CLI durable inbox will replay our accepted self
+                        # event with the same event-derived idempotency key.
+                        print(
+                            "[Interface] outgoing call bookkeeping deferred",
+                            flush=True,
+                        )
                 if trace is not None and sent_event_id:
                     trace.add_response(
                         sent_event_id,
@@ -2420,11 +2600,13 @@ def send_progress(
             activity_frame_identity,
             canonical_activity_state,
             current_manager_activity_group,
+            touch_manager_call_activity,
         )
 
         group = group or current_manager_activity_group(contact_id)
         if not group:
             return
+        touch_manager_call_activity(contact_id)
         state = canonical_activity_state(state)
         if not frame_id:
             fingerprint = json.dumps(

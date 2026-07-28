@@ -22,6 +22,21 @@ class ManagerToolsDocTest(unittest.TestCase):
             with self.subTest(block=index):
                 json.loads(block)
 
+    def test_direct_carbon_attribution_requires_exact_quote(self):
+        for filename in ("MANAGER.md", "MANAGER_TOOLS.md"):
+            with self.subTest(filename=filename):
+                text = (PROJECT_ROOT / "prompts" / filename).read_text(
+                    encoding="utf-8"
+                )
+                self.assertRegex(
+                    text,
+                    r"MUST\s+include the carbon's exact original message",
+                )
+                self.assertRegex(
+                    text,
+                    r"(?:Quote it )?verbatim as a clearly\s+labeled quote",
+                )
+
 
 class ManagerActivityVisibilityTest(unittest.TestCase):
     @staticmethod
@@ -74,6 +89,7 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
                 return_value=f"group-{trigger}",
             ) as begin_activity,
             mock.patch.object(main, "settle_manager_activity") as settle_activity,
+            mock.patch.object(main, "touch_manager_call_activity"),
             mock.patch.object(main, "set_active_task_timer"),
             mock.patch.object(main, "send_progress") as send_progress,
         ):
@@ -119,6 +135,10 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
                 "execute_work_update",
                 return_value="Done. internal update",
             ),
+            mock.patch.object(
+                main,
+                "touch_manager_call_activity",
+            ) as touch_manager_call_activity,
         ):
             handler = main._make_provider_progress_handler("carbon-a", "")
             handler(
@@ -142,6 +162,7 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
             )
 
         send_progress.assert_not_called()
+        touch_manager_call_activity.assert_called_once_with("carbon-a")
         trace.event.assert_called_once()
         self.assertIn("Done. internal update", result)
         self.assertIn("offline", failure)
@@ -339,7 +360,6 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 "prepare_outbound_call",
                 return_value=work_call,
             ),
-            mock.patch.object(main, "enqueue_outbound_call") as enqueue_outbound,
             mock.patch.object(
                 main,
                 "send_manager_message",
@@ -356,15 +376,10 @@ class ManagerToolExecutionTest(unittest.TestCase):
             target_type="carbon",
             work_call=work_call,
         )
-        enqueue_outbound.assert_called_once_with(
-            work_call,
-            target_name="B's manager",
-            message="Can you review this?",
-        )
         self.assertIn("task_id=task-fitness", result)
         self.assertIn("call_id=call-review", result)
 
-    def test_message_manager_does_not_claim_rejected_call_card_identity(self):
+    def test_message_manager_returns_identity_after_durable_queue_acceptance(self):
         work_call = {
             "owner_contact_id": "carbon-a",
             "task_id": "task-fitness",
@@ -410,11 +425,6 @@ class ManagerToolExecutionTest(unittest.TestCase):
                     ),
                     mock.patch.object(
                         main,
-                        "enqueue_outbound_call",
-                        return_value=False,
-                    ) as enqueue_outbound,
-                    mock.patch.object(
-                        main,
                         "send_manager_message",
                         return_value="Done. queued",
                     ) as send_manager_message,
@@ -423,12 +433,71 @@ class ManagerToolExecutionTest(unittest.TestCase):
                     result = main.execute_single_tool(spec, "carbon-a")
 
                 send_manager_message.assert_called_once()
-                enqueue_outbound.assert_called_once()
                 self.assertIn("Done. queued", result)
-                self.assertNotIn("Work update:", result)
-                self.assertNotIn("task_id=", result)
-                self.assertNotIn("work_event_id=", result)
-                self.assertNotIn("call_id=", result)
+                self.assertIn("Work update:", result)
+                self.assertIn("task_id=task-fitness", result)
+                self.assertIn("work_event_id=event-review", result)
+                self.assertIn("call_id=call-review", result)
+
+    def test_message_manager_preparation_failure_sends_nothing_and_is_body_free(
+        self,
+    ):
+        targets = (
+            (
+                {"carbon_id": "carbon-b"},
+                {
+                    "contact_type": "carbon",
+                    "carbon_id": "carbon-b",
+                    "display_name": "B",
+                },
+            ),
+            (
+                {"silicon_id": "silicon-b"},
+                {
+                    "contact_type": "silicon",
+                    "silicon_id": "silicon-b",
+                    "display_name": "Builder",
+                },
+            ),
+        )
+
+        for target, contact in targets:
+            with self.subTest(target=target):
+                spec = {
+                    "tool": "message_manager",
+                    **target,
+                    "message": "Private manager message.",
+                }
+                with (
+                    mock.patch.object(
+                        main,
+                        "ensure_contact_for_target",
+                        return_value=contact,
+                    ),
+                    mock.patch.object(
+                        main,
+                        "prepare_outbound_call",
+                        side_effect=OSError(
+                            "disk failed while handling Private manager message."
+                        ),
+                    ),
+                    mock.patch.object(
+                        main,
+                        "send_manager_message",
+                    ) as send_manager_message,
+                    mock.patch(
+                        "core.work_updates.enqueue_outbound_call",
+                    ) as enqueue_outbound_call,
+                    mock.patch.object(main, "send_progress"),
+                ):
+                    result = main.execute_single_tool(spec, "carbon-a")
+
+                send_manager_message.assert_not_called()
+                enqueue_outbound_call.assert_not_called()
+                self.assertIn("Message not sent", result)
+                self.assertIn("(OSError)", result)
+                self.assertNotIn("Private manager message", result)
+                self.assertNotIn("disk failed", result)
 
     def test_message_manager_failure_reports_progress_and_output(self):
         spec = {

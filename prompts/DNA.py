@@ -399,7 +399,7 @@ def get_manager_prompt(carbon_id):
         _persistent_runtime_paths_section(),
         _read_prompt("SOUL.md"),
         _read_prompt("SILICON.md"),
-        _read_prompt("CARBON_MESSAGING.md"),
+        _read_prompt("not_be_ignored.md"),
         _read_prompt("LORE.md"),
         _read_prompt("CONTACTS.md"),
         # f"## Current Contacts\n{_get_contacts_summary()}",
@@ -448,7 +448,7 @@ def get_manager_prompt(carbon_id):
     # Keep the decision questionnaire and final response check at the end so
     # they are not diluted by generic boot/session prose appended after them.
     parts.append(_read_prompt("QUESTIONNAIRE.md"))
-    parts.append(_read_prompt("CARBON_RESPONSE_CHECK.md"))
+    parts.append(_read_prompt("FINAL_QUESTIONNAIRE.md"))
 
     return "\n\n".join(p for p in parts if p)
 

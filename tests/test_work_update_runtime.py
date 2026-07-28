@@ -1,6 +1,7 @@
 import json
 import math
 import tempfile
+import time
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -369,6 +370,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.old_backup = interface.CONTACTS_BACKUP_FILE
         self.old_legacy = interface.LEGACY_TELEGRAM_CONTACTS_FILE
         work_updates.WORK_UPDATES_FILE = root / "work_updates.json"
+        work_updates._CALL_RETRY_INFLIGHT.clear()
         interface.CONTACTS_FILE = root / "contacts.json"
         interface.CONTACTS_BACKUP_FILE = root / "contacts-backup.json"
         interface.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy-contacts.json"
@@ -403,6 +405,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.profile_patch.stop()
         self.contact_patch.stop()
         work_updates.WORK_UPDATES_FILE = self.old_work_state
+        work_updates._CALL_RETRY_INFLIGHT.clear()
         interface.CONTACTS_FILE = self.old_contacts
         interface.CONTACTS_BACKUP_FILE = self.old_backup
         interface.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
@@ -858,21 +861,462 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             [row["body"] for row in inbound_event["transcript"]],
             ["No active task yet.", "Received."],
         )
-        state = work_updates._read_state()
-        self.assertTrue(state["contacts"]["carbon-a"]["pending_calls"])
-        self.assertTrue(state["contacts"]["carbon-b"]["pending_calls"])
-
-        work_updates.WorkUpdates("carbon-a", client=client).execute(
-            {
-                "action": "call/update",
-                "call_id": outbound["call_id"],
-                "data": {"state": "completed"},
-            }
-        )
         self.assertEqual(outbound_event["state"], "completed")
+        self.assertEqual(inbound_event["state"], "completed")
         state = work_updates._read_state()
         self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
         self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
+        next_call = work_updates.prepare_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="A new topic.",
+        )
+        self.assertFalse(next_call.get("continuation", False))
+        self.assertNotEqual(next_call["call_id"], outbound["call_id"])
+
+    def test_same_side_followup_stays_open_until_opposite_side_responds(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Initial question.",
+            client=client,
+        )
+        inbound = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Initial question.",
+            outbound=outbound,
+            client=client,
+        )
+        previous_activity = (
+            time.time() - work_updates.PENDING_CALL_TTL_SECONDS + 60
+        )
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            for contact in state["contacts"].values():
+                for correlation in contact["pending_calls"].values():
+                    correlation["updated_at"] = previous_activity
+            work_updates._write_state(state)
+
+        followup = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="One more detail.",
+            client=client,
+        )
+
+        self.assertTrue(followup["continuation"])
+        self.assertEqual(followup["continuation_role"], "outbound")
+        outbound_event = client._event_by("", "call_id", outbound["call_id"])
+        inbound_event = client._event_by("", "call_id", inbound["call_id"])
+        self.assertEqual(outbound_event["state"], "in_progress")
+        self.assertEqual(inbound_event["state"], "in_progress")
+        self.assertEqual(
+            [row["body"] for row in outbound_event["transcript"]],
+            ["Initial question.", "One more detail."],
+        )
+        state = work_updates._read_state()
+        self.assertGreater(
+            state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"][
+                "updated_at"
+            ],
+            previous_activity,
+        )
+
+        response = work_updates.record_outbound_call(
+            "carbon-b",
+            target_kind="manager",
+            target_id="carbon-a",
+            target_name="Ada's manager",
+            message="Confirmed.",
+            client=client,
+        )
+
+        self.assertTrue(response["continuation"])
+        self.assertEqual(response["continuation_role"], "inbound")
+        self.assertEqual(outbound_event["state"], "completed")
+        self.assertEqual(inbound_event["state"], "completed")
+        self.assertEqual(
+            [row["body"] for row in outbound_event["transcript"]],
+            ["Initial question.", "One more detail.", "Confirmed."],
+        )
+
+    def test_call_idle_timeout_completes_mirrors_and_late_activity_is_new_call(
+        self,
+    ):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please confirm.",
+            client=client,
+        )
+        inbound = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Please confirm.",
+            outbound=outbound,
+            client=client,
+        )
+        last_activity = time.time()
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            for contact in state["contacts"].values():
+                for correlation in contact["pending_calls"].values():
+                    correlation["updated_at"] = last_activity
+            work_updates._write_state(state)
+
+        self.assertEqual(
+            work_updates.complete_inactive_calls(
+                now=last_activity
+                + work_updates.CALL_IDLE_TIMEOUT_SECONDS
+                - 0.001,
+                client=client,
+            ),
+            0,
+        )
+        self.assertEqual(
+            client._event_by("", "call_id", outbound["call_id"])["state"],
+            "in_progress",
+        )
+        self.assertEqual(
+            work_updates.complete_inactive_calls(
+                now=last_activity + work_updates.CALL_IDLE_TIMEOUT_SECONDS,
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+
+        outbound_event = client._event_by("", "call_id", outbound["call_id"])
+        inbound_event = client._event_by("", "call_id", inbound["call_id"])
+        self.assertEqual(outbound_event["state"], "completed")
+        self.assertEqual(inbound_event["state"], "completed")
+        self.assertEqual(
+            [row["body"] for row in outbound_event["transcript"]],
+            ["Please confirm."],
+        )
+        state = work_updates._read_state()
+        self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
+
+        later = work_updates.prepare_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Following up later.",
+        )
+        self.assertFalse(later.get("continuation", False))
+        self.assertNotEqual(later["call_id"], outbound["call_id"])
+
+    def test_call_activity_resets_the_ten_second_idle_deadline(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Initial question.",
+            client=client,
+        )
+        work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Initial question.",
+            outbound=outbound,
+            client=client,
+        )
+        old_activity = time.time() - 9.0
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            for contact in state["contacts"].values():
+                for correlation in contact["pending_calls"].values():
+                    correlation["updated_at"] = old_activity
+            work_updates._write_state(state)
+
+        followup = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="One more detail.",
+            client=client,
+        )
+        self.assertTrue(followup["continuation"])
+        state = work_updates._read_state()
+        refreshed = state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"][
+            "updated_at"
+        ]
+        self.assertGreater(refreshed, old_activity)
+        self.assertEqual(
+            work_updates.complete_inactive_calls(
+                now=refreshed + work_updates.CALL_IDLE_TIMEOUT_SECONDS - 0.001,
+                client=client,
+            ),
+            0,
+        )
+        self.assertEqual(
+            work_updates.complete_inactive_calls(
+                now=refreshed + work_updates.CALL_IDLE_TIMEOUT_SECONDS,
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(
+            client._event_by("", "call_id", outbound["call_id"])["state"],
+            "completed",
+        )
+
+    def test_manager_activity_refreshes_both_call_mirrors(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please investigate.",
+            client=client,
+        )
+        work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Please investigate.",
+            outbound=outbound,
+            client=client,
+        )
+        old_activity = time.time() - 9.0
+        refreshed_at = old_activity + 8.0
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            for contact in state["contacts"].values():
+                for correlation in contact["pending_calls"].values():
+                    correlation["updated_at"] = old_activity
+            work_updates._write_state(state)
+
+        self.assertTrue(
+            work_updates.touch_manager_call_activity(
+                "carbon-b",
+                now=refreshed_at,
+            )
+        )
+        state = work_updates._read_state()
+        for owner, peer in (
+            ("carbon-a", "carbon-b"),
+            ("carbon-b", "carbon-a"),
+        ):
+            self.assertEqual(
+                state["contacts"][owner]["pending_calls"][peer]["updated_at"],
+                refreshed_at,
+            )
+        self.assertEqual(
+            work_updates.complete_inactive_calls(
+                now=refreshed_at
+                + work_updates.CALL_IDLE_TIMEOUT_SECONDS
+                - 0.001,
+                client=client,
+            ),
+            0,
+        )
+
+    def test_idle_timeout_recovers_visible_call_without_live_correlation(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="This correlation will be lost.",
+            client=client,
+        )
+        last_activity = time.time()
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            state["contacts"]["carbon-a"]["pending_calls"].clear()
+            cached = state["contacts"]["carbon-a"]["standalone_calls"][
+                outbound["call_id"]
+            ]
+            cached["_cached_at"] = last_activity
+            work_updates._write_state(state)
+
+        self.assertEqual(
+            work_updates.complete_inactive_calls(
+                now=last_activity + work_updates.CALL_IDLE_TIMEOUT_SECONDS,
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(
+            client._event_by("", "call_id", outbound["call_id"])["state"],
+            "completed",
+        )
+        self.assertEqual(work_updates.complete_inactive_calls(client=client), 0)
+
+    def test_idle_completion_is_durable_and_never_reuses_the_old_call(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please check.",
+            client=client,
+        )
+        inbound = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Please check.",
+            outbound=outbound,
+            client=client,
+        )
+        last_activity = time.time() - work_updates.CALL_IDLE_TIMEOUT_SECONDS
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            for contact in state["contacts"].values():
+                for correlation in contact["pending_calls"].values():
+                    correlation["updated_at"] = last_activity
+            work_updates._write_state(state)
+
+        with mock.patch.object(
+            work_updates,
+            "submit_best_effort",
+            return_value=False,
+        ):
+            self.assertEqual(
+                work_updates.complete_inactive_calls(client=client),
+                1,
+            )
+            self.assertEqual(
+                work_updates.complete_inactive_calls(client=client),
+                0,
+            )
+
+        state = work_updates._read_state()
+        pending_patches = [
+            entry
+            for entry in state["call_retry_journal"].values()
+            if entry["operation"] == "patch"
+        ]
+        self.assertEqual(len(pending_patches), 2)
+        self.assertTrue(
+            state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"][
+                "terminal_requested"
+            ]
+        )
+        later = work_updates.prepare_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Checking again later.",
+        )
+        self.assertFalse(later.get("continuation", False))
+        self.assertNotEqual(later["call_id"], outbound["call_id"])
+
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            2,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(
+            client._event_by("", "call_id", outbound["call_id"])["state"],
+            "completed",
+        )
+        self.assertEqual(
+            client._event_by("", "call_id", inbound["call_id"])["state"],
+            "completed",
+        )
+
+    def test_prepared_continuation_after_idle_boundary_gets_a_fresh_call(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Original request.",
+            client=client,
+        )
+        inbound = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Original request.",
+            outbound=outbound,
+            client=client,
+        )
+        prepared_before_timeout = work_updates.prepare_outbound_call(
+            "carbon-b",
+            target_kind="manager",
+            target_id="carbon-a",
+            target_name="Ada's manager",
+            message="Late response.",
+        )
+        self.assertTrue(prepared_before_timeout["continuation"])
+        self.assertEqual(prepared_before_timeout["call_id"], inbound["call_id"])
+
+        last_activity = time.time() - work_updates.CALL_IDLE_TIMEOUT_SECONDS
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            for contact in state["contacts"].values():
+                for correlation in contact["pending_calls"].values():
+                    correlation["updated_at"] = last_activity
+            work_updates._write_state(state)
+        with mock.patch.object(
+            work_updates,
+            "submit_best_effort",
+            return_value=False,
+        ):
+            self.assertEqual(work_updates.complete_inactive_calls(), 1)
+
+        self.assertTrue(
+            work_updates.enqueue_outbound_call(
+                prepared_before_timeout,
+                target_name="Ada's manager",
+                message="Late response.",
+                client=client,
+                idempotency_key="late-manager-handoff",
+            )
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertFalse(prepared_before_timeout.get("continuation", False))
+        self.assertNotEqual(
+            prepared_before_timeout["call_id"],
+            inbound["call_id"],
+        )
+        self.assertEqual(
+            client._event_by(
+                "",
+                "call_id",
+                prepared_before_timeout["call_id"],
+            )["state"],
+            "in_progress",
+        )
 
     def test_prepared_standalone_call_persists_after_async_enqueue(self):
         client = FakeWorkClient()
@@ -903,7 +1347,68 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertEqual(event["room_id"], "room-a")
         self.assertEqual(event["transcript"][0]["body"], "Please review this.")
 
-    def test_rejected_inbound_enqueue_discards_unpublished_card_reference(self):
+    def test_completed_continuation_receipt_accepts_source_replay(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please confirm.",
+            client=client,
+        )
+        inbound = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Please confirm.",
+            outbound=outbound,
+            client=client,
+        )
+        continuation = work_updates.prepare_outbound_call(
+            "carbon-b",
+            target_kind="manager",
+            target_id="carbon-a",
+            target_name="Ada's manager",
+            message="Confirmed.",
+        )
+        dedupe_key = "manager-handoff:queue-response:outbound"
+
+        self.assertTrue(
+            work_updates.enqueue_outbound_call(
+                continuation,
+                target_name="Ada's manager",
+                message="Confirmed.",
+                client=client,
+                idempotency_key=dedupe_key,
+            )
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertFalse(
+            work_updates._read_state()["contacts"]["carbon-b"][
+                "pending_calls"
+            ]
+        )
+        request_count = len(client.requests)
+
+        self.assertTrue(
+            work_updates.enqueue_outbound_call(
+                continuation,
+                target_name="Ada's manager",
+                message="Confirmed.",
+                client=client,
+                idempotency_key=dedupe_key,
+            )
+        )
+        self.assertEqual(len(client.requests), request_count)
+        self.assertTrue(continuation["continuation"])
+        self.assertEqual(continuation["call_id"], inbound["call_id"])
+        state = work_updates._read_state()
+        self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
+
+    def test_rejected_inbound_enqueue_keeps_durable_card_reference(self):
         outbound = {
             "owner_contact_id": "carbon-a",
             "task_id": "",
@@ -925,9 +1430,13 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 client=FakeWorkClient(),
             )
 
-        self.assertEqual(inbound["call_id"], "")
-        self.assertEqual(inbound["work_event_id"], "")
+        self.assertTrue(inbound["call_id"])
+        self.assertTrue(inbound["work_event_id"])
         state = work_updates._read_state()
+        self.assertEqual(len(state["call_retry_journal"]), 1)
+        retry = next(iter(state["call_retry_journal"].values()))
+        self.assertEqual(retry["direction"], "inbound")
+        self.assertEqual(retry["reference"]["call_id"], inbound["call_id"])
         for owner, peer in (
             ("carbon-a", "carbon-b"),
             ("carbon-b", "carbon-a"),
@@ -937,8 +1446,11 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 correlation["outbound_call_id"],
                 "call-outbound",
             )
-            self.assertEqual(correlation["inbound_call_id"], "")
-            self.assertEqual(correlation["inbound_work_event_id"], "")
+            self.assertEqual(correlation["inbound_call_id"], inbound["call_id"])
+            self.assertEqual(
+                correlation["inbound_work_event_id"],
+                inbound["work_event_id"],
+            )
 
     def test_call_update_without_task_id_stays_standalone_after_cache_loss(self):
         client = FakeWorkClient()
@@ -981,7 +1493,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             )
         )
 
-    def test_standalone_call_publication_failure_is_isolated(self):
+    def test_standalone_call_publication_failure_is_durably_retryable(self):
         reference = work_updates.record_outbound_call(
             "carbon-a",
             target_kind="manager",
@@ -991,9 +1503,820 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=ExplodingClient(),
         )
 
-        self.assertEqual(reference, {})
+        self.assertTrue(reference["call_id"])
         state = work_updates._read_state()
-        self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertTrue(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertEqual(len(state["call_retry_journal"]), 1)
+        retry = next(iter(state["call_retry_journal"].values()))
+        self.assertEqual(retry["attempts"], 1)
+        self.assertEqual(retry["last_error"], "OSError")
+        self.assertEqual(
+            work_updates.pending_call_update_retries(),
+            {
+                "pending": 1,
+                "failed": 1,
+                "dead_letter": 0,
+                "total": 1,
+                "archived_dead_letter": 0,
+                "overflow_count": 0,
+                "last_overflow_at": 0.0,
+                "oldest_created_at": retry["created_at"],
+                "next_attempt_at": retry["next_attempt_at"],
+            },
+        )
+
+    def test_transient_retry_budget_covers_about_twenty_four_hours(self):
+        nominal_delays = [
+            min(
+                work_updates.CALL_RETRY_BASE_DELAY_SECONDS
+                * (2 ** min(attempt - 1, 12)),
+                work_updates.CALL_RETRY_MAX_DELAY_SECONDS,
+            )
+            for attempt in range(1, work_updates.CALL_RETRY_MAX_ATTEMPTS)
+        ]
+        nominal_horizon = sum(nominal_delays)
+
+        self.assertGreaterEqual(nominal_horizon, 24 * 60 * 60)
+        self.assertLess(nominal_horizon, 25 * 60 * 60)
+
+    def test_auth_failure_remains_retryable_and_recovers_after_rotation(self):
+        client = FakeWorkClient()
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please confirm.",
+            client=client,
+        )
+        retry_id = work_updates._journal_call_patch(
+            reference,
+            {"body": "Authentication recovered."},
+            mutation_id="auth-recovery",
+        )
+        successful_patch = client.work_standalone_call_patch
+        attempts = 0
+
+        def rotate_then_patch(call_id, payload):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise interface.WorkCallMutationError(
+                    status_code=401,
+                    code="silicon_key_rejected",
+                    retryable=True,
+                )
+            return successful_patch(call_id, payload)
+
+        client.work_standalone_call_patch = rotate_then_patch
+        self.assertFalse(
+            work_updates._deliver_call_retry(retry_id, client=client)
+        )
+        health = work_updates.pending_call_update_retries()
+        self.assertEqual(health["pending"], 1)
+        self.assertEqual(health["dead_letter"], 0)
+
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 0)
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(event["body"], "Authentication recovered.")
+
+    def test_permanent_create_failure_uses_cli_api_status_and_dead_letters(self):
+        class InvalidCreateClient:
+            def work_standalone_call_create(self, _payload):
+                raise interface.InterfaceError(
+                    'api 400: {"code":"invalid_call","detail":"omitted"}'
+                )
+
+        work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please confirm.",
+            client=InvalidCreateClient(),
+        )
+
+        state = work_updates._read_state()
+        entry = next(iter(state["call_retry_journal"].values()))
+        self.assertEqual(entry["status"], "dead_letter")
+        self.assertEqual(entry["attempts"], 1)
+        self.assertEqual(entry["last_error"], "InterfaceError:http_400")
+        health = work_updates.pending_call_update_retries()
+        self.assertEqual(health["pending"], 0)
+        self.assertEqual(health["dead_letter"], 1)
+
+    def test_retry_diagnostics_never_store_or_print_cli_payloads(self):
+        secret = "TOP-SECRET TRANSCRIPT"
+
+        class SensitiveFailureClient:
+            def work_standalone_call_create(self, _payload):
+                raise interface.InterfaceError(
+                    f"command si work call create --data {secret}"
+                )
+
+        with mock.patch("builtins.print") as printed:
+            work_updates.record_outbound_call(
+                "carbon-a",
+                target_kind="manager",
+                target_id="carbon-b",
+                target_name="Babbage's manager",
+                message=secret,
+                client=SensitiveFailureClient(),
+            )
+
+        state = work_updates._read_state()
+        entry = next(iter(state["call_retry_journal"].values()))
+        self.assertEqual(entry["last_error"], "InterfaceError")
+        rendered_logs = " ".join(
+            str(value)
+            for call in printed.call_args_list
+            for value in call.args
+        )
+        self.assertNotIn(secret, rendered_logs)
+        self.assertNotIn("--data", rendered_logs)
+
+    def test_retry_journal_cap_fails_atomically_and_reports_overflow(self):
+        first = {
+            "owner_contact_id": "carbon-a",
+            "call_id": "call-first",
+        }
+        second = {
+            "owner_contact_id": "carbon-a",
+            "call_id": "call-second",
+        }
+        with mock.patch.object(
+            work_updates,
+            "CALL_RETRY_MAX_ENTRIES",
+            1,
+        ):
+            work_updates._journal_call_patch(
+                first,
+                {"body": "first"},
+                mutation_id="first",
+            )
+            with self.assertRaises(work_updates.WorkUpdateError):
+                work_updates._journal_call_patch(
+                    second,
+                    {"body": "second"},
+                    mutation_id="second",
+                )
+
+        health = work_updates.pending_call_update_retries()
+        self.assertEqual(health["total"], 1)
+        self.assertEqual(health["overflow_count"], 1)
+        state = work_updates._read_state()
+        self.assertEqual(
+            {
+                entry["reference"]["call_id"]
+                for entry in state["call_retry_journal"].values()
+            },
+            {"call-first"},
+        )
+
+    def test_expired_dead_letter_archival_is_body_free(self):
+        secret = "PRIVATE CALL BODY"
+        retry_id = work_updates._journal_call_patch(
+            {
+                "owner_contact_id": "carbon-a",
+                "call_id": "call-private",
+            },
+            {"body": secret},
+            mutation_id="private",
+        )
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            entry = state["call_retry_journal"][retry_id]
+            entry["status"] = "dead_letter"
+            entry["attempts"] = work_updates.CALL_RETRY_MAX_ATTEMPTS
+            entry["last_error"] = "InterfaceError:http_422"
+            entry["dead_lettered_at"] = (
+                time.time()
+                - work_updates.CALL_RETRY_DEAD_LETTER_RETENTION_SECONDS
+                - 1
+            )
+            work_updates._write_state(state)
+
+        health = work_updates.pending_call_update_retries()
+        self.assertEqual(health["total"], 0)
+        self.assertEqual(health["archived_dead_letter"], 1)
+        persisted = work_updates.WORK_UPDATES_FILE.read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(secret, persisted)
+
+    def test_failed_call_create_replays_with_stable_idempotent_payload(self):
+        client = FakeWorkClient()
+        successful_create = client.work_standalone_call_create
+        create = mock.Mock()
+
+        def flaky_create(payload):
+            if create.call_count == 1:
+                successful_create(payload)
+                raise OSError("response lost after Glass committed")
+            return successful_create(payload)
+
+        create.side_effect = flaky_create
+        client.work_standalone_call_create = create
+
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please review this.",
+            client=client,
+        )
+
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 1)
+        self.assertEqual(create.call_count, 1)
+        scheduled = work_updates.replay_pending_call_updates(
+            now=float("inf"),
+            client=client,
+        )
+        self.assertEqual(scheduled, 1)
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(create.call_count, 2)
+        first_payload = create.call_args_list[0].args[0]
+        second_payload = create.call_args_list[1].args[0]
+        self.assertEqual(first_payload, second_payload)
+        self.assertTrue(first_payload["client_id"])
+        self.assertEqual(
+            first_payload["transcript"][0]["transcript_id"],
+            second_payload["transcript"][0]["transcript_id"],
+        )
+        self.assertEqual(
+            first_payload["transcript"][0]["created_at"],
+            second_payload["transcript"][0]["created_at"],
+        )
+        self.assertEqual(
+            first_payload["transcript"][0]["updated_at"],
+            second_payload["transcript"][0]["updated_at"],
+        )
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 0)
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(event["transcript"][0]["body"], "Please review this.")
+
+    def test_failed_inbound_call_replays_without_losing_correlation(self):
+        reference = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Can you review this?",
+            outbound={
+                "owner_contact_id": "carbon-a",
+                "task_id": "",
+                "call_id": "call-outbound",
+                "work_event_id": "event-outbound",
+            },
+            client=ExplodingClient(),
+        )
+        state = work_updates._read_state()
+        self.assertEqual(len(state["call_retry_journal"]), 1)
+        self.assertEqual(
+            state["contacts"]["carbon-b"]["pending_calls"]["carbon-a"][
+                "inbound_call_id"
+            ],
+            reference["call_id"],
+        )
+
+        client = FakeWorkClient()
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 0)
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(event["direction"], "inbound")
+        self.assertEqual(event["transcript"][0]["body"], "Can you review this?")
+
+    def test_pending_call_create_replays_later_transcript_and_terminal_state(self):
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Initial question.",
+            client=ExplodingClient(),
+        )
+        continuation = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Additional context.",
+            client=ExplodingClient(),
+        )
+        queued = work_updates.WorkUpdates(
+            "carbon-a",
+            client=ExplodingClient(),
+        ).execute(
+            {
+                "action": "call/update",
+                "call_id": reference["call_id"],
+                "standalone": True,
+                "data": {
+                    "state": "completed",
+                    "body": "Babbage replied.",
+                },
+            }
+        )
+
+        self.assertTrue(continuation["continuation"])
+        self.assertTrue(queued["queued_for_delivery"])
+        journal = sorted(
+            work_updates._read_state()["call_retry_journal"].values(),
+            key=lambda entry: entry["sequence"],
+        )
+        self.assertEqual(
+            [entry["operation"] for entry in journal],
+            ["create", "patch", "patch"],
+        )
+        terminal = journal[-1]["payload"]
+        self.assertEqual(terminal["state"], "completed")
+        self.assertEqual(terminal["body"], "Babbage replied.")
+        self.assertEqual(
+            [
+                row["body"]
+                for row in journal[1]["payload"]["transcript"]
+            ],
+            ["Additional context."],
+        )
+
+        client = FakeWorkClient()
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 0)
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(event["state"], "completed")
+        self.assertEqual(event["body"], "Babbage replied.")
+        self.assertEqual(
+            [row["body"] for row in event["transcript"]],
+            ["Initial question.", "Additional context."],
+        )
+        self.assertFalse(
+            work_updates._read_state()["contacts"]["carbon-a"]["pending_calls"]
+        )
+
+    def test_call_journal_preserves_update_added_during_create(self):
+        client = FakeWorkClient()
+        original_create = client.work_standalone_call_create
+        reference_box = {}
+
+        def racing_create(payload):
+            if not reference_box:
+                reference_box.update(
+                    owner_contact_id="carbon-a",
+                    call_id=payload["call_id"],
+                )
+                work_updates.WorkUpdates("carbon-a", client=client).execute(
+                    {
+                        "action": "call/update",
+                        "call_id": payload["call_id"],
+                        "standalone": True,
+                        "data": {"state": "completed"},
+                    }
+                )
+            return original_create(payload)
+
+        client.work_standalone_call_create = racing_create
+        with mock.patch.object(
+            work_updates,
+            "_schedule_next_call_lane",
+            return_value=False,
+        ):
+            reference = work_updates.record_outbound_call(
+                "carbon-a",
+                target_kind="manager",
+                target_id="carbon-b",
+                target_name="Babbage's manager",
+                message="Please confirm.",
+                client=client,
+            )
+
+        journal = work_updates._read_state()["call_retry_journal"]
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(
+            next(iter(journal.values()))["payload"]["state"],
+            "completed",
+        )
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 0)
+        self.assertEqual(
+            client._event_by("", "call_id", reference["call_id"])["state"],
+            "completed",
+        )
+
+    def test_expired_call_lease_is_taken_over_after_ninety_seconds(self):
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please confirm.",
+            client=ExplodingClient(),
+        )
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            entry = next(iter(state["call_retry_journal"].values()))
+            entry["next_attempt_at"] = 0.0
+            entry["lease_owner"] = "old-process"
+            entry["lease_token"] = "old-token"
+            entry["lease_expires_at"] = 1_090.0
+            work_updates._write_state(state)
+
+        client = FakeWorkClient()
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=1_089.9,
+                client=client,
+            ),
+            0,
+        )
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=1_090.1,
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 0)
+        self.assertEqual(
+            client._event_by("", "call_id", reference["call_id"])[
+                "transcript"
+            ][0]["body"],
+            "Please confirm.",
+        )
+
+    def test_lost_patch_response_replays_without_duplicate_transcript(self):
+        client = FakeWorkClient()
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Initial question.",
+            client=client,
+        )
+        successful_patch = client.work_standalone_call_patch
+        attempts = 0
+
+        def flaky_patch(call_id, payload):
+            nonlocal attempts
+            attempts += 1
+            event = client._event_by("", "call_id", call_id)
+            if attempts == 1:
+                successful_patch(call_id, payload)
+                raise OSError("response lost after Glass committed")
+            if payload.get("revision") != event["revision"]:
+                raise interface.WorkCallMutationError(
+                    status_code=409,
+                    code="revision_conflict",
+                    current_revision=event["revision"],
+                    retryable=True,
+                )
+            return successful_patch(call_id, payload)
+
+        client.work_standalone_call_patch = flaky_patch
+        self.assertTrue(
+            work_updates.record_contact_call_message(
+                "carbon-a",
+                peer_contact_id="carbon-b",
+                speaker_kind="manager",
+                speaker_id="manager:carbon-a",
+                speaker_name="Ada's manager",
+                message="Additional context.",
+                client=client,
+                idempotency_key="event-outgoing-1",
+            )
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertEqual(work_updates.pending_call_update_retries()["pending"], 1)
+
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(
+            [row["body"] for row in event["transcript"]],
+            ["Initial question.", "Additional context."],
+        )
+        self.assertEqual(
+            len({row["transcript_id"] for row in event["transcript"]}),
+            2,
+        )
+        self.assertEqual(attempts, 3)
+
+    def test_dead_patch_does_not_block_later_terminal_mutation(self):
+        client = FakeWorkClient()
+        reference = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Initial question.",
+            client=client,
+        )
+        retry_id = work_updates._journal_call_patch(
+            reference,
+            {"body": "A malformed optional update."},
+            mutation_id="malformed-update",
+        )
+        original_patch = client.work_standalone_call_patch
+        client.work_standalone_call_patch = mock.Mock(
+            side_effect=ValueError("invalid optional patch")
+        )
+        self.assertFalse(
+            work_updates._deliver_call_retry(retry_id, client=client)
+        )
+        client.work_standalone_call_patch = original_patch
+        self.assertEqual(
+            work_updates.pending_call_update_retries()["dead_letter"],
+            1,
+        )
+
+        result = work_updates.WorkUpdates("carbon-a", client=client).execute(
+            {
+                "action": "call/update",
+                "call_id": reference["call_id"],
+                "standalone": True,
+                "data": {
+                    "state": "completed",
+                    "body": "The call completed.",
+                },
+            }
+        )
+
+        self.assertFalse(result.get("queued_for_delivery", False))
+        self.assertEqual(
+            client._event_by("", "call_id", reference["call_id"])["state"],
+            "completed",
+        )
+
+    def test_inbound_event_id_replay_keeps_one_canonical_card(self):
+        outbound = {
+            "owner_contact_id": "carbon-a",
+            "call_id": "call-outbound",
+            "work_event_id": "event-outbound",
+        }
+        with mock.patch.object(
+            work_updates,
+            "_schedule_call_retry",
+            return_value=True,
+        ):
+            first = work_updates.enqueue_inbound_call(
+                "carbon-b",
+                source_kind="manager",
+                source_id="carbon-a",
+                source_name="Ada's manager",
+                message="Please review.",
+                outbound=outbound,
+                idempotency_key="incoming-event-1",
+            )
+            second = work_updates.enqueue_inbound_call(
+                "carbon-b",
+                source_kind="manager",
+                source_id="carbon-a",
+                source_name="Ada's manager",
+                message="Please review.",
+                outbound=outbound,
+                idempotency_key="incoming-event-1",
+            )
+
+        self.assertEqual(first, second)
+        state = work_updates._read_state()
+        self.assertEqual(len(state["call_retry_journal"]), 1)
+        receipt = state["call_retry_dedupe"]["incoming-event-1"]
+        self.assertNotIn(
+            "Please review.",
+            json.dumps(receipt, sort_keys=True),
+        )
+        self.assertEqual(
+            state["contacts"]["carbon-b"]["pending_calls"]["carbon-a"][
+                "inbound_call_id"
+            ],
+            first["call_id"],
+        )
+
+    def test_initial_outgoing_self_echo_does_not_duplicate_or_close_call(self):
+        self.contacts["silicon-b"] = {
+            "contact_type": "silicon",
+            "silicon_id": "silicon-b",
+            "room_id": "room-b",
+            "display_name": "Babbage",
+        }
+        dedupe_key = "outgoing-call:silicon-b:event-outgoing-1"
+        reference = work_updates.prepare_outbound_call(
+            "silicon-b",
+            target_kind="silicon",
+            target_id="silicon-b",
+            target_name="Babbage",
+            message="Hello.",
+        )
+        with mock.patch.object(
+            work_updates,
+            "_schedule_call_retry",
+            return_value=True,
+        ) as schedule:
+            self.assertTrue(
+                work_updates.enqueue_outbound_call(
+                    reference,
+                    target_name="Babbage",
+                    message="Hello.",
+                    idempotency_key=dedupe_key,
+                )
+            )
+            self.assertTrue(
+                work_updates.record_contact_call_message(
+                    "silicon-b",
+                    speaker_kind="manager",
+                    speaker_id="silicon-self",
+                    speaker_name="Silicon",
+                    message="Hello.",
+                    idempotency_key=dedupe_key,
+                    terminal=True,
+                )
+            )
+
+        state = work_updates._read_state()
+        journal = list(state["call_retry_journal"].values())
+        self.assertEqual(len(journal), 1)
+        self.assertEqual(journal[0]["operation"], "create")
+        correlation = state["contacts"]["silicon-b"]["pending_calls"][
+            "silicon-b"
+        ]
+        self.assertFalse(correlation.get("terminal_requested", False))
+        self.assertEqual(schedule.call_count, 2)
+
+    def test_direct_silicon_bookkeeping_uses_only_its_peer_correlation(self):
+        self.contacts["silicon-b"] = {
+            "contact_type": "silicon",
+            "silicon_id": "silicon-b",
+            "room_id": "room-b",
+            "display_name": "Babbage",
+        }
+        client = FakeWorkClient()
+        direct = work_updates.record_outbound_call(
+            "silicon-b",
+            target_kind="silicon",
+            target_id="silicon-b",
+            target_name="Babbage",
+            message="Direct question.",
+            client=client,
+        )
+        unrelated = work_updates.record_outbound_call(
+            "silicon-b",
+            target_kind="silicon",
+            target_id="silicon-c",
+            target_name="Curie",
+            message="Unrelated question.",
+            client=client,
+        )
+        with work_updates._state_guard():
+            state = work_updates._read_state()
+            pending = state["contacts"]["silicon-b"]["pending_calls"]
+            pending["silicon-b"]["updated_at"] = time.time() - 2.0
+            pending["silicon-c"]["updated_at"] = time.time() - 1.0
+            work_updates._write_state(state)
+
+        self.assertTrue(
+            work_updates.record_contact_call_message(
+                "silicon-b",
+                speaker_kind="silicon",
+                speaker_id="silicon-b",
+                speaker_name="Babbage",
+                message="Direct answer.",
+                client=client,
+                idempotency_key="incoming-call:silicon-b:event-direct",
+                terminal=True,
+            )
+        )
+        self.assertTrue(flush_best_effort())
+
+        direct_event = client._event_by("", "call_id", direct["call_id"])
+        unrelated_event = client._event_by("", "call_id", unrelated["call_id"])
+        self.assertEqual(direct_event["state"], "completed")
+        self.assertEqual(
+            [row["body"] for row in direct_event["transcript"]],
+            ["Direct question.", "Direct answer."],
+        )
+        self.assertEqual(unrelated_event["state"], "in_progress")
+        self.assertEqual(
+            [row["body"] for row in unrelated_event["transcript"]],
+            ["Unrelated question."],
+        )
+        pending = work_updates._read_state()["contacts"]["silicon-b"][
+            "pending_calls"
+        ]
+        self.assertNotIn("silicon-b", pending)
+        self.assertIn("silicon-c", pending)
+
+    def test_completed_terminal_append_receipt_replay_is_accepted_noop(self):
+        self.contacts["silicon-b"] = {
+            "contact_type": "silicon",
+            "silicon_id": "silicon-b",
+            "room_id": "room-b",
+            "display_name": "Babbage",
+        }
+        client = FakeWorkClient()
+        reference = work_updates.record_outbound_call(
+            "silicon-b",
+            target_kind="silicon",
+            target_id="silicon-b",
+            target_name="Babbage",
+            message="Please confirm.",
+            client=client,
+        )
+        dedupe_key = "incoming-call:silicon-b:event-response"
+        self.assertTrue(
+            work_updates.record_contact_call_message(
+                "silicon-b",
+                speaker_kind="silicon",
+                speaker_id="silicon-b",
+                speaker_name="Babbage",
+                message="Confirmed.",
+                client=client,
+                idempotency_key=dedupe_key,
+                terminal=True,
+            )
+        )
+        self.assertTrue(flush_best_effort())
+        self.assertFalse(
+            work_updates._read_state()["contacts"]["silicon-b"]["pending_calls"]
+        )
+        create_count = len(client.payloads("work_standalone_call_create"))
+        patch_count = len(client.payloads("work_standalone_call_patch"))
+
+        replayed = work_updates.record_contact_call_message(
+            "silicon-b",
+            speaker_kind="silicon",
+            speaker_id="silicon-b",
+            speaker_name="Babbage",
+            message="Confirmed.",
+            client=client,
+            idempotency_key=dedupe_key,
+            terminal=True,
+        )
+        if not replayed:
+            work_updates.enqueue_inbound_call(
+                "silicon-b",
+                source_kind="silicon",
+                source_id="silicon-b",
+                source_name="Babbage",
+                message="Confirmed.",
+                client=client,
+                idempotency_key=dedupe_key,
+            )
+        self.assertTrue(flush_best_effort())
+
+        self.assertTrue(replayed)
+        self.assertEqual(
+            len(client.payloads("work_standalone_call_create")),
+            create_count,
+        )
+        self.assertEqual(
+            len(client.payloads("work_standalone_call_patch")),
+            patch_count,
+        )
+        self.assertFalse(
+            work_updates._read_state()["contacts"]["silicon-b"]["pending_calls"]
+        )
+        event = client._event_by("", "call_id", reference["call_id"])
+        self.assertEqual(
+            [row["body"] for row in event["transcript"]],
+            ["Please confirm.", "Confirmed."],
+        )
 
     def test_task_linked_call_bridge_still_mirrors_transcript(self):
         client = FakeWorkClient()
@@ -1039,6 +2362,78 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertEqual(
             [row["body"] for row in inbound_event["transcript"]],
             ["Can you confirm the colour?", "Use blue."],
+        )
+        self.assertEqual(outbound_event["state"], "completed")
+        self.assertEqual(inbound_event["state"], "completed")
+        state = work_updates._read_state()
+        self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
+        self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
+
+    def test_partial_mirror_failure_retries_only_the_missing_side(self):
+        client = FakeWorkClient()
+        outbound = work_updates.record_outbound_call(
+            "carbon-a",
+            target_kind="manager",
+            target_id="carbon-b",
+            target_name="Babbage's manager",
+            message="Please confirm.",
+            client=client,
+        )
+        inbound = work_updates.record_inbound_call(
+            "carbon-b",
+            source_kind="manager",
+            source_id="carbon-a",
+            source_name="Ada's manager",
+            message="Please confirm.",
+            outbound=outbound,
+            client=client,
+        )
+        original_patch = client.work_standalone_call_patch
+
+        def one_side_offline(call_id, payload):
+            if call_id == outbound["call_id"]:
+                raise OSError("outbound room offline")
+            return original_patch(call_id, payload)
+
+        client.work_standalone_call_patch = one_side_offline
+        continuation = work_updates.record_outbound_call(
+            "carbon-b",
+            target_kind="manager",
+            target_id="carbon-a",
+            target_name="Ada's manager",
+            message="Confirmed.",
+            client=client,
+        )
+
+        self.assertTrue(continuation["continuation"])
+        inbound_event = client._event_by("", "call_id", inbound["call_id"])
+        self.assertEqual(inbound_event["state"], "completed")
+        self.assertEqual(
+            work_updates.pending_call_update_retries()["pending"],
+            1,
+        )
+        creates_before_retry = len(
+            client.payloads("work_standalone_call_create")
+        )
+
+        client.work_standalone_call_patch = original_patch
+        self.assertEqual(
+            work_updates.replay_pending_call_updates(
+                now=float("inf"),
+                client=client,
+            ),
+            1,
+        )
+        self.assertTrue(flush_best_effort())
+        outbound_event = client._event_by("", "call_id", outbound["call_id"])
+        self.assertEqual(outbound_event["state"], "completed")
+        self.assertEqual(
+            len(client.payloads("work_standalone_call_create")),
+            creates_before_retry,
+        )
+        self.assertEqual(
+            [row["body"] for row in outbound_event["transcript"]],
+            ["Please confirm.", "Confirmed."],
         )
 
     def test_standalone_call_outer_event_can_be_correlated_for_replies(self):

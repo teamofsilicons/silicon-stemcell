@@ -29,6 +29,8 @@ class InterfaceStateTest(unittest.TestCase):
             interface._inbox_scan_state.clear()
         with interface._activity_condition:
             interface._activity_pending = 0
+        with interface._inbox_retry_lock:
+            interface._inbox_retry_records.clear()
         while True:
             try:
                 interface._event_queue.get_nowait()
@@ -46,6 +48,8 @@ class InterfaceStateTest(unittest.TestCase):
             interface._inbox_scan_state.clear()
         with interface._activity_condition:
             interface._activity_pending = 0
+        with interface._inbox_retry_lock:
+            interface._inbox_retry_records.clear()
         self.tmp.cleanup()
 
     def test_new_contacts_fail_closed_and_ids_are_fixed(self):
@@ -495,9 +499,17 @@ class InterfaceStateTest(unittest.TestCase):
             interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
         )
         fake = FakeClient()
-        with mock.patch.object(interface, "InterfaceClient", return_value=fake), mock.patch.object(interface, "start_listener"):
+        with (
+            mock.patch.object(interface, "InterfaceClient", return_value=fake),
+            mock.patch.object(interface, "start_listener"),
+            mock.patch(
+                "core.work_updates.replay_pending_call_updates",
+                return_value=0,
+            ) as replay_calls,
+        ):
             contexts = interface.get_unread_events()
 
+        replay_calls.assert_called_once_with()
         self.assertIn("carbon-a", contexts)
         self.assertIn("hello from durable inbox", contexts["carbon-a"])
         self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-sync")
@@ -528,6 +540,175 @@ class InterfaceStateTest(unittest.TestCase):
         replay = interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
 
         self.assertEqual([r.frame["event"]["event_id"] for r in replay], ["evt-2"])
+
+    def test_call_journal_failure_replays_before_inbox_cursor_advances(self):
+        interface.upsert_contact(
+            "silicon",
+            "silicon-b",
+            room_id="room-b",
+            display_name="Babbage",
+        )
+        frame = {
+            "type": "event",
+            "room_id": "room-b",
+            "event": {
+                "type": "m.text",
+                "event_id": "event-b-1",
+                "sender_id": "silicon-b",
+                "content": {"body": "Please review this."},
+            },
+        }
+        interface.DEFAULT_INBOX_FILE.write_text(
+            json.dumps(frame) + "\n",
+            encoding="utf-8",
+        )
+        interface._queue_inbox_records(
+            interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        )
+        fake = mock.Mock()
+        bookkeeping = mock.Mock(
+            side_effect=[
+                interface.CallBookkeepingError("disk unavailable"),
+                None,
+            ]
+        )
+        with (
+            mock.patch.object(interface, "InterfaceClient", return_value=fake),
+            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(
+                interface,
+                "discover_rooms",
+                return_value=interface.get_contacts(),
+            ),
+            mock.patch.object(
+                interface,
+                "_record_incoming_call_bookkeeping",
+                bookkeeping,
+            ),
+            mock.patch(
+                "core.work_updates.replay_pending_call_updates",
+                return_value=0,
+            ),
+        ):
+            self.assertEqual(interface.get_unread_events(), {})
+            self.assertFalse(interface.INBOX_CONSUMER_FILE.exists())
+            recovered = interface.get_unread_events()
+
+        self.assertIn("Please review this.", recovered["silicon-b"])
+        self.assertEqual(bookkeeping.call_count, 2)
+        consumer = json.loads(
+            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            consumer["offset"],
+            interface.DEFAULT_INBOX_FILE.stat().st_size,
+        )
+
+    def test_lost_root_acceptance_response_replays_without_duplicate_turn(self):
+        from core.maintenance import MaintenanceCoordinator
+
+        interface.upsert_contact(
+            "carbon",
+            "carbon-a",
+            room_id="room-a",
+            display_name="Carbon A",
+        )
+        frame = {
+            "type": "event",
+            "room_id": "room-a",
+            "event": {
+                "type": "m.text",
+                "event_id": "event-a-1",
+                "sender_id": "carbon-a",
+                "content": {"body": "Run this exactly once."},
+            },
+        }
+        interface.DEFAULT_INBOX_FILE.write_text(
+            json.dumps(frame) + "\n",
+            encoding="utf-8",
+        )
+        interface._queue_inbox_records(
+            interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        )
+        coordinator = MaintenanceCoordinator(
+            self.tmp.name,
+            state_file=Path(self.tmp.name) / "maintenance.json",
+        )
+        original_enqueue = coordinator.enqueue_ingress_root
+
+        def commit_then_lose_response(*args, **kwargs):
+            original_enqueue(*args, **kwargs)
+            raise OSError("response lost")
+
+        with (
+            mock.patch.object(interface, "InterfaceClient", return_value=mock.Mock()),
+            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(
+                interface,
+                "discover_rooms",
+                return_value=interface.get_contacts(),
+            ),
+            mock.patch.object(interface, "submit_best_effort", return_value=True),
+            mock.patch(
+                "core.work_updates.replay_pending_call_updates",
+                return_value=0,
+            ),
+            mock.patch(
+                "core.diagnostics.Diagnostics.get_active_run",
+                return_value=None,
+            ),
+            mock.patch(
+                "core.diagnostics.Diagnostics.start_run",
+                side_effect=RuntimeError,
+            ),
+            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch.object(
+                coordinator,
+                "enqueue_ingress_root",
+                side_effect=commit_then_lose_response,
+            ),
+        ):
+            self.assertEqual(interface.get_unread_events_durable(), {})
+
+        self.assertFalse(interface.INBOX_CONSUMER_FILE.exists())
+        first_turn = coordinator.claim_pending_roots()
+        self.assertEqual(len(first_turn), 1)
+        self.assertIn("Run this exactly once.", first_turn[0].context)
+        coordinator.complete_roots(first_turn)
+
+        with (
+            mock.patch.object(interface, "InterfaceClient", return_value=mock.Mock()),
+            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(
+                interface,
+                "discover_rooms",
+                return_value=interface.get_contacts(),
+            ),
+            mock.patch.object(interface, "submit_best_effort", return_value=True),
+            mock.patch(
+                "core.work_updates.replay_pending_call_updates",
+                return_value=0,
+            ),
+            mock.patch(
+                "core.diagnostics.Diagnostics.get_active_run",
+                return_value=None,
+            ),
+            mock.patch(
+                "core.diagnostics.Diagnostics.start_run",
+                side_effect=RuntimeError,
+            ),
+            mock.patch("core.maintenance.COORDINATOR", coordinator),
+        ):
+            self.assertEqual(interface.get_unread_events_durable(), {})
+
+        consumer = json.loads(
+            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            consumer["offset"],
+            interface.DEFAULT_INBOX_FILE.stat().st_size,
+        )
+        self.assertEqual(coordinator.claim_pending_roots(), [])
 
     def test_initial_snapshot_timeline_is_routed_through_same_dedupe_path(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
@@ -609,6 +790,220 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual(calls[2], ("send", "room-a", "two"))
         self.assertEqual(calls[3], ("tts", "room-a", "hello [short pause]"))
         self.assertEqual(calls[4], ("send", "room-a", "three"))
+
+    def test_reply_uses_deterministic_client_id_per_parsed_segment(self):
+        interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
+        sends = []
+
+        class FakeClient:
+            def send(self, room_id, message, **kwargs):
+                sends.append((room_id, message, kwargs))
+                return {"event_id": f"event-{len(sends)}"}
+
+            def tts(self, room_id, text):
+                return {"event_id": "voice-1"}
+
+        with mock.patch.object(interface, "InterfaceClient", FakeClient):
+            self.assertEqual(
+                interface.reply_contact(
+                    "first [voice=pause] second",
+                    "carbon-a",
+                    client_id="final-reply-1",
+                ),
+                "Message sent",
+            )
+
+        self.assertEqual(
+            [value[2]["client_id"] for value in sends],
+            [
+                "final-reply-1:segment:1:text",
+                "final-reply-1:segment:3:text",
+            ],
+        )
+
+    def test_multi_text_silicon_reply_only_terminalizes_final_segment(self):
+        interface.upsert_contact(
+            "silicon",
+            "silicon-b",
+            room_id="room-b",
+            display_name="Babbage",
+        )
+        text_events = iter(("event-text-1", "event-text-2"))
+
+        class FakeClient:
+            def send(self, _room_id, _message, **_kwargs):
+                return {"event_id": next(text_events)}
+
+            def tts(self, _room_id, _text):
+                return {"event_id": "event-voice-1"}
+
+        with (
+            mock.patch.object(interface, "InterfaceClient", FakeClient),
+            mock.patch.object(
+                interface,
+                "_record_sent_call_message",
+            ) as record,
+        ):
+            self.assertEqual(
+                interface.reply_contact(
+                    "First part. [voice=pause] Final part.",
+                    "silicon-b",
+                ),
+                "Message sent",
+            )
+
+        self.assertEqual(
+            record.call_args_list,
+            [
+                mock.call(
+                    "silicon-b",
+                    "First part.",
+                    "event-text-1",
+                    terminal=False,
+                ),
+                mock.call(
+                    "silicon-b",
+                    "Final part.",
+                    "event-text-2",
+                    terminal=True,
+                ),
+            ],
+        )
+
+    def test_accepted_silicon_text_creates_card_when_no_call_exists(self):
+        reference = {
+            "owner_contact_id": "silicon-b",
+            "call_id": "call-a",
+            "work_event_id": "event-a",
+            "target_kind": "silicon",
+            "target_id": "silicon-b",
+        }
+        with (
+            mock.patch(
+                "core.work_updates.record_contact_call_message",
+                return_value=False,
+            ),
+            mock.patch(
+                "core.work_updates.prepare_outbound_call",
+                return_value=reference,
+            ) as prepare,
+            mock.patch(
+                "core.work_updates.enqueue_outbound_call",
+                return_value=True,
+            ) as enqueue,
+            mock.patch.object(
+                interface,
+                "get_contact",
+                return_value={
+                    "contact_type": "silicon",
+                    "silicon_id": "silicon-b",
+                    "display_name": "Babbage",
+                },
+            ),
+            mock.patch.object(
+                interface,
+                "get_own_profile",
+                return_value={
+                    "silicon_id": "silicon-a",
+                    "name": "Ada",
+                },
+            ),
+        ):
+            interface._record_sent_call_message(
+                "silicon-b",
+                "Hello Babbage.",
+                "event-sent-1",
+            )
+
+        prepare.assert_called_once()
+        enqueue.assert_called_once_with(
+            reference,
+            target_name="Babbage",
+            message="Hello Babbage.",
+            idempotency_key="outgoing-call:silicon-b:event-sent-1",
+        )
+
+    def test_accepted_silicon_text_appends_without_creating_second_card(self):
+        with (
+            mock.patch(
+                "core.work_updates.record_contact_call_message",
+                return_value=True,
+            ) as append,
+            mock.patch(
+                "core.work_updates.prepare_outbound_call",
+            ) as prepare,
+            mock.patch.object(
+                interface,
+                "get_own_profile",
+                return_value={
+                    "silicon_id": "silicon-a",
+                    "name": "Ada",
+                },
+            ),
+        ):
+            interface._record_sent_call_message(
+                "silicon-b",
+                "Existing call answer.",
+                "event-sent-2",
+            )
+
+        self.assertEqual(
+            append.call_args.kwargs["idempotency_key"],
+            "outgoing-call:silicon-b:event-sent-2",
+        )
+        prepare.assert_not_called()
+
+    def test_outgoing_silicon_bookkeeping_recovers_from_durable_self_event(self):
+        interface.upsert_contact(
+            "silicon",
+            "silicon-b",
+            room_id="room-b",
+            display_name="Babbage",
+        )
+        state = interface.get_contacts()
+        state["own_ids"] = ["silicon-self"]
+        interface._save_state(state)
+
+        class FakeClient:
+            def send(self, _room_id, _message, **_kwargs):
+                return {"event_id": "event-outgoing-1"}
+
+        bookkeeping = mock.Mock(
+            side_effect=[
+                interface.CallBookkeepingError("disk unavailable"),
+                None,
+            ]
+        )
+        with (
+            mock.patch.object(interface, "InterfaceClient", FakeClient),
+            mock.patch.object(
+                interface,
+                "_record_sent_call_message",
+                bookkeeping,
+            ),
+        ):
+            self.assertEqual(
+                interface.reply_contact("Hello.", "silicon-b"),
+                "Message sent",
+            )
+            self.assertIsNone(
+                interface.process_incoming_event(
+                    {
+                        "type": "m.text",
+                        "event_id": "event-outgoing-1",
+                        "room_id": "room-b",
+                        "sender_id": "silicon-self",
+                        "content": {"body": "Hello."},
+                    },
+                    client=FakeClient(),
+                )
+            )
+
+        self.assertEqual(bookkeeping.call_count, 2)
+        self.assertEqual(
+            bookkeeping.call_args_list[1].args,
+            ("silicon-b", "Hello.", "event-outgoing-1"),
+        )
 
 
 class InterfaceClientTest(unittest.TestCase):

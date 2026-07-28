@@ -1,17 +1,11 @@
 import unittest
 from unittest import mock
 
-from core.interface import InterfaceClient, InterfaceError
-
-
-class FakeGlassResponse:
-    def __init__(self, status_code, payload, headers=None):
-        self.status_code = status_code
-        self.payload = payload
-        self.headers = headers or {}
-
-    def json(self):
-        return self.payload
+from core.interface import (
+    InterfaceClient,
+    InterfaceError,
+    WorkCallMutationError,
+)
 
 
 class WorkUpdateTransportTest(unittest.TestCase):
@@ -26,6 +20,7 @@ class WorkUpdateTransportTest(unittest.TestCase):
             "Still working",
             progress_group_id="run-1",
             work_continues=True,
+            client_id="reply-1",
         )
 
         self.run.assert_called_once_with(
@@ -33,6 +28,8 @@ class WorkUpdateTransportTest(unittest.TestCase):
                 "send",
                 "room-1",
                 "Still working",
+                "--client-id",
+                "reply-1",
                 "--group",
                 "run-1",
                 "--work-continues",
@@ -203,17 +200,10 @@ class WorkUpdateTransportTest(unittest.TestCase):
         )
         self.assertEqual(payload["client_id"], "caller-owned-id")
 
-    @mock.patch("core.glass.silicon_api_request")
-    def test_standalone_call_mutations_use_authenticated_glass_transport(
-        self,
-        request,
-    ):
-        request.side_effect = [
-            FakeGlassResponse(201, {"call_id": "call:standalone"}),
-            FakeGlassResponse(
-                200,
-                {"call_id": "call:standalone", "state": "completed"},
-            ),
+    def test_standalone_call_mutations_use_cli_operation_journal(self):
+        self.run.side_effect = [
+            {"call_id": "call:standalone"},
+            {"call_id": "call:standalone", "state": "completed"},
         ]
         create_payload = {
             "call_id": "call:standalone",
@@ -234,62 +224,54 @@ class WorkUpdateTransportTest(unittest.TestCase):
             {"call_id": "call:standalone", "state": "completed"},
         )
         self.assertEqual(
-            request.call_args_list,
+            self.run.call_args_list,
             [
                 mock.call(
-                    "POST",
-                    "/api/v1/work/calls",
-                    json_body=create_payload,
+                    [
+                        "work",
+                        "call",
+                        "create",
+                        "--data",
+                        (
+                            '{"call_id":"call:standalone",'
+                            '"state":"connecting",'
+                            '"client_id":"create-call:standalone"}'
+                        ),
+                    ],
                     timeout=60,
                 ),
                 mock.call(
-                    "PATCH",
-                    "/api/v1/work/calls/call%3Astandalone",
-                    json_body=patch_payload,
+                    [
+                        "work",
+                        "call",
+                        "patch",
+                        "call:standalone",
+                        "--data",
+                        '{"state":"completed","revision":0}',
+                    ],
                     timeout=60,
                 ),
             ],
         )
-        self.run.assert_not_called()
 
-    @mock.patch("core.glass.silicon_api_request")
-    def test_standalone_call_mutation_surfaces_glass_error_detail(self, request):
-        request.return_value = FakeGlassResponse(
-            404,
-            {"detail": "Room is unavailable."},
+    def test_call_patch_exposes_only_body_free_conflict_metadata(self):
+        self.run.side_effect = InterfaceError(
+            'command failed with secret transcript: api 409 '
+            '{"code":"revision_conflict","current":{"revision":7}}'
         )
 
-        with self.assertRaisesRegex(InterfaceError, "Room is unavailable"):
-            self.client.work_standalone_call_create({"room_id": "missing"})
+        with self.assertRaises(WorkCallMutationError) as raised:
+            self.client.work_standalone_call_patch(
+                "call-1",
+                {"body": "private transcript"},
+            )
 
-        self.run.assert_not_called()
-
-    @mock.patch("core.interface.time.sleep")
-    @mock.patch("core.glass.silicon_api_request")
-    def test_standalone_call_create_retries_transient_glass_failure(
-        self,
-        request,
-        sleep,
-    ):
-        request.side_effect = [
-            FakeGlassResponse(
-                503,
-                {"detail": "Temporarily unavailable."},
-                {"Retry-After": "0"},
-            ),
-            FakeGlassResponse(201, {"call_id": "call-standalone"}),
-        ]
-        payload = {
-            "room_id": "room-1",
-            "client_id": "create-call-standalone",
-        }
-
-        result = self.client.work_standalone_call_create(payload)
-
-        self.assertEqual(result, {"call_id": "call-standalone"})
-        self.assertEqual(request.call_count, 2)
-        sleep.assert_called_once_with(0.0)
-        self.run.assert_not_called()
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.code, "revision_conflict")
+        self.assertEqual(raised.exception.current_revision, 7)
+        self.assertTrue(raised.exception.retryable)
+        self.assertNotIn("private", str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception))
 
     def test_task_transition_wrappers_build_exact_argv(self):
         payload = {"client_id": "transition-id", "body": "Finished"}

@@ -1,8 +1,8 @@
 import threading
 
-from core.interface import get_unread_events
+from core.interface import get_unread_events_durable
 from core.cron import check_crons
-from core.messages import check_manager_messages
+from core.messages import check_manager_messages_durable
 from worker.handler import check_completed_workers_formatted, clean_old_archives
 from update import check_for_system_update
 
@@ -141,7 +141,7 @@ EVENT_LOOP = [
     {
         "name": "check_interface",
         "description": "Check for unread Silicon Interface events",
-        "execute": get_unread_events,
+        "execute": get_unread_events_durable,
         "on_error": lambda e: print(f"[Interface Error] {e}", flush=True),
     },
     {
@@ -153,7 +153,7 @@ EVENT_LOOP = [
     {
         "name": "check_manager_messages",
         "description": "Check for pending inter-manager messages",
-        "execute": check_manager_messages,
+        "execute": check_manager_messages_durable,
         "on_error": lambda e: print(f"[Manager Messages Error] {e}", flush=True),
     },
     {

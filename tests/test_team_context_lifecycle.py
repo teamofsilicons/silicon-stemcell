@@ -25,6 +25,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             mock.patch.object(main, "_install_diagnostic_shutdown_hooks"),
             mock.patch.object(main, "start_listener"),
             mock.patch.object(main, "stop_listener"),
+            mock.patch.object(main, "complete_inactive_calls"),
             mock.patch.object(main, "ManagerDispatcher", return_value=dispatcher),
             mock.patch.object(
                 main,

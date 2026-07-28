@@ -123,6 +123,18 @@ class WorkUpdatePromptTest(unittest.TestCase):
         ):
             self.assertIn(f"`{pause_reason}`", text)
         self.assertIn("A terminal task must have a stopped timer", prose)
+        self.assertIn("Elapsed time alone must never create a task or Todo", prose)
+        self.assertIn(
+            "runtime automatically schedules internal accuracy checkpoints "
+            "at every 5% of the accepted goal time",
+            prose,
+        )
+        self.assertIn("until the task reaches a terminal state", prose)
+        self.assertIn(
+            "rescheduled when the accepted estimate materially changes",
+            prose,
+        )
+        self.assertIn("not `cron/create`", text)
 
     def test_prompt_encodes_truthful_blocker_worker_call_and_terminal_rules(self):
         text = WORK_UPDATES_PATH.read_text(encoding="utf-8")
@@ -137,6 +149,12 @@ class WorkUpdatePromptTest(unittest.TestCase):
         self.assertIn("update-card failure must never cancel", text)
         self.assertIn("actual conversation in order", text)
         self.assertIn('Never replace the content with a count such as "3 messages"', prose)
+        self.assertIn(
+            "completes a call after 10 seconds without correlated manager or "
+            "call activity",
+            prose,
+        )
+        self.assertIn("Activity after that boundary is a new call", prose)
         self.assertIn("Use exactly one terminal action", text)
         self.assertIn(
             "After the terminal card is accepted, send a normal concise reply",

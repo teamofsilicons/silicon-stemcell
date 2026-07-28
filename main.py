@@ -87,13 +87,31 @@ from core.progress import (
 )
 from core.work_updates import (
     begin_manager_activity,
+    complete_inactive_calls,
     current_manager_activity_group,
-    enqueue_outbound_call,
     execute_work_update,
     prepare_outbound_call,
     record_worker_started,
     set_active_task_timer,
     settle_manager_activity,
+    touch_manager_call_activity,
+)
+from core.long_task_updates import (
+    accuracy_review_root_is_current,
+    acknowledge_accuracy_review_dispatched,
+    acknowledge_queued_long_task_root,
+    begin_long_task_run,
+    backfill_active_estimated_task_lifecycles,
+    claim_ready_accuracy_review_roots,
+    claim_ready_long_task_roots,
+    close_terminal_accuracy_lifecycle,
+    complete_accuracy_review_root,
+    current_long_task,
+    extract_accuracy_review_root,
+    extract_queued_long_task_root,
+    extract_queued_long_task_root_metadata,
+    queue_long_task_root_if_blocked,
+    recover_long_task_lifecycles,
 )
 
 RESTART_FLAG = os.path.join(PROJECT_ROOT, ".restart_pending")
@@ -195,7 +213,7 @@ def _provider_progress_note(progress, line):
     return text
 
 
-def _make_provider_progress_handler(carbon_id, group):
+def _make_provider_progress_handler(carbon_id, group, lifecycle=None):
     last_sent_at_by_key = {}
     last_note_by_key = {}
 
@@ -210,6 +228,9 @@ def _make_provider_progress_handler(carbon_id, group):
         item_id = str(progress.get("item_id") or "")
         if kind == "done":
             return
+        touch_manager_call_activity(carbon_id)
+        if lifecycle is not None:
+            lifecycle.observe(_provider_progress_state(progress))
         key = (kind, status, item_id)
         now = time.time()
         min_interval = 3.0 if status == "output" else 0.6
@@ -495,6 +516,29 @@ def _message_failure_status(carbon_id, target_kind, target_id, error):
     return message
 
 
+def _call_preparation_failure_status(
+    carbon_id,
+    target_kind,
+    target_id,
+    error,
+):
+    """Report a local call-card barrier failure without exposing its details."""
+    error_type = type(error).__name__[:80] or "Exception"
+    message = (
+        f"Message not sent: the call update for {target_kind} '{target_id}' "
+        f"could not be prepared ({error_type})."
+    )
+    group = _manager_progress_group(carbon_id)
+    if group:
+        send_progress(
+            carbon_id,
+            group,
+            "calling",
+            message,
+        )
+    return message
+
+
 def _manager_progress_group(carbon_id):
     """Return the visible group, suppressing private manager continuations."""
     group = current_manager_activity_group(carbon_id)
@@ -565,7 +609,12 @@ def _diagnostic_tool_metadata(tool_spec):
     return metadata
 
 
-def execute_single_tool(tool_spec, carbon_id):
+def execute_single_tool(
+    tool_spec,
+    carbon_id,
+    *,
+    suppress_progress=False,
+):
     """Execute a single tool, logging the call + result to the daily activity log.
 
     `do_nothing` is the idle no-op fired on most ticks; logging it would bury the
@@ -579,7 +628,11 @@ def execute_single_tool(tool_spec, carbon_id):
         try:
             with trace.span("tool_call") as span:
                 span.set_meta(**_diagnostic_tool_metadata(tool_spec))
-                result = _execute_single_tool(tool_spec, carbon_id)
+                result = _execute_single_tool(
+                    tool_spec,
+                    carbon_id,
+                    suppress_progress=suppress_progress,
+                )
                 executed = True
                 result_status = "error" if "Error" in str(result) else "ok"
                 result_summary = (
@@ -604,9 +657,17 @@ def execute_single_tool(tool_spec, carbon_id):
                     span.set_meta(error=result_summary)
         except Exception:
             if not executed:
-                result = _execute_single_tool(tool_spec, carbon_id)
+                result = _execute_single_tool(
+                    tool_spec,
+                    carbon_id,
+                    suppress_progress=suppress_progress,
+                )
     else:
-        result = _execute_single_tool(tool_spec, carbon_id)
+        result = _execute_single_tool(
+            tool_spec,
+            carbon_id,
+            suppress_progress=suppress_progress,
+        )
     if tool_name and tool_name != "do_nothing":
         try:
             from core.activity_log import tool_call
@@ -616,7 +677,12 @@ def execute_single_tool(tool_spec, carbon_id):
     return result
 
 
-def _execute_single_tool(tool_spec, carbon_id):
+def _execute_single_tool(
+    tool_spec,
+    carbon_id,
+    *,
+    suppress_progress=False,
+):
     """Execute a single tool. Returns result string or None for do_nothing."""
     tool_name = tool_spec.get("tool", "")
 
@@ -624,7 +690,7 @@ def _execute_single_tool(tool_spec, carbon_id):
         return None
 
     progress_note = _tool_progress_note(tool_spec)
-    if progress_note:
+    if progress_note and not suppress_progress:
         group = _manager_progress_group(carbon_id)
         if group:
             send_progress(
@@ -635,21 +701,48 @@ def _execute_single_tool(tool_spec, carbon_id):
             )
 
     if tool_name == "work_update":
-        return f"Tool 'work_update': {execute_work_update(tool_spec, carbon_id)}"
+        lifecycle = current_long_task(carbon_id)
+        prepared = (
+            lifecycle.prepare_work_update(tool_spec)
+            if lifecycle is not None
+            else [tool_spec]
+        )
+        results = [
+            execute_work_update(prepared_spec, carbon_id)
+            for prepared_spec in prepared
+        ]
+        if lifecycle is not None:
+            lifecycle.record_work_update(tool_spec, prepared, results)
+        return "Tool 'work_update': " + " ".join(str(result) for result in results)
 
     if tool_name == "reply":
         message = tool_spec.get("message", "")
-        status = reply_user(
-            message,
-            carbon_id,
-            work_continues=bool(tool_spec.get("work_continues", False)),
-        )
+        work_continues = bool(tool_spec.get("work_continues", False))
+        lifecycle = current_long_task(carbon_id)
+        if lifecycle is not None and not work_continues:
+            status = lifecycle.deliver_final_reply(
+                message,
+                has_active_workers=_contact_has_active_workers(carbon_id),
+                reply_sender=reply_user,
+            )
+        else:
+            status = reply_user(
+                message,
+                carbon_id,
+                work_continues=work_continues,
+            )
         return f"Tool 'reply': {status}"
 
     elif tool_name == "message_manager":
         target_carbon_id = tool_spec.get("carbon_id", "")
         target_silicon_id = tool_spec.get("silicon_id", "")
         message = tool_spec.get("message", "")
+        lifecycle = current_long_task(carbon_id)
+        call_task_id = (
+            lifecycle.resolve_task_id(str(tool_spec.get("task_id") or ""))
+            if lifecycle is not None
+            else str(tool_spec.get("task_id") or "")
+        )
         if not message:
             return "Tool 'message_manager': Error: message is required"
 
@@ -670,10 +763,18 @@ def _execute_single_tool(tool_spec, carbon_id):
                     target_id=target_id,
                     target_name=target_name,
                     message=message,
-                    task_id=str(tool_spec.get("task_id") or ""),
+                    task_id=call_task_id,
                 )
-            except Exception:
-                work_call = {}
+            except Exception as exc:
+                status = _call_preparation_failure_status(
+                    carbon_id,
+                    "carbon",
+                    target_id,
+                    exc,
+                )
+                return (
+                    f"Tool 'message_manager' (to {target_id}): Error: {status}"
+                )
             status = send_manager_message(
                 carbon_id,
                 target_id,
@@ -681,21 +782,10 @@ def _execute_single_tool(tool_spec, carbon_id):
                 target_type="carbon",
                 work_call=work_call,
             )
-            work_call_accepted = False
-            try:
-                work_call_accepted = bool(
-                    enqueue_outbound_call(
-                        work_call,
-                        target_name=target_name,
-                        message=message,
-                    )
-                )
-            except Exception:
-                pass
             return (
                 f"Tool 'message_manager' (to {target_id}): {status}"
                 + _work_reference_suffix(
-                    work_call if work_call_accepted else {},
+                    work_call,
                     "task_id",
                     "work_event_id",
                     "call_id",
@@ -721,10 +811,18 @@ def _execute_single_tool(tool_spec, carbon_id):
                     target_id=target_id,
                     target_name=target_name,
                     message=message,
-                    task_id=str(tool_spec.get("task_id") or ""),
+                    task_id=call_task_id,
                 )
-            except Exception:
-                work_call = {}
+            except Exception as exc:
+                status = _call_preparation_failure_status(
+                    carbon_id,
+                    "silicon",
+                    target_id,
+                    exc,
+                )
+                return (
+                    f"Tool 'message_manager' (to {target_id}): Error: {status}"
+                )
             status = send_manager_message(
                 carbon_id,
                 target_id,
@@ -732,21 +830,10 @@ def _execute_single_tool(tool_spec, carbon_id):
                 target_type="silicon",
                 work_call=work_call,
             )
-            work_call_accepted = False
-            try:
-                work_call_accepted = bool(
-                    enqueue_outbound_call(
-                        work_call,
-                        target_name=target_name,
-                        message=message,
-                    )
-                )
-            except Exception:
-                pass
             return (
                 f"Tool 'message_manager' (to {target_id}): {status}"
                 + _work_reference_suffix(
-                    work_call if work_call_accepted else {},
+                    work_call,
                     "task_id",
                     "work_event_id",
                     "call_id",
@@ -970,22 +1057,64 @@ def _execute_single_tool(tool_spec, carbon_id):
             task = tool_spec.get("task", "")
             if not task:
                 return f"Tool 'worker/new' ({worker_id}): Error: task is required"
+            lifecycle = current_long_task(carbon_id)
+            lifecycle_task_id = ""
+            pending_work_invocation = {}
+            if lifecycle is not None:
+                lifecycle_task_id = lifecycle.ensure("spawning_worker")
+                requested_task_id = str(tool_spec.get("task_id") or "")
+                durable_task_id = lifecycle.resolve_task_id(
+                    requested_task_id
+                )
+                if durable_task_id:
+                    pending_work_invocation = lifecycle.journal_worker_start(
+                        worker_id,
+                        worker_type,
+                        task,
+                        task_id=durable_task_id,
+                    )
+                    if not pending_work_invocation:
+                        return (
+                            f"Tool 'worker/new' ({worker_type}, {worker_id}): "
+                            "Error: durable worker update admission is "
+                            "unavailable; worker was not started"
+                        )
             incognito = tool_spec.get("incognito", False)
             status = start_worker(worker_id, task, worker_type, carbon_id, incognito=incognito)
             work_invocation = {}
             if "Error" not in status:
-                work_invocation = record_worker_started(
-                    carbon_id,
-                    worker_id,
-                    worker_type,
-                    task,
-                    queued="queued" in status.lower(),
-                    task_id=str(tool_spec.get("task_id") or ""),
-                )
+                if lifecycle is not None and pending_work_invocation:
+                    work_invocation = lifecycle.mark_worker_started(
+                        worker_id,
+                        queued="queued" in status.lower(),
+                    )
+                    if not work_invocation:
+                        status += " (durable worker update queued for retry)"
+                else:
+                    work_invocation = record_worker_started(
+                        carbon_id,
+                        worker_id,
+                        worker_type,
+                        task,
+                        queued="queued" in status.lower(),
+                        task_id=str(
+                            (
+                                lifecycle.resolve_task_id(
+                                    str(tool_spec.get("task_id") or "")
+                                )
+                                if lifecycle is not None
+                                else tool_spec.get("task_id")
+                            )
+                            or lifecycle_task_id
+                            or ""
+                        ),
+                    )
                 trace = Diagnostics.get_active_run(carbon_id)
                 if trace is not None:
                     trace.note_worker_spawned()
                     trace.event("worker.spawned", worker_id=worker_id, worker_type=worker_type)
+            elif lifecycle is not None and pending_work_invocation:
+                lifecycle.discard_worker_intent(worker_id)
 
             # Handle checkback_in if specified
             checkback_in = tool_spec.get("checkback_in")
@@ -1080,18 +1209,46 @@ def _execute_single_tool(tool_spec, carbon_id):
         return f"Unknown tool: '{tool_name}'"
 
 
-def execute_all_tools(all_tools):
+def execute_all_tools(
+    all_tools,
+    *,
+    suppress_progress_contacts=None,
+):
     """Execute all tools from all managers through a single executor.
     all_tools is a list of (carbon_id, tool_spec) tuples.
     Returns (results_by_carbon, empty_remaps_for_legacy_callers)."""
     results_by_carbon = {}
     needs_restart = False
     restart_carbon_id = None
+    suppress_progress_contacts = {
+        str(contact_id)
+        for contact_id in (suppress_progress_contacts or set())
+    }
 
-    # Sort: restart at end
-    restart_tools = [(cid, t) for cid, t in all_tools if t.get("tool") == "restart_silicon_service"]
-    other_tools = [(cid, t) for cid, t in all_tools if t.get("tool") != "restart_silicon_service"]
-    sorted_tools = other_tools + restart_tools
+    # A final normal reply is the end-of-batch fence: durable updates and
+    # worker starts must be accepted first even if the manager listed the reply
+    # early. Intermediate replies intentionally retain their original order.
+    restart_tools = [
+        (cid, tool)
+        for cid, tool in all_tools
+        if tool.get("tool") == "restart_silicon_service"
+    ]
+    final_reply_tools = [
+        (cid, tool)
+        for cid, tool in all_tools
+        if tool.get("tool") == "reply"
+        and not tool.get("work_continues")
+    ]
+    other_tools = [
+        (cid, tool)
+        for cid, tool in all_tools
+        if tool.get("tool") != "restart_silicon_service"
+        and not (
+            tool.get("tool") == "reply"
+            and not tool.get("work_continues")
+        )
+    ]
+    sorted_tools = other_tools + final_reply_tools + restart_tools
 
     for carbon_id, tool_spec in sorted_tools:
         tool_name = tool_spec.get("tool", "")
@@ -1101,7 +1258,14 @@ def execute_all_tools(all_tools):
             restart_carbon_id = carbon_id
             continue
 
-        result = execute_single_tool(tool_spec, carbon_id)
+        if str(carbon_id) in suppress_progress_contacts:
+            result = execute_single_tool(
+                tool_spec,
+                carbon_id,
+                suppress_progress=True,
+            )
+        else:
+            result = execute_single_tool(tool_spec, carbon_id)
 
         if result is not None:
             if carbon_id not in results_by_carbon:
@@ -1255,13 +1419,19 @@ def run_event_loop_tick(handler_names=None):
     return merged
 
 
-def _make_mid_stream_handler(carbon_id):
+def _make_mid_stream_handler(
+    carbon_id,
+    *,
+    allow_intermediate_replies=True,
+):
     """Create a callback that executes reply tools mid-stream for fast delivery.
     Only explicitly intermediate replies are fire-and-forget. Final replies
     stay in the ordered executor so a terminal card or other preceding update
     is accepted first. All non-reply tools need their results fed back to the
     manager and therefore also use the centralized executor."""
     def on_tools(tools_list):
+        if not allow_intermediate_replies:
+            return []
         succeeded = []
         for tool_spec in tools_list:
             tool_name = tool_spec.get("tool", "")
@@ -1284,6 +1454,30 @@ def _trace_correlation(context):
     return (room_ids[0] if room_ids else ""), message_ids
 
 
+def _work_lifecycle_is_visible(trace, context):
+    """Expose direct-room roots while hiding explicitly internal continuations."""
+    room_id, message_ids = _trace_correlation(context)
+    raw_trace_room_id = getattr(trace, "room_id", "") if trace else ""
+    raw_trigger = getattr(trace, "trigger", "") if trace else ""
+    trace_room_id = (
+        raw_trace_room_id.strip()
+        if isinstance(raw_trace_room_id, str)
+        else ""
+    )
+    trigger = raw_trigger.strip() if isinstance(raw_trigger, str) else ""
+    if room_id or trace_room_id or message_ids or trigger == "message":
+        return True
+    if trace is None:
+        return False
+    return trigger not in {
+        "handoff",
+        "maintenance",
+        "manager_loop",
+        "startup",
+        "worker",
+    }
+
+
 def _instrumented_manager_call(carbon_id, text, trace, iteration, on_tools, on_progress):
     if trace is None:
         return manager_code(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
@@ -1295,16 +1489,69 @@ def _instrumented_manager_call(carbon_id, text, trace, iteration, on_tools, on_p
             )
 
 
+def _contact_has_active_workers(carbon_id):
+    try:
+        return not list_active(carbon_id).startswith(
+            "No active or queued workers."
+        )
+    except Exception:
+        # Do not terminalize a task when worker state cannot be inspected
+        # reliably.
+        return True
+
+
 def run_all_managers(context_by_carbon):
     """Run managers and retain one complete graph for each inbound message batch."""
     # Commands are roots too. They must cross the same durable update fence as
     # ordinary manager turns, rather than running during ingestion.
-    pending = handle_commands(dict(context_by_carbon))
+    queued_root_ids = {}
+    queued_root_visibility = {}
+    accuracy_review_ids = {}
+    cleaned_contexts = {}
+    for contact_id, context in dict(context_by_carbon).items():
+        (
+            queued_root_id,
+            clean_context,
+            durable_visibility,
+        ) = extract_queued_long_task_root_metadata(context)
+        if queued_root_id:
+            queued_root_ids[str(contact_id)] = queued_root_id
+            if durable_visibility is not None:
+                queued_root_visibility[str(contact_id)] = (
+                    durable_visibility
+                )
+        accuracy_review_id, clean_context = extract_accuracy_review_root(
+            clean_context
+        )
+        if accuracy_review_id:
+            if not accuracy_review_root_is_current(
+                str(contact_id),
+                accuracy_review_id,
+            ):
+                continue
+            accuracy_review_ids[str(contact_id)] = accuracy_review_id
+        cleaned_contexts[contact_id] = clean_context
+    ordinary_contexts = {
+        contact_id: context
+        for contact_id, context in cleaned_contexts.items()
+        if str(contact_id) not in accuracy_review_ids
+    }
+    pending = handle_commands(ordinary_contexts) if ordinary_contexts else {}
+    pending.update(
+        {
+            contact_id: cleaned_contexts[contact_id]
+            for contact_id in accuracy_review_ids
+            if contact_id in cleaned_contexts
+        }
+    )
     if not pending:
         return
     max_iterations = 10
     traces = {}
     activity_groups = {}
+    long_tasks = {}
+    accuracy_review_satisfied = set()
+    invisible_manager_contacts = set()
 
     def get_trace(carbon_id, context=""):
         if carbon_id in traces:
@@ -1372,6 +1619,11 @@ def run_all_managers(context_by_carbon):
         return trace
 
     def close_trace(carbon_id):
+        lifecycle = long_tasks.pop(carbon_id, None)
+        if lifecycle is not None:
+            lifecycle.finish(
+                keep_alive=_contact_has_active_workers(carbon_id),
+            )
         group = activity_groups.pop(carbon_id, "")
         if group:
             send_progress(
@@ -1404,10 +1656,36 @@ def run_all_managers(context_by_carbon):
                 for carbon_id, text in pending.items():
                     trace = get_trace(carbon_id, text)
                     group = activity_groups.get(carbon_id)
-                    visible_activity = (
-                        trace is None
-                        or str(getattr(trace, "trigger", "") or "") == "message"
+                    durable_visibility = queued_root_visibility.get(
+                        str(carbon_id)
                     )
+                    visible_activity = (
+                        carbon_id not in accuracy_review_ids
+                        and (
+                            durable_visibility
+                            if durable_visibility is not None
+                            else _work_lifecycle_is_visible(trace, text)
+                        )
+                    )
+                    if not visible_activity:
+                        invisible_manager_contacts.add(str(carbon_id))
+                    _, root_message_ids = _trace_correlation(text)
+                    root_run_id = (
+                        root_message_ids[0]
+                        if root_message_ids
+                        else (
+                            getattr(trace, "run_id", "")
+                            if trace is not None
+                            else ""
+                        )
+                    )
+                    if queue_long_task_root_if_blocked(
+                        carbon_id,
+                        root_run_id,
+                        text,
+                        visible=visible_activity,
+                    ):
+                        continue
                     if not group and visible_activity:
                         group = begin_manager_activity(
                             carbon_id,
@@ -1415,12 +1693,73 @@ def run_all_managers(context_by_carbon):
                         )
                         activity_groups[carbon_id] = group
                     group = group or ""
-                    set_active_task_timer(
+                    lifecycle = long_tasks.get(carbon_id)
+                    if lifecycle is None:
+                        def activity_heartbeat(note, contact_id=carbon_id):
+                            activity_group = activity_groups.get(contact_id, "")
+                            if activity_group:
+                                send_progress(
+                                    contact_id,
+                                    activity_group,
+                                    "thinking",
+                                    note,
+                                    frame_key="manager:heartbeat",
+                                    occurred_at=time.strftime(
+                                        "%Y-%m-%dT%H:%M:%SZ",
+                                        time.gmtime(),
+                                    ),
+                                )
+
+                        if carbon_id in accuracy_review_ids:
+                            lifecycle = current_long_task(carbon_id)
+                        else:
+                            lifecycle = begin_long_task_run(
+                                carbon_id,
+                                root_run_id,
+                                text,
+                                visible=visible_activity,
+                                activity_heartbeat=activity_heartbeat,
+                                reply_sender=reply_user,
+                                has_active_workers=_contact_has_active_workers,
+                                worker_status_resolver=get_worker_status,
+                            )
+                        if lifecycle is not None:
+                            long_tasks[carbon_id] = lifecycle
+                            acknowledge_queued_long_task_root(
+                                queued_root_ids.pop(carbon_id, "")
+                            )
+                    if (
+                        lifecycle is not None
+                        and iteration
+                        and carbon_id not in accuracy_review_ids
+                    ):
+                        lifecycle.continuing_round()
+                    if (
+                        lifecycle is not None
+                        and carbon_id not in accuracy_review_ids
+                    ):
+                        lifecycle.request_running()
+                    elif lifecycle is None and carbon_id not in accuracy_review_ids:
+                        set_active_task_timer(
+                            carbon_id,
+                            timer_state="running",
+                        )
+                    touch_manager_call_activity(carbon_id)
+                    on_tools = _make_mid_stream_handler(
                         carbon_id,
-                        timer_state="running",
+                        allow_intermediate_replies=(
+                            carbon_id not in accuracy_review_ids
+                        ),
                     )
-                    on_tools = _make_mid_stream_handler(carbon_id)
-                    on_progress = _make_provider_progress_handler(carbon_id, group)
+                    on_progress = _make_provider_progress_handler(
+                        carbon_id,
+                        group,
+                        (
+                            None
+                            if carbon_id in accuracy_review_ids
+                            else lifecycle
+                        ),
+                    )
                     if group:
                         send_progress(
                             carbon_id,
@@ -1443,11 +1782,21 @@ def run_all_managers(context_by_carbon):
                         if executed_tools:
                             already_executed[carbon_id] = executed_tools
                     except Exception as exc:
-                        set_active_task_timer(
-                            carbon_id,
-                            timer_state="paused",
-                            pause_reason="infrastructure",
-                        )
+                        if carbon_id in accuracy_review_ids:
+                            raise RuntimeError(
+                                "internal task accuracy review failed"
+                            ) from exc
+                        lifecycle = long_tasks.get(carbon_id)
+                        if lifecycle is not None:
+                            lifecycle.defer(
+                                "Work is paused because the manager is unavailable"
+                            )
+                        else:
+                            set_active_task_timer(
+                                carbon_id,
+                                timer_state="paused",
+                                pause_reason="infrastructure",
+                            )
                         safe_error = (
                             redact_diagnostic_text(exc, limit=500)
                             or "manager call failed"
@@ -1472,11 +1821,22 @@ def run_all_managers(context_by_carbon):
                 )
                 if tools_data is None:
                     if output and _is_rate_limit(output):
-                        set_active_task_timer(
-                            carbon_id,
-                            timer_state="paused",
-                            pause_reason="rate_limited",
-                        )
+                        if carbon_id in accuracy_review_ids:
+                            raise RuntimeError(
+                                "internal task accuracy review was rate-limited"
+                            )
+                        lifecycle = long_tasks.get(carbon_id)
+                        if lifecycle is not None:
+                            lifecycle.defer(
+                                "Work is paused while the provider is rate-limited",
+                                pause_reason="rate_limited",
+                            )
+                        else:
+                            set_active_task_timer(
+                                carbon_id,
+                                timer_state="paused",
+                                pause_reason="rate_limited",
+                            )
                         reply_user(_rate_limit_reply_text(output), carbon_id)
                         continue
                     if output == TIMEOUT_MSG:
@@ -1492,18 +1852,40 @@ def run_all_managers(context_by_carbon):
                     continue
 
                 if is_only_do_nothing(tools_data):
+                    if carbon_id in accuracy_review_ids:
+                        accuracy_review_satisfied.add(carbon_id)
                     continue
+                if (
+                    carbon_id in accuracy_review_ids
+                    and any(
+                        tool_spec.get("tool") == "do_nothing"
+                        for tool_spec in tools_data["tools"]
+                    )
+                ):
+                    accuracy_review_satisfied.add(carbon_id)
                 executed_keys = {
                     json.dumps(t, sort_keys=True)
                     for t in already_executed.get(carbon_id, [])
                 }
                 for tool_spec in tools_data["tools"]:
                     key = json.dumps(tool_spec, sort_keys=True)
+                    if (
+                        carbon_id in accuracy_review_ids
+                        and tool_spec.get("tool")
+                        not in {"work_update", "do_nothing"}
+                    ):
+                        continue
                     if tool_spec.get("tool") != "do_nothing" and key not in executed_keys:
                         all_tools.append((carbon_id, tool_spec))
 
             if all_tools:
-                results_by_carbon, remaps = execute_all_tools(all_tools)
+                results_by_carbon, remaps = execute_all_tools(
+                    all_tools,
+                    suppress_progress_contacts={
+                        *accuracy_review_ids,
+                        *invisible_manager_contacts,
+                    },
+                )
                 log(
                     "[Silicon] Tool results: "
                     f"{_tool_results_for_log(all_tools, results_by_carbon)}"
@@ -1514,7 +1896,23 @@ def run_all_managers(context_by_carbon):
                     if old_id in traces:
                         traces[new_id] = traces.pop(old_id)
                         Diagnostics.rename_active(old_id, new_id)
+                    if old_id in long_tasks:
+                        long_tasks[new_id] = long_tasks.pop(old_id)
+                    if old_id in queued_root_visibility:
+                        queued_root_visibility[new_id] = (
+                            queued_root_visibility.pop(old_id)
+                        )
                 for carbon_id, results in results_by_carbon.items():
+                    if carbon_id in accuracy_review_ids and any(
+                        str(result).startswith(
+                            "Tool 'work_update': Done."
+                        )
+                        and "Error:" not in str(result)
+                        for result in results
+                    ):
+                        accuracy_review_satisfied.add(carbon_id)
+                    if carbon_id in accuracy_review_ids:
+                        close_terminal_accuracy_lifecycle(carbon_id)
                     if results:
                         pending[carbon_id] = "Tool execution results:\n" + "\n".join(results)
 
@@ -1524,6 +1922,19 @@ def run_all_managers(context_by_carbon):
         if pending:
             log(f"[Silicon] Max manager iterations reached. Remaining: {list(pending.keys())}")
             for carbon_id in pending:
+                if carbon_id in accuracy_review_ids:
+                    continue
+                lifecycle = long_tasks.get(carbon_id)
+                if lifecycle is not None:
+                    lifecycle.defer(
+                        "Work paused after the manager retry budget was exhausted"
+                    )
+                else:
+                    set_active_task_timer(
+                        carbon_id,
+                        timer_state="paused",
+                        pause_reason="infrastructure",
+                    )
                 trace = traces.get(carbon_id)
                 if trace is None:
                     continue
@@ -1541,6 +1952,20 @@ def run_all_managers(context_by_carbon):
                     )
                 except Exception:
                     pass
+            if any(
+                carbon_id in accuracy_review_ids
+                for carbon_id in pending
+            ):
+                raise RuntimeError(
+                    "internal task accuracy review exhausted its retry budget"
+                )
+        unsatisfied_accuracy_reviews = (
+            set(accuracy_review_ids) - accuracy_review_satisfied
+        )
+        if unsatisfied_accuracy_reviews:
+            raise RuntimeError(
+                "internal task accuracy review returned no accepted action"
+            )
     finally:
         for carbon_id in list(traces):
             close_trace(carbon_id)
@@ -1566,13 +1991,45 @@ class ManagerDispatcher:
     def submit(self, context_by_carbon):
         """Durably enqueue roots and start only those admitted before the fence."""
         admissions = []
+        transferred_long_task_roots = []
+        transferred_accuracy_reviews = []
         for carbon_id, context in (context_by_carbon or {}).items():
             if not context:
                 continue
             result = MAINTENANCE.enqueue_root(carbon_id, str(context))
+            queued_root_id, _ = extract_queued_long_task_root(str(context))
+            if queued_root_id:
+                transferred_long_task_roots.append(queued_root_id)
+            accuracy_review_id, _ = extract_accuracy_review_root(str(context))
+            if accuracy_review_id:
+                transferred_accuracy_reviews.append(
+                    (str(carbon_id), accuracy_review_id)
+                )
             if result.admission is not None:
                 admissions.append(result.admission)
         self._schedule_admissions(admissions)
+        # enqueue_root is the durable ownership handoff. The lifecycle queue
+        # can be acknowledged before the runner starts because retry_roots
+        # retains the same context (and marker) after any runner failure.
+        for root_id in transferred_long_task_roots:
+            try:
+                acknowledge_queued_long_task_root(root_id)
+            except Exception as exc:
+                log(
+                    "[Silicon] Long-task root acknowledgement deferred: "
+                    f"{type(exc).__name__}"
+                )
+        for contact_id, review_id in transferred_accuracy_reviews:
+            try:
+                acknowledge_accuracy_review_dispatched(
+                    contact_id,
+                    review_id,
+                )
+            except Exception as exc:
+                log(
+                    "[Silicon] Accuracy-review acknowledgement deferred: "
+                    f"{type(exc).__name__}"
+                )
 
     def _schedule_admissions(self, admissions):
         started = []
@@ -1619,24 +2076,56 @@ class ManagerDispatcher:
                             released = True
                             self._condition.notify_all()
                             return
-                    try:
-                        # One contact's accepted roots may be coalesced into a
-                        # turn, but every durable claim remains leased until
-                        # that turn has actually returned.
-                        with heartbeat_scope(
-                            [item.activity for item in admissions],
-                            coordinator=MAINTENANCE,
-                        ):
-                            self._runner({
-                                carbon_id: "\n\n".join(
-                                    item.context for item in admissions
+                    batches = []
+                    normal_batch = []
+                    for admission in admissions:
+                        review_id, _ = extract_accuracy_review_root(
+                            admission.context
+                        )
+                        if review_id:
+                            if normal_batch:
+                                batches.append(normal_batch)
+                                normal_batch = []
+                            batches.append([admission])
+                        else:
+                            normal_batch.append(admission)
+                    if normal_batch:
+                        batches.append(normal_batch)
+
+                    for batch in batches:
+                        try:
+                            # Internal accuracy reviews stay isolated from
+                            # user roots; every admission remains leased until
+                            # its own manager turn actually returns.
+                            with heartbeat_scope(
+                                [item.activity for item in batch],
+                                coordinator=MAINTENANCE,
+                            ):
+                                self._runner({
+                                    carbon_id: "\n\n".join(
+                                        item.context for item in batch
+                                    )
+                                })
+                            for item in batch:
+                                review_id, _ = extract_accuracy_review_root(
+                                    item.context
                                 )
-                            })
-                        MAINTENANCE.complete_roots(admissions)
-                        log(f"[Silicon] Manager loop complete for {carbon_id}.")
-                    except Exception as exc:
-                        MAINTENANCE.retry_roots(admissions)
-                        log(f"[Silicon] Manager dispatcher error for {carbon_id}: {exc}")
+                                if review_id:
+                                    complete_accuracy_review_root(
+                                        carbon_id,
+                                        review_id,
+                                    )
+                            MAINTENANCE.complete_roots(batch)
+                            log(
+                                "[Silicon] Manager loop complete for "
+                                f"{carbon_id}."
+                            )
+                        except Exception as exc:
+                            MAINTENANCE.retry_roots(batch)
+                            log(
+                                "[Silicon] Manager dispatcher error for "
+                                f"{carbon_id}: {exc}"
+                            )
         finally:
             if not released:
                 with self._condition:
@@ -1717,6 +2206,35 @@ def _maintenance_runtime_tick(dispatcher, *, attest=True):
         return {"phase": "available"}
 
 
+def _merge_due_internal_roots(
+    context_by_carbon,
+    *,
+    maintenance_active,
+):
+    """Add lifecycle roots without mixing accuracy reviews into user turns."""
+    merged = dict(context_by_carbon or {})
+    if maintenance_active:
+        return merged
+
+    queued_long_task_roots = claim_ready_long_task_roots(limit=16)
+    for contact_id, queued_context in queued_long_task_roots.items():
+        if contact_id in merged:
+            merged[contact_id] = (
+                f"{queued_context}\n\n{merged[contact_id]}"
+            )
+        else:
+            merged[contact_id] = queued_context
+
+    # Accuracy reviews are deliberately isolated from user and queued-root
+    # turns. ManagerDispatcher independently preserves this after admission.
+    accuracy_roots = claim_ready_accuracy_review_roots(
+        limit=16,
+        exclude_contacts={str(contact_id) for contact_id in merged},
+    )
+    merged.update(accuracy_roots)
+    return merged
+
+
 def main():
     _install_diagnostic_shutdown_hooks()
     log("[Silicon] Starting event loop...")
@@ -1725,6 +2243,26 @@ def main():
     _bootstrap_team_context()
     _bootstrap_trust_policy()
     start_listener()
+    recovered_long_tasks = recover_long_task_lifecycles(
+        reply_sender=reply_user,
+        has_active_workers=_contact_has_active_workers,
+        worker_status_resolver=get_worker_status,
+    )
+    if recovered_long_tasks:
+        log(
+            "[Silicon] Replaying "
+            f"{recovered_long_tasks} durable long-task lifecycle(s)."
+        )
+    backfilled_long_tasks = backfill_active_estimated_task_lifecycles(
+        reply_sender=reply_user,
+        has_active_workers=_contact_has_active_workers,
+        worker_status_resolver=get_worker_status,
+    )
+    if backfilled_long_tasks:
+        log(
+            "[Silicon] Backfilled "
+            f"{backfilled_long_tasks} active estimated task lifecycle(s)."
+        )
     dispatcher = ManagerDispatcher()
     start_runtime_health(
         lambda: str(MAINTENANCE.public_status().get("phase", "available"))
@@ -1772,7 +2310,14 @@ def main():
                     selected_handlers = (
                         None if periodic_due else immediate_handlers
                     )
-                context_by_carbon = run_event_loop_tick(selected_handlers)
+                context_by_carbon = _merge_due_internal_roots(
+                    run_event_loop_tick(selected_handlers),
+                    maintenance_active=maintenance_active,
+                )
+                try:
+                    complete_inactive_calls()
+                except Exception as exc:
+                    log(f"[Work updates] inactive call completion deferred: {exc}")
                 if periodic_due:
                     next_periodic = time.monotonic() + LOOP_TICK
 

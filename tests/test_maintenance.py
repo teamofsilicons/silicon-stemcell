@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from core.maintenance import (
+    IngressRootConflictError,
     LEASE_TTL_SECONDS,
     MaintenanceCoordinator,
     bind_activity,
@@ -150,6 +151,117 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
                 epoch=drain["epoch"],
                 outbox_flushed=True,
             )
+        )
+
+    def test_continuation_queue_id_is_idempotent_after_completion(self):
+        root = self.coordinator.enqueue_root(
+            "carbon-a",
+            "source",
+        ).admission
+        descendant = self.coordinator.acquire_activity(
+            "manager_handoff",
+            activity_id="handoff-a",
+            contact_id="carbon-b",
+            parent=root.activity,
+        )
+        self.assertIsNotNone(descendant)
+
+        self.assertTrue(
+            self.coordinator.enqueue_continuation(
+                "carbon-b",
+                "same continuation",
+                descendant.reference(),
+                queue_id="handoff-queue-a",
+            )
+        )
+        self.assertTrue(
+            self.coordinator.enqueue_continuation(
+                "carbon-b",
+                "same continuation",
+                descendant.reference(),
+                queue_id="handoff-queue-a",
+            )
+        )
+        claimed = self.coordinator.claim_pending_roots()
+        self.assertEqual(len(claimed), 1)
+        self.coordinator.complete_roots(claimed)
+
+        self.assertTrue(
+            self.coordinator.enqueue_continuation(
+                "carbon-b",
+                "same continuation",
+                descendant.reference(),
+                queue_id="handoff-queue-a",
+            )
+        )
+        self.assertEqual(self.coordinator.claim_pending_roots(), [])
+        self.assertFalse(
+            self.coordinator.enqueue_continuation(
+                "carbon-b",
+                "different continuation",
+                descendant.reference(),
+                queue_id="handoff-queue-a",
+            )
+        )
+
+    def test_ingress_root_is_pending_and_idempotent_after_completion(self):
+        private_context = "SECRET manager context"
+        self.assertTrue(
+            self.coordinator.enqueue_ingress_root(
+                "carbon-a",
+                private_context,
+                ingress_id="interface:room-a:event-a",
+            )
+        )
+        status = self.coordinator.public_status()
+        self.assertEqual(status["active_count"], 0)
+        self.assertEqual(status["queued_message_count"], 1)
+
+        self.assertTrue(
+            self.coordinator.enqueue_ingress_root(
+                "carbon-a",
+                private_context,
+                ingress_id="interface:room-a:event-a",
+            )
+        )
+        claimed = self.coordinator.claim_pending_roots()
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0].context, private_context)
+        self.coordinator.complete_roots(claimed)
+
+        self.assertTrue(
+            self.coordinator.enqueue_ingress_root(
+                "carbon-a",
+                private_context,
+                ingress_id="interface:room-a:event-a",
+            )
+        )
+        self.assertEqual(self.coordinator.claim_pending_roots(), [])
+        raw = json.loads(
+            self.coordinator.state_file.read_text(encoding="utf-8")
+        )
+        self.assertNotIn(private_context, json.dumps(raw["ingress_receipts"]))
+
+    def test_ingress_identity_conflict_is_body_free(self):
+        self.coordinator.enqueue_ingress_root(
+            "carbon-a",
+            "first private context",
+            ingress_id="manager:queue-a",
+        )
+
+        with self.assertRaises(IngressRootConflictError) as raised:
+            self.coordinator.enqueue_ingress_root(
+                "carbon-a",
+                "second private context",
+                ingress_id="manager:queue-a",
+            )
+
+        self.assertNotIn("first private", str(raised.exception))
+        self.assertNotIn("second private", str(raised.exception))
+        claimed = self.coordinator.claim_pending_roots()
+        self.assertEqual(
+            [item.context for item in claimed],
+            ["first private context"],
         )
 
     def test_deadline_cancels_drain_without_terminating_active_work(self):

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextvars
+import hashlib
 import json
 import os
 import threading
@@ -34,6 +35,10 @@ ROOT_CLAIM_TTL_SECONDS = 120.0
 NOTICE_CLAIM_TTL_SECONDS = 60.0
 MAX_PUBLIC_EVENTS = 200
 MAX_DELIVERED_NOTICES = 200
+MAX_CONTINUATION_RECEIPTS = 2_000
+CONTINUATION_RECEIPT_TTL_SECONDS = 7 * 24 * 60 * 60
+MAX_INGRESS_RECEIPTS = 5_000
+INGRESS_RECEIPT_TTL_SECONDS = 7 * 24 * 60 * 60
 
 ACTIVE_PHASES = {"draining", "updating", "validating", "rolling_back"}
 PUBLIC_MESSAGES = {
@@ -54,6 +59,10 @@ _CURRENT_ACTIVITY: contextvars.ContextVar["ActivityToken | None"] = contextvars.
 )
 
 
+class IngressRootConflictError(RuntimeError):
+    """Body-free signal that a durable ingress identity was reused."""
+
+
 def _default_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
@@ -67,6 +76,8 @@ def _default_state() -> dict[str, Any]:
         "last_outcome": "",
         "leases": {},
         "root_queue": [],
+        "continuation_receipts": {},
+        "ingress_receipts": {},
         "notices": [],
         "public_events": [],
         "event_sequence": 0,
@@ -156,6 +167,10 @@ class MaintenanceCoordinator:
             state["phase"] = "available"
         if not isinstance(state.get("leases"), dict):
             state["leases"] = {}
+        if not isinstance(state.get("continuation_receipts"), dict):
+            state["continuation_receipts"] = {}
+        if not isinstance(state.get("ingress_receipts"), dict):
+            state["ingress_receipts"] = {}
         for key in ("root_queue", "notices", "public_events"):
             if not isinstance(state.get(key), list):
                 state[key] = []
@@ -220,6 +235,46 @@ class MaintenanceCoordinator:
             leases.pop(lease_id, None)
         if expired_ids:
             self._emit(state, "activity.expired")
+
+        receipts = state["continuation_receipts"]
+        for queue_id, receipt in list(receipts.items()):
+            if (
+                not isinstance(receipt, dict)
+                or now - _number(receipt.get("accepted_at"))
+                >= CONTINUATION_RECEIPT_TTL_SECONDS
+            ):
+                receipts.pop(queue_id, None)
+        if len(receipts) > MAX_CONTINUATION_RECEIPTS:
+            ordered = sorted(
+                receipts,
+                key=lambda queue_id: _number(
+                    (receipts.get(queue_id) or {}).get("accepted_at")
+                ),
+            )
+            for queue_id in ordered[
+                : len(receipts) - MAX_CONTINUATION_RECEIPTS
+            ]:
+                receipts.pop(queue_id, None)
+
+        ingress_receipts = state["ingress_receipts"]
+        for queue_id, receipt in list(ingress_receipts.items()):
+            if (
+                not isinstance(receipt, dict)
+                or now - _number(receipt.get("accepted_at"))
+                >= INGRESS_RECEIPT_TTL_SECONDS
+            ):
+                ingress_receipts.pop(queue_id, None)
+        if len(ingress_receipts) > MAX_INGRESS_RECEIPTS:
+            ordered = sorted(
+                ingress_receipts,
+                key=lambda queue_id: _number(
+                    (ingress_receipts.get(queue_id) or {}).get("accepted_at")
+                ),
+            )
+            for queue_id in ordered[
+                : len(ingress_receipts) - MAX_INGRESS_RECEIPTS
+            ]:
+                ingress_receipts.pop(queue_id, None)
 
         for item in state["root_queue"]:
             if not isinstance(item, dict) or item.get("status") != "claimed":
@@ -464,6 +519,108 @@ class MaintenanceCoordinator:
         assert result is not None
         return result
 
+    def enqueue_ingress_root(
+        self,
+        contact_id: str,
+        context: str,
+        *,
+        ingress_id: str,
+    ) -> bool:
+        """Idempotently take ownership of one durable source record.
+
+        Unlike ``enqueue_root``, an ingress root always remains pending. This
+        lets an event-loop handler transfer ownership before acknowledging its
+        source without creating a claimed root that has not yet been handed to
+        the runtime dispatcher.
+        """
+        contact_id = str(contact_id)
+        context = str(context)
+        ingress_id = str(ingress_id or "")
+        if not ingress_id:
+            raise ValueError("A durable ingress identity is required.")
+        queue_id = (
+            "ingress-"
+            + hashlib.sha256(ingress_id.encode("utf-8")).hexdigest()
+        )
+        fingerprint = hashlib.sha256(
+            f"{contact_id}\x1f{context}".encode("utf-8")
+        ).hexdigest()
+        accepted = False
+
+        def mutate(state: dict[str, Any], now: float) -> None:
+            nonlocal accepted
+            receipt = state["ingress_receipts"].get(queue_id)
+            if isinstance(receipt, dict):
+                if (
+                    receipt.get("fingerprint") != fingerprint
+                    or receipt.get("contact_id") != contact_id
+                ):
+                    raise IngressRootConflictError(
+                        "Durable ingress identity conflicts with an accepted root."
+                    )
+                accepted = True
+                return
+
+            existing = next(
+                (
+                    item
+                    for item in state["root_queue"]
+                    if isinstance(item, dict)
+                    and str(item.get("queue_id") or "") == queue_id
+                ),
+                None,
+            )
+            if isinstance(existing, dict):
+                existing_fingerprint = hashlib.sha256(
+                    (
+                        f"{str(existing.get('contact_id') or '')}\x1f"
+                        f"{str(existing.get('context') or '')}"
+                    ).encode("utf-8")
+                ).hexdigest()
+                if (
+                    str(existing.get("contact_id") or "") != contact_id
+                    or existing_fingerprint != fingerprint
+                ):
+                    raise IngressRootConflictError(
+                        "Durable ingress identity conflicts with an accepted root."
+                    )
+                state["ingress_receipts"][queue_id] = {
+                    "contact_id": contact_id,
+                    "fingerprint": fingerprint,
+                    "accepted_at": _number(existing.get("enqueued_at"), now),
+                }
+                accepted = True
+                return
+
+            phase = str(state.get("phase") or "available")
+            state["root_queue"].append(
+                {
+                    "queue_id": queue_id,
+                    "contact_id": contact_id,
+                    "context": context,
+                    "enqueued_at": now,
+                    "enqueued_epoch": _integer(state.get("epoch")),
+                    "status": "pending",
+                    "claim_token": "",
+                    "claim_until": 0.0,
+                    "lease_id": "",
+                    "attempts": 0,
+                    "not_before": 0.0,
+                }
+            )
+            state["ingress_receipts"][queue_id] = {
+                "contact_id": contact_id,
+                "fingerprint": fingerprint,
+                "accepted_at": now,
+            }
+            if phase != "available":
+                self._ensure_notice(state, contact_id, phase, now)
+            state["safe_to_stop"] = False
+            accepted = True
+
+        self._transaction(mutate)
+        return accepted
+
     def _claim_root_item(
         self,
         state: dict[str, Any],
@@ -535,21 +692,63 @@ class MaintenanceCoordinator:
         contact_id: str,
         context: str,
         activity_reference: dict[str, Any],
+        *,
+        queue_id: str = "",
     ) -> bool:
-        """Atomically transfer an accepted descendant into a manager turn."""
+        """Idempotently transfer an accepted descendant into a manager turn."""
         transferred = False
+        queue_id = str(queue_id or uuid.uuid4().hex)
+        contact_id = str(contact_id)
+        context = str(context)
+        fingerprint = hashlib.sha256(
+            f"{contact_id}\x1f{context}".encode("utf-8")
+        ).hexdigest()
 
         def mutate(state: dict[str, Any], now: float) -> None:
             nonlocal transferred
+            receipt = state["continuation_receipts"].get(queue_id)
+            if isinstance(receipt, dict):
+                transferred = (
+                    receipt.get("fingerprint") == fingerprint
+                    and receipt.get("contact_id") == contact_id
+                )
+                return
+            existing = next(
+                (
+                    item
+                    for item in state["root_queue"]
+                    if isinstance(item, dict)
+                    and str(item.get("queue_id") or "") == queue_id
+                ),
+                None,
+            )
+            if isinstance(existing, dict):
+                transferred = (
+                    str(existing.get("contact_id") or "") == contact_id
+                    and hashlib.sha256(
+                        (
+                            f"{contact_id}\x1f"
+                            f"{str(existing.get('context') or '')}"
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    == fingerprint
+                )
+                if transferred:
+                    state["continuation_receipts"][queue_id] = {
+                        "contact_id": contact_id,
+                        "fingerprint": fingerprint,
+                        "accepted_at": _number(existing.get("enqueued_at"), now),
+                    }
+                return
             lease_id = str((activity_reference or {}).get("lease_id") or "")
             lease = state["leases"].get(lease_id)
             if not isinstance(lease, dict):
                 return
             state["root_queue"].append(
                 {
-                    "queue_id": uuid.uuid4().hex,
-                    "contact_id": str(contact_id),
-                    "context": str(context),
+                    "queue_id": queue_id,
+                    "contact_id": contact_id,
+                    "context": context,
                     "enqueued_at": now,
                     "enqueued_epoch": _integer(state.get("epoch")),
                     "status": "pending",
@@ -567,6 +766,11 @@ class MaintenanceCoordinator:
             # The pending continuation itself is counted as blocking activity,
             # so transferring the process lease creates no quiescence gap.
             state["leases"].pop(lease_id, None)
+            state["continuation_receipts"][queue_id] = {
+                "contact_id": contact_id,
+                "fingerprint": fingerprint,
+                "accepted_at": now,
+            }
             state["safe_to_stop"] = False
             transferred = True
 
