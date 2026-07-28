@@ -132,7 +132,7 @@ class SnapshotLimits:
     max_file_size: int = 8 * 1024 * 1024 * 1024
     max_total_size: int = 64 * 1024 * 1024 * 1024
     chunk_size: int = CHUNK_SIZE
-    source_retries: int = 3
+    source_retries: int = 5
 
     def validate(self) -> None:
         if (
@@ -595,6 +595,27 @@ def _stat_signature(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
     )
 
 
+def _source_only_appended(before: os.stat_result, after: os.stat_result) -> bool:
+    """True when the copied prefix is still exactly what was on disk.
+
+    A live silicon appends continuously to its interface inbox and run logs.
+    Requiring a byte-identical stat before and after made those files
+    unsnapshotable while the silicon was running: every attempt raced an append,
+    the pre-update backup failed, and the whole update rolled back.
+
+    Copying exactly ``before.st_size`` bytes makes an append harmless -- those
+    bytes cannot change under us, only new ones are added past the end. So the
+    snapshot is rejected only when the file was replaced (a different inode) or
+    truncated (it shrank), where the copied prefix may correspond to no version
+    that ever existed. An in-place rewrite that keeps the inode and does not
+    shrink remains indistinguishable by stat alone, exactly as before.
+    """
+
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        return False
+    return after.st_size >= before.st_size
+
+
 def _object_path(store: Path, digest: str) -> Path:
     if not _DIGEST_RE.fullmatch(digest):
         raise SnapshotIntegrityError(f"Invalid content digest: {digest!r}")
@@ -761,12 +782,16 @@ def _copy_source_to_object(
                         )
                     digest = hashlib.sha256()
                     copied = 0
+                    # Copy exactly the bytes that existed when we stat'd the
+                    # source. Reading to EOF would chase a live append forever.
+                    remaining = before.st_size
                     with os.fdopen(descriptor, "wb") as destination:
                         descriptor = -1
-                        while True:
-                            chunk = source.read(limits.chunk_size)
+                        while remaining > 0:
+                            chunk = source.read(min(limits.chunk_size, remaining))
                             if not chunk:
                                 break
+                            remaining -= len(chunk)
                             copied += len(chunk)
                             if copied > limits.max_file_size:
                                 raise SnapshotLimitError(
@@ -779,9 +804,7 @@ def _copy_source_to_object(
                     after = os.fstat(source.fileno())
                 finally:
                     source.close()
-            if copied != before.st_size or _stat_signature(before) != _stat_signature(
-                after
-            ):
+            if copied != before.st_size or not _source_only_appended(before, after):
                 last_reason = "changed while being copied"
                 continue
             hexdigest = digest.hexdigest()
