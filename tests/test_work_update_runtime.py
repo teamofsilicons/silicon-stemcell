@@ -1681,6 +1681,60 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             {"call-first"},
         )
 
+    def test_retry_journal_cap_archives_oldest_failed_entry_for_new_ingress(self):
+        first = {
+            "owner_contact_id": "carbon-a",
+            "call_id": "call-first",
+        }
+        second = {
+            "owner_contact_id": "carbon-a",
+            "call_id": "call-second",
+        }
+        with mock.patch.object(
+            work_updates,
+            "CALL_RETRY_MAX_ENTRIES",
+            1,
+        ):
+            first_id = work_updates._journal_call_patch(
+                first,
+                {"body": "private first body"},
+                mutation_id="first",
+            )
+            with work_updates._state_guard():
+                state = work_updates._read_state()
+                state["call_retry_journal"][first_id].update(
+                    {
+                        "attempts": 3,
+                        "last_error": "WorkCallMutationError:http_500",
+                        "next_attempt_at": time.time() + 300,
+                    }
+                )
+                work_updates._write_state(state)
+
+            work_updates._journal_call_patch(
+                second,
+                {"body": "second"},
+                mutation_id="second",
+            )
+
+        state = work_updates._read_state()
+        self.assertEqual(
+            {
+                entry["reference"]["call_id"]
+                for entry in state["call_retry_journal"].values()
+            },
+            {"call-second"},
+        )
+        self.assertEqual(state["call_retry_overflow_count"], 1)
+        self.assertEqual(len(state["call_retry_dead_letters"]), 1)
+        archived = state["call_retry_dead_letters"][0]
+        self.assertEqual(archived["retry_id"], first_id)
+        self.assertIn("capacity_evicted", archived["last_error"])
+        self.assertNotIn(
+            "private first body",
+            json.dumps(state["call_retry_dead_letters"]),
+        )
+
     def test_expired_dead_letter_archival_is_body_free(self):
         secret = "PRIVATE CALL BODY"
         retry_id = work_updates._journal_call_patch(

@@ -49,6 +49,7 @@ MAX_STATE_CONTACTS = 256
 MAX_ALIASES = 64
 MAX_PENDING_WORKERS = 64
 MAX_PENDING_REPLY_CHARS = 262_144
+MAX_PENDING_REPLY_ATTEMPTS = 12
 PREPARED_RECONCILE_GRACE_SECONDS = 120.0
 MAX_QUEUED_ROOTS = 128
 MAX_QUEUED_ROOTS_PER_CONTACT = 16
@@ -98,6 +99,23 @@ def _fingerprint(value: Any) -> str:
 def _compact(value: Any, limit: int = 500) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _terminal_reply_delivery_status(status: Any) -> bool:
+    """Return true when replaying the same reply can never succeed."""
+    text = str(status or "")
+    if "idempotency_conflict" in text.lower():
+        return True
+    match = re.search(
+        r"\b(?:HTTP|api)\s+([1-5][0-9]{2})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return bool(
+        match
+        and int(match.group(1))
+        in {400, 404, 405, 409, 410, 413, 422}
+    )
 
 
 def _non_negative_number(value: Any) -> float:
@@ -1736,13 +1754,31 @@ class LongTaskLifecycle:
                 should_unregister = True
             else:
                 attempts = int(current.get("attempts") or 0) + 1
-                current["attempts"] = attempts
-                current["next_attempt_at"] = _retry_at(attempts)
-                self._persist(active=True)
-                should_unregister = False
+                terminal = (
+                    _terminal_reply_delivery_status(status)
+                    or attempts >= MAX_PENDING_REPLY_ATTEMPTS
+                )
+                if terminal:
+                    self.pending_reply = {}
+                    self._close_locked()
+                    should_unregister = True
+                else:
+                    current["attempts"] = attempts
+                    current["next_attempt_at"] = _retry_at(attempts)
+                    self._persist(active=True)
+                    should_unregister = False
         if should_unregister:
             _unregister(self)
-        return status if status == "Message sent" else "Message queued for durable delivery"
+        if status == "Message sent":
+            return status
+        if terminal:
+            print(
+                "[Long task] final reply delivery abandoned after a "
+                "non-retryable or exhausted failure",
+                flush=True,
+            )
+            return "Message delivery abandoned"
+        return "Message queued for durable delivery"
 
     def terminalize_before_reply(self, *, has_active_workers: bool) -> bool:
         """Compatibility helper: settle the card, but never bypass the barrier."""

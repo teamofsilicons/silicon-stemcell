@@ -538,6 +538,47 @@ def _new_call_retry_entry(
     }
 
 
+def _call_retry_capacity_victim(
+    journal: dict[str, Any],
+    *,
+    now: float,
+) -> dict[str, Any] | None:
+    """Choose one safe, already-failed retry to archive under backpressure."""
+    dead_letters = [
+        entry
+        for entry in journal.values()
+        if isinstance(entry, dict) and entry.get("status") == "dead_letter"
+    ]
+    if dead_letters:
+        return min(
+            dead_letters,
+            key=lambda entry: (
+                float(entry.get("dead_lettered_at") or 0.0),
+                int(entry.get("sequence") or 0),
+            ),
+        )
+
+    failed = [
+        entry
+        for entry in journal.values()
+        if (
+            isinstance(entry, dict)
+            and entry.get("status", "pending") == "pending"
+            and str(entry.get("last_error") or "")
+            and float(entry.get("lease_expires_at") or 0.0) <= now
+        )
+    ]
+    if not failed:
+        return None
+    return min(
+        failed,
+        key=lambda entry: (
+            float(entry.get("created_at") or 0.0),
+            int(entry.get("sequence") or 0),
+        ),
+    )
+
+
 def _insert_call_retry_entries_in_state(
     state: dict[str, Any],
     entries: list[dict[str, Any]],
@@ -567,34 +608,36 @@ def _insert_call_retry_entries_in_state(
         )
     )
     while len(journal) + new_count > CALL_RETRY_MAX_ENTRIES:
-        dead = min(
-            (
-                entry
-                for entry in journal.values()
-                if isinstance(entry, dict)
-                and entry.get("status") == "dead_letter"
-            ),
-            key=lambda entry: (
-                float(entry.get("dead_lettered_at") or 0.0),
-                int(entry.get("sequence") or 0),
-            ),
-            default=None,
-        )
-        if not isinstance(dead, dict):
+        now = time.time()
+        victim = _call_retry_capacity_victim(journal, now=now)
+        if not isinstance(victim, dict):
             state["call_retry_overflow_count"] = (
                 int(state.get("call_retry_overflow_count") or 0) + 1
             )
-            state["call_retry_last_overflow_at"] = time.time()
+            state["call_retry_last_overflow_at"] = now
             raise WorkUpdateError(
                 "Call retry journal is at its live-entry limit."
+            )
+        if victim.get("status") != "dead_letter":
+            state["call_retry_overflow_count"] = (
+                int(state.get("call_retry_overflow_count") or 0) + 1
+            )
+            state["call_retry_last_overflow_at"] = now
+            prior_error = str(victim.get("last_error") or "")[:96]
+            victim["status"] = "dead_letter"
+            victim["dead_lettered_at"] = now
+            victim["last_error"] = (
+                f"{prior_error}|capacity_evicted"
+                if prior_error
+                else "capacity_evicted"
             )
         archive = state.setdefault("call_retry_dead_letters", [])
         if not isinstance(archive, list):
             archive = []
             state["call_retry_dead_letters"] = archive
-        archive.append(_call_retry_archive_record(dead, time.time()))
+        archive.append(_call_retry_archive_record(victim, now))
         del archive[:-CALL_RETRY_ARCHIVE_LIMIT]
-        journal.pop(str(dead.get("retry_id") or ""), None)
+        journal.pop(str(victim.get("retry_id") or ""), None)
     for source in entries:
         retry_id = str(source.get("retry_id") or "")
         if not retry_id:

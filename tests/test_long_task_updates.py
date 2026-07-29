@@ -2215,6 +2215,58 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertEqual(len(seen_client_ids), 2)
         self.assertEqual(seen_client_ids[0], seen_client_ids[1])
 
+    def test_non_retryable_final_reply_error_closes_without_replaying(self):
+        lifecycle = self.lifecycle()
+        sender = mock.Mock(
+            return_value=(
+                "Sent with errors: text segment failed: api 409: "
+                '{"code":"idempotency_conflict","retryable":false}'
+            )
+        )
+
+        self.assertEqual(
+            lifecycle.deliver_final_reply(
+                "Release shipped. [file=/tmp/evidence.md]",
+                has_active_workers=False,
+                reply_sender=sender,
+            ),
+            "Message delivery abandoned",
+        )
+
+        self.assertFalse(lifecycle.is_open)
+        self.assertFalse(lifecycle.pending_reply)
+        sender.assert_called_once()
+
+    def test_final_reply_retry_budget_prevents_unbounded_replay(self):
+        lifecycle = self.lifecycle()
+        sender = mock.Mock(return_value="Interface unavailable")
+
+        with mock.patch.object(
+            long_task_updates,
+            "MAX_PENDING_REPLY_ATTEMPTS",
+            2,
+        ):
+            self.assertEqual(
+                lifecycle.deliver_final_reply(
+                    "Release shipped.",
+                    has_active_workers=False,
+                    reply_sender=sender,
+                ),
+                "Message queued for durable delivery",
+            )
+            self.assertEqual(
+                lifecycle._flush_final_reply(
+                    has_active_workers=False,
+                    reply_sender=sender,
+                    force=True,
+                ),
+                "Message delivery abandoned",
+            )
+
+        self.assertFalse(lifecycle.is_open)
+        self.assertFalse(lifecycle.pending_reply)
+        self.assertEqual(sender.call_count, 2)
+
     def test_concurrent_reply_replay_does_not_resurrect_settled_state(self):
         lifecycle = self.lifecycle()
         lifecycle.queue_final_reply("Exactly once.")
