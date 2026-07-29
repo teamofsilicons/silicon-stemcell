@@ -42,13 +42,31 @@ if IS_WINDOWS:
     if _codex_path:
         CODEX_CMD = _codex_path
 
-# Manager turn time limit (seconds). A turn that runs past this is killed and
-# counts as a provider failure (codex then falls back to claude). Raised from the
-# original 3 min to 30 min so codex can finish longer work inline instead of
-# prematurely timing out and falling back.
-MANAGER_TIMEOUT = 30 * 60  # 30 minutes
+# Manager turns have both an absolute ceiling and an inactivity ceiling. The
+# latter catches app-server turns which report that thinking completed and then
+# never emit agent text, a tool, an error, or turn/completed. Long work belongs
+# in a worker instead of holding a contact's serialized manager queue.
+MANAGER_TIMEOUT = max(
+    60.0,
+    float(os.environ.get("SILICON_MANAGER_TIMEOUT_SECONDS", str(30 * 60))),
+)
+MANAGER_INACTIVITY_TIMEOUT = max(
+    30.0,
+    min(
+        MANAGER_TIMEOUT,
+        float(os.environ.get("SILICON_MANAGER_INACTIVITY_SECONDS", "180")),
+    ),
+)
 
-TIMEOUT_MSG = "SYSTEM: You timed out (30 min limit). You were taking too long. Delegate long-running tasks to a worker instead of doing them yourself. If this task truly cannot be delegated, you may continue now — but be quick."
+TIMEOUT_MSG = (
+    "SYSTEM: The manager provider stopped responding before it produced a "
+    "complete tool result. Delegate long-running work to a worker and finish "
+    "this turn promptly."
+)
+
+
+class ManagerTimeoutError(TimeoutError):
+    """A provider turn exceeded its absolute or inactivity deadline."""
 
 
 SILICON_CONFIG_FILE = os.path.join(INSTANCE_ROOT, "silicon.json")
@@ -458,10 +476,11 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             from core.interface import reply_contact
             reply_contact("Manager session not found - send a message to start a new one.", carbon_id)
             return '{"tools": [{"tool": "do_nothing"}]}', None, []
-    except subprocess.TimeoutExpired:
-        from core.interface import reply_contact
-        reply_contact("hold on, still working on this...", carbon_id)
-        return TIMEOUT_MSG, None, []
+    except subprocess.TimeoutExpired as exc:
+        new_session(carbon_id, brain="claude")
+        raise ManagerTimeoutError(
+            f"Claude manager turn timed out after {MANAGER_TIMEOUT:g} seconds"
+        ) from exc
     except Exception:
         pass
 
@@ -487,10 +506,12 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
         output = result.stdout.strip()
         rl = output if (output and _is_rate_limit(output)) else None
         return output, rl, []
-    except subprocess.TimeoutExpired:
-        from core.interface import reply_contact
-        reply_contact("hold on, still working on this...", carbon_id)
-        return TIMEOUT_MSG, None, []
+    except subprocess.TimeoutExpired as exc:
+        new_session(carbon_id, brain="claude")
+        raise ManagerTimeoutError(
+            f"Claude manager fallback timed out after "
+            f"{MANAGER_TIMEOUT:g} seconds"
+        ) from exc
     except Exception as e:
         return _safe_manager_error_tools(e), None, []
 
@@ -742,8 +763,16 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
         if "error" in turn_resp:
             raise RuntimeError(turn_resp["error"].get("message", "codex turn/start failed"))
 
-        deadline = time.time() + MANAGER_TIMEOUT
+        started_at = time.time()
+        deadline = started_at + MANAGER_TIMEOUT
+        last_event_at = started_at
         while time.time() < deadline:
+            now = time.time()
+            if now - last_event_at >= MANAGER_INACTIVITY_TIMEOUT:
+                raise subprocess.TimeoutExpired(
+                    [CODEX_CMD, "app-server"],
+                    MANAGER_INACTIVITY_TIMEOUT,
+                )
             try:
                 source, line = client.messages.get(timeout=0.25)
             except queue.Empty:
@@ -760,6 +789,7 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
                 msg = json.loads(line)
             except (json.JSONDecodeError, ValueError):
                 continue
+            last_event_at = time.time()
 
             if client._handle_server_request(msg):
                 continue
@@ -824,10 +854,14 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
             return _safe_manager_error_tools(error_msg), rate_limit_msg, executed_tools
         return "", rate_limit_msg, executed_tools
 
-    except subprocess.TimeoutExpired:
-        from core.interface import reply_contact
-        reply_contact("hold on, still working on this...", carbon_id)
-        return TIMEOUT_MSG, None, []
+    except subprocess.TimeoutExpired as exc:
+        # A timed-out persisted thread may still contain an unfinished turn.
+        # Retrying that same thread can repeat the stall, so the next bounded
+        # retry starts with a fresh thread.
+        new_session(carbon_id, brain="codex")
+        raise ManagerTimeoutError(
+            "Codex manager turn stopped producing events before its deadline"
+        ) from exc
     except Exception as e:
         return _safe_manager_error_tools(e), None, []
     finally:
@@ -858,6 +892,12 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None):
                         text, carbon_id, on_tools=on_tools,
                         on_progress=on_progress, diag_span=diag_span,
                     )
+        except ManagerTimeoutError:
+            result = (
+                TIMEOUT_MSG,
+                None,
+                [],
+            )
         except Exception as exc:
             result = (
                 _safe_manager_error_tools(exc),

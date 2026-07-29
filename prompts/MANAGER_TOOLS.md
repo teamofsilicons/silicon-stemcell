@@ -493,6 +493,12 @@ They stay local because they are one-shot operational reminders.
 
 Sends to the contact you are currently managing through Silicon Interface.
 
+If this is only a progress acknowledgement and the same request is still
+running, you MUST include `"work_continues": true`. Omit it only for the final
+reply after the requested work has finished, failed, or been explicitly
+paused. A message such as "I started this" or "I will update you" is not a final
+reply.
+
 This ONLY sends a message to the carbon/contact you are currently talking to.
 
 To message any other carbon or silicon, you MUST use the `message_manager` tool.

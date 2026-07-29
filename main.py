@@ -114,6 +114,20 @@ from core.long_task_updates import (
     recover_long_task_lifecycles,
 )
 
+
+# One fresh-thread retry bounds a silent provider failure to two inactivity
+# windows. A second timeout pauses the durable task and releases the contact
+# dispatcher instead of occupying it for the remaining manager iterations.
+MAX_MANAGER_TIMEOUT_RETRIES = 1
+MANAGER_TIMEOUT_RETRY_REPLY = (
+    "The manager stopped responding before it produced a result. "
+    "I’m retrying once with a fresh session."
+)
+MANAGER_TIMEOUT_FINAL_REPLY = (
+    "I couldn’t complete this request because the manager provider stopped "
+    "responding twice. The task is paused; send a new message to resume it."
+)
+
 RESTART_FLAG = os.path.join(PROJECT_ROOT, ".restart_pending")
 
 
@@ -1550,6 +1564,7 @@ def run_all_managers(context_by_carbon):
     traces = {}
     activity_groups = {}
     long_tasks = {}
+    timeout_retries = {}
     accuracy_review_satisfied = set()
     invisible_manager_contacts = set()
 
@@ -1840,7 +1855,33 @@ def run_all_managers(context_by_carbon):
                         reply_user(_rate_limit_reply_text(output), carbon_id)
                         continue
                     if output == TIMEOUT_MSG:
-                        pending[carbon_id] = output
+                        retries = timeout_retries.get(carbon_id, 0)
+                        if retries < MAX_MANAGER_TIMEOUT_RETRIES:
+                            timeout_retries[carbon_id] = retries + 1
+                            reply_user(
+                                MANAGER_TIMEOUT_RETRY_REPLY,
+                                carbon_id,
+                                work_continues=True,
+                            )
+                            pending[carbon_id] = TIMEOUT_MSG
+                            continue
+                        lifecycle = long_tasks.get(carbon_id)
+                        if lifecycle is not None:
+                            lifecycle.defer(
+                                "Work paused after the manager provider "
+                                "stopped responding twice",
+                                pause_reason="infrastructure",
+                            )
+                        else:
+                            set_active_task_timer(
+                                carbon_id,
+                                timer_state="paused",
+                                pause_reason="infrastructure",
+                            )
+                        reply_user(
+                            MANAGER_TIMEOUT_FINAL_REPLY,
+                            carbon_id,
+                        )
                         continue
                     if not output or not output.strip():
                         error_msg = "Manager must output TOOL JSON. You returned empty output."

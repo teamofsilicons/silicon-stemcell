@@ -206,6 +206,41 @@ def _pid_alive(pid: Any) -> bool:
         return False
 
 
+def _entry_has_durable_delivery(entry: dict[str, Any]) -> bool:
+    """Return whether a persisted lifecycle still owns delivery work."""
+    return bool(
+        entry.get("pending_reply")
+        or entry.get("pending_workers")
+        or entry.get("pending_create_spec")
+        or entry.get("settle_requested")
+    )
+
+
+def _entry_has_live_lease(
+    entry: dict[str, Any],
+    now: float | None = None,
+) -> bool:
+    now = float(now or time.time())
+    return bool(
+        entry.get("lease_owner")
+        and float(entry.get("lease_until") or 0) > now
+        and _pid_alive(entry.get("lease_pid"))
+    )
+
+
+def _recoverable_terminal_entry(
+    entry: dict[str, Any],
+    now: float | None = None,
+) -> bool:
+    """Identify an expired terminal fence with nothing left to deliver."""
+    return bool(
+        entry.get("active")
+        and entry.get("terminal")
+        and not _entry_has_durable_delivery(entry)
+        and not _entry_has_live_lease(entry, now)
+    )
+
+
 def _bounded_mapping(value: Any, limit: int = MAX_ALIASES) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
@@ -298,6 +333,34 @@ def _state_entry(contact_id: str) -> dict[str, Any]:
     return deepcopy(entry) if isinstance(entry, dict) else {}
 
 
+def _recover_expired_terminal_entry(contact_id: str) -> bool:
+    """Atomically tombstone one expired terminal lifecycle."""
+    recovered = False
+    now = time.time()
+
+    def mutate(state: dict[str, Any]) -> None:
+        nonlocal recovered
+        _prune_state_locked(state, now)
+        contacts = state.setdefault("contacts", {})
+        entry = contacts.get(str(contact_id))
+        if (
+            isinstance(entry, dict)
+            and _recoverable_terminal_entry(entry, now)
+        ):
+            contacts[str(contact_id)] = _tombstone(entry, now)
+            recovered = True
+
+    update_json(LONG_TASK_STATE_FILE, _default_state(), mutate)
+    return recovered
+
+
+def _has_queued_root_backlog(contact_id: str) -> bool:
+    state = read_json(LONG_TASK_STATE_FILE, _default_state())
+    queued = state.get("queued_roots") if isinstance(state, dict) else {}
+    items = queued.get(str(contact_id)) if isinstance(queued, dict) else []
+    return bool(isinstance(items, list) and items)
+
+
 def _active_entries() -> list[tuple[str, dict[str, Any]]]:
     state = read_json(LONG_TASK_STATE_FILE, _default_state())
     contacts = state.get("contacts") if isinstance(state, dict) else {}
@@ -330,6 +393,8 @@ def queue_long_task_root_if_blocked(
     contact_id = str(contact_id)
     run_id = str(run_id or _stable_id("run", contact_id, context))
     lifecycle = current_long_task(contact_id)
+    if lifecycle is not None and lifecycle.close_if_terminal():
+        lifecycle = None
     if lifecycle is not None:
         with lifecycle._lock:
             blocked = (
@@ -341,6 +406,7 @@ def queue_long_task_root_if_blocked(
                 )
             )
     else:
+        _recover_expired_terminal_entry(contact_id)
         entry = _state_entry(contact_id)
         blocked = bool(
             entry.get("active")
@@ -351,6 +417,9 @@ def queue_long_task_root_if_blocked(
                 or entry.get("terminal")
             )
         )
+    # Once a root has crossed the durable queue fence, later roots must stay
+    # behind it even if the stale lifecycle was just recovered.
+    blocked = blocked or _has_queued_root_backlog(contact_id)
     if not blocked:
         return False
 
@@ -415,6 +484,12 @@ def claim_ready_long_task_roots(
             if len(claimed) >= bounded_limit:
                 break
             entry = contacts.get(contact_id)
+            if (
+                isinstance(entry, dict)
+                and _recoverable_terminal_entry(entry, now)
+            ):
+                contacts[contact_id] = _tombstone(entry, now)
+                entry = contacts[contact_id]
             if isinstance(entry, dict) and entry.get("active"):
                 continue
             if not isinstance(items, list) or not items:
@@ -1843,12 +1918,17 @@ class LongTaskLifecycle:
                 self.latest_activity = "Workers are processing the request"
             # Never infer successful completion merely because a manager turn
             # ended.  A final reply or explicit terminal action is the fence.
-            if (
+            terminal_without_delivery = (
+                self._terminal
+                and not self._has_durable_delivery_locked()
+            )
+            empty_ephemeral_lifecycle = (
                 not self.task_id
                 and not self.pending_reply
                 and not self.pending_workers
                 and not self._pending_create_spec
-            ):
+            )
+            if terminal_without_delivery or empty_ephemeral_lifecycle:
                 self._close_locked()
                 should_unregister = True
             else:
@@ -2512,11 +2592,17 @@ class LongTaskLifecycle:
         }
 
     def _persist(self, *, active: bool) -> bool:
+        # Closing is a one-way state transition. A watcher action which began
+        # just before _close_locked must never resurrect the tombstone.
+        if active and self._closed:
+            return False
         payload = self._state_payload(active=active)
         written = False
 
         def mutate(state: dict[str, Any]) -> None:
             nonlocal written
+            if active and self._closed:
+                return
             now = time.time()
             _prune_state_locked(state, now)
             contacts = state.setdefault("contacts", {})

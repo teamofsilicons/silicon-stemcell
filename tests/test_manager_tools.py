@@ -169,6 +169,168 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
 
 
 class ManagerToolExecutionTest(unittest.TestCase):
+    def test_codex_inactivity_timeout_resets_thread_without_sending_reply(self):
+        class FakeProcess:
+            @staticmethod
+            def poll():
+                return None
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                self.proc = FakeProcess()
+                self.messages = mock.Mock()
+                self.closed = False
+
+            def request(self, method, _params, timeout=None):
+                del timeout
+                if method == "thread/resume":
+                    return {
+                        "result": {
+                            "thread": {"id": "thread-a"},
+                            "model": "test-model",
+                            "modelProvider": "openai",
+                        }
+                    }
+                if method == "turn/start":
+                    return {"result": {"turn": {"id": "turn-a"}}}
+                return {"result": {}}
+
+            @staticmethod
+            def _handle_server_request(_message):
+                return False
+
+            def close(self):
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as temp:
+            thread_file = Path(temp) / "carbon-a_codex.txt"
+            thread_file.write_text("thread-a", encoding="utf-8")
+            fake_client = FakeClient()
+            with (
+                mock.patch.object(manager, "SESSIONS_DIR", temp),
+                mock.patch.object(
+                    manager,
+                    "_CodexAppServer",
+                    return_value=fake_client,
+                ),
+                mock.patch.object(
+                    manager,
+                    "get_manager_prompt",
+                    return_value="system prompt",
+                ),
+                mock.patch.object(
+                    manager,
+                    "MANAGER_INACTIVITY_TIMEOUT",
+                    0.0,
+                ),
+                mock.patch(
+                    "core.interface.reply_contact",
+                ) as reply_contact,
+            ):
+                with self.assertRaises(manager.ManagerTimeoutError):
+                    manager.codex_app_server("hello", "carbon-a")
+
+            reply_contact.assert_not_called()
+            self.assertFalse(thread_file.exists())
+            self.assertTrue(fake_client.closed)
+
+    def test_manager_timeout_is_retried_once_then_paused(self):
+        trace = mock.Mock()
+        trace.trigger = "message"
+        trace.run_id = "run-message"
+        trace.meta = {}
+        lifecycle = mock.Mock()
+        lifecycle.is_open = True
+        timeout_result = (manager.TIMEOUT_MSG, None, [])
+
+        with (
+            mock.patch.object(
+                main,
+                "handle_commands",
+                side_effect=lambda contexts: dict(contexts),
+            ),
+            mock.patch.object(
+                main.Diagnostics,
+                "consume_pending_contexts",
+                return_value=[],
+            ),
+            mock.patch.object(
+                main.Diagnostics,
+                "get_active_run",
+                return_value=None,
+            ),
+            mock.patch.object(
+                main.Diagnostics,
+                "start_run",
+                return_value=trace,
+            ),
+            mock.patch.object(main.Diagnostics, "register_active"),
+            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(
+                main,
+                "_instrumented_manager_call",
+                side_effect=[timeout_result, timeout_result],
+            ) as manager_call,
+            mock.patch.object(
+                main,
+                "queue_long_task_root_if_blocked",
+                return_value=False,
+            ),
+            mock.patch.object(
+                main,
+                "begin_long_task_run",
+                return_value=lifecycle,
+            ),
+            mock.patch.object(
+                main,
+                "acknowledge_queued_long_task_root",
+            ),
+            mock.patch.object(
+                main,
+                "begin_manager_activity",
+                return_value="group-message",
+            ),
+            mock.patch.object(main, "settle_manager_activity"),
+            mock.patch.object(main, "touch_manager_call_activity"),
+            mock.patch.object(main, "send_progress"),
+            mock.patch.object(main, "reply_user") as reply_user,
+            mock.patch.object(
+                main,
+                "_contact_has_active_workers",
+                return_value=False,
+            ),
+        ):
+            main.run_all_managers(
+                {
+                    "carbon-a": (
+                        "room_id: room-a\n"
+                        "event_id: event-a\n"
+                        "message:\nhello"
+                    )
+                }
+            )
+
+        self.assertEqual(manager_call.call_count, 2)
+        self.assertEqual(
+            reply_user.call_args_list,
+            [
+                mock.call(
+                    main.MANAGER_TIMEOUT_RETRY_REPLY,
+                    "carbon-a",
+                    work_continues=True,
+                ),
+                mock.call(
+                    main.MANAGER_TIMEOUT_FINAL_REPLY,
+                    "carbon-a",
+                ),
+            ],
+        )
+        lifecycle.defer.assert_called_once_with(
+            "Work paused after the manager provider stopped responding twice",
+            pause_reason="infrastructure",
+        )
+        lifecycle.finish.assert_called_once()
+
     def test_parser_preserves_braces_quotes_and_fences_in_advertising_content(self):
         contents = [
             'Use {"state": {"ready": true}}.',

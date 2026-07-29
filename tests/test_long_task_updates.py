@@ -3055,6 +3055,190 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertEqual(set(first), {"carbon-a"})
         self.assertEqual(second, {})
 
+    def test_finish_closes_terminal_task_even_when_task_id_remains(self):
+        lifecycle = self.lifecycle()
+        self.accept_task(lifecycle)
+        with lifecycle._lock:
+            lifecycle._terminal = True
+            lifecycle._persist(active=True)
+        self.register_lifecycle(lifecycle)
+
+        lifecycle.finish()
+
+        self.assertFalse(lifecycle.is_open)
+        self.assertIsNone(long_task_updates.current_long_task("carbon-a"))
+        self.assertFalse(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+
+    def test_expired_terminal_fence_is_reaped_before_oldest_root_claim(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "stale-run",
+                "task_id": "stale-task",
+                "terminal": True,
+                "manager_running": True,
+                "pending_reply": {},
+                "pending_workers": {},
+                "pending_create_spec": {},
+                "settle_requested": False,
+                "lease_owner": "stale-owner",
+                "lease_pid": os.getpid(),
+                "lease_until": now - 1,
+                "updated_at": now - 31,
+            }
+            state["queued_roots"]["carbon-a"] = [
+                {
+                    "root_id": "queued-root:first",
+                    "run_id": "run-first",
+                    "context": "message:\nFirst request",
+                    "created_at": now - 20,
+                    "claim_owner": "",
+                    "claim_pid": 0,
+                    "claim_until": 0.0,
+                },
+                {
+                    "root_id": "queued-root:second",
+                    "run_id": "run-second",
+                    "context": "message:\nSecond request",
+                    "created_at": now - 10,
+                    "claim_owner": "",
+                    "claim_pid": 0,
+                    "claim_until": 0.0,
+                },
+            ]
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+
+        claimed = long_task_updates.claim_ready_long_task_roots()
+
+        self.assertEqual(set(claimed), {"carbon-a"})
+        root_id, context = long_task_updates.extract_queued_long_task_root(
+            claimed["carbon-a"]
+        )
+        self.assertEqual(root_id, "queued-root:first")
+        self.assertEqual(context, "message:\nFirst request")
+        self.assertFalse(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+
+    def test_live_terminal_lease_is_not_reaped(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "live-run",
+                "terminal": True,
+                "pending_reply": {},
+                "pending_workers": {},
+                "pending_create_spec": {},
+                "settle_requested": False,
+                "lease_owner": "live-owner",
+                "lease_pid": os.getpid(),
+                "lease_until": now + 60,
+                "updated_at": now,
+            }
+            state["queued_roots"]["carbon-a"] = [
+                {
+                    "root_id": "queued-root:next",
+                    "run_id": "run-next",
+                    "context": "message:\nNext request",
+                    "created_at": now,
+                    "claim_owner": "",
+                    "claim_pid": 0,
+                    "claim_until": 0.0,
+                }
+            ]
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+
+        self.assertEqual(long_task_updates.claim_ready_long_task_roots(), {})
+        self.assertTrue(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+
+    def test_new_root_stays_behind_backlog_after_terminal_recovery(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "stale-run",
+                "terminal": True,
+                "pending_reply": {},
+                "pending_workers": {},
+                "pending_create_spec": {},
+                "settle_requested": False,
+                "lease_owner": "stale-owner",
+                "lease_pid": 0,
+                "lease_until": 0.0,
+                "updated_at": now - 60,
+            }
+            state["queued_roots"]["carbon-a"] = [
+                {
+                    "root_id": "queued-root:first",
+                    "run_id": "run-first",
+                    "context": "message:\nFirst request",
+                    "created_at": now - 30,
+                    "claim_owner": "",
+                    "claim_pid": 0,
+                    "claim_until": 0.0,
+                }
+            ]
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+
+        self.assertTrue(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a",
+                "run-second",
+                "message:\nSecond request",
+                visible=True,
+            )
+        )
+
+        state = long_task_updates.read_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+        )
+        self.assertFalse(state["contacts"]["carbon-a"]["active"])
+        self.assertEqual(
+            [
+                item["run_id"]
+                for item in state["queued_roots"]["carbon-a"]
+            ],
+            ["run-first", "run-second"],
+        )
+
+    def test_closed_lifecycle_cannot_resurrect_its_tombstone(self):
+        lifecycle = self.lifecycle()
+        with lifecycle._lock:
+            lifecycle._close_locked()
+
+        self.assertFalse(lifecycle._persist(active=True))
+        self.assertFalse(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+
     def test_full_queued_root_journal_fails_closed_without_dropping(self):
         now = time.time()
 
