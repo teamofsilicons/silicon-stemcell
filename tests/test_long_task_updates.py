@@ -3071,6 +3071,110 @@ class LongTaskLifecycleTest(unittest.TestCase):
             long_task_updates._state_entry("carbon-a").get("active")
         )
 
+    def test_boot_recovery_reaps_expired_empty_ephemeral_lifecycle(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "stale-run",
+                "task_id": "",
+                "terminal": False,
+                "manager_running": False,
+                "deferred": True,
+                "pending_reply": {},
+                "pending_workers": {},
+                "pending_create_spec": {},
+                "settle_requested": False,
+                "lease_owner": "stale-owner",
+                "lease_pid": os.getpid(),
+                "lease_until": now - 1,
+                "updated_at": now - 31,
+            }
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+
+        recovered = long_task_updates.recover_long_task_lifecycles()
+
+        self.assertEqual(recovered, 0)
+        self.assertFalse(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+        self.assertIsNone(long_task_updates.current_long_task("carbon-a"))
+
+    def test_boot_recovery_preserves_live_empty_ephemeral_lifecycle(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "live-run",
+                "task_id": "",
+                "terminal": False,
+                "manager_running": False,
+                "pending_reply": {},
+                "pending_workers": {},
+                "pending_create_spec": {},
+                "settle_requested": False,
+                "lease_owner": f"{long_task_updates._PROCESS_TOKEN}:live-owner",
+                "lease_pid": os.getpid(),
+                "lease_until": now + 60,
+                "updated_at": now,
+            }
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+
+        recovered = long_task_updates.recover_long_task_lifecycles()
+
+        self.assertEqual(recovered, 0)
+        self.assertTrue(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+
+    def test_boot_recovery_reaps_reused_pid_from_prior_process(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "stale-run",
+                "task_id": "",
+                "terminal": False,
+                "manager_running": False,
+                "pending_reply": {},
+                "pending_workers": {},
+                "pending_create_spec": {},
+                "settle_requested": False,
+                "lease_owner": "prior-process-token:stale-owner",
+                "lease_pid": os.getpid(),
+                "lease_until": now + 60,
+                "updated_at": now,
+            }
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+
+        recovered = long_task_updates.recover_long_task_lifecycles()
+
+        self.assertEqual(recovered, 0)
+        self.assertFalse(
+            long_task_updates._state_entry("carbon-a").get("active")
+        )
+
     def test_expired_terminal_fence_is_reaped_before_oldest_root_claim(self):
         now = time.time()
 

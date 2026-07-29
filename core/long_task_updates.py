@@ -228,6 +228,24 @@ def _entry_has_live_lease(
     )
 
 
+def _entry_has_effective_live_lease(
+    entry: dict[str, Any],
+    now: float | None = None,
+) -> bool:
+    """Ignore a prior process lease when the container reused our PID."""
+    if not _entry_has_live_lease(entry, now):
+        return False
+    try:
+        lease_pid = int(entry.get("lease_pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    owner = str(entry.get("lease_owner") or "")
+    return not (
+        lease_pid == os.getpid()
+        and not owner.startswith(f"{_PROCESS_TOKEN}:")
+    )
+
+
 def _recoverable_terminal_entry(
     entry: dict[str, Any],
     now: float | None = None,
@@ -238,6 +256,20 @@ def _recoverable_terminal_entry(
         and entry.get("terminal")
         and not _entry_has_durable_delivery(entry)
         and not _entry_has_live_lease(entry, now)
+    )
+
+
+def _recoverable_empty_ephemeral_entry(
+    entry: dict[str, Any],
+    now: float | None = None,
+) -> bool:
+    """Identify a finished manager-only lifecycle left behind by a restart."""
+    return bool(
+        entry.get("active")
+        and not entry.get("task_id")
+        and not entry.get("manager_running")
+        and not _entry_has_durable_delivery(entry)
+        and not _entry_has_effective_live_lease(entry, now)
     )
 
 
@@ -346,6 +378,27 @@ def _recover_expired_terminal_entry(contact_id: str) -> bool:
         if (
             isinstance(entry, dict)
             and _recoverable_terminal_entry(entry, now)
+        ):
+            contacts[str(contact_id)] = _tombstone(entry, now)
+            recovered = True
+
+    update_json(LONG_TASK_STATE_FILE, _default_state(), mutate)
+    return recovered
+
+
+def _recover_empty_ephemeral_entry(contact_id: str) -> bool:
+    """Atomically tombstone one expired lifecycle with nothing to recover."""
+    recovered = False
+    now = time.time()
+
+    def mutate(state: dict[str, Any]) -> None:
+        nonlocal recovered
+        _prune_state_locked(state, now)
+        contacts = state.setdefault("contacts", {})
+        entry = contacts.get(str(contact_id))
+        if (
+            isinstance(entry, dict)
+            and _recoverable_empty_ephemeral_entry(entry, now)
         ):
             contacts[str(contact_id)] = _tombstone(entry, now)
             recovered = True
@@ -2709,6 +2762,11 @@ def recover_long_task_lifecycles(
     recovered = 0
     entries = _active_entries()[: max(0, min(int(limit), MAX_RECOVERY_CONTACTS))]
     for contact_id, saved in entries:
+        if (
+            _recoverable_empty_ephemeral_entry(saved)
+            and _recover_empty_ephemeral_entry(contact_id)
+        ):
+            continue
         lifecycle: LongTaskLifecycle | None = None
         with _REGISTRY_LOCK:
             current = _ACTIVE_BY_CONTACT.get(contact_id)
