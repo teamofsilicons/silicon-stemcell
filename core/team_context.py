@@ -2355,6 +2355,7 @@ def _reconcile_locked(
     state["managed_peer_ids"] = sorted(current_peer_ids | set(prune_errors))
     own_ok = bool(own_result.get("ok", False))
     own_status = str(own_result.get("status") or "unavailable")
+    own_detail = str(own_result.get("detail") or "").strip()
     has_issue = bool(errors) or not own_ok
     retry_soon = bool(errors) or (
         not own_ok and own_status not in {"conflict", "invalid"}
@@ -2367,7 +2368,7 @@ def _reconcile_locked(
         now=time.time(),
         partial=retry_soon,
     )
-    return {
+    result = {
         "ok": not has_issue,
         "status": "partial" if has_issue else ("updated" if any_changed else "current"),
         "changed": any_changed,
@@ -2377,6 +2378,9 @@ def _reconcile_locked(
         "own_status": own_status,
         "error_count": len(errors),
     }
+    if own_detail:
+        result["own_detail"] = own_detail
+    return result
 
 
 def _safe_failure(
@@ -2454,8 +2458,8 @@ def reconcile_team_context(
     try:
         try:
             ensure_team_context_layout(project_root)
-        except TeamContextError:
-            return _safe_failure("invalid")
+        except TeamContextError as exc:
+            return _safe_failure("invalid", detail=str(exc))
         with _sync_lock(project_root):
             state = _load_state(project_root)
             previous_identity = _stored_identity(state)
@@ -2539,8 +2543,8 @@ def team_context_tick(root: str | Path | None = None) -> dict[str, Any]:
     try:
         try:
             ensure_team_context_layout(project_root)
-        except TeamContextError:
-            return _safe_failure("invalid")
+        except TeamContextError as exc:
+            return _safe_failure("invalid", detail=str(exc))
         with _sync_lock(project_root):
             state = _load_state(project_root)
             previous_identity = _stored_identity(state)
@@ -2694,8 +2698,8 @@ def update_own_advertising_memory(
     try:
         try:
             ensure_team_context_layout(project_root)
-        except TeamContextError:
-            return _safe_failure("invalid")
+        except TeamContextError as exc:
+            return _safe_failure("invalid", detail=str(exc))
         with _sync_lock(project_root):
             state = _load_state(project_root)
             previous_identity = _stored_identity(state)

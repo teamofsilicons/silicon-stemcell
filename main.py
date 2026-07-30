@@ -31,7 +31,7 @@ os.environ["PATH"] = os.pathsep.join(
     [ACTIVE_ENV_BIN, LOCAL_BIN, *_path_entries]
 )
 
-from config import EVENT_LOOP, LOOP_TICK
+from config import EVENT_LOOP, LOOP_TICK, acknowledge_team_context_result
 from manager import manager_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG
 from core.interface import (
     complete_take_back,
@@ -971,6 +971,8 @@ def _execute_single_tool(
             return f"Tool 'advertising_memory/update': Error: {exc}"
 
         if isinstance(outcome, dict):
+            if outcome.get("ok") is True:
+                acknowledge_team_context_result(outcome)
             status = str(outcome.get("status") or "saved")
             details = []
             revision = outcome.get("revision")

@@ -720,16 +720,21 @@ class ManagerToolExecutionTest(unittest.TestCase):
             "tool": "advertising_memory/update",
             "content": "# Current work\n- Reviewing the release",
         }
+        outcome = {
+            "ok": True,
+            "status": "uploaded",
+            "revision": 3,
+        }
 
         with (
             mock.patch(
                 "core.team_context.update_own_advertising_memory",
-                return_value={
-                    "ok": True,
-                    "status": "uploaded",
-                    "revision": 3,
-                },
+                return_value=outcome,
             ) as update_memory,
+            mock.patch.object(
+                main,
+                "acknowledge_team_context_result",
+            ) as acknowledge,
             mock.patch.object(main, "send_progress") as send_progress,
         ):
             result = main.execute_single_tool(spec, "carbon-a")
@@ -745,6 +750,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             "executing",
             "updating team-visible advertising memory",
         )
+        acknowledge.assert_called_once_with(outcome)
         self.assertEqual(
             result,
             "Tool 'advertising_memory/update': uploaded — revision 3",

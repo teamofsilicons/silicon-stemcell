@@ -16,6 +16,39 @@ _TEAM_CONTEXT_RUNNING = False
 _TEAM_CONTEXT_PENDING_NOTICE = ""
 _TEAM_CONTEXT_LAST_NOTICE = ""
 _TEAM_CONTEXT_MAINTENANCE_ACTIVITY = None
+_TEAM_CONTEXT_RESULT_EPOCH = 0
+
+
+def _team_context_result_detail(result):
+    payload = result if isinstance(result, dict) else {}
+    detail = payload.get("own_detail") or payload.get("detail") or ""
+    return " ".join(str(detail).split())[:500]
+
+
+def _team_context_own_is_healthy(result):
+    payload = result if isinstance(result, dict) else {}
+    own_status = str(payload.get("own_status") or "")
+    healthy_statuses = {"current", "downloaded", "synced", "unchanged", "uploaded"}
+    if own_status:
+        return own_status in healthy_statuses
+    return bool(payload.get("ok")) and str(payload.get("status") or "") in (
+        healthy_statuses | {"updated"}
+    )
+
+
+def acknowledge_team_context_result(result):
+    """Discard queued owner warnings superseded by a verified healthy result."""
+
+    global _TEAM_CONTEXT_LAST_NOTICE
+    global _TEAM_CONTEXT_PENDING_NOTICE
+    global _TEAM_CONTEXT_RESULT_EPOCH
+    if not _team_context_own_is_healthy(result):
+        return False
+    with _TEAM_CONTEXT_LOCK:
+        _TEAM_CONTEXT_RESULT_EPOCH += 1
+        _TEAM_CONTEXT_PENDING_NOTICE = ""
+        _TEAM_CONTEXT_LAST_NOTICE = ""
+    return True
 
 
 def _team_context_notice(result):
@@ -27,6 +60,16 @@ def _team_context_notice(result):
             "with advertising_memory/update and resolve_conflict=true."
         )
     if status == "invalid":
+        detail = _team_context_result_detail(result)
+        if detail:
+            return (
+                "Your local advertising memory could not be published. "
+                f"Sync detail: {detail} "
+                "Content must be valid UTF-8, at most 100 lines and 65,536 bytes, "
+                "with no NUL characters. If the content already passes those "
+                "checks, verify that the runtime is reading a stable regular file "
+                "from the expected Silicon data root."
+            )
         return (
             "Your local advertising memory is invalid and was not published. "
             "Replace it with advertising_memory/update; it must be valid UTF-8, "
@@ -61,6 +104,8 @@ def _run_team_context_tick():
         from core.team_context import team_context_tick
         from core.maintenance import heartbeat_scope
 
+        with _TEAM_CONTEXT_LOCK:
+            result_epoch = _TEAM_CONTEXT_RESULT_EPOCH
         activity = _TEAM_CONTEXT_MAINTENANCE_ACTIVITY
         if activity is not None:
             with heartbeat_scope([activity]):
@@ -69,10 +114,19 @@ def _run_team_context_tick():
             result = team_context_tick()
         notice = _team_context_notice(result)
         with _TEAM_CONTEXT_LOCK:
-            if notice and notice != _TEAM_CONTEXT_LAST_NOTICE:
-                _TEAM_CONTEXT_PENDING_NOTICE = notice
-                print(f"[Team Context] {notice}", flush=True)
-            _TEAM_CONTEXT_LAST_NOTICE = notice
+            if result_epoch != _TEAM_CONTEXT_RESULT_EPOCH:
+                # A successful explicit update superseded this in-flight tick.
+                pass
+            elif notice:
+                if notice != _TEAM_CONTEXT_LAST_NOTICE:
+                    _TEAM_CONTEXT_PENDING_NOTICE = notice
+                    print(f"[Team Context] {notice}", flush=True)
+                _TEAM_CONTEXT_LAST_NOTICE = notice
+            elif _team_context_own_is_healthy(result):
+                # A verified healthy owner state supersedes any warning that
+                # was queued before a successful reconciliation or upload.
+                _TEAM_CONTEXT_PENDING_NOTICE = ""
+                _TEAM_CONTEXT_LAST_NOTICE = ""
     except Exception as exc:
         print(f"[Team Context Error] {exc}", flush=True)
     finally:
@@ -124,10 +178,15 @@ def check_team_context():
         except Exception:
             contact_id = ""
         if contact_id:
+            deliver = False
             with _TEAM_CONTEXT_LOCK:
                 if _TEAM_CONTEXT_PENDING_NOTICE == notice:
                     _TEAM_CONTEXT_PENDING_NOTICE = ""
-            return {contact_id: f"Team context synchronization notice:\n{notice}"}
+                    deliver = True
+            if deliver:
+                return {
+                    contact_id: f"Team context synchronization notice:\n{notice}"
+                }
     return None
 
 

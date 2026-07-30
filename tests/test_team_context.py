@@ -740,8 +740,42 @@ class TeamContextSyncTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "invalid")
+        self.assertIn("regular file", result["detail"])
         self.assertFalse(any(call[0] == "PUT" for call in api.calls))
         self.assertEqual(secret.read_text(), "TOP_SECRET=value")
+
+    def test_full_reconcile_preserves_own_invalid_detail(self):
+        markdown = "# Alpha Silicon Team\n"
+        own_content = "Owner status"
+        api = QueuedAPI(
+            identity(),
+            FakeResponse(
+                body=context_payload(
+                    markdown,
+                    [manifest_entry("self-si", own_content, 1)],
+                ),
+                headers={"ETag": '"team-context-v1"'},
+            ),
+        )
+        detail = "Local context file changed while it was being read."
+        own_result = {
+            "ok": False,
+            "status": "invalid",
+            "changed": False,
+            "local_saved": True,
+            "detail": detail,
+        }
+
+        with mock.patch.object(
+            team_context,
+            "_sync_own",
+            return_value=own_result,
+        ):
+            result = self._run(api)
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["own_status"], "invalid")
+        self.assertEqual(result["own_detail"], detail)
 
     def test_symlinked_advertising_directory_is_never_read_or_uploaded(self):
         self._initial_sync()
@@ -767,6 +801,7 @@ class TeamContextSyncTests(unittest.TestCase):
 
             self.assertFalse(result["ok"])
             self.assertEqual(result["status"], "invalid")
+            self.assertIn("local directory", result["detail"])
             self.assertFalse(any(call[0] == "PUT" for call in api.calls))
             self.assertEqual(secret.read_text(), "TOP_SECRET=value")
 

@@ -13,6 +13,8 @@ class TeamContextLifecycleTest(unittest.TestCase):
             config._TEAM_CONTEXT_RUNNING = False
             config._TEAM_CONTEXT_PENDING_NOTICE = ""
             config._TEAM_CONTEXT_LAST_NOTICE = ""
+            config._TEAM_CONTEXT_MAINTENANCE_ACTIVITY = None
+            config._TEAM_CONTEXT_RESULT_EPOCH = 0
 
     def test_startup_sync_precedes_restart_manager_turn(self):
         calls = []
@@ -178,6 +180,153 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         self.assertIn("no longer authorizes", notice)
         self.assertIn("hidden the cached TEAM.md", notice)
+
+    def test_invalid_notice_preserves_the_sync_detail(self):
+        notice = config._team_context_notice(
+            {
+                "ok": False,
+                "status": "partial",
+                "own_status": "invalid",
+                "own_detail": (
+                    "Local context file changed while it was being read."
+                ),
+            }
+        )
+
+        self.assertIn(
+            "Local context file changed while it was being read.",
+            notice,
+        )
+        self.assertIn("stable regular file", notice)
+
+    def test_healthy_tick_discards_a_superseded_pending_notice(self):
+        invalid = {
+            "ok": False,
+            "status": "invalid",
+            "detail": "Local context file changed while it was being read.",
+        }
+        healthy = {
+            "ok": True,
+            "status": "current",
+            "own_status": "unchanged",
+        }
+
+        with (
+            mock.patch(
+                "core.team_context.team_context_tick",
+                side_effect=[invalid, healthy],
+            ),
+            mock.patch("builtins.print"),
+        ):
+            config._run_team_context_tick()
+            config._run_team_context_tick()
+
+        with config._TEAM_CONTEXT_LOCK:
+            self.assertEqual(config._TEAM_CONTEXT_PENDING_NOTICE, "")
+            self.assertEqual(config._TEAM_CONTEXT_LAST_NOTICE, "")
+
+    def test_concurrent_recovery_cancels_a_notice_before_delivery(self):
+        notice = config._team_context_notice(
+            {
+                "ok": False,
+                "status": "invalid",
+                "detail": "Local context path must be a regular file.",
+            }
+        )
+        with config._TEAM_CONTEXT_LOCK:
+            config._TEAM_CONTEXT_PENDING_NOTICE = notice
+            config._TEAM_CONTEXT_LAST_NOTICE = notice
+            config._TEAM_CONTEXT_RUNNING = True
+
+        def recover_before_contact_lookup_finishes():
+            config.acknowledge_team_context_result(
+                {
+                    "ok": True,
+                    "status": "uploaded",
+                    "revision": 2,
+                }
+            )
+            return "central-carbon"
+
+        with mock.patch(
+            "core.interface.get_central_contact_id",
+            side_effect=recover_before_contact_lookup_finishes,
+        ):
+            delivered = config.check_team_context()
+
+        self.assertIsNone(delivered)
+        with config._TEAM_CONTEXT_LOCK:
+            self.assertEqual(config._TEAM_CONTEXT_PENDING_NOTICE, "")
+            self.assertEqual(config._TEAM_CONTEXT_LAST_NOTICE, "")
+            config._TEAM_CONTEXT_RUNNING = False
+
+    def test_successful_update_supersedes_an_inflight_invalid_result(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def stale_invalid_tick():
+            started.set()
+            release.wait(2)
+            return {
+                "ok": False,
+                "status": "invalid",
+                "detail": "Local context file changed while it was being read.",
+            }
+
+        with (
+            mock.patch(
+                "core.team_context.team_context_tick",
+                side_effect=stale_invalid_tick,
+            ),
+            mock.patch("builtins.print") as output,
+        ):
+            thread = threading.Thread(target=config._run_team_context_tick)
+            thread.start()
+            self.assertTrue(started.wait(2))
+            config.acknowledge_team_context_result(
+                {
+                    "ok": True,
+                    "status": "uploaded",
+                    "revision": 2,
+                }
+            )
+            release.set()
+            thread.join(2)
+
+        self.assertFalse(thread.is_alive())
+        output.assert_not_called()
+        with config._TEAM_CONTEXT_LOCK:
+            self.assertEqual(config._TEAM_CONTEXT_PENDING_NOTICE, "")
+            self.assertEqual(config._TEAM_CONTEXT_LAST_NOTICE, "")
+
+    def test_transient_failure_does_not_reset_notice_deduplication(self):
+        invalid = {
+            "ok": False,
+            "status": "invalid",
+            "detail": "Local context path must be a regular file.",
+        }
+        unavailable = {"ok": False, "status": "unavailable"}
+
+        with (
+            mock.patch(
+                "core.team_context.team_context_tick",
+                side_effect=[invalid, unavailable, invalid],
+            ),
+            mock.patch("builtins.print") as output,
+        ):
+            config._run_team_context_tick()
+            with config._TEAM_CONTEXT_LOCK:
+                config._TEAM_CONTEXT_PENDING_NOTICE = ""
+            config._run_team_context_tick()
+            config._run_team_context_tick()
+
+        self.assertEqual(output.call_count, 1)
+        with config._TEAM_CONTEXT_LOCK:
+            self.assertEqual(config._TEAM_CONTEXT_PENDING_NOTICE, "")
+            self.assertIn(
+                "regular file",
+                config._TEAM_CONTEXT_LAST_NOTICE,
+            )
 
     def test_notice_waits_until_a_central_contact_exists(self):
         with config._TEAM_CONTEXT_LOCK:
