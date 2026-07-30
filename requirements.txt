@@ -2,4 +2,4 @@ requests
 websockets
 croniter
 certifi
-silicon-extend==0.1.1
+silicon-extend==0.1.3

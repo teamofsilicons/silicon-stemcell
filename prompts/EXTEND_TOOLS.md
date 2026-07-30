@@ -189,6 +189,15 @@ memory.
   is not the destination for an Interface setup request.
 - After setup completes, refresh/list the live catalog and retry only when the
   connection reports ready.
+- Request reconnection only for `REAUTHORIZATION_REQUIRED` or
+  `CONNECTION_REQUIRED`. Never infer an authentication problem from
+  `PROVIDER_EXECUTION_FAILED`, `INVALID_OUTPUT`, a missing resource, or an
+  unavailable operation.
+- For `PROVIDER_RESOURCE_NOT_FOUND`, verify canonical account, workspace,
+  repository, project, or record identifiers before retrying. For
+  `PROVIDER_OPERATION_DEPRECATED`, select a supported operation instead of
+  reconnecting. `INVALID_OUTPUT` is a Glass/provider contract failure and must
+  be reported without treating its unvalidated payload as evidence.
 - Do not repeatedly retry a side-effecting tool when its outcome is uncertain.
   Report the uncertainty so the manager can decide how to continue.
 

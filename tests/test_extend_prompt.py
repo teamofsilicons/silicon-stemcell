@@ -131,6 +131,16 @@ class ExtendPromptAssemblyTest(unittest.TestCase):
         self.assertIn("Do not send them to Glass", text)
         self.assertIn("do not ask them to paste a credential into chat", text)
         self.assertIn("never credentials, tokens, integration URLs", text)
+        self.assertIn(
+            "Request reconnection only for `REAUTHORIZATION_REQUIRED`",
+            text,
+        )
+        self.assertIn(
+            "Never infer an authentication problem from "
+            "`PROVIDER_EXECUTION_FAILED`, `INVALID_OUTPUT`",
+            text,
+        )
+        self.assertIn("verify canonical account, workspace, repository", text)
 
 
 if __name__ == "__main__":
