@@ -18,6 +18,8 @@ from core.progress import (
     contains_advertising_memory_reference,
     contains_private_manager_tool,
     diagnostic_error_summary,
+    provider_authentication_failed,
+    provider_not_authenticated_message,
     progress_is_error,
     progress_display_line,
     redact_diagnostic_text,
@@ -185,6 +187,18 @@ def _safe_manager_error_tools(value):
     return json.dumps({
         "tools": [
             {"tool": "reply", "message": f"Manager error: {detail}"},
+            {"tool": "do_nothing"},
+        ]
+    })
+
+
+def _provider_not_authenticated_tools(provider):
+    return json.dumps({
+        "tools": [
+            {
+                "tool": "reply",
+                "message": provider_not_authenticated_message(provider),
+            },
             {"tool": "do_nothing"},
         ]
     })
@@ -370,6 +384,9 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
                     print(f"  [{tag}] provider error details omitted", flush=True)
 
         elif etype == "assistant":
+            if provider_authentication_failed(event.get("error")):
+                result_error_subtype = "authentication_failed"
+                result_error_msg = "authentication failed"
             for block in event.get("message", {}).get("content", []):
                 if block.get("type") == "text":
                     txt = block.get("text", "").strip()
@@ -403,12 +420,20 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
     if not result_text and all_texts:
         result_text = all_texts[-1]
 
+    safe_stderr = ""
+    if stderr:
+        safe_stderr = (
+            "[provider authentication failed]"
+            if provider_authentication_failed(stderr)
+            else "[provider stderr omitted]"
+        )
+
     return (
         result_text,
         rate_limit_msg,
         rc,
         executed_tools,
-        "[provider stderr omitted]" if stderr else "",
+        safe_stderr,
         result_error_subtype,
         result_error_msg,
     )
@@ -444,6 +469,12 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
         )
         if rc == 0 and result_text.strip():
             return result_text.strip(), rate_limit, executed_tools
+        if provider_authentication_failed(
+            error_subtype,
+            error_msg,
+            stderr_text,
+        ):
+            return _provider_not_authenticated_tools("claude"), None, executed_tools
         # Session not found — check the exact error message
         if rc != 0 and "no" in error_msg.lower() and "found" in error_msg.lower() and session_id in error_msg:
             print(f"  [{tag}] manager session missing — creating new session...", flush=True)
@@ -472,10 +503,23 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             )
             if rc == 0 and result_text.strip():
                 return result_text.strip(), rate_limit, executed_tools
-            # If that also failed, give up gracefully
-            from core.interface import reply_contact
-            reply_contact("Manager session not found - send a message to start a new one.", carbon_id)
-            return '{"tools": [{"tool": "do_nothing"}]}', None, []
+            if provider_authentication_failed(
+                error_subtype,
+                error_msg,
+                stderr_text,
+            ):
+                return (
+                    _provider_not_authenticated_tools("claude"),
+                    None,
+                    executed_tools,
+                )
+            return (
+                _safe_manager_error_tools(
+                    "Claude failed after creating a new session"
+                ),
+                None,
+                executed_tools,
+            )
     except subprocess.TimeoutExpired as exc:
         new_session(carbon_id, brain="claude")
         raise ManagerTimeoutError(
@@ -504,6 +548,14 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             cwd=PROJECT_ROOT,
         )
         output = result.stdout.strip()
+        if (
+            result.returncode != 0
+            and provider_authentication_failed(
+                result.stdout,
+                result.stderr,
+            )
+        ):
+            return _provider_not_authenticated_tools("claude"), None, []
         rl = output if (output and _is_rate_limit(output)) else None
         return output, rl, []
     except subprocess.TimeoutExpired as exc:
@@ -513,6 +565,8 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             f"{MANAGER_TIMEOUT:g} seconds"
         ) from exc
     except Exception as e:
+        if provider_authentication_failed(e):
+            return _provider_not_authenticated_tools("claude"), None, []
         return _safe_manager_error_tools(e), None, []
 
 
@@ -851,6 +905,12 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
         if output:
             return output, rate_limit_msg, executed_tools
         if error_msg:
+            if provider_authentication_failed(error_msg):
+                return (
+                    _provider_not_authenticated_tools("codex"),
+                    None,
+                    executed_tools,
+                )
             return _safe_manager_error_tools(error_msg), rate_limit_msg, executed_tools
         return "", rate_limit_msg, executed_tools
 
@@ -863,6 +923,8 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
             "Codex manager turn stopped producing events before its deadline"
         ) from exc
     except Exception as e:
+        if provider_authentication_failed(e):
+            return _provider_not_authenticated_tools("codex"), None, []
         return _safe_manager_error_tools(e), None, []
     finally:
         if client:
@@ -935,10 +997,18 @@ def _manager_provider_failed(output, rate_limit):
     parsed = parse_manager_output(text, debug=False)
     if parsed:
         for tool in parsed.get("tools", []):
+            if not isinstance(tool, dict):
+                continue
+            message = str(tool.get("message") or "")
             if (
-                isinstance(tool, dict)
-                and tool.get("tool") == "reply"
-                and "Manager error:" in str(tool.get("message") or "")
+                tool.get("tool") == "reply"
+                and (
+                    "Manager error:" in message
+                    or message in {
+                        provider_not_authenticated_message("claude"),
+                        provider_not_authenticated_message("codex"),
+                    }
+                )
             ):
                 return True
         return False

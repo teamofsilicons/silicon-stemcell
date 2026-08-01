@@ -1,6 +1,8 @@
 import json
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ import core.interface as interface
 
 class InterfaceStateTest(unittest.TestCase):
     def setUp(self):
+        interface.stop_runtime_file_watch()
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.old_contacts = interface.CONTACTS_FILE
@@ -38,6 +41,7 @@ class InterfaceStateTest(unittest.TestCase):
                 break
 
     def tearDown(self):
+        interface.stop_runtime_file_watch()
         interface.CONTACTS_FILE = self.old_contacts
         interface.CONTACTS_BACKUP_FILE = self.old_backup
         interface.MEDIA_DIR = self.old_media
@@ -760,6 +764,59 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertTrue(interface.wait_for_runtime_activity(0))
         self.assertFalse(interface.wait_for_runtime_activity(0))
+
+    def test_runtime_file_change_wakes_main_condition(self):
+        state_file = Path(self.tmp.name) / "maintenance.json"
+        state_file.write_text("{}", encoding="utf-8")
+        interface.start_runtime_file_watch(state_file)
+        deadline = time.monotonic() + 1
+        while (
+            not interface.runtime_file_notifications_active()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        replacement = state_file.with_suffix(".tmp")
+        replacement.write_text('{"phase":"draining"}', encoding="utf-8")
+        replacement.replace(state_file)
+
+        self.assertTrue(interface.wait_for_runtime_activity(1.5))
+
+    def test_listener_queues_appended_inbox(self):
+        interface.DEFAULT_INBOX_FILE.write_text("", encoding="utf-8")
+        ready = threading.Event()
+        stop = threading.Event()
+
+        class FakeClient:
+            def daemon_local_status(self):
+                ready.set()
+                return {
+                    "running": True,
+                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                }
+
+        with mock.patch.object(interface, "InterfaceClient", FakeClient):
+            thread = threading.Thread(
+                target=interface._listener_loop,
+                args=(stop,),
+                daemon=True,
+            )
+            thread.start()
+            try:
+                self.assertTrue(ready.wait(1))
+                with interface.DEFAULT_INBOX_FILE.open(
+                    "a",
+                    encoding="utf-8",
+                ) as inbox:
+                    inbox.write('{"type":"test-notification"}\n')
+                    inbox.flush()
+                record = interface._event_queue.get(timeout=1)
+            finally:
+                stop.set()
+                thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(record.frame["type"], "test-notification")
 
     def test_reply_segments_keep_order_and_report_missing_files(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")

@@ -55,6 +55,15 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_status_read_does_not_rewrite_unchanged_state(self):
+        self.coordinator.request_drain(deadline_seconds=60)
+
+        with mock.patch("core.maintenance.write_json") as write:
+            status = self.coordinator.public_status()
+
+        self.assertEqual(status["phase"], "draining")
+        write.assert_not_called()
+
     def test_active_lineage_finishes_while_new_root_is_durably_queued(self):
         first = self.coordinator.enqueue_root("carbon-a", "active task")
         self.assertIsNotNone(first.admission)

@@ -8,7 +8,7 @@ from unittest import mock
 
 from core import interface, work_updates
 from core.background import BestEffortOutbox, flush_best_effort
-from core.state_store import read_json, update_json
+from core.state_store import read_json, update_json, update_json_if_changed
 from worker import handler
 
 
@@ -147,6 +147,23 @@ class PrimaryDeliveryLatencyTest(unittest.TestCase):
 
 
 class ConcurrentJsonStateTest(unittest.TestCase):
+    def test_conditional_update_skips_noop_replace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state.json"
+            update_json(path, {"count": 0}, lambda _state: None)
+            previous = path.stat()
+
+            result = update_json_if_changed(
+                path,
+                {"count": 0},
+                lambda state: state.get("count"),
+            )
+
+            current = path.stat()
+            self.assertEqual(result, 0)
+            self.assertEqual(current.st_ino, previous.st_ino)
+            self.assertEqual(current.st_mtime_ns, previous.st_mtime_ns)
+
     def test_atomic_updates_do_not_lose_parallel_writes(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "counter.json"

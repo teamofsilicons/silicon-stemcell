@@ -26,6 +26,7 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from core.path_watch import PathSetChangeWaiter
 from core.runtime_paths import CODE_ROOT, DATA_ROOT
 
 try:
@@ -33,9 +34,10 @@ try:
 except ImportError:  # Windows has no pseudo-terminal module.
     pty = None
 
-STATUS_INTERVAL = 15
+STATUS_CHECK_INTERVAL = 5
+STATUS_REFRESH_INTERVAL = 60
 PING_INTERVAL = 20
-DIAGNOSTICS_INTERVAL = 5
+DIAGNOSTICS_INTERVAL = 60
 TEAM_CONTEXT_INTERVAL = 60
 TRUST_POLICY_INTERVAL = 60
 RUNTIME_LOG_INITIAL_LINES = 10
@@ -641,6 +643,68 @@ class RuntimeLogTailer:
                 handle.seek(self._position)
                 sent += 1
         return sent
+
+
+class ChangeDrivenWorker:
+    """Run one sidecar callback on file changes with a slow safety fallback."""
+
+    def __init__(
+        self,
+        paths: list[Path],
+        callback,
+        *,
+        fallback_seconds: float,
+        polling_seconds: float,
+        name: str,
+        on_error=None,
+    ):
+        self.paths = [Path(path) for path in paths]
+        self.callback = callback
+        self.fallback_seconds = max(0.1, float(fallback_seconds))
+        self.polling_seconds = max(0.05, float(polling_seconds))
+        self.name = name
+        self.on_error = on_error
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        for path in self.paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=self.name,
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            with PathSetChangeWaiter(
+                self.paths,
+                fallback_poll_seconds=self.polling_seconds,
+            ) as changes:
+                while not self._stop.is_set():
+                    changes.wait(self.fallback_seconds, self._stop)
+                    if self._stop.is_set():
+                        return
+                    try:
+                        self.callback()
+                    except Exception as exc:
+                        if self.on_error is not None:
+                            self.on_error(exc)
+                        return
+        except Exception as exc:
+            if self.on_error is not None:
+                self.on_error(exc)
+
+    def stop(self, timeout: float = 2) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
 
 
 def drain_diagnostics(ws, root: Path, config: dict) -> int:
@@ -1531,6 +1595,18 @@ def handle_message(
         return
     if msg_type == "pong":
         return
+    if msg_type == "crons.changed":
+        try:
+            from core.cron import invalidate_cron_cache
+
+            invalidate_cron_cache()
+        except Exception as exc:
+            print(
+                "[glass-agent] cron invalidation marker deferred: "
+                f"{str(exc)[:300]}",
+                flush=True,
+            )
+        return
     if msg_type == "team_context.changed":
         _request_team_context_reconcile(
             team_context_reconciler,
@@ -1662,84 +1738,172 @@ def run_live(
     log_tailer = runtime_log_tailer or RuntimeLogTailer(root / ".silicon.log")
     try:
         with connect(url, **connect_options) as ws:
-            print("[glass-agent] connected", flush=True)
-            _request_team_context_reconcile(
-                reconciler,
-                force=True,
-                reason="websocket-connect",
-            )
-            _request_trust_reconcile(
-                trust_reconciler,
-                force=True,
-                reason="websocket-connect",
-            )
-            send_json(ws, {
-                "type": "handshake",
-                "name": name,
-                "version": local_version(root),
-                "hostname": os.uname().nodename if hasattr(os, "uname") else "",
-                "pid": os.getpid(),
-                "capabilities": ["trust_policy_v1"],
-            })
-            # Only now is the link proven usable end-to-end. The reconnect
-            # policy times from here, so a socket that dies mid-handshake
-            # counts as a failed attempt rather than a healthy link dropping.
-            if on_connected is not None:
-                on_connected()
-            send_json(ws, status_payload(root))
-            drain_diagnostics(ws, root, config)
-            now = time.monotonic()
-            next_status = now + STATUS_INTERVAL
-            next_ping = now + PING_INTERVAL
-            next_diagnostics = now + DIAGNOSTICS_INTERVAL
-            next_team_context = now + TEAM_CONTEXT_INTERVAL
-            next_trust_policy = now + TRUST_POLICY_INTERVAL
+            workers: list[ChangeDrivenWorker] = []
+            worker_failure: list[Exception] = []
 
-            while running[0]:
-                log_tailer.poll(lambda frame: send_json(ws, frame))
+            def worker_failed(exc: Exception) -> None:
+                worker_failure.append(exc)
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+            try:
+                print("[glass-agent] connected", flush=True)
+                _request_team_context_reconcile(
+                    reconciler,
+                    force=True,
+                    reason="websocket-connect",
+                )
+                _request_trust_reconcile(
+                    trust_reconciler,
+                    force=True,
+                    reason="websocket-connect",
+                )
+                send_json(ws, {
+                    "type": "handshake",
+                    "name": name,
+                    "version": local_version(root),
+                    "hostname": os.uname().nodename if hasattr(os, "uname") else "",
+                    "pid": os.getpid(),
+                    "capabilities": ["trust_policy_v1"],
+                })
+                # Only now is the link proven usable end-to-end. The reconnect
+                # policy times from here, so a socket that dies mid-handshake
+                # counts as a failed attempt rather than a healthy link dropping.
+                if on_connected is not None:
+                    on_connected()
+
+                last_status = status_payload(root)
+                send_json(ws, last_status)
+
+                from core.glass_diag_push import resolve_db_path
+
+                diagnostic_path = Path(
+                    resolve_db_path(root, config.get("diag_db"))
+                )
+                log_poll_lock = threading.Lock()
+                diagnostic_drain_lock = threading.Lock()
+
+                def poll_runtime_log() -> int:
+                    with log_poll_lock:
+                        return log_tailer.poll(
+                            lambda frame: send_json(ws, frame)
+                        )
+
+                def drain_runtime_diagnostics() -> int:
+                    with diagnostic_drain_lock:
+                        return drain_diagnostics(ws, root, config)
+
+                workers = [
+                    ChangeDrivenWorker(
+                        [root / ".silicon.log"],
+                        poll_runtime_log,
+                        fallback_seconds=60,
+                        polling_seconds=1,
+                        name="glass-runtime-log-follow",
+                        on_error=worker_failed,
+                    ),
+                    ChangeDrivenWorker(
+                        [
+                            diagnostic_path,
+                            Path(f"{diagnostic_path}-wal"),
+                        ],
+                        drain_runtime_diagnostics,
+                        fallback_seconds=DIAGNOSTICS_INTERVAL,
+                        polling_seconds=5,
+                        name="glass-diagnostics-follow",
+                        on_error=worker_failed,
+                    ),
+                ]
                 now = time.monotonic()
-                if now >= next_status:
-                    send_json(ws, status_payload(root))
-                    next_status = now + STATUS_INTERVAL
-                if now >= next_ping:
-                    send_json(ws, {"type": "ping", "ts": int(time.time())})
-                    next_ping = now + PING_INTERVAL
-                if now >= next_diagnostics:
-                    drain_diagnostics(ws, root, config)
-                    next_diagnostics = now + DIAGNOSTICS_INTERVAL
-                if now >= next_team_context:
-                    _request_team_context_reconcile(
-                        reconciler,
-                        reason="websocket-safety",
-                    )
-                    next_team_context = now + TEAM_CONTEXT_INTERVAL
-                if now >= next_trust_policy:
-                    _request_trust_reconcile(
-                        trust_reconciler,
-                        reason="websocket-safety",
-                    )
-                    next_trust_policy = now + TRUST_POLICY_INTERVAL
+                next_status_check = now + STATUS_CHECK_INTERVAL
+                next_status_refresh = now + STATUS_REFRESH_INTERVAL
+                next_ping = now + PING_INTERVAL
+                next_team_context = now + TEAM_CONTEXT_INTERVAL
+                next_trust_policy = now + TRUST_POLICY_INTERVAL
+                first_loop_now = time.monotonic()
 
-                try:
-                    raw = ws.recv(timeout=1)
-                except TimeoutError:
-                    continue
-                if not raw:
-                    continue
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(msg, dict):
-                    handle_message(
-                        ws,
-                        msg,
-                        root,
-                        name,
-                        config,
-                        team_context_reconciler=reconciler,
-                        trust_policy_reconciler=trust_reconciler,
+                for worker in workers:
+                    worker.start()
+                poll_runtime_log()
+                drain_runtime_diagnostics()
+
+                while running[0]:
+                    if worker_failure:
+                        raise worker_failure[0]
+                    if first_loop_now is None:
+                        now = time.monotonic()
+                    else:
+                        now = first_loop_now
+                        first_loop_now = None
+                    if now >= next_status_check:
+                        current_status = status_payload(root)
+                        if (
+                            current_status != last_status
+                            or now >= next_status_refresh
+                        ):
+                            send_json(ws, current_status)
+                            last_status = current_status
+                            next_status_refresh = (
+                                now + STATUS_REFRESH_INTERVAL
+                            )
+                        next_status_check = (
+                            now + STATUS_CHECK_INTERVAL
+                        )
+                    if now >= next_ping:
+                        send_json(
+                            ws,
+                            {"type": "ping", "ts": int(time.time())},
+                        )
+                        next_ping = now + PING_INTERVAL
+                    if now >= next_team_context:
+                        _request_team_context_reconcile(
+                            reconciler,
+                            reason="websocket-safety",
+                        )
+                        next_team_context = now + TEAM_CONTEXT_INTERVAL
+                    if now >= next_trust_policy:
+                        _request_trust_reconcile(
+                            trust_reconciler,
+                            reason="websocket-safety",
+                        )
+                        next_trust_policy = now + TRUST_POLICY_INTERVAL
+
+                    deadline = min(
+                        next_status_check,
+                        next_ping,
+                        next_team_context,
+                        next_trust_policy,
                     )
+                    try:
+                        raw = ws.recv(
+                            timeout=max(
+                                0.05,
+                                deadline - now,
+                            )
+                        )
+                    except TimeoutError:
+                        continue
+                    if not raw:
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(msg, dict):
+                        handle_message(
+                            ws,
+                            msg,
+                            root,
+                            name,
+                            config,
+                            team_context_reconciler=reconciler,
+                            trust_policy_reconciler=trust_reconciler,
+                        )
+            finally:
+                for worker in workers:
+                    worker.stop()
     finally:
         terminal_stop()
         if owned_reconciler:

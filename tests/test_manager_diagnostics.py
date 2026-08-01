@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -13,6 +14,90 @@ from core.diagnostics import Diagnostics  # noqa: E402
 
 
 class ManagerFailureDiagnosticsTests(unittest.TestCase):
+    def test_provider_authentication_messages_name_the_provider(self):
+        self.assertTrue(manager.provider_authentication_failed(
+            "authentication_failed: Not logged in"
+        ))
+        self.assertEqual(
+            manager.provider_not_authenticated_message("claude"),
+            "Claude not authenticated.",
+        )
+        self.assertEqual(
+            manager.provider_not_authenticated_message("codex"),
+            "Codex not authenticated.",
+        )
+
+    def test_claude_session_recovery_reports_authentication_failure(self):
+        missing = (
+            "",
+            None,
+            1,
+            [],
+            "[provider stderr omitted]",
+            "error_during_execution",
+            "No conversation found with session ID old-session",
+        )
+        authentication_failed = (
+            "",
+            None,
+            1,
+            [],
+            "[provider authentication failed]",
+            "authentication_failed",
+            "authentication failed",
+        )
+        with (
+            mock.patch.object(
+                manager,
+                "_get_session_id",
+                return_value="old-session",
+            ),
+            mock.patch.object(
+                manager,
+                "_write_prompt_file",
+                return_value="/tmp/prompt",
+            ),
+            mock.patch.object(
+                manager,
+                "new_session",
+                return_value="new-session",
+            ),
+            mock.patch.object(
+                manager,
+                "_run_streaming",
+                side_effect=[missing, authentication_failed],
+            ),
+        ):
+            output, _rate_limit, _tools = manager.claude_code(
+                "hello",
+                "carbon-a",
+            )
+
+        parsed = manager.parse_manager_output(output)
+        self.assertEqual(
+            parsed["tools"][0]["message"],
+            "Claude not authenticated.",
+        )
+        self.assertTrue(manager._manager_provider_failed(output, None))
+
+    def test_codex_authentication_failure_names_codex(self):
+        with mock.patch.object(
+            manager,
+            "_CodexAppServer",
+            side_effect=RuntimeError("Not logged in"),
+        ):
+            output, _rate_limit, _tools = manager.codex_app_server(
+                "hello",
+                "carbon-a",
+            )
+
+        parsed = manager.parse_manager_output(output)
+        self.assertEqual(
+            parsed["tools"][0]["message"],
+            "Codex not authenticated.",
+        )
+        self.assertTrue(manager._manager_provider_failed(output, None))
+
     def test_expired_oauth_text_is_a_provider_failure(self):
         self.assertTrue(manager._manager_provider_failed(
             "Failed to authenticate: OAuth session expired and could not be refreshed",

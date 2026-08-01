@@ -89,6 +89,10 @@ class LongTaskLifecycleTest(unittest.TestCase):
             mutate,
         )
 
+    def test_empty_root_claim_does_not_create_or_rewrite_state(self):
+        self.assertEqual(long_task_updates.claim_ready_long_task_roots(), {})
+        self.assertFalse(long_task_updates.LONG_TASK_STATE_FILE.exists())
+
     def test_success_detection_uses_transport_status_not_returned_content(self):
         self.assertTrue(
             long_task_updates._successful(

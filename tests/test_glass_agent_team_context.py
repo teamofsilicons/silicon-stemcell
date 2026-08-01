@@ -338,6 +338,12 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
         ), mock.patch.object(
             glass_agent,
             "terminal_stop",
+        ), mock.patch.object(
+            glass_agent.ChangeDrivenWorker,
+            "start",
+        ), mock.patch.object(
+            glass_agent.ChangeDrivenWorker,
+            "stop",
         ):
             glass_agent.run_live(
                 Path("/tmp/silicon"),

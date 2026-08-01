@@ -11,6 +11,10 @@ import uuid
 from datetime import datetime, timezone
 
 from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from core.progress import (
+    provider_authentication_failed,
+    provider_not_authenticated_message,
+)
 from core.state_store import file_lock, read_json, update_json, write_json
 from prompts.DNA import get_worker_prompt
 
@@ -1562,6 +1566,8 @@ def _worker_completion_context(completion):
 
 _sweep_call_counter = 0
 _SWEEP_INTERVAL = 10
+_next_archive_cleanup = 0.0
+ARCHIVE_CLEANUP_INTERVAL_SECONDS = 60 * 60
 
 
 def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, output_path):
@@ -1774,7 +1780,14 @@ def check_completed_workers_formatted():
     return result
 
 
-def clean_old_archives(archive_for_seconds):
+def clean_old_archives(archive_for_seconds, *, force=False):
+    global _next_archive_cleanup
+    monotonic_now = time.monotonic()
+    if not force and monotonic_now < _next_archive_cleanup:
+        return {}
+    _next_archive_cleanup = (
+        monotonic_now + ARCHIVE_CLEANUP_INTERVAL_SECONDS
+    )
     if not os.path.exists(OUTPUTS_DIR):
         return {}
 
@@ -1805,6 +1818,32 @@ def clean_old_archives(archive_for_seconds):
 
 # --- Output parsing ---
 
+def _worker_provider_auth_message(events, provider):
+    for event in events:
+        values = []
+        if event.get("error") or event.get("is_error"):
+            values.extend([
+                event.get("error"),
+                event.get("errors"),
+            ])
+        if event.get("type") == "silicon.codex_app_error":
+            values.append(event.get("message"))
+        if event.get("method") == "error":
+            params = event.get("params") or {}
+            nested_error = params.get("error")
+            values.extend([
+                params.get("message"),
+                (
+                    nested_error.get("message")
+                    if isinstance(nested_error, dict)
+                    else nested_error
+                ),
+            ])
+        if provider_authentication_failed(*values):
+            return provider_not_authenticated_message(provider)
+    return ""
+
+
 def _parse_claude_output(raw):
     if not raw.strip():
         return "No output yet."
@@ -1812,6 +1851,10 @@ def _parse_claude_output(raw):
     events = _extract_json_events(raw)
     if not events:
         return "No parseable output yet."
+
+    auth_message = _worker_provider_auth_message(events, "claude")
+    if auth_message:
+        return auth_message
 
     result_event = None
     for event in events:
@@ -1844,6 +1887,10 @@ def _parse_codex_output(raw):
     events = _extract_json_events(raw)
     if not events:
         return "No parseable output yet."
+
+    auth_message = _worker_provider_auth_message(events, "codex")
+    if auth_message:
+        return auth_message
 
     texts = []
     streamed_text = ""

@@ -424,6 +424,15 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             }
         )
 
+    def test_retry_replay_does_not_rewrite_unchanged_journal(self):
+        work_updates._write_state(work_updates._default_state())
+
+        with mock.patch.object(work_updates, "_write_state") as write:
+            scheduled = work_updates.replay_pending_call_updates(now=1_000.0)
+
+        self.assertEqual(scheduled, 0)
+        write.assert_not_called()
+
     def test_manager_activity_ids_revisions_and_settlement(self):
         group = work_updates.begin_manager_activity("carbon-a", "run/one")
         self.assertEqual(group, work_updates.begin_manager_activity("carbon-a", "run/one"))

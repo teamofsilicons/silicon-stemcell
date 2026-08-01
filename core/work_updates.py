@@ -102,19 +102,23 @@ def _default_state() -> dict[str, Any]:
     }
 
 
-def _read_state() -> dict[str, Any]:
-    state = read_json(WORK_UPDATES_FILE, _default_state())
+def _read_state_with_prune_status() -> tuple[dict[str, Any], bool]:
+    raw_state = read_json(WORK_UPDATES_FILE, _default_state())
+    state = raw_state
+    changed = False
     if not isinstance(state, dict):
-        return _default_state()
-    state.setdefault("version", 1)
-    state.setdefault("contacts", {})
-    state.setdefault("call_retry_journal", {})
-    state.setdefault("call_retry_sequence", 0)
-    state.setdefault("call_retry_dead_letters", [])
-    state.setdefault("call_retry_overflow_count", 0)
-    state.setdefault("call_retry_last_overflow_at", 0.0)
-    state.setdefault("call_retry_dedupe", {})
-    _prune_state(state)
+        state = _default_state()
+        changed = True
+    defaults = _default_state()
+    for key, value in defaults.items():
+        if key not in state:
+            state[key] = deepcopy(value)
+            changed = True
+    return state, _prune_state(state) or changed
+
+
+def _read_state() -> dict[str, Any]:
+    state, _changed = _read_state_with_prune_status()
     return state
 
 
@@ -155,11 +159,13 @@ def _call_retry_archive_record(entry: dict[str, Any], now: float) -> dict[str, A
     }
 
 
-def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
+def _prune_state(state: dict[str, Any], now: float | None = None) -> bool:
     now = time.time() if now is None else float(now)
+    changed = False
     dedupe = state.get("call_retry_dedupe")
     if not isinstance(dedupe, dict):
         state["call_retry_dedupe"] = {}
+        changed = True
     else:
         for key, receipt in list(dedupe.items()):
             if (
@@ -168,6 +174,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 >= CALL_RETRY_DEDUPE_RETENTION_SECONDS
             ):
                 dedupe.pop(key, None)
+                changed = True
         if len(dedupe) > CALL_RETRY_DEDUPE_LIMIT:
             ordered = sorted(
                 dedupe,
@@ -177,10 +184,12 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
             )
             for key in ordered[: len(dedupe) - CALL_RETRY_DEDUPE_LIMIT]:
                 dedupe.pop(key, None)
+                changed = True
     journal = state.get("call_retry_journal")
     pending_call_ids: set[str] = set()
     if not isinstance(journal, dict):
         state["call_retry_journal"] = {}
+        changed = True
     else:
         for retry_id, entry in list(journal.items()):
             if (
@@ -191,6 +200,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 not in {"outbound", "inbound", "mutation"}
             ):
                 journal.pop(retry_id, None)
+                changed = True
                 continue
             if (
                 entry.get("status") == "dead_letter"
@@ -210,6 +220,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 archive.append(_call_retry_archive_record(entry, now))
                 del archive[:-CALL_RETRY_ARCHIVE_LIMIT]
                 journal.pop(retry_id, None)
+                changed = True
                 continue
             if (
                 entry.get("status", "pending") == "pending"
@@ -227,6 +238,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
             for peer_id, correlation in list(pending.items()):
                 if not isinstance(correlation, dict):
                     pending.pop(peer_id, None)
+                    changed = True
                     continue
                 updated_at = _timestamp(correlation.get("updated_at"))
                 correlation_call_ids = {
@@ -242,12 +254,14 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                     )
                 ):
                     pending.pop(peer_id, None)
+                    changed = True
 
         standalone_calls = contact.get("standalone_calls")
         if isinstance(standalone_calls, dict):
             for call_id, call in list(standalone_calls.items()):
                 if not isinstance(call, dict):
                     standalone_calls.pop(call_id, None)
+                    changed = True
                     continue
                 cached_at = _timestamp(call.get("_cached_at"))
                 if (
@@ -256,6 +270,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                     and now - cached_at > TERMINAL_TASK_TTL_SECONDS
                 ):
                     standalone_calls.pop(call_id, None)
+                    changed = True
             if len(standalone_calls) > 200:
                 ordered = sorted(
                     (
@@ -266,6 +281,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 )
                 for _cached_at, call_id in ordered[: len(standalone_calls) - 200]:
                     standalone_calls.pop(call_id, None)
+                    changed = True
 
         tasks = contact.get("tasks")
         if not isinstance(tasks, dict):
@@ -274,6 +290,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
         for task_id, task in list(tasks.items()):
             if not isinstance(task, dict):
                 tasks.pop(task_id, None)
+                changed = True
                 continue
             cached_at = _timestamp(task.get("_cached_at"))
             if (
@@ -282,6 +299,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 and now - cached_at > TERMINAL_TASK_TTL_SECONDS
             ):
                 tasks.pop(task_id, None)
+                changed = True
                 continue
             for bucket_name, limit in (
                 ("events", 500),
@@ -293,6 +311,7 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                 if isinstance(bucket, dict) and len(bucket) > limit:
                     for stale_id in list(bucket)[: len(bucket) - limit]:
                         bucket.pop(stale_id, None)
+                        changed = True
             terminal.append((cached_at, str(task_id)))
         if len(tasks) > MAX_CACHED_TASKS_PER_CONTACT:
             active_id = str(contact.get("active_task_id") or "")
@@ -301,6 +320,8 @@ def _prune_state(state: dict[str, Any], now: float | None = None) -> None:
                     break
                 if task_id != active_id:
                     tasks.pop(task_id, None)
+                    changed = True
+    return changed
 
 
 def _contact_state(state: dict[str, Any], contact_id: str) -> dict[str, Any]:
@@ -2025,6 +2046,63 @@ def _call_reference_identity(reference: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def next_inactive_call_deadline() -> float | None:
+    """Return the next exact wall-clock deadline for idle call completion."""
+    deadlines: list[float] = []
+    with _state_guard():
+        state = _read_state()
+        for contact in state.get("contacts", {}).values():
+            if not isinstance(contact, dict):
+                continue
+            pending = contact.get("pending_calls")
+            if isinstance(pending, dict):
+                for correlation in pending.values():
+                    if (
+                        not isinstance(correlation, dict)
+                        or correlation.get("terminal_requested")
+                        or not _correlation_references(correlation)
+                    ):
+                        continue
+                    updated_at = _timestamp(correlation.get("updated_at"))
+                    if updated_at:
+                        deadlines.append(
+                            updated_at + CALL_IDLE_TIMEOUT_SECONDS
+                        )
+            for call in (
+                contact.get("standalone_calls", {}) or {}
+            ).values():
+                if (
+                    not isinstance(call, dict)
+                    or call.get("_idle_terminal_requested")
+                    or call.get("state")
+                    not in {"connecting", "in_progress"}
+                ):
+                    continue
+                cached_at = _timestamp(call.get("_cached_at"))
+                if cached_at:
+                    deadlines.append(cached_at + CALL_IDLE_TIMEOUT_SECONDS)
+            for task in (contact.get("tasks", {}) or {}).values():
+                if not isinstance(task, dict):
+                    continue
+                task_cached_at = _timestamp(task.get("_cached_at"))
+                for call in (task.get("calls", {}) or {}).values():
+                    if (
+                        not isinstance(call, dict)
+                        or call.get("_idle_terminal_requested")
+                        or call.get("state")
+                        not in {"connecting", "in_progress"}
+                    ):
+                        continue
+                    cached_at = _timestamp(
+                        call.get("_cached_at") or task_cached_at
+                    )
+                    if cached_at:
+                        deadlines.append(
+                            cached_at + CALL_IDLE_TIMEOUT_SECONDS
+                        )
+    return min(deadlines) if deadlines else None
+
+
 def complete_inactive_calls(
     *,
     now: float | None = None,
@@ -3122,8 +3200,9 @@ def replay_pending_call_updates(
     """Schedule due disk-journaled call cards after startup or a periodic tick."""
     now = time.time() if now is None else float(now)
     with _state_guard():
-        state = _read_state()
-        _write_state(state)
+        state, pruned = _read_state_with_prune_status()
+        if pruned:
+            _write_state(state)
         journal = state.get("call_retry_journal", {})
         ordered = sorted(
             (entry for entry in journal.values() if isinstance(entry, dict)),
@@ -3173,8 +3252,8 @@ def pending_call_update_retries(
 ) -> dict[str, Any]:
     """Return body-free retry health for diagnostics and runtime probes."""
     with _state_guard():
-        state = _read_state()
-        if persist_prune:
+        state, pruned = _read_state_with_prune_status()
+        if persist_prune and pruned:
             _write_state(state)
         journal = state.get("call_retry_journal", {})
         entries = [entry for entry in journal.values() if isinstance(entry, dict)]

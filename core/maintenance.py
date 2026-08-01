@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
@@ -322,12 +323,15 @@ class MaintenanceCoordinator:
 
     def _transaction(self, mutate: Callable[[dict[str, Any], float], Any]) -> Any:
         with file_lock(self.state_file):
-            state = self._normalize(read_json(self.state_file, _default_state()))
+            raw_state = read_json(self.state_file, _default_state())
+            previous = deepcopy(raw_state)
+            state = self._normalize(raw_state)
             now = self._now()
             self._prune(state, now)
             result = mutate(state, now)
-            state["updated_at"] = now
-            write_json(self.state_file, state)
+            if state != previous:
+                state["updated_at"] = now
+                write_json(self.state_file, state)
             return result
 
     def _read(self) -> dict[str, Any]:

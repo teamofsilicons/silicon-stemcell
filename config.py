@@ -1,4 +1,5 @@
 import threading
+import time
 
 from core.interface import get_unread_events_durable
 from core.cron import check_crons
@@ -17,6 +18,9 @@ _TEAM_CONTEXT_PENDING_NOTICE = ""
 _TEAM_CONTEXT_LAST_NOTICE = ""
 _TEAM_CONTEXT_MAINTENANCE_ACTIVITY = None
 _TEAM_CONTEXT_RESULT_EPOCH = 0
+_TEAM_CONTEXT_NEXT_SAFETY_CHECK = 0.0
+_TEAM_CONTEXT_OWN_SIGNATURE = object()
+TEAM_CONTEXT_MAIN_SAFETY_SECONDS = 5 * 60
 
 
 def _team_context_result_detail(result):
@@ -148,10 +152,24 @@ def check_team_context():
     global _TEAM_CONTEXT_PENDING_NOTICE
     global _TEAM_CONTEXT_RUNNING
     global _TEAM_CONTEXT_MAINTENANCE_ACTIVITY
+    global _TEAM_CONTEXT_NEXT_SAFETY_CHECK
+    global _TEAM_CONTEXT_OWN_SIGNATURE
+
+    try:
+        from core.team_context import own_advertising_signature
+
+        own_signature = own_advertising_signature()
+    except Exception:
+        own_signature = None
+    now = time.monotonic()
 
     with _TEAM_CONTEXT_LOCK:
         notice = _TEAM_CONTEXT_PENDING_NOTICE
-        if not _TEAM_CONTEXT_RUNNING:
+        due = (
+            now >= _TEAM_CONTEXT_NEXT_SAFETY_CHECK
+            or own_signature != _TEAM_CONTEXT_OWN_SIGNATURE
+        )
+        if not _TEAM_CONTEXT_RUNNING and due:
             try:
                 from core.maintenance import acquire_descendant_activity
 
@@ -162,6 +180,10 @@ def check_team_context():
             except Exception:
                 activity = None
             if activity is not None:
+                _TEAM_CONTEXT_OWN_SIGNATURE = own_signature
+                _TEAM_CONTEXT_NEXT_SAFETY_CHECK = (
+                    now + TEAM_CONTEXT_MAIN_SAFETY_SECONDS
+                )
                 _TEAM_CONTEXT_MAINTENANCE_ACTIVITY = activity
                 _TEAM_CONTEXT_RUNNING = True
                 threading.Thread(

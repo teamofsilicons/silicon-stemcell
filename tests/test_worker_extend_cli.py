@@ -526,6 +526,38 @@ class WorkerExtendContextLaunchTest(unittest.TestCase):
             "origin-contact",
         )
 
+    def test_claude_worker_authentication_failure_names_claude(self):
+        raw = json.dumps({
+            "type": "assistant",
+            "error": "authentication_failed",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": "Not logged in · Please run /login",
+                }],
+            },
+        })
+
+        self.assertEqual(
+            handler._parse_claude_output(raw),
+            "Claude not authenticated.",
+        )
+
+    def test_codex_worker_authentication_failure_names_codex(self):
+        raw = json.dumps({
+            "method": "error",
+            "params": {
+                "error": {
+                    "message": "OAuth session expired",
+                },
+            },
+        })
+
+        self.assertEqual(
+            handler._parse_codex_output(raw),
+            "Codex not authenticated.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

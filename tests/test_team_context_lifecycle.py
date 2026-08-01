@@ -15,6 +15,8 @@ class TeamContextLifecycleTest(unittest.TestCase):
             config._TEAM_CONTEXT_LAST_NOTICE = ""
             config._TEAM_CONTEXT_MAINTENANCE_ACTIVITY = None
             config._TEAM_CONTEXT_RESULT_EPOCH = 0
+            config._TEAM_CONTEXT_NEXT_SAFETY_CHECK = 0.0
+            config._TEAM_CONTEXT_OWN_SIGNATURE = object()
 
     def test_startup_sync_precedes_restart_manager_turn(self):
         calls = []

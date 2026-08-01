@@ -20,9 +20,11 @@ from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 from typing import Any
+
 import requests
 
 from core.background import submit_best_effort
+from core.path_watch import PathChangeWaiter, PathSetChangeWaiter
 from core.runtime_paths import DATA_ROOT
 from core.state_store import file_lock, read_json, update_json, write_json
 
@@ -45,6 +47,11 @@ REMOTE_BROWSER_START_URL = os.environ.get("SILICON_REMOTE_BROWSER_START_URL", "h
 _listener_thread: threading.Thread | None = None
 _listener_lock = threading.Lock()
 _listener_stop: threading.Event | None = None
+_runtime_file_thread: threading.Thread | None = None
+_runtime_file_lock = threading.Lock()
+_runtime_file_stop: threading.Event | None = None
+_runtime_file_paths: tuple[str, ...] = ()
+_runtime_file_native = False
 _event_queue: "queue.Queue[InboxRecord | dict[str, Any]]" = queue.Queue()
 _inbox_retry_records: "deque[InboxRecord]" = deque()
 _inbox_retry_lock = threading.Lock()
@@ -58,7 +65,9 @@ _maintenance_notice_lock = threading.Lock()
 _maintenance_notice_running = False
 
 INBOX_POLL_SECONDS = 0.1
+RUNTIME_FILE_POLL_SECONDS = 0.5
 DAEMON_HEALTH_SECONDS = 15
+ROOM_SYNC_FALLBACK_SECONDS = 15 * 60
 INBOX_READ_CHUNK_BYTES = 4 * 1024 * 1024
 
 
@@ -300,7 +309,17 @@ def validate_contacts_integrity() -> bool:
         return False
     if not bad:
         CONTACTS_BACKUP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(CONTACTS_FILE, CONTACTS_BACKUP_FILE)
+        backup_matches = False
+        try:
+            backup_matches = (
+                CONTACTS_BACKUP_FILE.exists()
+                and CONTACTS_FILE.read_bytes()
+                == CONTACTS_BACKUP_FILE.read_bytes()
+            )
+        except OSError:
+            backup_matches = False
+        if not backup_matches:
+            shutil.copy2(CONTACTS_FILE, CONTACTS_BACKUP_FILE)
     return not bad
 
 
@@ -432,6 +451,41 @@ class InterfaceClient:
                 "did not return the durable listener contract."
             )
         return payload
+
+    def daemon_local_status(self) -> dict[str, Any]:
+        """Check the CLI-owned daemon without cold-starting the Node CLI."""
+        root = Path(
+            os.environ.get("SILICON_INTERFACE_ROOT") or self.cwd
+        ).expanduser().resolve()
+        state_dir = root / ".silicon-interface"
+        pid_file = state_dir / "daemon.pid"
+        pid: int | None = None
+        try:
+            parsed = int(pid_file.read_text(encoding="utf-8").strip())
+            if parsed > 0:
+                pid = parsed
+        except (OSError, TypeError, ValueError):
+            pid = None
+        running = False
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                running = True
+            except (OSError, ProcessLookupError, PermissionError):
+                running = False
+        inbox_value = str(
+            os.environ.get("SILICON_INTERFACE_INBOX") or ""
+        ).strip()
+        inbox = (
+            Path(inbox_value).expanduser()
+            if inbox_value
+            else state_dir / "inbox.jsonl"
+        )
+        return {
+            "running": running,
+            "pid": pid,
+            "inbox": str(inbox),
+        }
 
     def daemon_start(self) -> str:
         """Start the single CLI-owned listener; this command prints prose."""
@@ -1008,17 +1062,23 @@ def _finish_room_sync() -> dict[str, Any]:
 def discover_rooms(client: InterfaceClient | None = None, *, force: bool = False) -> dict[str, Any]:
     client = client or InterfaceClient()
     state = _load_state()
-    if not force and _now() - float(state.get("last_room_sync") or 0) < 60:
+    if (
+        not force
+        and _now() - float(state.get("last_room_sync") or 0)
+        < ROOM_SYNC_FALLBACK_SECONDS
+    ):
         return state
 
     me_payload = None
-    try:
-        me_payload = client.whoami()
-        own_ids = _extract_own_ids(me_payload)
-        if own_ids:
-            own_ids = _cache_own_ids(own_ids)
-    except Exception:
-        own_ids = _load_state().get("own_ids", [])
+    own_ids = list(state.get("own_ids") or [])
+    if not own_ids:
+        try:
+            me_payload = client.whoami()
+            own_ids = _extract_own_ids(me_payload)
+            if own_ids:
+                own_ids = _cache_own_ids(own_ids)
+        except Exception:
+            own_ids = _load_state().get("own_ids", [])
 
     rooms_payload = client.rooms_list()
     rooms = _as_list(rooms_payload, ("rooms", "data", "results"))
@@ -1968,10 +2028,15 @@ def _listener_loop(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         try:
             client = InterfaceClient()
-            status = client.daemon_status()
+            status = client.daemon_local_status()
             if not status.get("running"):
                 client.daemon_start()
-                status = client.daemon_status()
+                deadline = _now() + 2.0
+                while not stop_event.is_set() and _now() < deadline:
+                    status = client.daemon_local_status()
+                    if status.get("running"):
+                        break
+                    stop_event.wait(0.05)
             if not status.get("running"):
                 raise InterfaceError("Silicon Interface durable inbox daemon did not start.")
 
@@ -1982,15 +2047,22 @@ def _listener_loop(stop_event: threading.Event) -> None:
 
             backoff = 1.0
             next_health_check = _now() + DAEMON_HEALTH_SECONDS
-            while not stop_event.is_set():
-                _queue_inbox_records(_read_new_inbox_records(inbox_path))
-                now = _now()
-                if now >= next_health_check:
-                    status = client.daemon_status()
-                    if not status.get("running"):
-                        break
-                    next_health_check = now + DAEMON_HEALTH_SECONDS
-                stop_event.wait(INBOX_POLL_SECONDS)
+            with PathChangeWaiter(
+                inbox_path,
+                fallback_poll_seconds=INBOX_POLL_SECONDS,
+            ) as inbox_changes:
+                while not stop_event.is_set():
+                    _queue_inbox_records(_read_new_inbox_records(inbox_path))
+                    now = _now()
+                    if now >= next_health_check:
+                        status = client.daemon_status()
+                        if not status.get("running"):
+                            break
+                        next_health_check = now + DAEMON_HEALTH_SECONDS
+                    inbox_changes.wait(
+                        max(0.0, next_health_check - _now()),
+                        stop_event,
+                    )
         except Exception as exc:
             if _now() - _last_listener_error > 30:
                 print(f"[Interface] durable inbox unavailable: {exc}", flush=True)
@@ -2027,6 +2099,103 @@ def stop_listener() -> None:
         else:
             _listener_thread = None
             _listener_stop = None
+
+
+def _runtime_file_loop(
+    paths: tuple[Path, ...],
+    stop_event: threading.Event,
+) -> None:
+    global _runtime_file_native
+    try:
+        with PathSetChangeWaiter(
+            paths,
+            fallback_poll_seconds=RUNTIME_FILE_POLL_SECONDS,
+        ) as changes:
+            while not stop_event.is_set():
+                _runtime_file_native = changes.native_notifications
+                wait_seconds = (
+                    60.0
+                    if changes.native_notifications
+                    else RUNTIME_FILE_POLL_SECONDS
+                )
+                if changes.wait(wait_seconds, stop_event):
+                    notify_runtime_activity()
+    finally:
+        _runtime_file_native = False
+
+
+def start_runtime_file_watch(
+    paths: (
+        str
+        | os.PathLike[str]
+        | list[str | os.PathLike[str]]
+        | tuple[str | os.PathLike[str], ...]
+    ),
+) -> None:
+    """Wake the runtime when any cross-process coordination file changes."""
+    global _runtime_file_thread, _runtime_file_stop, _runtime_file_paths
+    values = (
+        [paths]
+        if isinstance(paths, (str, os.PathLike))
+        else list(paths)
+    )
+    resolved = tuple(
+        sorted(
+            {
+                str(Path(path).expanduser().resolve())
+                for path in values
+            }
+        )
+    )
+    if not resolved:
+        raise ValueError("At least one runtime coordination file is required.")
+    with _runtime_file_lock:
+        if (
+            _runtime_file_thread
+            and _runtime_file_thread.is_alive()
+            and _runtime_file_paths == resolved
+        ):
+            return
+        if _runtime_file_thread and _runtime_file_thread.is_alive():
+            return
+        for path in resolved:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        _runtime_file_paths = resolved
+        _runtime_file_stop = threading.Event()
+        _runtime_file_thread = threading.Thread(
+            target=_runtime_file_loop,
+            args=(
+                tuple(Path(path) for path in resolved),
+                _runtime_file_stop,
+            ),
+            name="runtime-file-watch",
+            daemon=True,
+        )
+        _runtime_file_thread.start()
+
+
+def runtime_file_notifications_active() -> bool:
+    thread = _runtime_file_thread
+    return bool(
+        thread
+        and thread.is_alive()
+        and _runtime_file_native
+    )
+
+
+def stop_runtime_file_watch() -> None:
+    global _runtime_file_thread, _runtime_file_stop, _runtime_file_paths
+    with _runtime_file_lock:
+        stop_event = _runtime_file_stop
+        thread = _runtime_file_thread
+        if stop_event:
+            stop_event.set()
+        if thread and thread.is_alive():
+            thread.join(timeout=2)
+        if not thread or not thread.is_alive():
+            _runtime_file_thread = None
+            _runtime_file_stop = None
+            _runtime_file_paths = ()
 
 
 def set_maintenance_listener_fence(phase: str) -> None:

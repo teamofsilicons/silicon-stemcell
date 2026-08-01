@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.interface import STATE_DIR
-from core.state_store import read_json, update_json
+from core.state_store import read_json, update_json, update_json_if_changed
 from core.work_updates import (
     active_task_id,
     execute_work_update,
@@ -566,7 +566,7 @@ def claim_ready_long_task_roots(
                 f"{str(item.get('context') or '')}"
             )
 
-    update_json(LONG_TASK_STATE_FILE, _default_state(), mutate)
+    update_json_if_changed(LONG_TASK_STATE_FILE, _default_state(), mutate)
     return claimed
 
 

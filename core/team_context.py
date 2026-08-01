@@ -371,7 +371,39 @@ def _save_state(root: Path, state: dict[str, Any]) -> None:
     encoded = (
         json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
     ).encode("utf-8")
-    _atomic_write_bytes(root, _state_file(root), encoded)
+    path = _state_file(root)
+    try:
+        if path.read_bytes() == encoded:
+            return
+    except OSError:
+        pass
+    _atomic_write_bytes(root, path, encoded)
+
+
+def own_advertising_signature(
+    root: str | Path | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Return a content-change signature without performing reconciliation."""
+    project_root = _normalise_root(root)
+    try:
+        state = _load_state(project_root)
+        identity = _stored_identity(state)
+        if identity is None:
+            return None
+        metadata = os.stat(
+            _advertising_file(project_root, identity["silicon_id"]),
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        return (
+            int(metadata.st_dev),
+            int(metadata.st_ino),
+            int(metadata.st_size),
+            int(metadata.st_mtime_ns),
+        )
+    except (OSError, TeamContextError):
+        return None
 
 
 def _thread_lock(path: Path) -> threading.Lock:

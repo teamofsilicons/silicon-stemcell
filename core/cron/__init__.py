@@ -17,6 +17,13 @@ CRON_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = DATA_ROOT
 CHECKBACK_HISTORY_FILE = PROJECT_ROOT / "core" / "cron" / "history.json"
 CRON_STATE_FILE = PROJECT_ROOT / "core" / "interface_state" / "crons.json"
+CRON_CACHE_FILE = (
+    PROJECT_ROOT / "core" / "interface_state" / "glass_crons_cache.json"
+)
+CRON_INVALIDATION_FILE = (
+    PROJECT_ROOT / "core" / "interface_state" / "glass_crons_invalidated.json"
+)
+CRON_CACHE_FALLBACK_SECONDS = 5 * 60
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -113,6 +120,87 @@ def _load_cron_state() -> dict[str, Any]:
 
 def _save_cron_state(state: dict[str, Any]) -> None:
     _write_json(CRON_STATE_FILE, state)
+
+
+def invalidate_cron_cache() -> None:
+    """Wake the runtime and force one authoritative cron refresh."""
+    _write_json(
+        CRON_INVALIDATION_FILE,
+        {
+            "version": 1,
+            "invalidated_at": time.time(),
+        },
+    )
+
+
+def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
+    records = (
+        payload
+        if isinstance(payload, list)
+        else (
+            payload.get("crons")
+            or payload.get("data")
+            or payload.get("results")
+            or []
+        )
+        if isinstance(payload, dict)
+        else []
+    )
+    return [
+        dict(record)
+        for record in records
+        if isinstance(record, dict)
+    ]
+
+
+def _cache_is_invalidated() -> bool:
+    try:
+        return (
+            CRON_INVALIDATION_FILE.stat().st_mtime_ns
+            > CRON_CACHE_FILE.stat().st_mtime_ns
+        )
+    except FileNotFoundError:
+        return CRON_INVALIDATION_FILE.exists()
+    except OSError:
+        return True
+
+
+def _load_cached_cron_records(
+    client: InterfaceClient,
+) -> list[dict[str, Any]]:
+    cache = _read_json(CRON_CACHE_FILE, {})
+    cached_records = (
+        _records_from_payload(cache.get("records"))
+        if isinstance(cache, dict)
+        else []
+    )
+    fetched_at = (
+        float(cache.get("fetched_at") or 0.0)
+        if isinstance(cache, dict)
+        else 0.0
+    )
+    if (
+        fetched_at > 0
+        and time.time() - fetched_at < CRON_CACHE_FALLBACK_SECONDS
+        and not _cache_is_invalidated()
+    ):
+        return cached_records
+    try:
+        records = _records_from_payload(client.crons_list())
+    except InterfaceError:
+        # Previously verified definitions remain runnable while Glass is
+        # temporarily unavailable. Their per-cron watermarks still prevent
+        # duplicate execution.
+        return cached_records
+    _write_json(
+        CRON_CACHE_FILE,
+        {
+            "version": 1,
+            "fetched_at": time.time(),
+            "records": records,
+        },
+    )
+    return records
 
 
 def _cron_id(record: dict[str, Any]) -> str:
@@ -268,15 +356,15 @@ def _format_cron_context(record: dict[str, Any], fire_dt: datetime, missed_count
 
 def _check_glass_crons(now: datetime | None = None, client: InterfaceClient | None = None) -> dict[str, str]:
     now = now or _utc_now()
+    explicit_client = client is not None
     client = client or InterfaceClient()
-    try:
-        payload = client.crons_list()
-    except InterfaceError:
-        return {}
-
-    records = payload if isinstance(payload, list) else payload.get("crons") or payload.get("data") or payload.get("results") or []
-    if not isinstance(records, list):
-        return {}
+    if explicit_client:
+        try:
+            records = _records_from_payload(client.crons_list())
+        except InterfaceError:
+            return {}
+    else:
+        records = _load_cached_cron_records(client)
 
     due: list[tuple[dict[str, Any], datetime, int, str]] = []
     results: dict[str, list[str]] = {}
@@ -365,6 +453,7 @@ def execute_cron_tool(tool_spec: dict[str, Any]) -> str:
         if not isinstance(targets, list) or not targets:
             return "Tool 'cron/create': Error: targets is required"
         payload = client.cron_create(trigger, task, targets)
+        invalidate_cron_cache()
         return "Tool 'cron/create': " + json.dumps(payload, sort_keys=True)
 
     if tool == "cron/update":
@@ -377,6 +466,7 @@ def execute_cron_tool(tool_spec: dict[str, Any]) -> str:
             task=tool_spec.get("task"),
             active=tool_spec.get("active") if "active" in tool_spec else None,
         )
+        invalidate_cron_cache()
         return "Tool 'cron/update': " + json.dumps(payload, sort_keys=True)
 
     if tool == "cron/delete":
@@ -384,6 +474,7 @@ def execute_cron_tool(tool_spec: dict[str, Any]) -> str:
         if not cron_id:
             return "Tool 'cron/delete': Error: cron_id is required"
         payload = client.cron_delete(cron_id)
+        invalidate_cron_cache()
 
         def remove_cron(state):
             if isinstance(state, dict):
@@ -394,6 +485,15 @@ def execute_cron_tool(tool_spec: dict[str, Any]) -> str:
 
     if tool == "cron/list":
         payload = client.crons_list()
+        records = _records_from_payload(payload)
+        _write_json(
+            CRON_CACHE_FILE,
+            {
+                "version": 1,
+                "fetched_at": time.time(),
+                "records": records,
+            },
+        )
         return "Tool 'cron/list': " + json.dumps(payload, sort_keys=True)
 
     return f"Unknown cron tool: '{tool}'"

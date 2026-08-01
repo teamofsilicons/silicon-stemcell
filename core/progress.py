@@ -224,6 +224,40 @@ def redact_diagnostic_text(value, limit=500):
     return compact(text, limit=limit)
 
 
+_PROVIDER_AUTH_FAILURE_MARKERS = (
+    "authentication_failed",
+    "authentication failed",
+    "failed to authenticate",
+    "not authenticated",
+    "not logged in",
+    "login required",
+    "please run /login",
+    "oauth session expired",
+    "oauth token expired",
+    "invalid api key",
+    "incorrect api key",
+    "401 unauthorized",
+)
+
+
+def provider_authentication_failed(*values):
+    """Return true only for explicit provider authentication evidence."""
+    text = " ".join(str(value or "") for value in values).lower()
+    return any(marker in text for marker in _PROVIDER_AUTH_FAILURE_MARKERS)
+
+
+def provider_not_authenticated_message(provider):
+    """Return a stable provider-specific message safe for Carbon visibility."""
+    normalized = str(provider or "").strip().lower()
+    labels = {
+        "claude": "Claude",
+        "codex": "Codex",
+        "chatgpt": "Codex",
+    }
+    label = labels.get(normalized, normalized.title() or "Provider")
+    return f"{label} not authenticated."
+
+
 def diagnostic_error_summary(event, limit=500):
     """Return a compact, credential-redacted provider failure summary."""
     if not progress_is_error(event):

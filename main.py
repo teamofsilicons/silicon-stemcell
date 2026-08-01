@@ -45,13 +45,16 @@ from core.interface import (
     schedule_maintenance_notices,
     send_progress,
     start_listener,
+    start_runtime_file_watch,
     stop_listener,
+    stop_runtime_file_watch,
     take_back_event,
     validate_contacts_integrity,
+    runtime_file_notifications_active,
     wait_for_runtime_activity,
 )
-from core.messages import send_manager_message
-from core.cron import execute_cron_tool
+from core.messages import MANAGER_MESSAGES_FILE, send_manager_message
+from core.cron import CRON_INVALIDATION_FILE, execute_cron_tool
 from core.maintenance import (
     COORDINATOR as MAINTENANCE,
     RootAdmission,
@@ -67,6 +70,8 @@ from core.extend import (
     request_setup as request_extend_setup,
 )
 from worker.handler import (
+    ACTIVE_FILE,
+    BROWSER_QUEUE_FILE,
     start_worker,
     message_worker,
     get_worker_status,
@@ -86,17 +91,20 @@ from core.progress import (
     redact_diagnostic_text,
 )
 from core.work_updates import (
+    WORK_UPDATES_FILE,
     begin_manager_activity,
     complete_inactive_calls,
     current_manager_activity_group,
     execute_work_update,
     prepare_outbound_call,
     record_worker_started,
+    next_inactive_call_deadline,
     set_active_task_timer,
     settle_manager_activity,
     touch_manager_call_activity,
 )
 from core.long_task_updates import (
+    LONG_TASK_STATE_FILE,
     accuracy_review_root_is_current,
     acknowledge_accuracy_review_dispatched,
     acknowledge_queued_long_task_root,
@@ -2286,6 +2294,17 @@ def main():
     _bootstrap_team_context()
     _bootstrap_trust_policy()
     start_listener()
+    start_runtime_file_watch(
+        [
+            MAINTENANCE.state_file,
+            MANAGER_MESSAGES_FILE,
+            WORK_UPDATES_FILE,
+            LONG_TASK_STATE_FILE,
+            ACTIVE_FILE,
+            BROWSER_QUEUE_FILE,
+            CRON_INVALIDATION_FILE,
+        ]
+    )
     recovered_long_tasks = recover_long_task_lifecycles(
         reply_sender=reply_user,
         has_active_workers=_contact_has_active_workers,
@@ -2327,7 +2346,12 @@ def main():
                     break
 
     next_periodic = 0.0
-    immediate_handlers = {"check_interface", "check_manager_messages"}
+    immediate_handlers = {
+        "check_interface",
+        "check_manager_messages",
+        "check_crons",
+        "check_workers",
+    }
     try:
         while True:
             try:
@@ -2357,10 +2381,18 @@ def main():
                     run_event_loop_tick(selected_handlers),
                     maintenance_active=maintenance_active,
                 )
-                try:
-                    complete_inactive_calls()
-                except Exception as exc:
-                    log(f"[Work updates] inactive call completion deferred: {exc}")
+                call_deadline = next_inactive_call_deadline()
+                if (
+                    call_deadline is not None
+                    and call_deadline <= time.time()
+                ):
+                    try:
+                        complete_inactive_calls()
+                    except Exception as exc:
+                        log(
+                            "[Work updates] inactive call completion "
+                            f"deferred: {exc}"
+                        )
                 if periodic_due:
                     next_periodic = time.monotonic() + LOOP_TICK
 
@@ -2376,14 +2408,23 @@ def main():
                 if next_periodic <= time.monotonic():
                     next_periodic = time.monotonic() + min(float(LOOP_TICK), 1.0)
             timeout = max(0.0, next_periodic - time.monotonic())
-            # Maintenance requests are raised by silicon-cli in another
-            # process, so cap the sleep even when no Interface event arrives.
-            wait_for_runtime_activity(min(timeout, 0.5))
+            call_deadline = next_inactive_call_deadline()
+            if call_deadline is not None:
+                timeout = min(
+                    timeout,
+                    max(0.0, call_deadline - time.time()),
+                )
+            # Native notifications cover every cross-process runtime source.
+            # The minute cap is recovery-only; platforms without a healthy
+            # native watcher retain the original half-second polling safety.
+            fallback = 60.0 if runtime_file_notifications_active() else 0.5
+            wait_for_runtime_activity(min(timeout, fallback))
     except KeyboardInterrupt:
         log("\n[Silicon] Shutting down.")
         raise SystemExit(0)
     finally:
         stop_runtime_health()
+        stop_runtime_file_watch()
         stop_listener()
         dispatcher.shutdown(wait=False)
 

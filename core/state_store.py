@@ -5,6 +5,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
@@ -144,4 +145,20 @@ def update_json(
         current = _read_json_unlocked(resolved, default)
         result = update(current)
         _write_json_unlocked(resolved, current)
+        return result
+
+
+def update_json_if_changed(
+    path: str | os.PathLike[str],
+    default: T,
+    update: Callable[[T], Any],
+) -> Any:
+    """Atomically mutate JSON, replacing the document only when it changed."""
+    resolved = Path(path)
+    with file_lock(resolved):
+        current = _read_json_unlocked(resolved, default)
+        previous = deepcopy(current)
+        result = update(current)
+        if current != previous:
+            _write_json_unlocked(resolved, current)
         return result
