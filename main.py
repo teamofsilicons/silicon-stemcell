@@ -425,15 +425,32 @@ def _parse_extend_tool(tool_spec):
 
 def _parse_integration_tool(tool_spec):
     tool_name = str(tool_spec.get("tool") or "")
-    integration_key = (
+    integration_command = (
         tool_name.removeprefix("integration/")
         if tool_name.startswith("integration/")
         else ""
     )
+    suffix_action = ""
+    integration_key = integration_command
+    if "." in integration_command:
+        possible_key, possible_suffix = integration_command.rsplit(".", 1)
+        suffix_action = {
+            "list": "list",
+            "ready": "ready",
+            "needs_setup": "needs_setup",
+            "pending": "pending",
+            "show": "show",
+            "run": "execute",
+            "execute": "execute",
+            "request_setup": "request_setup",
+            "setup": "request_setup",
+        }.get(possible_suffix.lower().replace("-", "_"), "")
+        if suffix_action:
+            integration_key = possible_key
     explicit_action = (
         str(tool_spec.get("type") or "").strip().lower().replace("-", "_")
     )
-    action = explicit_action or (
+    action = explicit_action or suffix_action or (
         "execute"
         if tool_spec.get("name") or tool_spec.get("key") or "arguments" in tool_spec
         else "list"

@@ -34,8 +34,9 @@ this file.
 
 Glass manages the full system catalog, team enablement, and the editable
 `Accessible by` Silicon audience for each integration. The live catalog below
-shows direct integration tools granted to this Silicon. It intentionally does
-not expose every operation until you call that integration.
+shows each granted integration's description, optional Glass-authored manager
+note, and compact commands. It intentionally does not expose every operation
+or schema until you call that integration's `.list` command.
 
 #### Use a granted integration directly
 
@@ -44,8 +45,7 @@ available Gmail operations and schemas with:
 
 ```json
 {
-    "tool": "integration/gmail",
-    "type": "list"
+    "tool": "integration/gmail.list"
 }
 ```
 
@@ -53,8 +53,7 @@ Then execute one exact returned operation through the same direct integration:
 
 ```json
 {
-    "tool": "integration/gmail",
-    "type": "execute",
+    "tool": "integration/gmail.run",
     "name": "gmail.messages.send",
     "arguments": {
         "to": "person@example.com",
@@ -64,9 +63,11 @@ Then execute one exact returned operation through the same direct integration:
 }
 ```
 
-Calling a direct integration without `type`, `name`, or `arguments` is the same
-as `type: list`. A direct integration result explicitly confirms that this
-Silicon has access. Glass still rechecks access on every execution.
+The other compact commands are `integration/gmail.show` and
+`integration/gmail.request_setup`. The older `integration/gmail` plus `type`
+form remains supported. Calling it without `type`, `name`, or `arguments` is
+the same as `type: list`. A direct integration result explicitly confirms that
+this Silicon has access. Glass still rechecks access on every execution.
 
 #### Discover tools and setup state
 

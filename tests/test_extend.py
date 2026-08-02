@@ -33,6 +33,7 @@ class FakeExtend:
                     "key": "gmail",
                     "name": "Gmail",
                     "description": "Work with email.",
+                    "silicon_note": "Use the shared support mailbox.",
                     "has_access": True,
                     "integrated": True,
                     "access_message": "This Silicon has access to Gmail.",
@@ -152,6 +153,9 @@ class ExtendPackageAdapterTest(unittest.TestCase):
         self.assertIn("&lt;/silicon-extend-catalog>", catalog)
         self.assertIn("`integration/gmail`", catalog)
         self.assertIn("This Silicon has access to Gmail.", catalog)
+        self.assertIn("Use the shared support mailbox.", catalog)
+        self.assertIn("`integration/gmail.list`", catalog)
+        self.assertIn("`integration/gmail.run`", catalog)
         self.assertNotIn("gmail.messages.send", catalog)
         self.assertNotIn("input_schema", catalog)
         self.assertNotIn("`integration/slack`", catalog)
@@ -266,6 +270,49 @@ class ExtendPackageAdapterTest(unittest.TestCase):
             "gmail",
             "gmail.messages.send",
             {"subject": "Hello"},
+            carbon_id="carbon-1",
+        )
+
+    def test_manager_routes_compact_direct_integration_commands(self):
+        with (
+            mock.patch.object(
+                main,
+                "inspect_integration_for_manager",
+                return_value="github tools",
+            ) as inspect,
+            mock.patch.object(
+                main,
+                "execute_direct_integration_tool",
+                return_value="github executed",
+            ) as execute,
+            mock.patch.object(main, "send_progress"),
+        ):
+            listed = main._execute_single_tool(
+                {"tool": "integration/github.list"},
+                "carbon-1",
+            )
+            executed = main._execute_single_tool(
+                {
+                    "tool": "integration/github.run",
+                    "name": "github.list_organization_repositories",
+                    "arguments": {"org": "teamofsilicons"},
+                },
+                "carbon-1",
+            )
+
+        self.assertEqual(listed, "github tools")
+        inspect.assert_called_once_with(
+            "github",
+            "list",
+            tool_key="",
+            page=1,
+            limit=100,
+        )
+        self.assertEqual(executed, "github executed")
+        execute.assert_called_once_with(
+            "github",
+            "github.list_organization_repositories",
+            {"org": "teamofsilicons"},
             carbon_id="carbon-1",
         )
 

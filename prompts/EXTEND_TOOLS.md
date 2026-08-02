@@ -29,9 +29,15 @@ manager or worker.
 
 Managers invoke Extend through the same top-level `tools` array documented in
 `MANAGER_TOOLS.md`. Every granted integration is also advertised as its own
-direct manager tool, such as `integration/gmail`. Only the integration is
-advertised eagerly; call it with `type: list` to fetch its operations and exact
-schemas.
+direct manager tool, such as `integration/gmail`. Only its name, description,
+Glass-authored manager note, and compact command set are advertised eagerly;
+the operation catalog and schemas are not. Call `integration/gmail.list` to
+fetch them only when needed. The equivalent legacy form is
+`{"tool":"integration/gmail","type":"list"}`.
+
+Direct integration commands are `.list`, `.show`, `.run`, and
+`.request_setup`. `.show`, `.run`, and `.request_setup` also require the exact
+operation in `name`; `.run` takes its validated fields in `arguments`.
 
 Use these discovery actions whenever you need a fresh view:
 
