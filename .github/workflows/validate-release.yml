@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/validate-release.yml"
+      - "requirements.lock"
       - "requirements.txt"
       - "scripts/verify_release_runtime.py"
       - "silicon.info"
