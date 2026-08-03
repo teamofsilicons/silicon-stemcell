@@ -243,7 +243,9 @@ prereleases, timestamps, or Glass release records.
 
 Each published stable tag is immutable. Protect the `v*` tag namespace, never
 force-push or reuse a version, and create the tag only after the matching
-`silicon.info` version and immutable runtime-image digest are committed.
+`silicon.info` version, runtime-contract hash, and immutable runtime-image digest
+are committed. Publish packages first, build and probe the runtime image second,
+then run `python scripts/verify_release_runtime.py`; create the Git tag last.
 
 The running Stemcell never mutates its source or Git configuration. Apply a
 release through the machine-level CLI:
