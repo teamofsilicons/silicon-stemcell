@@ -68,8 +68,8 @@ class TeamContextLifecycleTest(unittest.TestCase):
         )
         dispatcher.shutdown.assert_called_once_with(wait=False)
 
-    def test_existing_ten_second_loop_runs_team_context_tick(self):
-        self.assertEqual(config.LOOP_TICK, 10)
+    def test_recovery_loop_runs_team_context_tick(self):
+        self.assertEqual(config.LOOP_TICK, 60)
         self.assertEqual(config.EVENT_LOOP[0]["name"], "check_team_context")
         finished = threading.Event()
 

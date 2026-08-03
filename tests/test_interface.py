@@ -1,4 +1,5 @@
 import json
+import socket
 import subprocess
 import tempfile
 import threading
@@ -417,6 +418,108 @@ class InterfaceStateTest(unittest.TestCase):
             event_id="evt-media",
         )
 
+    def test_album_event_downloads_each_unique_item_and_includes_caption(self):
+        interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
+
+        class FakeClient:
+            def __init__(self):
+                self.media_lookups = []
+                self.reads = []
+
+            def media_show(self, media_id):
+                self.media_lookups.append(media_id)
+                return {
+                    "download_url": f"https://download.example/{media_id}",
+                    "filename": f"{media_id}.bin",
+                }
+
+            def read(self, room_id, event_id):
+                self.reads.append((room_id, event_id))
+
+        def run_immediately(function, *args, **_kwargs):
+            function(*args)
+            return True
+
+        client = FakeClient()
+        event = {
+            "type": "m.album",
+            "event_id": "evt-album",
+            "room_id": "room-a",
+            "content": {
+                "caption": "Review both company documents.",
+                "items": [
+                    {"media_id": "media-pdf", "filename": "booklet.pdf"},
+                    {"media_id": "media-zip", "filename": "documents.zip"},
+                ],
+            },
+            # The durable inbox also projects album items here. They must not
+            # cause duplicate downloads.
+            "media_items": [
+                {"position": 0, "media_id": "media-pdf", "filename": "booklet.pdf"},
+                {"position": 1, "media_id": "media-zip", "filename": "documents.zip"},
+            ],
+        }
+
+        def downloaded(_url, path):
+            return str(path)
+
+        with (
+            mock.patch.object(interface, "_download_url", side_effect=downloaded),
+            mock.patch.object(interface, "submit_best_effort", side_effect=run_immediately),
+            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
+            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
+        ):
+            processed = interface.process_incoming_event(event, client=client)
+
+        self.assertEqual(processed[0], "carbon-a")
+        self.assertIn("event_type: m.album", processed[1])
+        self.assertIn("message:\nReview both company documents.", processed[1])
+        self.assertIn("evt-album_1_booklet.pdf", processed[1])
+        self.assertIn("evt-album_2_documents.zip", processed[1])
+        self.assertLess(
+            processed[1].index("evt-album_1_booklet.pdf"),
+            processed[1].index("evt-album_2_documents.zip"),
+        )
+        self.assertEqual(client.media_lookups, ["media-pdf", "media-zip"])
+        self.assertEqual(client.reads, [("room-a", "evt-album")])
+
+    def test_album_without_caption_still_reaches_manager_with_attachment(self):
+        interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
+        client = mock.Mock()
+        client.media_show.return_value = {
+            "download_url": "https://download.example/media-only",
+            "filename": "evidence.pdf",
+        }
+
+        with (
+            mock.patch.object(
+                interface,
+                "_download_url",
+                return_value=str(Path(self.tmp.name) / "media" / "evt-album_evidence.pdf"),
+            ),
+            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
+            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
+        ):
+            processed = interface.process_incoming_event(
+                {
+                    "type": "m.album",
+                    "event_id": "evt-album",
+                    "room_id": "room-a",
+                    "content": {
+                        "items": [
+                            {"media_id": "media-only", "filename": "evidence.pdf"},
+                        ]
+                    },
+                },
+                client=client,
+            )
+
+        self.assertEqual(processed[0], "carbon-a")
+        self.assertIn("event_type: m.album", processed[1])
+        self.assertIn("downloaded_files:", processed[1])
+        self.assertIn("evt-album_evidence.pdf", processed[1])
+        self.assertNotIn("message:\n", processed[1])
+
     def test_ignored_events_update_local_watermark(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
         event = {"type": "m.progress", "event_id": "evt-progress", "room_id": "room-a"}
@@ -795,6 +898,13 @@ class InterfaceStateTest(unittest.TestCase):
                     "inbox": str(interface.DEFAULT_INBOX_FILE),
                 }
 
+            def daemon_status(self):
+                return {
+                    "running": True,
+                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                    "cursors": {},
+                }
+
         with mock.patch.object(interface, "InterfaceClient", FakeClient):
             thread = threading.Thread(
                 target=interface._listener_loop,
@@ -817,6 +927,63 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(record.frame["type"], "test-notification")
+
+    def test_listener_uses_local_health_between_deep_contract_probes(self):
+        stop = threading.Event()
+        calls = {"local": 0, "deep": 0, "wait": 0}
+
+        class FakeClient:
+            def daemon_local_status(self):
+                calls["local"] += 1
+                return {
+                    "running": True,
+                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                }
+
+            def daemon_status(self):
+                calls["deep"] += 1
+                return {
+                    "running": True,
+                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                    "cursors": {},
+                }
+
+        class FakeWaiter:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def wait(self, _timeout, stop_event):
+                calls["wait"] += 1
+                time.sleep(0.015)
+                if calls["wait"] >= 3:
+                    stop_event.set()
+
+        with (
+            mock.patch.object(interface, "InterfaceClient", FakeClient),
+            mock.patch.object(interface, "PathChangeWaiter", FakeWaiter),
+            mock.patch.object(
+                interface,
+                "_read_new_inbox_records",
+                return_value=[],
+            ),
+            mock.patch.object(interface, "DAEMON_HEALTH_SECONDS", 0.01),
+            mock.patch.object(interface, "DAEMON_DEEP_HEALTH_SECONDS", 60),
+            mock.patch.object(
+                interface,
+                "DAEMON_DEEP_HEALTH_JITTER_SECONDS",
+                0,
+            ),
+        ):
+            interface._listener_loop(stop)
+
+        self.assertGreaterEqual(calls["local"], 3)
+        self.assertEqual(calls["deep"], 1)
 
     def test_reply_segments_keep_order_and_report_missing_files(self):
         interface.upsert_contact("carbon", "carbon-a", room_id="room-a")
@@ -1064,6 +1231,101 @@ class InterfaceStateTest(unittest.TestCase):
 
 
 class InterfaceClientTest(unittest.TestCase):
+    @staticmethod
+    def _serve_rpc_once(root: Path, responder):
+        state = root / ".silicon-interface"
+        state.mkdir(parents=True, exist_ok=True)
+        socket_path = state / "daemon.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(1)
+
+        def run():
+            connection, _ = server.accept()
+            try:
+                request = b""
+                while b"\n" not in request:
+                    chunk = connection.recv(64 * 1024)
+                    if not chunk:
+                        break
+                    request += chunk
+                response = responder(json.loads(request.split(b"\n", 1)[0]))
+                if response is not None:
+                    connection.sendall(
+                        json.dumps(response, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                    )
+            finally:
+                connection.close()
+                server.close()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def test_rpc_is_preferred_over_subprocess(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            def respond(request):
+                return {
+                    "version": 1,
+                    "id": request["id"],
+                    "ok": True,
+                    "result": {"silicon_id": "silicon-one"},
+                }
+
+            thread = self._serve_rpc_once(root, respond)
+            with mock.patch("subprocess.run") as run:
+                payload = interface.InterfaceClient(cwd=root).whoami()
+            thread.join(1)
+
+            self.assertEqual(payload, {"silicon_id": "silicon-one"})
+            run.assert_not_called()
+
+    def test_rpc_does_not_retry_ambiguous_mutation_through_subprocess(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            thread = self._serve_rpc_once(root, lambda _request: None)
+            with mock.patch("subprocess.run") as run:
+                with self.assertRaisesRegex(
+                    interface.InterfaceError,
+                    "closed without a response",
+                ):
+                    interface.InterfaceClient(cwd=root).send("room-1", "hello")
+            thread.join(1)
+            run.assert_not_called()
+
+    def test_rpc_preserves_structured_api_error_for_work_retry(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            def respond(request):
+                return {
+                    "version": 1,
+                    "id": request["id"],
+                    "ok": False,
+                    "error": {
+                        "code": "API_ERROR",
+                        "status": 409,
+                        "message": "revision conflict",
+                        "body": {
+                            "code": "revision_conflict",
+                            "current": {"revision": 7},
+                        },
+                    },
+                }
+
+            thread = self._serve_rpc_once(root, respond)
+            client = interface.InterfaceClient(cwd=root)
+            with self.assertRaises(interface.WorkCallMutationError) as raised:
+                client.work_call_patch("task-1", "call-1", {"revision": 6})
+            thread.join(1)
+
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertEqual(raised.exception.code, "revision_conflict")
+            self.assertEqual(raised.exception.current_revision, 7)
+
     def test_cli_uses_json_flag_and_parses_json(self):
         with tempfile.TemporaryDirectory() as td:
             exe = Path(td) / "si"

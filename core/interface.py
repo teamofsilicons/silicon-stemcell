@@ -11,7 +11,9 @@ import json
 import os
 import queue
 import re
+import secrets
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -38,7 +40,7 @@ DEFAULT_INBOX_FILE = PROJECT_ROOT / ".silicon-interface" / "inbox.jsonl"
 LEGACY_TELEGRAM_CONTACTS_FILE = PROJECT_ROOT / "core" / "telegram" / "contacts.json"
 
 VALID_TRUST_LEVELS = ["very_low", "low", "ok", "high", "very_high", "ultimate"]
-USER_VISIBLE_EVENT_TYPES = {"m.text", "m.image", "m.file", "m.voice", "m.tts"}
+USER_VISIBLE_EVENT_TYPES = {"m.text", "m.image", "m.file", "m.album", "m.voice", "m.tts"}
 IGNORED_EVENT_TYPES = {"m.progress", "m.reaction", "m.session_marker", "m.system"}
 RICH_MEDIA_RE = re.compile(r"\[(file|voice)=((?:[^\[\]]|\[[^\]]*\])*)\]", re.DOTALL)
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
@@ -67,8 +69,11 @@ _maintenance_notice_running = False
 INBOX_POLL_SECONDS = 0.1
 RUNTIME_FILE_POLL_SECONDS = 0.5
 DAEMON_HEALTH_SECONDS = 15
+DAEMON_DEEP_HEALTH_SECONDS = 5 * 60
+DAEMON_DEEP_HEALTH_JITTER_SECONDS = 60
 ROOM_SYNC_FALLBACK_SECONDS = 15 * 60
 INBOX_READ_CHUNK_BYTES = 4 * 1024 * 1024
+RPC_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,14 @@ class InboxRecord:
 
 class InterfaceError(RuntimeError):
     pass
+
+
+class _RPCUnavailable(RuntimeError):
+    """The daemon socket was unavailable before a request could be sent."""
+
+
+class _RPCUnsupported(RuntimeError):
+    """The daemon rejected a command before dispatch, so CLI fallback is safe."""
 
 
 class WorkCallMutationError(InterfaceError):
@@ -386,6 +399,107 @@ class InterfaceClient:
             cmd.append("--json")
         return cmd
 
+    def rpc_socket_path(self) -> Path:
+        configured = str(
+            os.environ.get("SILICON_INTERFACE_RPC_SOCKET") or ""
+        ).strip()
+        if configured:
+            return Path(configured).expanduser()
+        root = Path(
+            os.environ.get("SILICON_INTERFACE_ROOT") or self.cwd
+        ).expanduser().resolve()
+        state_dir = root / ".silicon-interface"
+        discovery = state_dir / "daemon-rpc.json"
+        try:
+            value = json.loads(discovery.read_text(encoding="utf-8"))
+            socket_value = str(value.get("socket") or "")
+            if value.get("version") == 1 and socket_value:
+                candidate = Path(socket_value).expanduser()
+                if candidate.is_absolute():
+                    return candidate
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return state_dir / "daemon.sock"
+
+    def _run_rpc(self, args: list[str], *, timeout: int, check: bool) -> Any:
+        request_id = secrets.token_hex(16)
+        request = json.dumps(
+            {
+                "version": 1,
+                "id": request_id,
+                "command": str(args[0]),
+                "args": [str(value) for value in args[1:]],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(max(0.1, float(timeout)))
+        sent = False
+        try:
+            try:
+                connection.connect(str(self.rpc_socket_path()))
+            except (FileNotFoundError, ConnectionRefusedError, NotADirectoryError) as exc:
+                raise _RPCUnavailable(str(exc)) from exc
+            # Once sendall begins, a retry through a subprocess could duplicate
+            # a mutation whose response was lost. Ambiguous failures therefore
+            # fail closed instead of silently changing transports.
+            sent = True
+            connection.sendall(request)
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = connection.recv(min(64 * 1024, RPC_MAX_RESPONSE_BYTES + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > RPC_MAX_RESPONSE_BYTES:
+                    raise InterfaceError("Interface daemon RPC response exceeded its safe limit")
+                if b"\n" in chunk:
+                    break
+            raw = b"".join(chunks).split(b"\n", 1)[0]
+            if not raw:
+                raise InterfaceError("Interface daemon RPC closed without a response")
+            try:
+                response = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise InterfaceError("Interface daemon RPC returned invalid JSON") from exc
+            if (
+                not isinstance(response, dict)
+                or response.get("version") != 1
+                or response.get("id") != request_id
+            ):
+                raise InterfaceError("Interface daemon RPC returned a mismatched response")
+            if response.get("ok") is True:
+                return response.get("result")
+            error = response.get("error") if isinstance(response.get("error"), dict) else {}
+            code = str(error.get("code") or "RPC_ERROR")
+            if code == "UNSUPPORTED_COMMAND":
+                raise _RPCUnsupported(str(error.get("message") or code))
+            if not check:
+                return {}
+            status = int(error.get("status") or 0)
+            detail = str(error.get("message") or code)
+            if status:
+                detail = f"api {status}: {detail}"
+            body = error.get("body")
+            if body is not None:
+                detail += "\n" + json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+            raise InterfaceError(detail)
+        except _RPCUnsupported:
+            raise
+        except _RPCUnavailable:
+            raise
+        except InterfaceError:
+            raise
+        except (OSError, TimeoutError) as exc:
+            if not sent:
+                raise _RPCUnavailable(str(exc)) from exc
+            raise InterfaceError(f"Interface daemon RPC outcome is unknown: {exc}") from exc
+        finally:
+            connection.close()
+
     def run(
         self,
         args: list[str],
@@ -395,7 +509,19 @@ class InterfaceClient:
         timeout: int = 60,
         check: bool = True,
     ) -> Any:
-        cmd = self.base_cmd(json_mode=json_mode) + [str(arg) for arg in args if arg is not None]
+        normalized_args = [str(arg) for arg in args if arg is not None]
+        if json_mode and input_text is None and normalized_args:
+            try:
+                return self._run_rpc(
+                    normalized_args,
+                    timeout=timeout,
+                    check=check,
+                )
+            except (_RPCUnavailable, _RPCUnsupported):
+                # Older daemons and intentionally unsupported interactive
+                # commands retain the proven subprocess compatibility path.
+                pass
+        cmd = self.base_cmd(json_mode=json_mode) + normalized_args
         proc = subprocess.run(
             cmd,
             input=input_text,
@@ -1368,6 +1494,40 @@ def _event_media_id(event: dict[str, Any]) -> str:
     return ""
 
 
+def _event_media_references(event: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return all attachment IDs and filenames in display order."""
+    content = _event_content(event)
+    if _event_type(event) != "m.album":
+        media_id = _event_media_id(event)
+        return [(media_id, _event_filename(event, media_id))] if media_id else []
+
+    references: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    collections = (
+        content.get("items"),
+        event.get("media_items"),
+        content.get("media_items"),
+        event.get("items"),
+    )
+    for collection in collections:
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            media_id = _first_text(item.get("media_id"), item.get("mediaId"), item.get("id"))
+            if not media_id or media_id in seen:
+                continue
+            filename = _first_text(item.get("filename"), item.get("file_name"), item.get("name"))
+            references.append((media_id, Path(filename).name if filename else media_id))
+            seen.add(media_id)
+
+    if references:
+        return references
+    media_id = _event_media_id(event)
+    return [(media_id, _event_filename(event, media_id))] if media_id else []
+
+
 def _event_filename(event: dict[str, Any], media_id: str) -> str:
     content = _event_content(event)
     for obj in (event, content, event.get("file"), event.get("attachment"), content.get("file"), content.get("attachment")):
@@ -1805,21 +1965,27 @@ def process_incoming_event(
         ingest_span = None
 
     local_paths: list[str] = []
-    media_id = _event_media_id(event)
+    media_references = _event_media_references(event)
+    media_id = media_references[0][0] if media_references else ""
     media_info: dict[str, Any] = {}
     local_path = ""
-    if media_id:
+    for index, (item_media_id, filename) in enumerate(media_references):
         try:
-            local_path, media_info = _download_media_with_info(
-                media_id,
-                event_id=event_id,
+            item_event_id = event_id
+            if len(media_references) > 1:
+                item_event_id = f"{event_id}_{index + 1}" if event_id else str(index + 1)
+            local_path, item_media_info = _download_media_with_info(
+                item_media_id,
+                event_id=item_event_id,
                 client=client,
-                filename=_event_filename(event, media_id),
+                filename=filename,
             )
+            if index == 0:
+                media_info = item_media_info
             if local_path:
                 local_paths.append(local_path)
         except Exception as exc:
-            local_paths.append(f"download failed for media_id {media_id}: {exc}")
+            local_paths.append(f"download failed for media_id {item_media_id}: {exc}")
 
     transcript = ""
     if event_type in {"m.voice", "m.tts"}:
@@ -2040,13 +2206,29 @@ def _listener_loop(stop_event: threading.Event) -> None:
             if not status.get("running"):
                 raise InterfaceError("Silicon Interface durable inbox daemon did not start.")
 
+            # One full contract probe confirms that the process behind the PID
+            # is actually the expected daemon. Subsequent frequent checks stay
+            # process-local; the deep probe uses the daemon RPC and runs only as
+            # a jittered safety check.
+            status = client.daemon_status()
+            if not status.get("running"):
+                raise InterfaceError("Silicon Interface daemon failed its contract probe.")
             inbox_value = str(status.get("inbox") or "").strip()
             inbox_path = Path(inbox_value).expanduser() if inbox_value else DEFAULT_INBOX_FILE
             if not inbox_path.is_absolute():
                 inbox_path = PROJECT_ROOT / inbox_path
 
             backoff = 1.0
-            next_health_check = _now() + DAEMON_HEALTH_SECONDS
+            next_local_health = _now() + DAEMON_HEALTH_SECONDS
+            jitter_digest = hashlib.sha256(
+                f"{PROJECT_ROOT}:interface-deep-health".encode("utf-8")
+            ).digest()
+            deep_jitter = int.from_bytes(jitter_digest[:2], "big") % (
+                DAEMON_DEEP_HEALTH_JITTER_SECONDS + 1
+            )
+            next_deep_health = (
+                _now() + DAEMON_DEEP_HEALTH_SECONDS + deep_jitter
+            )
             with PathChangeWaiter(
                 inbox_path,
                 fallback_poll_seconds=INBOX_POLL_SECONDS,
@@ -2054,13 +2236,23 @@ def _listener_loop(stop_event: threading.Event) -> None:
                 while not stop_event.is_set():
                     _queue_inbox_records(_read_new_inbox_records(inbox_path))
                     now = _now()
-                    if now >= next_health_check:
+                    if now >= next_local_health:
+                        status = client.daemon_local_status()
+                        if not status.get("running"):
+                            break
+                        next_local_health = now + DAEMON_HEALTH_SECONDS
+                    if now >= next_deep_health:
                         status = client.daemon_status()
                         if not status.get("running"):
                             break
-                        next_health_check = now + DAEMON_HEALTH_SECONDS
+                        next_deep_health = (
+                            now + DAEMON_DEEP_HEALTH_SECONDS + deep_jitter
+                        )
                     inbox_changes.wait(
-                        max(0.0, next_health_check - _now()),
+                        max(
+                            0.0,
+                            min(next_local_health, next_deep_health) - _now(),
+                        ),
                         stop_event,
                     )
         except Exception as exc:

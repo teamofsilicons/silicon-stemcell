@@ -1,4 +1,5 @@
 import atexit
+import hashlib
 import time
 import sys
 import os
@@ -1423,10 +1424,10 @@ def handle_commands(context_by_carbon):
 def run_event_loop_tick(handler_names=None):
     """Run selected event handlers. Returns {carbon_id: context_string}."""
     context_by_carbon = {}
-    selected = set(handler_names or ())
+    selected = None if handler_names is None else set(handler_names)
 
     for handler in EVENT_LOOP:
-        if selected and handler["name"] not in selected:
+        if selected is not None and handler["name"] not in selected:
             continue
         try:
             result = handler["execute"]()
@@ -1458,6 +1459,68 @@ def run_event_loop_tick(handler_names=None):
         merged[carbon_id] = "\n\n".join(parts)
 
     return merged
+
+
+class EventLoopSchedule:
+    """Independent, deterministic recovery clocks for event-loop handlers."""
+
+    def __init__(self, handlers, *, now=None, identity=""):
+        self.handlers = {handler["name"]: handler for handler in handlers}
+        self.identity = str(identity or PROJECT_ROOT)
+        self.attempts = {name: 0 for name in self.handlers}
+        current = time.monotonic() if now is None else float(now)
+        self.next_due = {}
+        for name, handler in self.handlers.items():
+            if handler.get("run_on_startup"):
+                self.next_due[name] = current
+            else:
+                self.next_due[name] = current + self._delay(name, handler)
+
+    def _delay(self, name, handler):
+        interval = max(0.1, float(handler.get("interval_seconds") or LOOP_TICK))
+        jitter = max(0.0, float(handler.get("jitter_seconds") or 0.0))
+        attempt = self.attempts[name]
+        digest = hashlib.sha256(
+            f"{self.identity}:{name}:{attempt}".encode("utf-8")
+        ).digest()
+        fraction = int.from_bytes(digest[:8], "big") / float(2**64 - 1)
+        return interval + (jitter * fraction)
+
+    def due(self, now, *, activity=False, eligible=None):
+        allowed = set(self.handlers) if eligible is None else set(eligible)
+        names = {
+            name
+            for name in allowed
+            if name in self.next_due and now >= self.next_due[name]
+        }
+        if activity:
+            names.update(
+                name
+                for name in allowed
+                if self.handlers.get(name, {}).get("run_on_activity")
+            )
+        return names
+
+    def record_attempts(self, names, now):
+        for name in names:
+            deadline = self.next_due.get(name)
+            # An event-triggered attempt must not postpone the independent
+            # recovery clock unless that clock was itself due.
+            if deadline is None or now < deadline:
+                continue
+            self.attempts[name] += 1
+            self.next_due[name] = now + self._delay(name, self.handlers[name])
+
+    def seconds_until_due(self, now, *, eligible=None):
+        allowed = set(self.handlers) if eligible is None else set(eligible)
+        deadlines = [
+            deadline
+            for name, deadline in self.next_due.items()
+            if name in allowed
+        ]
+        if not deadlines:
+            return float(LOOP_TICK)
+        return max(0.0, min(deadlines) - now)
 
 
 def _make_mid_stream_handler(
@@ -2306,7 +2369,10 @@ def _merge_due_internal_roots(
 def main():
     _install_diagnostic_shutdown_hooks()
     log("[Silicon] Starting event loop...")
-    log(f"[Silicon] Periodic tick interval: {LOOP_TICK}s; Interface wakeups are immediate")
+    log(
+        "[Silicon] Event-driven scheduler active; independent recovery "
+        f"checks are capped at {LOOP_TICK}s for interactive sources"
+    )
 
     _bootstrap_team_context()
     _bootstrap_trust_policy()
@@ -2362,15 +2428,25 @@ def main():
                     dispatcher.submit({cid: restart_msg})
                     break
 
-    next_periodic = 0.0
-    immediate_handlers = {
-        "check_interface",
-        "check_manager_messages",
-        "check_crons",
-        "check_workers",
-    }
+    schedule = EventLoopSchedule(EVENT_LOOP, identity=PROJECT_ROOT)
+    activity_ready = True
+    next_contact_integrity = 0.0
+    contact_jitter = int.from_bytes(
+        hashlib.sha256(f"{PROJECT_ROOT}:contacts".encode("utf-8")).digest()[:2],
+        "big",
+    ) % 61
+    failure_count = 0
+    failure_not_before = 0.0
     try:
         while True:
+            now = time.monotonic()
+            if now < failure_not_before:
+                # A global scheduler failure should never turn into a hot
+                # retry loop, even if a burst of pending wakeups is queued.
+                time.sleep(failure_not_before - now)
+                activity_ready = True
+            maintenance_active = False
+            eligible_handlers = set(schedule.handlers)
             try:
                 maintenance_status = _maintenance_runtime_tick(
                     dispatcher,
@@ -2380,24 +2456,29 @@ def main():
                     maintenance_status.get("phase") != "available"
                 )
                 now = time.monotonic()
-                periodic_due = now >= next_periodic
-                if periodic_due and not maintenance_active:
+                if not maintenance_active and now >= next_contact_integrity:
                     validate_contacts_integrity()
+                    next_contact_integrity = now + 300.0 + contact_jitter
 
                 if maintenance_active:
-                    selected_handlers = {
+                    eligible_handlers = {
                         "check_interface",
                         "check_manager_messages",
                         "check_workers",
                     }
                 else:
-                    selected_handlers = (
-                        None if periodic_due else immediate_handlers
-                    )
+                    eligible_handlers = set(schedule.handlers)
+                selected_handlers = schedule.due(
+                    now,
+                    activity=activity_ready,
+                    eligible=eligible_handlers,
+                )
+                activity_ready = False
                 context_by_carbon = _merge_due_internal_roots(
                     run_event_loop_tick(selected_handlers),
                     maintenance_active=maintenance_active,
                 )
+                schedule.record_attempts(selected_handlers, now)
                 call_deadline = next_inactive_call_deadline()
                 if (
                     call_deadline is not None
@@ -2410,21 +2491,32 @@ def main():
                             "[Work updates] inactive call completion "
                             f"deferred: {exc}"
                         )
-                if periodic_due:
-                    next_periodic = time.monotonic() + LOOP_TICK
-
                 if context_by_carbon:
                     for cid, ctx in context_by_carbon.items():
                         log(f"[Silicon] Context for {cid}:\n{ctx[:200]}...")
                     dispatcher.submit(context_by_carbon)
                 _maintenance_runtime_tick(dispatcher, attest=True)
+                failure_count = 0
+                failure_not_before = 0.0
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
                 log(f"[Silicon] Error: {exc}")
-                if next_periodic <= time.monotonic():
-                    next_periodic = time.monotonic() + min(float(LOOP_TICK), 1.0)
-            timeout = max(0.0, next_periodic - time.monotonic())
+                failure_count += 1
+                failure_not_before = time.monotonic() + min(
+                    30.0,
+                    float(2 ** min(failure_count - 1, 5)),
+                )
+            now = time.monotonic()
+            timeout = schedule.seconds_until_due(
+                now,
+                eligible=eligible_handlers,
+            )
+            if not maintenance_active:
+                timeout = min(
+                    timeout,
+                    max(0.0, next_contact_integrity - now),
+                )
             call_deadline = next_inactive_call_deadline()
             if call_deadline is not None:
                 timeout = min(
@@ -2435,7 +2527,7 @@ def main():
             # The minute cap is recovery-only; platforms without a healthy
             # native watcher retain the original half-second polling safety.
             fallback = 60.0 if runtime_file_notifications_active() else 0.5
-            wait_for_runtime_activity(min(timeout, fallback))
+            activity_ready = wait_for_runtime_activity(min(timeout, fallback))
     except KeyboardInterrupt:
         log("\n[Silicon] Shutting down.")
         raise SystemExit(0)
