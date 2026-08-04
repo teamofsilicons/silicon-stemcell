@@ -26,6 +26,7 @@ POLICY_SCHEMA = 1
 POLICY_FILE = Path(".silicon") / "data-policy.json"
 LEGACY_POLICY_FILE = ".backupsilicon"
 SNAPSHOT_STORE = Path(".silicon") / "snapshots"
+RUNTIME_EPHEMERAL_SOCKET = PurePosixPath(".silicon-interface/daemon.sock")
 
 
 class DataPolicyError(ValueError):
@@ -211,6 +212,26 @@ def _ensure_entry_type(path: Path) -> os.stat_result:
     return metadata
 
 
+def _is_runtime_ephemeral_socket(path: Path, root: Path) -> bool:
+    """Return whether *path* is the known non-durable interface socket.
+
+    Only the socket at the canonical runtime-relative location is ignored.
+    Regular files at that location and special files anywhere else retain the
+    policy's strict rejection behavior.
+    """
+
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    if PurePosixPath(relative.as_posix()) != RUNTIME_EPHEMERAL_SOCKET:
+        return False
+    try:
+        return stat.S_ISSOCK(path.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
 def _sorted_children(directory: Path) -> list[Path]:
     return sorted(
         (
@@ -222,17 +243,25 @@ def _sorted_children(directory: Path) -> list[Path]:
     )
 
 
-def _safe_tree(path: Path) -> Iterator[Path]:
+def _safe_tree(path: Path, *, root: Path) -> Iterator[Path]:
     """Yield a directory tree without ever following links."""
 
+    if _is_runtime_ephemeral_socket(path, root):
+        return
     metadata = _ensure_entry_type(path)
     yield path
     if stat.S_ISDIR(metadata.st_mode):
         for child in _sorted_children(path):
-            yield from _safe_tree(child)
+            yield from _safe_tree(child, root=root)
 
 
-def _expand_parts(current: Path, parts: Sequence[str], index: int) -> Iterator[Path]:
+def _expand_parts(
+    current: Path,
+    parts: Sequence[str],
+    index: int,
+    *,
+    root: Path,
+) -> Iterator[Path]:
     if index == len(parts):
         if current.exists() or current.is_symlink():
             yield current
@@ -242,19 +271,21 @@ def _expand_parts(current: Path, parts: Sequence[str], index: int) -> Iterator[P
     if segment == "**":
         if index == len(parts) - 1:
             if current.exists() or current.is_symlink():
-                yield from _safe_tree(current)
+                yield from _safe_tree(current, root=root)
             return
         # ``**`` may consume no component.
-        yield from _expand_parts(current, parts, index + 1)
+        yield from _expand_parts(current, parts, index + 1, root=root)
         if not current.exists():
             return
         metadata = _ensure_entry_type(current)
         if not stat.S_ISDIR(metadata.st_mode):
             return
         for child in _sorted_children(current):
+            if _is_runtime_ephemeral_socket(child, root):
+                continue
             child_metadata = _ensure_entry_type(child)
             if stat.S_ISDIR(child_metadata.st_mode):
-                yield from _expand_parts(child, parts, index)
+                yield from _expand_parts(child, parts, index, root=root)
         return
 
     if not current.exists():
@@ -275,11 +306,13 @@ def _expand_parts(current: Path, parts: Sequence[str], index: int) -> Iterator[P
     for child in candidates:
         if not (child.exists() or child.is_symlink()):
             continue
+        if _is_runtime_ephemeral_socket(child, root):
+            continue
         child_metadata = _ensure_entry_type(child)
         if index == len(parts) - 1:
             yield child
         elif stat.S_ISDIR(child_metadata.st_mode):
-            yield from _expand_parts(child, parts, index + 1)
+            yield from _expand_parts(child, parts, index + 1, root=root)
 
 
 def expand_pattern(root: Path, pattern: str) -> tuple[Path, ...]:
@@ -288,7 +321,12 @@ def expand_pattern(root: Path, pattern: str) -> tuple[Path, ...]:
     root = Path(root).resolve(strict=True)
     canonical = validate_relative_pattern(pattern)
     matches: dict[str, Path] = {}
-    for candidate in _expand_parts(root, PurePosixPath(canonical).parts, 0):
+    for candidate in _expand_parts(
+        root,
+        PurePosixPath(canonical).parts,
+        0,
+        root=root,
+    ):
         # lstat validation above rejects symlinks before resolve can follow one.
         _ensure_entry_type(candidate)
         try:
@@ -311,7 +349,7 @@ def expand_pattern_files(root: Path, pattern: str) -> tuple[Path, ...]:
     root = Path(root).resolve(strict=True)
     matches: dict[str, Path] = {}
     for candidate in expand_pattern(root, pattern):
-        for item in _safe_tree(candidate):
+        for item in _safe_tree(candidate, root=root):
             metadata = _ensure_entry_type(item)
             if not stat.S_ISREG(metadata.st_mode):
                 continue

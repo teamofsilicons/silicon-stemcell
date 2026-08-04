@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import socket
 import stat
 import tarfile
 import tempfile
@@ -173,6 +174,68 @@ class DataPolicyTest(unittest.TestCase):
             )
             with self.assertRaises(data_policy.UnsafePathError):
                 policy.resolve(root)
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix sockets unavailable")
+    def test_runtime_interface_socket_is_excluded_but_state_is_protected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / ".silicon-interface"
+            state.mkdir()
+            durable = state / "delivery-state.json"
+            durable.write_text('{"cursor": 7}\n', encoding="utf-8")
+            daemon_socket = state / "daemon.sock"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(daemon_socket))
+            finally:
+                listener.close()
+
+            policy = data_policy.load_data_policy(root, legacy_patterns=[])
+            resolved = {item.relative_path for item in policy.resolve(root)}
+
+            self.assertIn(".silicon-interface/delivery-state.json", resolved)
+            self.assertNotIn(".silicon-interface/daemon.sock", resolved)
+            snapshot = backup.create_local_snapshot(
+                root,
+                release_id="release-with-interface-socket",
+                policy=policy,
+            )
+            paths = {entry["path"] for entry in snapshot.manifest["files"]}
+            self.assertIn(".silicon-interface/delivery-state.json", paths)
+            self.assertNotIn(".silicon-interface/daemon.sock", paths)
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix sockets unavailable")
+    def test_unrecognized_runtime_socket_is_still_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            other_socket = runtime / "other.sock"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(other_socket))
+            finally:
+                listener.close()
+
+            policy = data_policy.load_data_policy(
+                root,
+                legacy_patterns=["runtime/**"],
+            )
+            with self.assertRaises(data_policy.UnsafePathError):
+                policy.resolve(root)
+
+    def test_regular_file_named_like_runtime_socket_remains_protected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / ".silicon-interface"
+            state.mkdir()
+            daemon_file = state / "daemon.sock"
+            daemon_file.write_text("durable", encoding="utf-8")
+
+            policy = data_policy.load_data_policy(root, legacy_patterns=[])
+            resolved = {item.relative_path for item in policy.resolve(root)}
+
+            self.assertIn(".silicon-interface/daemon.sock", resolved)
 
     def test_broad_addition_cannot_capture_plaintext_credentials(self):
         with tempfile.TemporaryDirectory() as td:
