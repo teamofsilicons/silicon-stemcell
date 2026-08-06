@@ -1,3 +1,11 @@
+"""Progress frames shown to a contact while work is in flight.
+
+Builds the small, schema-versioned events the interface renders (reading a
+file, executing, thinking, done) and -- just as importantly -- redacts them.
+Provider output can contain private manager tool calls, advertising memory, or
+raw commands, none of which may reach a contact, so every event goes through
+``sanitize_progress_event`` before it is sent.
+"""
 import json
 import posixpath
 import re
@@ -83,9 +91,6 @@ def contains_private_manager_tool(value):
                 tool == "advertising_memory/update"
                 or tool == "work_update"
                 or tool in {"trust/list", "trust/get", "trust/set"}
-                or tool == "extend"
-                or tool.startswith("extend/")
-                or tool.startswith("integration/")
             ):
                 return True
     # Fail closed for incomplete/plain private invocations that still use the
@@ -101,18 +106,6 @@ def contains_private_manager_tool(value):
         or bool(
             re.search(
                 r"""["']tool["']\s*:\s*["']trust/(?:list|get|set)["']""",
-                normalized_text,
-            )
-        )
-        or bool(
-            re.search(
-                r"""["']tool["']\s*:\s*["']extend(?:/|["'])""",
-                normalized_text,
-            )
-        )
-        or bool(
-            re.search(
-                r"""["']tool["']\s*:\s*["']integration/""",
                 normalized_text,
             )
         )
@@ -284,14 +277,6 @@ def progress_event(provider, kind, **fields):
         if value is not None and value != "":
             event[key] = value
     return sanitize_progress_event(event)
-
-
-def write_progress_line(path, event):
-    if not path or not event:
-        return
-    event = sanitize_progress_event(event)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
 def stringify_command(command):

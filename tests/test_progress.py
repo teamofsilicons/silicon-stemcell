@@ -57,16 +57,12 @@ class ProgressDisplayTest(unittest.TestCase):
         self.assertEqual(rendered, "[private manager tool invocation omitted]")
         self.assertNotIn(content, rendered)
 
-    def test_escaped_private_tool_names_and_extend_payloads_are_redacted(self):
+    def test_escaped_private_tool_names_are_redacted(self):
         content = "do not persist this payload"
         values = [
             (
                 '{"tools":[{"content":"do not persist this payload",'
                 '"tool":"advertising_memory\\u002fupdate"}]}'
-            ),
-            (
-                '{"tools":[{"tool":"extend","arguments":'
-                '{"message":"do not persist this payload"}}]}'
             ),
         ]
 

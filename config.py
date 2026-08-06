@@ -1,3 +1,10 @@
+"""Event-loop schedule and the periodic team-context tick.
+
+``EVENT_LOOP`` lists the handlers ``main`` runs each ``LOOP_TICK`` seconds.
+This module also owns the team-context refresh: it keeps at most one tick in
+flight, remembers the notice to surface once a tick lands, and exposes
+``acknowledge_team_context_result`` so a manager tool can settle that notice.
+"""
 import threading
 import time
 

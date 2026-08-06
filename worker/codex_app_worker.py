@@ -1,3 +1,9 @@
+"""Subprocess entrypoint for a Codex app-server backed worker.
+
+Runs one task to completion against ``codex app-server`` and prints the result
+for ``worker.handler`` to collect.  Transport lives in
+``core.codex_app_server``; this module only adds the worker presentation.
+"""
 import argparse
 import json
 import os

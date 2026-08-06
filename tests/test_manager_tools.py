@@ -1096,8 +1096,6 @@ class ManagerToolExecutionTest(unittest.TestCase):
             "trust/list",
             "trust/get",
             "trust/set",
-            "extend",
-            "extend/request_setup",
         ):
             with self.subTest(tool=tool_name):
                 self.assertEqual(

@@ -1929,15 +1929,6 @@ class LongTaskLifecycle:
             self._persist(active=True)
         return self._settle_task(close_terminal=False)
 
-    def record_reply(self, *, work_continues: bool, successful: bool) -> None:
-        # Retained for older call sites. Final delivery is owned by
-        # deliver_final_reply and therefore cannot be marked here.
-        if work_continues:
-            return
-        with self._lock:
-            if successful and not self.pending_reply:
-                self._final_reply_sent = True
-
     def defer(
         self,
         note: str = "",

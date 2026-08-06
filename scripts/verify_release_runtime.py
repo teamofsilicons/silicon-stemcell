@@ -19,22 +19,6 @@ IMAGE_RE = re.compile(
 RESULT_MARKER = "SILICON_RELEASE_GATE="
 
 
-def _require_dependency_alignment(root: Path, declared: dict) -> None:
-    expected = str(declared.get("silicon_extend") or "")
-    if not expected:
-        raise RuntimeError("runtime contract has no Silicon Extend version")
-    pattern = re.compile(r"(?m)^silicon-extend==([^\s;\\]+)")
-    for filename in ("requirements.txt", "requirements.lock"):
-        path = root / filename
-        versions = set(pattern.findall(path.read_text(encoding="utf-8")))
-        if versions != {expected}:
-            found = ", ".join(sorted(versions)) or "missing"
-            raise RuntimeError(
-                f"{filename} Silicon Extend version does not match the "
-                f"runtime contract: found {found}, require {expected}"
-            )
-
-
 def _run(command: list[str]) -> tuple[subprocess.CompletedProcess[str], float]:
     started = time.monotonic()
     result = subprocess.run(
@@ -90,7 +74,6 @@ def main() -> int:
     declared = runtime_contract.verify_release_contract_metadata(
         info.get("runtime_contract")
     )
-    _require_dependency_alignment(root, declared)
     metadata_seconds = time.monotonic() - metadata_started
 
     pull, pull_seconds = _run(["docker", "pull", image])

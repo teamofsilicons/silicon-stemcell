@@ -1,3 +1,10 @@
+"""Manager provider adapters: Claude Code and the Codex app-server.
+
+Each ``brain`` is reached through a streaming subprocess that emits tool calls
+and progress events as it works.  This module owns process lifecycle, per
+contact session ids, timeout and rate-limit detection, redaction of provider
+output, and parsing the manager's reply into a tools payload.
+"""
 import subprocess
 import os
 import json

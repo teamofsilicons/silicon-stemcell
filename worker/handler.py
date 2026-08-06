@@ -1,3 +1,10 @@
+"""Worker process lifecycle: spawn, message, poll, stop, archive.
+
+Workers are subprocesses (browser, terminal, writer) driven by a provider CLI.
+This module tracks them in ``_active_workers.json``, serialises browser starts
+through a queue so profiles are not shared concurrently, parses provider
+output into results, and archives finished runs for later reading.
+"""
 import ast
 import json
 import os
@@ -50,9 +57,6 @@ WORKER_PROVIDER_FALLBACKS = {
     "writer": ["claude"],
 }
 VALID_WORKER_PROVIDERS = {"claude", "codex", "chatgpt"}
-EXTEND_ACTING_CARBON_ENV = "SILICON_EXTEND_ACTING_CARBON_ID"
-EXTEND_ROOM_ENV = "SILICON_EXTEND_ROOM_ID"
-EXTEND_CONTACT_ENV = "SILICON_EXTEND_CONTACT_ID"
 
 def _legacy_browser_profile():
     """Read the one supported legacy env.py value without executing the file."""
@@ -86,54 +90,15 @@ SILICON_BROWSER_PROFILE = _BROWSER_PROFILE
 
 
 def _worker_process_env(contact_id):
-    """Return a worker environment bound to its originating contact.
+    """Return the environment for a worker process.
 
-    The contact is inherited by the worker process instead of appearing in its
-    command line.  Always overwrite (or remove) a parent value so a stale
-    manager environment cannot leak one Carbon's context into another worker.
+    No contact-scoped variable is injected. If one is ever reintroduced, it
+    must be popped from the inherited environment before being set, so a
+    parent manager's value cannot leak one Carbon's context into another
+    Carbon's worker.
     """
 
-    env = os.environ.copy()
-    for key in (
-        EXTEND_ACTING_CARBON_ENV,
-        EXTEND_ROOM_ENV,
-        EXTEND_CONTACT_ENV,
-    ):
-        env.pop(key, None)
-    value = str(contact_id or "").strip()
-    acting_carbon_id = value
-    room_id = ""
-    if value:
-        try:
-            from core.interface import get_contact
-
-            contact = get_contact(value) or {}
-        except Exception:
-            contact = {}
-        if contact.get("contact_type") == "silicon":
-            acting_carbon_id = ""
-        else:
-            acting_carbon_id = str(
-                contact.get("carbon_id") or value
-            ).strip()
-        room_id = str(contact.get("room_id") or "").strip()
-        if not room_id:
-            try:
-                from core.diagnostics import Diagnostics
-
-                trace = Diagnostics.get_active_run(value)
-                room_id = str(
-                    getattr(trace, "room_id", "") or ""
-                ).strip()
-            except Exception:
-                room_id = ""
-    if acting_carbon_id:
-        env[EXTEND_ACTING_CARBON_ENV] = acting_carbon_id
-        # One-release compatibility for the old worker bridge.
-        env[EXTEND_CONTACT_ENV] = acting_carbon_id
-    if room_id:
-        env[EXTEND_ROOM_ENV] = room_id
-    return env
+    return os.environ.copy()
 
 
 def _maintenance_reference():
@@ -263,10 +228,6 @@ def _save_browser_queue(queue):
 def _load_archive_meta():
     value = read_json(ARCHIVE_META_FILE, {})
     return value if isinstance(value, dict) else {}
-
-
-def _save_archive_meta(meta):
-    write_json(ARCHIVE_META_FILE, meta)
 
 
 def _migrate_worker_record(worker_id, record):

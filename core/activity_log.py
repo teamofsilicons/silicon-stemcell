@@ -75,19 +75,6 @@ def tool_call(carbon_id: str, tool: str, args=None, result=None) -> None:
         # unknown aliases could otherwise duplicate the advertised content.
         extra = {}
         result = "[Advertising memory result omitted]"
-    elif (
-        tool == "extend"
-        or tool.startswith("extend/")
-        or tool.startswith("integration/")
-    ):
-        # Extend arguments may contain messages, records, or provider data.
-        # Retain only routing metadata through a strict allowlist.
-        extra = {}
-        if isinstance(args, dict):
-            for key in ("type", "name", "key"):
-                if key in args:
-                    extra[key] = args[key]
-        result = "[Extend result omitted]"
     elif tool == "work_update":
         # Work cards can contain files, browser sessions, blocker answers, and
         # full manager/Silicon transcripts. Glass already stores the visible

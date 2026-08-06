@@ -133,33 +133,6 @@ Main tools:
 
 See `prompts/MANAGER_TOOLS.md`.
 
-## Silicon Extend
-
-Silicon Extend is an independently installed package, separate from the private
-manager tools above. When this Silicon is connected, the package discovers its
-team from Glass and uses that shared team directory as its source of truth. At
-prompt construction the Stemcell fetches only its team's enabled directory;
-those entries are exposed through the single dynamic form:
-
-```json
-{"tool":"extend","name":"gmail.messages.send","arguments":{}}
-```
-
-Setup can also be requested without attempting an invocation:
-
-```json
-{"tool":"extend","type":"request_setup","name":"gmail.messages.send","note":"Needed for the current task"}
-```
-
-The package uses the Silicon identity in `.glass.json`; connection secrets stay
-server-side and are never copied into the Stemcell. If a connection is
-missing—or setup is requested proactively—the package creates a durable request
-for the assigned Carbon to complete inside Interface. Glass remains the
-directory and proactive team-management surface; Interface has no Extend tab
-or general management surface. Catalog lookup is best-effort and briefly
-cached, so an unavailable directory does not prevent the Silicon from using its
-private tools.
-
 ## Crons
 
 User crons are Glass records read with Interface `crons list --mine --json`.
@@ -290,7 +263,6 @@ updated first because messaging, backup, and browser traffic use it directly.
 
 ```
 core/interface.py             # Interface CLI adapter, contacts, events, replies
-core/extend.py                # team Extend discovery, execution, setup messages
 core/team_context.py          # Glass TEAM.md and advertising-memory synchronization
 core/trust.py                 # Glass-first trust policy sync and local mutations
 core/interface_state/         # runtime state, ignored

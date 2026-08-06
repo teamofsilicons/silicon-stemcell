@@ -71,18 +71,6 @@ def validated_data_root(
 DATA_ROOT = validated_data_root()
 
 
-def code_path(*parts: str | os.PathLike[str]) -> Path:
-    """Resolve a tracked source/template path under the active release."""
-
-    return CODE_ROOT.joinpath(*parts)
-
-
-def data_path(*parts: str | os.PathLike[str]) -> Path:
-    """Resolve a mutable path under the durable Silicon instance."""
-
-    return DATA_ROOT.joinpath(*parts)
-
-
 def resolve_data_relative(value: str | os.PathLike[str]) -> Path:
     """Resolve a configured data path, making relative values instance-local."""
 

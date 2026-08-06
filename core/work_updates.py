@@ -2294,42 +2294,6 @@ def complete_inactive_calls(
     return completed_count
 
 
-def _discard_call_reference(call_id: str, prefix: str) -> None:
-    """Drop one failed remote card while preserving its valid peer card."""
-    prefix = "inbound" if prefix == "inbound" else "outbound"
-    with _state_guard():
-        state = _read_state()
-        changed = False
-        for contact in state.get("contacts", {}).values():
-            if not isinstance(contact, dict):
-                continue
-            pending = contact.get("pending_calls")
-            if not isinstance(pending, dict):
-                continue
-            for peer_id, correlation in list(pending.items()):
-                if (
-                    not isinstance(correlation, dict)
-                    or correlation.get(f"{prefix}_call_id") != call_id
-                ):
-                    continue
-                for field in (
-                    "owner_contact_id",
-                    "task_id",
-                    "call_id",
-                    "work_event_id",
-                ):
-                    correlation[f"{prefix}_{field}"] = ""
-                correlation["updated_at"] = time.time()
-                if not (
-                    _has_call_reference(correlation, "outbound")
-                    or _has_call_reference(correlation, "inbound")
-                ):
-                    pending.pop(peer_id, None)
-                changed = True
-        if changed:
-            _write_state(state)
-
-
 def _remember_outbound_call_reference(reference: dict[str, Any]) -> None:
     """Durably retain the local side once primary message delivery is accepted."""
     contact_id = str(reference.get("owner_contact_id") or "")

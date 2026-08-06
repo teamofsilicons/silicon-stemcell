@@ -36,6 +36,7 @@ from core.glass import (
     silicon_api_request,
 )
 from core.runtime_paths import DATA_ROOT
+from core.state_store import atomic_write_bytes
 
 PROJECT_ROOT = DATA_ROOT
 TEAM_CONTEXT_PATH = "prompts/TEAM.md"
@@ -189,35 +190,9 @@ def _assert_local_path(root: Path, path: Path) -> None:
 
 
 def _atomic_write_bytes(root: Path, path: Path, data: bytes) -> None:
+    """Write inside the Silicon root only, then persist atomically."""
     _assert_local_path(root, path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        try:
-            os.fchmod(fd, 0o600)
-        except (AttributeError, OSError):
-            pass
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        if os.name != "nt" and hasattr(os, "O_DIRECTORY"):
-            directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    except Exception:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+    atomic_write_bytes(path, data, dir_mode=None)
 
 
 def _write_team_placeholder(root: Path) -> None:

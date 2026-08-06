@@ -144,12 +144,6 @@ def _utc_iso(ts: float | None = None) -> str:
     return datetime.fromtimestamp(ts or _now(), tz=timezone.utc).isoformat()
 
 
-def _read_json(path: Path, default: Any) -> Any:
-    return read_json(path, default)
-
-
-def _write_json(path: Path, data: Any) -> None:
-    write_json(path, data)
 
 
 def _default_contacts_state() -> dict[str, Any]:
@@ -168,7 +162,7 @@ def _default_contacts_state() -> dict[str, Any]:
 def _migrate_legacy_contacts() -> dict[str, Any] | None:
     if not LEGACY_TELEGRAM_CONTACTS_FILE.exists():
         return None
-    legacy = _read_json(LEGACY_TELEGRAM_CONTACTS_FILE, {})
+    legacy = read_json(LEGACY_TELEGRAM_CONTACTS_FILE, {})
     legacy_contacts = legacy.get("contacts") if isinstance(legacy, dict) else None
     if not isinstance(legacy_contacts, dict):
         return None
@@ -215,7 +209,7 @@ def _load_state() -> dict[str, Any]:
         migrated = _migrate_legacy_contacts()
         if migrated:
             _save_state(migrated)
-    state = _read_json(CONTACTS_FILE, _default_contacts_state())
+    state = read_json(CONTACTS_FILE, _default_contacts_state())
     state.setdefault("version", 1)
     state.setdefault("contacts", {})
     state.setdefault("rooms", {})
@@ -229,7 +223,7 @@ def _load_state() -> dict[str, Any]:
 
 @_state_serialized
 def _save_state(state: dict[str, Any]) -> None:
-    _write_json(CONTACTS_FILE, state)
+    write_json(CONTACTS_FILE, state)
 
 
 def get_contacts() -> dict[str, Any]:
@@ -1722,17 +1716,6 @@ def _download_media_with_info(
     return _download_url(url, MEDIA_DIR / f"{prefix}_{chosen_name}"), dict(info)
 
 
-def download_media(media_id: str, event_id: str = "", client: InterfaceClient | None = None, filename: str = "") -> str:
-    """Download one Interface attachment and return its local path."""
-    path, _ = _download_media_with_info(
-        media_id,
-        event_id=event_id,
-        client=client,
-        filename=filename,
-    )
-    return path
-
-
 def _transcript_for_event(event: dict[str, Any], local_path: str, media_id: str, client: InterfaceClient) -> str:
     content = _event_content(event)
     transcript = _first_text(event.get("transcript"), content.get("transcript"))
@@ -2041,7 +2024,7 @@ def _inbox_file_id(stat_result: os.stat_result) -> str:
 
 
 def _load_inbox_consumer() -> dict[str, Any]:
-    state = _read_json(INBOX_CONSUMER_FILE, {})
+    state = read_json(INBOX_CONSUMER_FILE, {})
     if not isinstance(state, dict) or state.get("version") != 1:
         return {"version": 1, "path": "", "file_id": "", "offset": 0}
     try:
@@ -2057,7 +2040,7 @@ def _load_inbox_consumer() -> dict[str, Any]:
 
 
 def _save_inbox_consumer(path: str, file_id: str, offset: int) -> None:
-    _write_json(
+    write_json(
         INBOX_CONSUMER_FILE,
         {
             "version": 1,
@@ -2388,14 +2371,6 @@ def stop_runtime_file_watch() -> None:
             _runtime_file_thread = None
             _runtime_file_stop = None
             _runtime_file_paths = ()
-
-
-def set_maintenance_listener_fence(phase: str) -> None:
-    """Keep Glass's durable daemon alive while fencing volatile local claims."""
-    if str(phase or "available") == "available":
-        start_listener()
-    else:
-        stop_listener()
 
 
 def maintenance_inbox_quiescent() -> bool:
@@ -3120,11 +3095,6 @@ def _extract_remote_browser_url(posted: Any, fallback: str = "") -> str:
         if isinstance(url, str) and url.strip():
             return url.strip()
     return fallback
-
-
-def _load_remote_browser_state() -> dict:
-    value = read_json(REMOTE_BROWSER_STATE_FILE, {})
-    return value if isinstance(value, dict) else {}
 
 
 def _save_remote_browser_event(session_name: str, event_id: str) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,7 +12,6 @@ from core.interface import InterfaceClient, InterfaceError, ensure_contact_for_t
 from core.runtime_paths import DATA_ROOT
 from core.state_store import file_lock, read_json, update_json, write_json
 
-CRON_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = DATA_ROOT
 CHECKBACK_HISTORY_FILE = PROJECT_ROOT / "core" / "cron" / "history.json"
 CRON_STATE_FILE = PROJECT_ROOT / "core" / "interface_state" / "crons.json"
@@ -26,12 +24,6 @@ CRON_INVALIDATION_FILE = (
 CRON_CACHE_FALLBACK_SECONDS = 5 * 60
 
 
-def _read_json(path: Path, default: Any) -> Any:
-    return read_json(path, default)
-
-
-def _write_json(path: Path, data: Any) -> None:
-    write_json(path, data)
 
 
 def _utc_now() -> datetime:
@@ -57,11 +49,11 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _load_checkback_history() -> dict[str, Any]:
-    return _read_json(CHECKBACK_HISTORY_FILE, {})
+    return read_json(CHECKBACK_HISTORY_FILE, {})
 
 
 def _save_checkback_history(history: dict[str, Any]) -> None:
-    _write_json(CHECKBACK_HISTORY_FILE, history)
+    write_json(CHECKBACK_HISTORY_FILE, history)
 
 
 def _check_checkbacks() -> dict[str, str]:
@@ -112,19 +104,19 @@ def _check_checkbacks() -> dict[str, str]:
 
 
 def _load_cron_state() -> dict[str, Any]:
-    state = _read_json(CRON_STATE_FILE, {"version": 1, "crons": {}})
+    state = read_json(CRON_STATE_FILE, {"version": 1, "crons": {}})
     state.setdefault("version", 1)
     state.setdefault("crons", {})
     return state
 
 
 def _save_cron_state(state: dict[str, Any]) -> None:
-    _write_json(CRON_STATE_FILE, state)
+    write_json(CRON_STATE_FILE, state)
 
 
 def invalidate_cron_cache() -> None:
     """Wake the runtime and force one authoritative cron refresh."""
-    _write_json(
+    write_json(
         CRON_INVALIDATION_FILE,
         {
             "version": 1,
@@ -168,7 +160,7 @@ def _cache_is_invalidated() -> bool:
 def _load_cached_cron_records(
     client: InterfaceClient,
 ) -> list[dict[str, Any]]:
-    cache = _read_json(CRON_CACHE_FILE, {})
+    cache = read_json(CRON_CACHE_FILE, {})
     cached_records = (
         _records_from_payload(cache.get("records"))
         if isinstance(cache, dict)
@@ -192,7 +184,7 @@ def _load_cached_cron_records(
         # temporarily unavailable. Their per-cron watermarks still prevent
         # duplicate execution.
         return cached_records
-    _write_json(
+    write_json(
         CRON_CACHE_FILE,
         {
             "version": 1,
@@ -486,7 +478,7 @@ def execute_cron_tool(tool_spec: dict[str, Any]) -> str:
     if tool == "cron/list":
         payload = client.crons_list()
         records = _records_from_payload(payload)
-        _write_json(
+        write_json(
             CRON_CACHE_FILE,
             {
                 "version": 1,

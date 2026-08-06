@@ -2091,7 +2091,8 @@ class LongTaskLifecycleTest(unittest.TestCase):
 
         set_timer.assert_not_called()
         lifecycle.defer.assert_called_with(
-            "Work paused after the manager retry budget was exhausted"
+            "Work paused after the manager retry budget was exhausted",
+            pause_reason="infrastructure",
         )
 
     def test_public_refresh_reconciles_the_local_task_cache(self):

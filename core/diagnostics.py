@@ -93,12 +93,6 @@ def _wall_ms() -> int:
     return int(time.time() * 1000)
 
 
-def configure(base_dir: str) -> None:
-    """Override the diagnostics output directory at runtime."""
-    global DEFAULT_DIAG_DIR
-    DEFAULT_DIAG_DIR = base_dir
-
-
 # --- token usage container ---------------------------------------------------
 class _Tokens:
     __slots__ = ("input", "output", "cache_read", "cache_creation")

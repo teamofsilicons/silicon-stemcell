@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silicon Stemcell — System Map</title>
+<style>
+:root{
+  --bg:#080b10; --bg2:#0d1219; --panel:#111823; --panel2:#161f2c;
+  --line:#22304200; --border:#1f2b3a; --border2:#2b3a4d;
+  --ink:#dbe6f2; --ink2:#93a6ba; --ink3:#63778c;
+  --glass:#4ade80; --iface:#38bdf8; --core:#a78bfa; --mgr:#f472b6;
+  --wkr:#fbbf24; --tool:#22d3ee; --loop:#fb7185; --ext:#94a3b8;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:
+   radial-gradient(1200px 600px at 20% -10%, #10202e 0%, transparent 60%),
+   radial-gradient(900px 500px at 90% 0%, #1a1226 0%, transparent 55%), var(--bg);
+  color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--tool);text-decoration:none}
+code,.mono{font-family:var(--mono);font-size:.85em}
+
+/* layout */
+.wrap{display:grid;grid-template-columns:230px minmax(0,1fr);gap:0;max-width:1500px;margin:0 auto}
+nav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;padding:26px 14px 40px;
+    border-right:1px solid var(--border);background:rgba(8,11,16,.7);backdrop-filter:blur(8px)}
+nav .brand{font-weight:700;font-size:15px;letter-spacing:-.2px;margin-bottom:2px}
+nav .sub{font-size:11px;color:var(--ink3);font-family:var(--mono);margin-bottom:20px}
+nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--ink2);font-size:13px;border-left:2px solid transparent}
+nav a:hover{background:var(--panel);color:var(--ink);border-left-color:var(--tool)}
+main{padding:34px 40px 120px;min-width:0}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}nav{position:static;height:auto;border-right:none;border-bottom:1px solid var(--border)}main{padding:24px 18px 80px}}
+
+h1{font-size:32px;letter-spacing:-.8px;margin:0 0 6px}
+h2{font-size:21px;letter-spacing:-.4px;margin:52px 0 4px;padding-top:14px;border-top:1px solid var(--border)}
+h2 .num{font-family:var(--mono);font-size:12px;color:var(--tool);margin-right:10px;vertical-align:2px}
+h3{font-size:15px;margin:26px 0 8px;color:var(--ink)}
+p{color:var(--ink2);max-width:80ch;margin:8px 0}
+.lede{font-size:15px;color:var(--ink2);max-width:78ch}
+.hint{font-size:12.5px;color:var(--ink3);font-style:italic}
+
+.tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.4px;text-transform:uppercase;
+     padding:2px 7px;border-radius:4px;border:1px solid var(--border2);color:var(--ink3);margin-right:6px}
+
+/* generic card */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin:14px 0}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+
+/* ---- architecture stack ---- */
+.stack{display:flex;flex-direction:column;gap:0;margin:20px 0}
+.layer{border:1px solid var(--border);background:linear-gradient(180deg,var(--panel),var(--bg2));
+       border-radius:12px;padding:14px 16px}
+.layer-h{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.layer-h .dot{width:9px;height:9px;border-radius:50%;flex:none}
+.layer-h .t{font-weight:650;font-size:13.5px}
+.layer-h .f{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-left:auto;text-align:right}
+.nodes{display:flex;flex-wrap:wrap;gap:8px}
+.node{border:1px solid var(--border2);background:var(--panel2);border-radius:8px;padding:8px 11px;min-width:150px;flex:1 1 180px}
+.node .n{font-size:12.5px;font-weight:600}
+.node .d{font-size:11.5px;color:var(--ink3);margin-top:2px}
+.node .f{font-family:var(--mono);font-size:10.5px;color:var(--ink3);margin-top:4px;opacity:.8}
+.flowdown{display:flex;align-items:center;gap:10px;padding:7px 0 7px 22px;color:var(--ink3);font-size:11.5px;font-family:var(--mono)}
+.flowdown::before{content:"";width:2px;height:26px;background:linear-gradient(180deg,var(--border2),var(--tool));border-radius:2px}
+.flowdown span{opacity:.85}
+
+.L-glass .dot{background:var(--glass)} .L-glass{border-color:#1d4a33}
+.L-iface .dot{background:var(--iface)} .L-iface{border-color:#154458}
+.L-core  .dot{background:var(--core)}  .L-core{border-color:#33265c}
+.L-mgr   .dot{background:var(--mgr)}   .L-mgr{border-color:#4d1f38}
+.L-wkr   .dot{background:var(--wkr)}   .L-wkr{border-color:#4d3a10}
+
+/* ---- tables ---- */
+.tbox{overflow-x:auto;border:1px solid var(--border);border-radius:12px;margin:14px 0;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:620px}
+th{text-align:left;padding:10px 14px;font-size:10.5px;letter-spacing:.6px;text-transform:uppercase;
+   color:var(--ink3);border-bottom:1px solid var(--border2);background:var(--bg2);white-space:nowrap}
+td{padding:9px 14px;border-bottom:1px solid var(--border);color:var(--ink2);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.k{color:var(--ink);font-family:var(--mono);font-size:12px;white-space:nowrap}
+td.c{white-space:nowrap;font-family:var(--mono);font-size:12px;color:var(--tool)}
+
+/* ---- tool list ---- */
+.tools{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(310px,1fr))}
+.tgroup{border:1px solid var(--border);border-radius:11px;background:var(--panel);overflow:hidden}
+.tgroup h4{margin:0;padding:10px 14px;font-size:12px;letter-spacing:.5px;text-transform:uppercase;
+  color:var(--ink);background:var(--bg2);border-bottom:1px solid var(--border)}
+.tgroup ul{list-style:none;margin:0;padding:6px 0}
+.tgroup li{padding:6px 14px;font-size:12.5px;color:var(--ink3);display:flex;gap:9px;align-items:baseline}
+.tgroup li b{font-family:var(--mono);font-size:11.5px;font-weight:500;color:var(--tool);flex:none}
+.tgroup li.w b{color:var(--wkr)}
+.tgroup li.m b{color:var(--mgr)}
+.tgroup li span{min-width:0}
+
+/* ---- loop component ---- */
+.loop{border:1px solid var(--border);border-left:3px solid var(--loop);border-radius:11px;
+      background:var(--panel);padding:14px 16px 12px;margin:12px 0}
+.loop-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.loop-h .id{font-family:var(--mono);font-size:11px;color:var(--loop);border:1px solid #52293a;
+            padding:1px 6px;border-radius:4px}
+.loop-h .name{font-weight:650;font-size:13.5px}
+.loop-h .where{font-family:var(--mono);font-size:11px;color:var(--ink3);margin-left:auto}
+.loop-d{font-size:12.5px;color:var(--ink3);margin:6px 0 4px;max-width:88ch}
+.loop-d b{color:var(--ink2);font-weight:600}
+
+.chain{position:relative;padding:10px 0 30px;overflow-x:auto}
+.chain-row{display:flex;align-items:center;gap:0;flex-wrap:nowrap;min-width:min-content}
+.pill{border:1px solid var(--border2);background:var(--panel2);border-radius:7px;padding:6px 10px;
+      font-size:11.5px;white-space:nowrap;color:var(--ink)}
+.pill.a{border-color:#2a5540;color:#8ee7ac}   /* glass */
+.pill.b{border-color:#1d4a63;color:#7dd3fc}   /* interface */
+.pill.c{border-color:#3a2c66;color:#c4b5fd}   /* core */
+.pill.d{border-color:#5a2544;color:#f9a8d4}   /* manager */
+.pill.e{border-color:#584014;color:#fcd34d}   /* worker */
+.arrow{flex:none;width:34px;height:1px;background:var(--border2);position:relative;margin:0 2px}
+.arrow::after{content:"";position:absolute;right:-1px;top:-3px;border:3.5px solid transparent;border-left-color:var(--border2)}
+.arrow.lbl{width:auto;min-width:44px;background:none;height:auto;display:flex;align-items:center}
+.arrow.lbl::after{display:none}
+.arrow.lbl i{font-style:normal;font-family:var(--mono);font-size:10px;color:var(--ink3);
+  border-bottom:1px solid var(--border2);padding:0 6px 2px;position:relative;white-space:nowrap}
+.arrow.lbl i::after{content:"";position:absolute;right:-1px;bottom:-4px;border:3.5px solid transparent;border-left-color:var(--border2)}
+.ret{position:absolute;left:0;right:0;bottom:0;height:26px;pointer-events:none}
+.ret svg{width:100%;height:26px;overflow:visible}
+.ret .rl{position:absolute;left:50%;transform:translateX(-50%);bottom:-4px;font-family:var(--mono);
+  font-size:10px;color:var(--loop);background:var(--panel);padding:0 8px}
+
+.kv{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.kv span{font-family:var(--mono);font-size:10.5px;color:var(--ink3);border:1px solid var(--border);
+  border-radius:5px;padding:2px 7px}
+.kv span b{color:var(--ink2);font-weight:500}
+
+.note{border-left:3px solid var(--tool);background:rgba(34,211,238,.05);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0}
+.note p{margin:0;font-size:12.5px}
+.warn{border-left-color:var(--wkr);background:rgba(251,191,36,.05)}
+
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink3);margin:10px 0 0}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+
+.tree{font-family:var(--mono);font-size:12px;color:var(--ink2);white-space:pre;overflow-x:auto;
+  background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:16px 18px;margin:14px 0;line-height:1.65}
+.tree b{color:var(--tool);font-weight:500}
+.tree u{color:var(--ink3);text-decoration:none}
+
+footer{margin-top:60px;padding-top:18px;border-top:1px solid var(--border);font-size:12px;color:var(--ink3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="brand">Silicon Stemcell</div>
+  <div class="sub">system map · v2.4.2</div>
+  <a href="#arch">1 · Architecture</a>
+  <a href="#loop">2 · Event loop</a>
+  <a href="#dispatch">3 · Dispatcher &amp; turn</a>
+  <a href="#mtools">4 · Manager tools</a>
+  <a href="#workers">5 · Workers &amp; tools</a>
+  <a href="#loops">6 · Every loop</a>
+  <a href="#trust">7 · Trust &amp; prompt</a>
+  <a href="#files">8 · File map</a>
+</nav>
+
+<main>
+<h1>Silicon Stemcell</h1>
+<p class="lede">An autonomous <b>manager&nbsp;→&nbsp;worker</b> agent runtime. Glass is the cloud authority, Silicon Interface is
+the messaging transport, <code>main.py</code> is a single long-lived Python process holding an event loop, and every real unit of
+work is a separate LLM CLI subprocess. Read from the outside in.</p>
+<div class="legend">
+  <span><i style="background:var(--glass)"></i>Glass (cloud authority)</span>
+  <span><i style="background:var(--iface)"></i>Silicon Interface (transport)</span>
+  <span><i style="background:var(--core)"></i>Stemcell core (this repo)</span>
+  <span><i style="background:var(--mgr)"></i>Manager (persistent LLM session)</span>
+  <span><i style="background:var(--wkr)"></i>Worker (ephemeral LLM subprocess)</span>
+</div>
+
+<!-- ============================ 1 ============================ -->
+<h2 id="arch"><span class="num">01</span>Architecture — outside in</h2>
+<p>Five planes. Everything below the Interface line runs inside one Python process except workers, which are real OS subprocesses.</p>
+
+<div class="stack">
+
+  <div class="layer L-glass">
+    <div class="layer-h"><i class="dot"></i><span class="t">Glass — cloud authority</span>
+      <span class="f">glass_agent.py · core/glass.py</span></div>
+    <div class="nodes">
+      <div class="node"><div class="n">WebSocket sidecar</div><div class="d"><code>/ws/glass/agent/</code>, auth via <code>X-Silicon-Key</code></div><div class="f">glass_agent.py</div></div>
+      <div class="node"><div class="n">Commands</div><div class="d">backup · start · stop · version · dependencies · update_check</div><div class="f">execute_command()</div></div>
+      <div class="node"><div class="n">Invalidations</div><div class="d"><code>crons.changed</code> · <code>trust.changed</code> · <code>team_context.changed</code></div><div class="f">handle_message()</div></div>
+      <div class="node"><div class="n">Owns</div><div class="d">team roster, hierarchy, trust policy, cron records, backups, advertising memory</div><div class="f">authoritative</div></div>
+      <div class="node"><div class="n">Terminal relay</div><div class="d">remote <code>claude</code> / <code>codex login</code> PTY</div><div class="f">handle_terminal_message()</div></div>
+      <div class="node"><div class="n">Diagnostics ingest</div><div class="d">rollup push + <code>diag.rollup.ack</code></div><div class="f">core/glass_diag_push.py</div></div>
+    </div>
+  </div>
+
+  <div class="flowdown"><span>WSS · signed cursors · reconnect backfill</span></div>
+
+  <div class="layer L-iface">
+    <div class="layer-h"><i class="dot"></i><span class="t">Silicon Interface CLI v2 — daemon (external process)</span>
+      <span class="f">core/interface.py adapter</span></div>
+    <div class="nodes">
+      <div class="node"><div class="n">Durable inbox</div><div class="d">CLI spools committed frames to <code>.silicon-interface/inbox.jsonl</code></div><div class="f">DEFAULT_INBOX_FILE</div></div>
+      <div class="node"><div class="n">Owns</div><div class="d">rooms · events · media · read receipts · STT/TTS · take-back · remote-browser · crons</div><div class="f">CLI-side</div></div>
+      <div class="node"><div class="n">Inbound events</div><div class="d"><code>m.text</code> <code>m.image</code> <code>m.file</code> <code>m.voice</code> <code>m.tts</code> → normalized + media downloaded</div><div class="f">core/interface_state/media/</div></div>
+      <div class="node"><div class="n">Outbound</div><div class="d"><code>send</code> · <code>send-file</code> · <code>tts --room</code> · <code>remote-browser</code></div><div class="f">reply_user()</div></div>
+    </div>
+  </div>
+
+  <div class="flowdown"><span>tailer thread commits byte offset only after a complete frame is interpreted</span></div>
+
+  <div class="layer L-core">
+    <div class="layer-h"><i class="dot"></i><span class="t">Stemcell process — <code>main.py</code></span>
+      <span class="f">main() · EventLoopSchedule · ManagerDispatcher</span></div>
+    <div class="nodes">
+      <div class="node"><div class="n">interface-listener thread</div><div class="d">tails inbox, exponential backoff to 30s on failure</div><div class="f">start_listener()</div></div>
+      <div class="node"><div class="n">runtime file watch</div><div class="d">native notify on 7 state files; 0.5s poll fallback</div><div class="f">start_runtime_file_watch()</div></div>
+      <div class="node"><div class="n">EventLoopSchedule</div><div class="d">per-handler deterministic clock + hashed jitter</div><div class="f">main.py:1464</div></div>
+      <div class="node"><div class="n">MaintenanceCoordinator</div><div class="d">durable root queue, admission fence, leases, heartbeats</div><div class="f">core/maintenance.py</div></div>
+      <div class="node"><div class="n">Diagnostics</div><div class="d">runs, spans, handoff lineage, rollups to Glass</div><div class="f">core/diagnostics.py</div></div>
+      <div class="node"><div class="n">Work updates</div><div class="d">task/todo/milestone/blocker cards, long-task lifecycle</div><div class="f">core/work_updates.py · long_task_updates.py</div></div>
+    </div>
+  </div>
+
+  <div class="flowdown"><span>context_by_carbon = {contact_id: text} → dispatcher.submit()</span></div>
+
+  <div class="layer L-mgr">
+    <div class="layer-h"><i class="dot"></i><span class="t">Managers — one persistent LLM session per fixed contact id</span>
+      <span class="f">manager.py · prompts/DNA.py</span></div>
+    <div class="nodes">
+      <div class="node"><div class="n">Provider</div><div class="d"><code>claude -p --resume</code> stream-json, or Codex app-server thread</div><div class="f">claude_code() / codex_app_server()</div></div>
+      <div class="node"><div class="n">Session identity</div><div class="d">session id / thread id persisted per <code>carbon_id</code></div><div class="f">_session_file()</div></div>
+      <div class="node"><div class="n">Contract</div><div class="d">must emit <code>{"tools":[…]}</code> JSON — nothing else counts</div><div class="f">parse_manager_output()</div></div>
+      <div class="node"><div class="n">Concurrency</div><div class="d">serialized per contact, 16 contacts in parallel</div><div class="f">ManagerDispatcher</div></div>
+      <div class="node"><div class="n">Timeouts</div><div class="d">30 min absolute · 180 s inactivity · 1 retry</div><div class="f">MANAGER_TIMEOUT</div></div>
+    </div>
+  </div>
+
+  <div class="flowdown"><span>tool JSON → execute_all_tools() → results fed back as next prompt</span></div>
+
+  <div class="layer L-wkr">
+    <div class="layer-h"><i class="dot"></i><span class="t">Workers — ephemeral OS subprocesses</span>
+      <span class="f">worker/handler.py</span></div>
+    <div class="nodes">
+      <div class="node"><div class="n">browser</div><div class="d">Glass-managed Browserbase via <code>silicon-browser</code>; model pinned to <code>sonnet</code></div><div class="f">start_browser_worker()</div></div>
+      <div class="node"><div class="n">terminal</div><div class="d">full shell, <code>--append-system-prompt</code></div><div class="f">start_terminal_worker()</div></div>
+      <div class="node"><div class="n">writer</div><div class="d">writing skill + terminal + web</div><div class="f">start_writer_worker()</div></div>
+      <div class="node"><div class="n">Isolation</div><div class="d">separate PID, own stdout file, own session id, no access to manager state</div><div class="f">worker/outputs/</div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="note"><p><b>Key invariant:</b> a manager never does long work. It only routes. Anything that would block the contact's
+serialized turn is supposed to become a worker, and the manager returns immediately with a reply.</p></div>
+
+<!-- ============================ 2 ============================ -->
+<h2 id="loop"><span class="num">02</span>The event loop — 7 handlers, event-driven with recovery clocks</h2>
+<p><code>config.EVENT_LOOP</code> is a list of handler dicts. Each has its own interval and jitter. Native file/inbox notifications
+are the <i>primary</i> trigger; the intervals are only a recovery ceiling for platforms without a healthy watcher.</p>
+
+<div class="tbox"><table>
+<thead><tr><th>Handler</th><th>Does</th><th>Interval</th><th>Jitter</th><th>On activity</th><th>On startup</th></tr></thead>
+<tbody>
+<tr><td class="k">check_team_context</td><td>Sync TEAM.md + advertising memory with Glass (runs on a side thread)</td><td class="c">60 s</td><td class="c">15 s</td><td>—</td><td>yes</td></tr>
+<tr><td class="k">check_interface</td><td>Drain committed durable inbox frames into contact context</td><td class="c">60 s</td><td class="c">15 s</td><td><b>yes</b></td><td>yes</td></tr>
+<tr><td class="k">check_crons</td><td>Compute due/missed Glass cron fires against local watermarks</td><td class="c">30 s</td><td class="c">10 s</td><td><b>yes</b></td><td>yes</td></tr>
+<tr><td class="k">check_manager_messages</td><td>Deliver queued inter-manager messages as durable roots</td><td class="c">60 s</td><td class="c">15 s</td><td><b>yes</b></td><td>yes</td></tr>
+<tr><td class="k">check_system_updates</td><td>Read-only release check against canonical git tags</td><td class="c">60 min</td><td class="c">5 min</td><td>—</td><td>—</td></tr>
+<tr><td class="k">check_workers</td><td>Reap finished worker processes, parse output, format for the manager</td><td class="c">60 s</td><td class="c">15 s</td><td><b>yes</b></td><td>yes</td></tr>
+<tr><td class="k">clean_archives</td><td>Delete worker archives older than 7 days</td><td class="c">60 min</td><td class="c">5 min</td><td>—</td><td>—</td></tr>
+</tbody></table></div>
+
+<h3>Tick mechanics</h3>
+<div class="chain">
+  <div class="chain-row">
+    <span class="pill c">wait_for_runtime_activity(timeout)</span>
+    <span class="arrow"></span>
+    <span class="pill c">maintenance tick</span>
+    <span class="arrow lbl"><i>fence?</i></span>
+    <span class="pill c">schedule.due(now, activity)</span>
+    <span class="arrow"></span>
+    <span class="pill c">run_event_loop_tick(selected)</span>
+    <span class="arrow"></span>
+    <span class="pill c">merge → context_by_carbon</span>
+    <span class="arrow"></span>
+    <span class="pill d">dispatcher.submit()</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">next tick — timeout = min(next due, contact integrity, inactive-call deadline, 60s or 0.5s)</span></div>
+</div>
+
+<div class="grid g3">
+  <div class="card"><span class="tag">backpressure</span><p>A raised exception increments <code>failure_count</code> and pushes <code>failure_not_before</code> out by <code>2^n</code>, capped at 30 s — a crash can never become a hot retry loop.</p></div>
+  <div class="card"><span class="tag">maintenance fence</span><p>While maintenance is active only <code>check_interface</code>, <code>check_manager_messages</code>, and <code>check_workers</code> are eligible. New roots stay durably queued.</p></div>
+  <div class="card"><span class="tag">integrity</span><p><code>validate_contacts_integrity()</code> runs every 300 s + a hash-derived 0–60 s offset so fleet instances never sync up.</p></div>
+</div>
+
+<!-- ============================ 3 ============================ -->
+<h2 id="dispatch"><span class="num">03</span>Dispatcher and one manager turn</h2>
+<p><code>ManagerDispatcher</code> guarantees: <b>serialized per contact, parallel across contacts</b>. A new message for a busy
+contact is coalesced into that contact's next turn; a message for another contact starts its own thread immediately.
+Bounded at <b>16 concurrent contacts</b>.</p>
+
+<div class="chain">
+  <div class="chain-row">
+    <span class="pill b">inbound context</span>
+    <span class="arrow lbl"><i>durable</i></span>
+    <span class="pill c">MAINTENANCE.enqueue_root()</span>
+    <span class="arrow lbl"><i>admission</i></span>
+    <span class="pill c">_pending[contact]</span>
+    <span class="arrow"></span>
+    <span class="pill d">thread manager-dispatch-&lt;id&gt;</span>
+    <span class="arrow lbl"><i>lease + heartbeat</i></span>
+    <span class="pill d">run_all_managers()</span>
+    <span class="arrow"></span>
+    <span class="pill c">complete_roots()</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">on exception → retry_roots() puts the same context back, same marker, no loss</span></div>
+</div>
+
+<h3>Inside <code>run_all_managers</code> — the tool-result loop</h3>
+<p>This is the innermost agentic cycle and the one that most defines the system's behaviour.</p>
+
+<div class="chain">
+  <div class="chain-row">
+    <span class="pill c">get_manager_prompt(carbon_id)</span>
+    <span class="arrow"></span>
+    <span class="pill d">provider streams</span>
+    <span class="arrow lbl"><i>mid-stream</i></span>
+    <span class="pill d">reply(work_continues=true) fires immediately</span>
+    <span class="arrow"></span>
+    <span class="pill c">parse_manager_output → tools[]</span>
+    <span class="arrow"></span>
+    <span class="pill c">execute_all_tools()</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">"Tool execution results:\n…" becomes the next prompt · <b>max 10 iterations</b> · exits when only <code>do_nothing</code> remains</span></div>
+</div>
+
+<div class="grid g2">
+  <div class="card"><span class="tag">exit conditions</span>
+    <p><code>is_only_do_nothing()</code> → clean exit. Unparseable output → an error string is fed back as the next prompt.
+    Rate limit → lifecycle deferred + carbon told. Timeout → 1 retry, then paused with <code>pause_reason=infrastructure</code>.
+    Budget exhausted at 10 → <code>manager.iteration_limit</code> span, work paused.</p></div>
+  <div class="card"><span class="tag">de-duplication</span>
+    <p>Tools already executed mid-stream are hashed with <code>json.dumps(sort_keys=True)</code> and skipped in the batch pass,
+    so a streamed reply is never sent twice.</p></div>
+</div>
+
+<!-- ============================ 4 ============================ -->
+<h2 id="mtools"><span class="num">04</span>Manager tools — the complete surface</h2>
+<p>Dispatched in <code>main.py:_execute_single_tool</code>. The manager can emit several tools per turn; results come back as
+one concatenated block.</p>
+
+<div class="tools">
+
+  <div class="tgroup"><h4>Talking</h4><ul>
+    <li class="m"><b>reply</b><span>Send to the current contact via Interface. <code>work_continues:true</code> = intermediate, fires mid-stream. Supports <code>[file=/path]</code> → <code>send-file</code> and <code>[voice=…]</code> → <code>tts --room</code>.</span></li>
+    <li class="m"><b>message_manager</b><span>Message another manager by <code>carbon_id</code> <i>or</i> <code>silicon_id</code> (never both). Does <b>not</b> go over the wire — it queues a local manager message. The only legal path to another contact.</span></li>
+    <li class="m"><b>take_back</b><span>Retract/replace a sent event by <code>request_id</code> (system-generated) or explicit <code>event_id</code> + <code>force</code>.</span></li>
+    <li class="m"><b>do_nothing</b><span>Terminal tool. Ends the iteration loop.</span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Workers</h4><ul>
+    <li class="w"><b>worker/browser</b><span><code>type:new</code> · <code>worker-id</code> · <code>task</code> · <code>incognito</code> · <code>checkback_in</code></span></li>
+    <li class="w"><b>worker/terminal</b><span><code>type:new</code> — full shell access</span></li>
+    <li class="w"><b>worker/writer</b><span><code>type:new</code> — writing skill + terminal + web</span></li>
+    <li class="w"><b>worker · message</b><span>Resume the same <code>worker-id</code> session with a new instruction</span></li>
+    <li class="w"><b>worker · checkback</b><span>One-shot local timer in minutes; auto-removed on completion</span></li>
+    <li class="w"><b>worker · status</b><span>Live status of one running worker</span></li>
+    <li class="w"><b>worker · stop</b><span>Terminate + archive the run</span></li>
+    <li class="w"><b>worker · list_active</b><span>All running workers for this contact</span></li>
+    <li class="w"><b>worker · list_archive</b><span>All archived runs for this contact</span></li>
+    <li class="w"><b>worker · read_archive</b><span>Full output of one archived run</span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Trust (Glass-first)</h4><ul>
+    <li><b>trust/list</b><span>Refresh + list the complete effective policy through the authenticated Glass endpoint</span></li>
+    <li><b>trust/get</b><span>One typed identity — exactly one of <code>carbon_id</code>/<code>silicon_id</code></span></li>
+    <li><b>trust/set</b><span>Commits the same Glass override row the console writes, <i>then</i> updates local <code>contacts.json</code></span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Crons (Glass records)</h4><ul>
+    <li><b>cron/create</b><span>Creates a Glass cron record via Interface</span></li>
+    <li><b>cron/update</b><span>Mutates trigger / task / target / active</span></li>
+    <li><b>cron/delete</b><span>Removes the record</span></li>
+    <li><b>cron/list</b><span><code>crons list --mine --json</code></span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Work updates (UI cards)</h4><ul>
+    <li><b>work_update · task/create</b><span><code>task_id</code>, title, description, state, <code>realistic_estimate_seconds</code>, <code>client_id</code></span></li>
+    <li><b>work_update · task/update</b><span>Optimistic concurrency via <code>revision</code></span></li>
+    <li><b>work_update · todo/add</b><span>Child todo under a task</span></li>
+    <li><b>work_update · todo/update</b><span>State + description transitions</span></li>
+    <li><b>work_update · milestone / blocker</b><span>Progress markers and blocking conditions</span></li>
+    <li><b>work_update · worker / call / terminal</b><span>Worker invocation cards, manager-call cards, terminal completion</span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Browser handoff to the human</h4><ul>
+    <li><b>remote_browser · share</b><span><code>expiry</code> (60 min), <code>new</code>, <code>url</code>. Runs close → open → share on <code>remote-&lt;contact_id&gt;</code>, then sends the URL via Interface <code>remote-browser</code>.</span></li>
+    <li><b>remote_browser · close</b><span>Saves profile state back. Required after login/OTP is done.</span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Self / memory</h4><ul>
+    <li><b>advertising_memory/update</b><span>Replaces the whole team-visible snapshot. ≤100 lines / 65,536 bytes. <code>resolve_conflict:true</code> = CAS against latest Glass revision.</span></li>
+    <li><b>new_session</b><span>Fresh provider session for this contact, prompts only</span></li>
+    <li><b>restart_silicon_service</b><span>Restarts the service; handled specially in <code>execute_all_tools</code> and sequenced last</span></li>
+    <li><b>bash (implicit)</b><span>The manager can run simple commands directly for context, and edits <code>prompts/MEMORY.md</code>, <code>prompts/memory/carbons/*.md</code>, <code>prompts/memory/silicons/*.md</code> as files</span></li>
+  </ul></div>
+
+</div>
+
+<div class="note warn"><p><b>Boundary rule enforced in prompt, not code:</b> a manager may never read another manager's workers,
+sessions, archives, or memory. <code>message_manager</code> is the only cross-contact channel, and any claim attributed to a
+carbon must carry that carbon's verbatim message as a labeled quote.</p></div>
+
+<!-- ============================ 5 ============================ -->
+<h2 id="workers"><span class="num">05</span>Workers — types, tools, lifecycle</h2>
+<p>Workers are stateless per instruction but keep a provider session behind their <code>worker-id</code>, so they can be resumed.
+One active run per worker id; completed and stopped runs archive per <i>run</i>, not per worker.</p>
+
+<div class="tbox"><table>
+<thead><tr><th>Worker</th><th>Primary tool</th><th>Secondary tools</th><th>Notes file</th><th>Special</th></tr></thead>
+<tbody>
+<tr><td class="k">worker/browser</td><td><code>silicon-browser</code> CLI (remote Browserbase/Playwright) — navigate, snapshot→refs, interact, upload, extract, <code>share</code>, <code>close</code></td><td>Terminal (r/w/d files, any command) · WebFetch / WebSearch</td><td class="c">BROWSER_WTOOLS.md</td><td>Model pinned to <code>sonnet</code>. <code>incognito:true</code> → fresh session, runs in parallel. <code>false</code> → shared <code>silicon</code> profile with saved logins, <b>queued</b>.</td></tr>
+<tr><td class="k">worker/terminal</td><td>Terminal — "a god on the terminal", detects OS first, runs anything</td><td>WebFetch / WebSearch</td><td class="c">TERMINAL_WTOOLS.md</td><td>Launched with <code>--append-system-prompt</code> (keeps the provider's own base prompt) rather than <code>--system-prompt</code>.</td></tr>
+<tr><td class="k">worker/writer</td><td>The excellent-writer skill loaded via <code>{load-ref!prompts/worker/skills/excellent_writer.md}</code></td><td>Terminal · WebFetch / WebSearch</td><td class="c">WRITER_WTOOLS.md</td><td>Long skills get their own file under <code>prompts/worker/skills/</code>.</td></tr>
+</tbody></table></div>
+
+<h3>Self-modifying tool docs</h3>
+<div class="note"><p>Each worker's <code>*_WTOOLS.md</code> is <b>the only way that worker knows what tools it has</b>. Workers are
+instructed to write new tools, learned information, and skills back into that file — so the tool surface literally grows
+with use. This is a write-back loop into the prompt system (see <b>L12</b>).</p></div>
+
+<h3>Launch path</h3>
+<div class="chain">
+  <div class="chain-row">
+    <span class="pill d">worker/&lt;type&gt; type:new</span>
+    <span class="arrow"></span>
+    <span class="pill c">_create_worker_record</span>
+    <span class="arrow lbl"><i>provider order</i></span>
+    <span class="pill c">_launch_with_provider_order</span>
+    <span class="arrow"></span>
+    <span class="pill e">claude -p … stream-json</span>
+    <span class="arrow lbl"><i>or</i></span>
+    <span class="pill e">codex_app_worker.py (stdin task)</span>
+    <span class="arrow"></span>
+    <span class="pill c">worker/outputs/&lt;id&gt;/&lt;run&gt;</span>
+  </div>
+</div>
+<div class="kv">
+  <span><b>order</b> silicon.json → workers.&lt;type&gt;: ["claude","codex"]</span>
+  <span><b>pinned</b> provider+session persisted behind worker-id after first success</span>
+  <span><b>archive</b> 7 days, then <code>clean_archives</code></span>
+  <span><b>orphans</b> <code>sweep_orphaned_daemons()</code></span>
+</div>
+
+<!-- ============================ 6 ============================ -->
+<h2 id="loops"><span class="num">06</span>Every loop in the system</h2>
+<p>Cycles — where output re-enters as input. Dashed return arrows mark the closing edge.</p>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L1</span><span class="name">Manager tool-result loop</span><span class="where">main.py:1607 run_all_managers</span></div>
+  <div class="loop-d">The core agentic cycle. Tool results are re-injected as the manager's next prompt until it emits only <code>do_nothing</code>. <b>Bounded at 10 iterations.</b></div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">manager</span><span class="arrow lbl"><i>tools[]</i></span>
+    <span class="pill c">execute_all_tools</span><span class="arrow lbl"><i>results</i></span>
+    <span class="pill c">pending[carbon_id]</span><span class="arrow"></span>
+    <span class="pill d">next iteration</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">closes ≤10×</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L2</span><span class="name">Manager ↔ Manager (the loop you asked about)</span><span class="where">core/messages.py</span></div>
+  <div class="loop-d">Manager A calls <code>message_manager</code> → a local durable queue item is written and the dispatcher is woken.
+  <code>check_manager_messages_durable</code> converts it into an ingress root for contact B. B's manager sees
+  <code>"Message from manager of &lt;A&gt;"</code>, and replies by calling <code>message_manager</code> back at A — <b>which closes the loop</b>.
+  Nothing leaves the machine; both managers live in the same process.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">manager A</span><span class="arrow lbl"><i>message_manager</i></span>
+    <span class="pill c">manager_messages.json</span><span class="arrow lbl"><i>notify</i></span>
+    <span class="pill c">enqueue_ingress_root</span><span class="arrow"></span>
+    <span class="pill d">manager B turn</span><span class="arrow lbl"><i>message_manager</i></span>
+    <span class="pill c">queue again</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">back to manager A — <b>unbounded by design</b>; only capacity (1,000 items) and work-call correlation constrain it</span></div></div>
+  <div class="kv"><span><b>queue</b> MANAGER_QUEUE_MAX_ITEMS = 1000</span><span><b>ordering</b> per-recipient FIFO, break-on-error preserves it</span><span><b>lineage</b> diagnostics handoff ids link A's run to B's run</span><span><b>fast path</b> <code>_queue_lineage_handoff</code> skips the queue when the lease can transfer directly</span></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L3</span><span class="name">Manager ↔ Worker</span><span class="where">worker/handler.py + config.check_workers</span></div>
+  <div class="loop-d">Spawn → poll for completion → parsed summary is injected as context → manager may <code>worker/message</code> the same
+  worker id again. Multi-round worker back-and-forth is explicitly supported (and the manager is told to warn the carbon first).</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">worker/&lt;type&gt; new</span><span class="arrow"></span>
+    <span class="pill e">subprocess runs</span><span class="arrow lbl"><i>exit</i></span>
+    <span class="pill c">check_completed_workers</span><span class="arrow lbl"><i>summary</i></span>
+    <span class="pill d">manager context</span><span class="arrow lbl"><i>worker/message</i></span>
+    <span class="pill e">same session resumed</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">repeats until the manager stops re-prompting</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L4</span><span class="name">Worker checkback timer</span><span class="where">core/cron/checkback.py</span></div>
+  <div class="loop-d">A one-shot local operational timer (<b>not</b> a Glass cron). On fire, the system runs <code>get_worker_status</code> and pushes the result to the manager, which can set another checkback — making this a manager-driven polling cycle.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">checkback_in: N min</span><span class="arrow"></span>
+    <span class="pill c">checkbacks.json</span><span class="arrow lbl"><i>due</i></span>
+    <span class="pill c">status → context</span><span class="arrow"></span>
+    <span class="pill d">manager decides</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">set another checkback · auto-removed when the worker completes</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L5</span><span class="name">Silicon ↔ Silicon over Glass (two-hop loop)</span><span class="where">MANAGER_TOOLS.md §Message Another Manager</span></div>
+  <div class="loop-d">Cross-machine communication is <b>L2 chained with L6</b>. Your manager talks to the <i>local</i> silicon-contact manager;
+  that manager is the one that actually speaks over Interface; the remote Silicon's reply comes back in as a normal inbound event
+  and is relayed to you by <code>message_manager</code>.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">your manager</span><span class="arrow lbl"><i>message_manager</i></span>
+    <span class="pill d">local silicon-contact manager</span><span class="arrow lbl"><i>reply</i></span>
+    <span class="pill b">Interface → Glass</span><span class="arrow"></span>
+    <span class="pill a">remote Silicon</span><span class="arrow lbl"><i>inbound</i></span>
+    <span class="pill d">same contact manager</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">message_manager back to you — full round trip</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L6</span><span class="name">Carbon conversation loop</span><span class="where">core/interface.py</span></div>
+  <div class="loop-d">The outermost human loop. Committed inbox frame → context → manager turn → <code>reply</code> → Interface → the carbon answers.
+  Media is downloaded locally and absolute paths injected; voice/TTS use the Interface transcript or fall back to Interface STT.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill b">m.text / m.image / m.file / m.voice / m.tts</span><span class="arrow"></span>
+    <span class="pill c">inbox.jsonl (durable)</span><span class="arrow"></span>
+    <span class="pill d">manager turn</span><span class="arrow lbl"><i>reply</i></span>
+    <span class="pill b">send / send-file / tts</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">carbon replies · offset committed only after a complete frame is interpreted</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L7</span><span class="name">Cron fire loop</span><span class="where">core/cron/__init__.py</span></div>
+  <div class="loop-d">Glass owns the cron <i>records</i>; Stemcell computes fires locally against watermarks in <code>crons.json</code>, so a
+  restart replays missed fires instead of losing them. A <code>crons.changed</code> WS message drops an invalidation marker and the
+  next check re-reads.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill a">Glass cron record</span><span class="arrow lbl"><i>crons list --mine</i></span>
+    <span class="pill c">fire_times_between(watermark, now)</span><span class="arrow"></span>
+    <span class="pill d">manager context (+missed count)</span><span class="arrow"></span>
+    <span class="pill c">watermark advanced</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">every 30 s ±10 s, or on activity</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L8</span><span class="name">Browser queue serialization loop</span><span class="where">worker/handler.py:_process_browser_queue</span></div>
+  <div class="loop-d">There is exactly one shared logged-in browser profile. Non-incognito browser workers queue behind it; when the active
+  one calls <code>silicon-browser close</code> and exits, the next queued worker is launched. <code>incognito:true</code> bypasses the queue entirely.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill e">browser worker (profiled)</span><span class="arrow lbl"><i>busy?</i></span>
+    <span class="pill c">browser_queue.json</span><span class="arrow lbl"><i>on exit</i></span>
+    <span class="pill c">_process_browser_queue</span><span class="arrow"></span>
+    <span class="pill e">next worker launches</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">drains until empty</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L9</span><span class="name">Team context / advertising memory loop</span><span class="where">config.py + core/team_context.py</span></div>
+  <div class="loop-d">Bidirectional. Down: Glass → <code>TEAM.md</code> + peer <code>advertising/*.md</code> mirrors (hash-verified; stale or locally
+  modified peer files are <i>not</i> injected). Up: the owning Silicon's file is hashed on the loop and uploaded only when changed,
+  with optimistic concurrency — a concurrent Glass edit produces a <b>conflict</b> that must be resolved explicitly.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill c">own file hash</span><span class="arrow lbl"><i>changed?</i></span>
+    <span class="pill a">Glass upload (CAS)</span><span class="arrow lbl"><i>conflict</i></span>
+    <span class="pill d">notice to central carbon</span><span class="arrow lbl"><i>advertising_memory/update resolve_conflict</i></span>
+    <span class="pill a">Glass revision</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">60 s safety check + <code>team_context.changed</code> invalidation + startup reconcile</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L10</span><span class="name">Trust invalidation loop</span><span class="where">core/trust.py + glass_agent.py</span></div>
+  <div class="loop-d">Glass sends <code>trust.changed</code> → local marker → reconciler refetches. A <code>team_context.changed</code> of kind
+  <code>team_context</code> <i>also</i> forces a trust reconcile, because membership changes the effective roster.
+  Effective trust resolves <b>central Carbon → per-Silicon override → Team base → very_low</b>.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill a">trust.changed (WS)</span><span class="arrow"></span>
+    <span class="pill c">mark_trust_policy_invalidated</span><span class="arrow"></span>
+    <span class="pill c">TrustPolicyReconciler</span><span class="arrow"></span>
+    <span class="pill c">trust_policy.json cache</span><span class="arrow lbl"><i>prompt</i></span>
+    <span class="pill d">trust/&lt;level&gt;.md injected</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">manager calls <code>trust/set</code> → writes the Glass override row → Glass emits <code>trust.changed</code> → loop closes</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L11</span><span class="name">Take-back / unread-summary loop</span><span class="where">MANAGER_TOOLS.md §Take Back</span></div>
+  <div class="loop-d">If the carbon has not read N messages after a set time, a trigger fires and asks the manager to <i>replace</i> those
+  messages with a single summary. The manager then calls <code>take_back</code> with the supplied <code>request_id</code>.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">manager sends messages</span><span class="arrow lbl"><i>unread N + time</i></span>
+    <span class="pill b">take-back request</span><span class="arrow"></span>
+    <span class="pill d">manager writes summary</span><span class="arrow lbl"><i>take_back</i></span>
+    <span class="pill b">events replaced</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">can re-trigger on the replacement</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L12</span><span class="name">Self-modification loop (prompts write themselves)</span><span class="where">prompts/ + .backupsilicon</span></div>
+  <div class="loop-d">The most unusual cycle here. Managers edit <code>MEMORY.md</code> / <code>memory/**</code> / <code>LORE.md</code> / <code>SOUL.md</code>;
+  workers append tools and skills to their own <code>*_WTOOLS.md</code>. Those files are re-read by <code>DNA.py</code> on the <b>next</b>
+  prompt build — so this turn's writing is next turn's instructions. New paths get appended to <code>.backupsilicon</code> so Glass backs them up.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">manager / worker writes .md</span><span class="arrow"></span>
+    <span class="pill c">.backupsilicon manifest</span><span class="arrow lbl"><i>glass backup</i></span>
+    <span class="pill a">Glass snapshot</span><span class="arrow"></span>
+    <span class="pill c">DNA.get_manager_prompt()</span><span class="arrow"></span>
+    <span class="pill d">next turn's prompt</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">"this repo starts generic and differentiates through memory, prompts, trust, and conversations"</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L13</span><span class="name">Provider fallback loop</span><span class="where">manager.py / worker/handler.py</span></div>
+  <div class="loop-d">Both managers and workers walk a configured provider list from <code>silicon.json</code>
+  (<code>["claude","codex"]</code>). On launch failure it advances to the next provider. Once a run succeeds the provider and its
+  session id are pinned behind the id and no longer re-negotiated.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill c">get_brain_order()</span><span class="arrow"></span>
+    <span class="pill e">try claude</span><span class="arrow lbl"><i>launch failure</i></span>
+    <span class="pill e">try codex</span><span class="arrow lbl"><i>success</i></span>
+    <span class="pill c">pin provider + session</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">iterate the order list</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L14</span><span class="name">Retry / backoff loops (four of them)</span><span class="where">main.py · core/interface.py · core/messages.py</span></div>
+  <div class="loop-d">
+    <b>Event-loop failure:</b> <code>2^n</code> capped at 30 s.
+    <b>Inbox listener:</b> backoff doubling to 30 s on a dead durable inbox.
+    <b>Manager timeout:</b> <code>MAX_MANAGER_TIMEOUT_RETRIES = 1</code> — one polite "still working" retry, then paused.
+    <b>Root retry:</b> any dispatcher exception calls <code>retry_roots()</code>, which re-admits the identical context (idempotent markers make replay safe).
+  </div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L15</span><span class="name">Diagnostics rollup loop</span><span class="where">core/diagnostics.py · glass_diag_push.py</span></div>
+  <div class="loop-d">Every turn opens a run with spans (<code>manager.iteration_limit</code>, <code>worker.spawned</code>,
+  <code>handoff.accepted</code>, <code>message.ingress</code>). Rollups are pushed to Glass, which answers <code>diag.rollup.ack</code>;
+  a rejection is logged back up the same socket and retried from the local SQLite store.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill c">Diagnostics.start_run</span><span class="arrow"></span>
+    <span class="pill c">spans + events</span><span class="arrow lbl"><i>push</i></span>
+    <span class="pill a">Glass</span><span class="arrow lbl"><i>diag.rollup.ack</i></span>
+    <span class="pill c">acknowledge / retain</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">unacked rollups retried on a 60 s recovery check</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L16</span><span class="name">Long-task lifecycle / accuracy review loop</span><span class="where">core/long_task_updates.py</span></div>
+  <div class="loop-d">Long-running work gets a durable lifecycle: <code>request_running</code> → <code>continuing_round</code> →
+  <code>defer(reason)</code> → resumed. Separately, an <b>internal accuracy review</b> root is dispatched back into the manager
+  (isolated from user roots, replies suppressed) and must return an accepted <code>work_update</code> or <code>do_nothing</code>, or the
+  turn raises. Recovered and backfilled on startup.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill c">long_task state file</span><span class="arrow"></span>
+    <span class="pill d">manager turn</span><span class="arrow lbl"><i>internal root</i></span>
+    <span class="pill d">accuracy review (silent)</span><span class="arrow lbl"><i>work_update</i></span>
+    <span class="pill c">cards reconciled</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">replayed on restart via <code>recover_long_task_lifecycles()</code></span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L17</span><span class="name">Maintenance / update fence</span><span class="where">core/maintenance.py · update.py</span></div>
+  <div class="loop-d">During <code>silicon update</code>, the fence stops admitting new roots; already-admitted work drains under lease
+  heartbeats; new messages stay durably queued. After the window, <code>replay_maintenance_queue()</code> claims them back and
+  restarts the dispatcher. The running Stemcell never mutates its own source — the host CLI does.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill c">fence raised</span><span class="arrow lbl"><i>only 3 handlers</i></span>
+    <span class="pill c">drain admitted work</span><span class="arrow"></span>
+    <span class="pill a">silicon-cli stop / activate / restart</span><span class="arrow"></span>
+    <span class="pill c">replay_maintenance_queue</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">queued roots resume exactly where they were</span></div></div>
+</div>
+
+<!-- ============================ 7 ============================ -->
+<h2 id="trust"><span class="num">07</span>Trust levels &amp; how a manager prompt is built</h2>
+
+<div class="grid g2">
+<div>
+<h3>Effective trust</h3>
+<p class="hint">central Carbon → per-Silicon override → Team base → <code>very_low</code>. Glass is authoritative;
+<code>trust_policy.json</code> holds only the last confirmed revision.</p>
+<div class="tbox"><table>
+<thead><tr><th>Level</th><th>Gist</th></tr></thead><tbody>
+<tr><td class="k">very_low</td><td>Unknown. No personal info, no sensitive ops, no private-file workers, no internals. Escalate to another manager rather than the central carbon.</td></tr>
+<tr><td class="k">low</td><td>Known but unproven.</td></tr>
+<tr><td class="k">ok</td><td>Ordinary working trust.</td></tr>
+<tr><td class="k">high</td><td>Broad operational latitude.</td></tr>
+<tr><td class="k">very_high</td><td>Near-full latitude.</td></tr>
+<tr><td class="k">ultimate</td><td>Central carbon. All workers/archives/crons, config + prompt edits, restart, new sessions, approve trust up to ultimate.</td></tr>
+</tbody></table></div>
+</div>
+
+<div>
+<h3>Prompt assembly — <code>DNA.get_manager_prompt()</code></h3>
+<div class="tree"><b>DNA.py</b>          <u>instruction set (self-documenting)</u>
+<b>SOUL.md</b>         <u>behaviour</u>
+<b>SILICON.md</b>      <u>who this Silicon is</u>
+<b>not_be_ignored.md</b>
+<b>LORE.md</b>         <u>backstory (data root)</u>
+<b>CONTACTS.md</b>     <u>(data root)</u>
+<b>TEAM_CONTEXT.md</b> + Glass team section
+<b>trust/&lt;level&gt;.md</b>  <u>← resolved effective trust</u>
+<b>MEMORY.md</b>       <u>global memory (data root)</u>
+<b>MANAGER.md</b>      <u>role</u>
+<b>WORK_UPDATES.md</b> <u>card discipline</u>
+<b>MANAGER_TOOLS.md</b> <u>the tool contract</u>
+<b>SILICON_MANAGER.md</b> <u>if contact is a Silicon</u>
+<b>BOOT.md</b>         <u>only until setup is done</u>
+<b>QUESTIONNAIRE.md</b> + <b>FINAL_QUESTIONNAIRE.md</b>
+</div>
+<p class="hint"><code>{load-ref!path}</code> inlines other files, with cycle protection, depth cap 8, and root containment
+checks — the same mechanism workers use to pull in long skills.</p>
+</div>
+</div>
+
+<!-- ============================ 8 ============================ -->
+<h2 id="files"><span class="num">08</span>File map — where to look</h2>
+<div class="tbox"><table>
+<thead><tr><th>File</th><th>Lines</th><th>Responsibility</th></tr></thead><tbody>
+<tr><td class="k">main.py</td><td class="c">2,431</td><td>Event loop, tool dispatch, <code>ManagerDispatcher</code>, <code>EventLoopSchedule</code>, trace wiring</td></tr>
+<tr><td class="k">manager.py</td><td class="c">1,069</td><td>Provider invocation (Claude stream-json / Codex app-server), session files, output parsing, timeouts</td></tr>
+<tr><td class="k">glass_agent.py</td><td class="c">2,001</td><td>Glass WebSocket sidecar: commands, invalidations, terminal relay, dependency report, backups</td></tr>
+<tr><td class="k">config.py</td><td class="c">284</td><td><code>EVENT_LOOP</code> handler table + the team-context tick thread</td></tr>
+<tr><td class="k">update.py</td><td class="c">942</td><td>Read-only release checks against stable <code>vX.Y.Z</code> tags; <code>rotate-key</code></td></tr>
+<tr><td class="k">worker/handler.py</td><td class="c">1,995</td><td>Worker lifecycle: launch, browser queue, archive, reap, orphan sweep, output parsing</td></tr>
+<tr><td class="k">core/interface.py</td><td class="c">3,282</td><td>Interface CLI adapter, contacts, durable inbox tailer, replies, media, runtime file watch</td></tr>
+<tr><td class="k">core/work_updates.py</td><td class="c">3,424</td><td>Task/todo/milestone/blocker/call/terminal cards + durable journals</td></tr>
+<tr><td class="k">core/long_task_updates.py</td><td class="c">3,205</td><td>Long-task lifecycle, deferrals, accuracy-review roots, startup recovery</td></tr>
+<tr><td class="k">core/backup.py</td><td class="c">3,017</td><td><code>.backupsilicon</code> manifest snapshots to Glass</td></tr>
+<tr><td class="k">core/team_context.py</td><td class="c">3,004</td><td>TEAM.md + advertising-memory sync, hash verification, drafts, identity rotation</td></tr>
+<tr><td class="k">core/maintenance.py</td><td class="c">1,338</td><td>Durable root queue, admission fence, leases, heartbeats, notices</td></tr>
+<tr><td class="k">core/diagnostics.py</td><td class="c">971</td><td>Runs, spans, handoff lineage</td></tr>
+<tr><td class="k">core/trust.py</td><td class="c">583</td><td>Glass-first trust sync + local mutation</td></tr>
+<tr><td class="k">core/messages.py</td><td class="c">536</td><td>Inter-manager queue (L2)</td></tr>
+<tr><td class="k">core/cron/</td><td class="c">583</td><td>Glass cron execution + local worker checkbacks</td></tr>
+<tr><td class="k">prompts/</td><td class="c">~2,200</td><td>The behavioural surface: DNA, SOUL, MANAGER_TOOLS, WORK_UPDATES, trust levels, worker prompts + skills</td></tr>
+<tr><td class="k">tests/</td><td class="c">41 files</td><td>Concurrency, scheduler, handoffs, trust, backup manifest, prompt construction</td></tr>
+</tbody></table></div>
+
+<footer>
+Generated by reading the repository at <code>main</code> (5f83a6a, v2.4.2). Line counts are exact;
+loop bounds and intervals are taken from source constants, not documentation.
+</footer>
+
+</main>
+</div>
+</body>
+</html>

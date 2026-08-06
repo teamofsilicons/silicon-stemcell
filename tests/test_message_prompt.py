@@ -1,6 +1,4 @@
 import hashlib
-import sys
-import types
 import unittest
 from unittest import mock
 
@@ -9,15 +7,11 @@ from prompts import DNA
 
 class MessagePromptTest(unittest.TestCase):
     def test_message_guide_is_loaded_once_with_exact_contents(self):
-        fake_extend = types.ModuleType("core.extend")
-        fake_extend.render_manager_catalog = lambda: ""
-
         with (
             mock.patch.object(DNA, "_get_contact_info", return_value=None),
             mock.patch.object(DNA, "_glass_profile_section", return_value=""),
             mock.patch.object(DNA, "_glass_team_context_section", return_value=""),
             mock.patch.object(DNA, "_glass_trust_policy_section", return_value=""),
-            mock.patch.dict(sys.modules, {"core.extend": fake_extend}),
         ):
             prompt = DNA.get_manager_prompt("carbon-1")
 

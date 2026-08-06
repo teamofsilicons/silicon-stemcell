@@ -1,3 +1,16 @@
+"""Silicon Stemcell process entrypoint and manager event loop.
+
+Responsibilities, in the order they appear below:
+
+* boot the runtime (paths, diagnostics hooks, team context, trust policy)
+* run the manager for each contact with pending input, up to a retry budget
+* dispatch the tools a manager emits (see ``_TOOL_HANDLERS``)
+* drive the periodic handlers listed in ``config.EVENT_LOOP``
+
+Import order matters at the top of this file: the active release must be on
+``sys.path`` and ``PATH`` must prefer the selected generation's bin directory
+before anything else is imported, so a stale launcher cannot shadow it.
+"""
 import atexit
 import hashlib
 import time
@@ -26,8 +39,8 @@ _path_entries = [
     if entry and entry not in {ACTIVE_ENV_BIN, LOCAL_BIN}
 ]
 # Package entry points belong to the selected generation environment. Keep that
-# bin directory ahead of the legacy data-root bin so an old generated Extend
-# launcher can never shadow the installed silicon-extend command.
+# bin directory ahead of the legacy data-root bin so an old generated launcher
+# can never shadow an installed command.
 os.environ["PATH"] = os.pathsep.join(
     [ACTIVE_ENV_BIN, LOCAL_BIN, *_path_entries]
 )
@@ -62,14 +75,6 @@ from core.maintenance import (
     heartbeat_scope,
 )
 from core.runtime_health import start_runtime_health, stop_runtime_health
-from core.extend import (
-    execute_direct_integration_tool,
-    execute_tool as execute_extend_tool,
-    inspect_integration_for_manager,
-    inspect_extend_for_manager,
-    request_direct_integration_setup,
-    request_setup as request_extend_setup,
-)
 from worker.handler import (
     ACTIVE_FILE,
     BROWSER_QUEUE_FILE,
@@ -375,92 +380,6 @@ def _parse_worker_tool(tool_spec):
     return worker_type, action_type, worker_id
 
 
-_EXTEND_DISCOVERY_ACTIONS = {
-    "integrations",
-    "list",
-    "ready",
-    "needs_setup",
-    "pending",
-    "status",
-    "show",
-    "connections",
-    "requests",
-}
-_EXTEND_ACTION_ALIASES = {
-    "tools": "list",
-    "run": "execute",
-    "setup": "request_setup",
-}
-
-
-def _parse_extend_tool(tool_spec):
-    """Return a normalized Extend action and tool key."""
-
-    tool_name = str(tool_spec.get("tool") or "")
-    suffix = (
-        tool_name.removeprefix("extend/")
-        if tool_name.startswith("extend/")
-        else ""
-    )
-    explicit_action = (
-        str(tool_spec.get("type") or "").strip().lower().replace("-", "_")
-    )
-    action_names = (
-        _EXTEND_DISCOVERY_ACTIONS
-        | {"execute", "request_setup"}
-        | set(_EXTEND_ACTION_ALIASES)
-    )
-    if explicit_action:
-        action = explicit_action
-    elif suffix in action_names:
-        action = suffix
-    else:
-        action = "execute"
-    action = _EXTEND_ACTION_ALIASES.get(action, action)
-
-    key = str(tool_spec.get("name") or tool_spec.get("key") or "").strip()
-    if not key and suffix and suffix not in action_names:
-        key = suffix
-    return action, key
-
-
-def _parse_integration_tool(tool_spec):
-    tool_name = str(tool_spec.get("tool") or "")
-    integration_command = (
-        tool_name.removeprefix("integration/")
-        if tool_name.startswith("integration/")
-        else ""
-    )
-    suffix_action = ""
-    integration_key = integration_command
-    if "." in integration_command:
-        possible_key, possible_suffix = integration_command.rsplit(".", 1)
-        suffix_action = {
-            "list": "list",
-            "ready": "ready",
-            "needs_setup": "needs_setup",
-            "pending": "pending",
-            "show": "show",
-            "run": "execute",
-            "execute": "execute",
-            "request_setup": "request_setup",
-            "setup": "request_setup",
-        }.get(possible_suffix.lower().replace("-", "_"), "")
-        if suffix_action:
-            integration_key = possible_key
-    explicit_action = (
-        str(tool_spec.get("type") or "").strip().lower().replace("-", "_")
-    )
-    action = explicit_action or suffix_action or (
-        "execute"
-        if tool_spec.get("name") or tool_spec.get("key") or "arguments" in tool_spec
-        else "list"
-    )
-    action = _EXTEND_ACTION_ALIASES.get(action, action)
-    tool_key = str(tool_spec.get("name") or tool_spec.get("key") or "").strip()
-    return integration_key, action, tool_key
-
-
 def _tool_progress_note(tool_spec):
     tool_name = str(tool_spec.get("tool", "") or "")
     if not tool_name or tool_name == "do_nothing":
@@ -490,36 +409,6 @@ def _tool_progress_note(tool_spec):
     if tool_name == "trust/set":
         target = tool_spec.get("carbon_id") or tool_spec.get("silicon_id") or "unknown"
         return f"updating trust for {target}"
-
-    if tool_name == "extend" or tool_name.startswith("extend/"):
-        action, key = _parse_extend_tool(tool_spec)
-        if action == "request_setup":
-            return f"requesting Extend setup: {key or 'unknown'}"
-        if action == "list":
-            return "listing team-enabled Extend tools"
-        if action == "ready":
-            return "listing ready Extend tools"
-        if action == "needs_setup":
-            return "checking which Extend tools need setup"
-        if action == "pending":
-            return "checking pending Extend setup"
-        if action == "status":
-            return "checking Extend status"
-        if action == "show":
-            return f"inspecting Extend tool: {key or 'unknown'}"
-        if action in {"connections", "requests"}:
-            return f"checking Extend {action}"
-        return f"called Extend tool: {key or 'unknown'}"
-
-    if tool_name.startswith("integration/"):
-        integration_key, action, key = _parse_integration_tool(tool_spec)
-        if action in {"list", "ready", "needs_setup", "pending"}:
-            return f"listing {integration_key} tools"
-        if action == "show":
-            return f"inspecting {integration_key} tool: {key or 'unknown'}"
-        if action == "request_setup":
-            return f"requesting {integration_key} setup"
-        return f"called {integration_key} tool: {key or 'unknown'}"
 
     if tool_name.startswith("cron/") or tool_name == "cron/list":
         return f"called tool: {tool_name}"
@@ -619,9 +508,6 @@ def _is_private_manager_tool_name(tool_name):
         or tool_name in {"trust/list", "trust/get"}
         or tool_name == "trust/set"
         or tool_name == "work_update"
-        or tool_name == "extend"
-        or tool_name.startswith("extend/")
-        or tool_name.startswith("integration/")
     )
 
 
@@ -676,13 +562,7 @@ def execute_single_tool(
                 executed = True
                 result_status = "error" if "Error" in str(result) else "ok"
                 result_summary = (
-                    "[Extend result omitted]"
-                    if (
-                        tool_name == "extend"
-                        or tool_name.startswith("extend/")
-                        or tool_name.startswith("integration/")
-                    )
-                    else "[Advertising memory result omitted]"
+                    "[Advertising memory result omitted]"
                     if tool_name == "advertising_memory/update"
                     else "[Work update result omitted]"
                     if tool_name == "work_update"
@@ -717,6 +597,465 @@ def execute_single_tool(
     return result
 
 
+# --- Tool handlers ---------------------------------------------------------
+#
+# One handler per manager tool.  Each takes the raw tool spec plus the carbon
+# it runs for, and returns the string echoed back to the manager (or None to
+# stay silent).  _TOOL_HANDLERS maps exact tool names onto these; tools whose
+# names carry a suffix ("cron/add", "worker/new") are matched by prefix in
+# _TOOL_PREFIX_HANDLERS.
+
+
+def _tool_work_update(tool_spec, carbon_id):
+    """Record progress against the carbon's open long-running task."""
+    lifecycle = current_long_task(carbon_id)
+    prepared = (
+        lifecycle.prepare_work_update(tool_spec)
+        if lifecycle is not None
+        else [tool_spec]
+    )
+    results = [
+        execute_work_update(prepared_spec, carbon_id)
+        for prepared_spec in prepared
+    ]
+    if lifecycle is not None:
+        lifecycle.record_work_update(tool_spec, prepared, results)
+    return "Tool 'work_update': " + " ".join(str(result) for result in results)
+
+
+def _tool_reply(tool_spec, carbon_id):
+    """Send the manager's reply. Unless work continues, this closes the task."""
+    message = tool_spec.get("message", "")
+    work_continues = bool(tool_spec.get("work_continues", False))
+    lifecycle = current_long_task(carbon_id)
+    if lifecycle is not None and not work_continues:
+        status = lifecycle.deliver_final_reply(
+            message,
+            has_active_workers=_contact_has_active_workers(carbon_id),
+            reply_sender=reply_user,
+        )
+    else:
+        status = reply_user(
+            message,
+            carbon_id,
+            work_continues=work_continues,
+        )
+    return f"Tool 'reply': {status}"
+
+
+def _tool_message_manager(tool_spec, carbon_id):
+    """Relay a message to another carbon's or silicon's manager as a work call."""
+    message = tool_spec.get("message", "")
+    if not message:
+        return "Tool 'message_manager': Error: message is required"
+
+    # Carbons are addressed through their manager; silicons by their own name.
+    target_carbon_id = tool_spec.get("carbon_id", "")
+    target_silicon_id = tool_spec.get("silicon_id", "")
+    if target_carbon_id:
+        contact_type, requested_id, target_kind = "carbon", target_carbon_id, "manager"
+    elif target_silicon_id:
+        contact_type, requested_id, target_kind = "silicon", target_silicon_id, "silicon"
+    else:
+        return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
+
+    lifecycle = current_long_task(carbon_id)
+    call_task_id = (
+        lifecycle.resolve_task_id(str(tool_spec.get("task_id") or ""))
+        if lifecycle is not None
+        else str(tool_spec.get("task_id") or "")
+    )
+
+    try:
+        contact = ensure_contact_for_target(contact_type, requested_id)
+    except Exception as e:
+        status = _message_failure_status(carbon_id, contact_type, requested_id, e)
+        return f"Tool 'message_manager' (to {requested_id}): Error: {status}"
+
+    target_id = contact.get(f"{contact_type}_id") or requested_id
+    display = contact.get("display_name") or contact.get("name") or target_id
+    target_name = f"{display}'s manager" if contact_type == "carbon" else str(display)
+
+    try:
+        work_call = prepare_outbound_call(
+            carbon_id,
+            target_kind=target_kind,
+            target_id=target_id,
+            target_name=target_name,
+            message=message,
+            task_id=call_task_id,
+        )
+    except Exception as exc:
+        status = _call_preparation_failure_status(
+            carbon_id,
+            contact_type,
+            target_id,
+            exc,
+        )
+        return f"Tool 'message_manager' (to {target_id}): Error: {status}"
+
+    status = send_manager_message(
+        carbon_id,
+        target_id,
+        message,
+        target_type=contact_type,
+        work_call=work_call,
+    )
+    return (
+        f"Tool 'message_manager' (to {target_id}): {status}"
+        + _work_reference_suffix(
+            work_call,
+            "task_id",
+            "work_event_id",
+            "call_id",
+        )
+    )
+
+
+def _tool_trust_inspect(tool_spec, carbon_id):
+    """Read the effective trust policy for one contact, or list every contact."""
+    tool_name = tool_spec.get("tool", "")
+    target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
+    target_silicon_id = str(tool_spec.get("silicon_id") or "").strip()
+    if tool_name == "trust/get" and (
+        bool(target_carbon_id) == bool(target_silicon_id)
+    ):
+        return (
+            "Tool 'trust/get': Error: provide exactly one of carbon_id "
+            "or silicon_id"
+        )
+    if tool_name == "trust/list" and target_carbon_id and target_silicon_id:
+        return (
+            "Tool 'trust/list': Error: provide at most one of carbon_id "
+            "or silicon_id"
+        )
+    try:
+        from core.trust import inspect_trust_policy
+
+        policy = inspect_trust_policy(
+            kind=(
+                "carbon"
+                if target_carbon_id
+                else "silicon"
+                if target_silicon_id
+                else ""
+            ),
+            public_id=target_carbon_id or target_silicon_id,
+            root=PROJECT_ROOT,
+            refresh=True,
+        )
+    except Exception as exc:
+        return f"Tool '{tool_name}': Error: {exc}"
+    return f"Tool '{tool_name}': {json.dumps(policy, sort_keys=True)}"
+
+
+def _tool_trust_set(tool_spec, carbon_id):
+    """Change one contact's trust level, recording who initiated the change."""
+    target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
+    target_silicon_id = str(tool_spec.get("silicon_id") or "").strip()
+    if bool(target_carbon_id) == bool(target_silicon_id):
+        return (
+            "Tool 'trust/set': Error: provide exactly one of carbon_id "
+            "or silicon_id"
+        )
+    raw_level = tool_spec.get("level")
+    # An empty/inherit level clears the override and falls back to the team default.
+    level = None if raw_level in {None, "", "inherit", "team_default"} else str(raw_level)
+    try:
+        from core.trust import set_contact_trust
+
+        initiating_contact = get_contact(carbon_id) or {}
+        result = set_contact_trust(
+            "carbon" if target_carbon_id else "silicon",
+            target_carbon_id or target_silicon_id,
+            level,
+            reason=str(tool_spec.get("reason") or ""),
+            initiated_by_carbon_id=(
+                carbon_id
+                if initiating_contact.get("contact_type") == "carbon"
+                else ""
+            ),
+            root=PROJECT_ROOT,
+        )
+    except Exception as exc:
+        return f"Tool 'trust/set': Error: {exc}"
+    return (
+        f"Tool 'trust/set': {result['target']} is now "
+        f"{result['level']} at Glass revision {result['revision']}"
+    )
+
+
+def _tool_remote_browser(tool_spec, carbon_id):
+    """Share or close the carbon-visible remote browser session."""
+    action_type = tool_spec.get("type", "share")
+    if action_type == "share":
+        expiry = tool_spec.get("expiry", 60)
+        new = tool_spec.get("new", True)
+        start_url = tool_spec.get("url") or tool_spec.get("start_url") or ""
+        status = remote_browser_share(carbon_id, expiry=expiry, new=new, url=start_url)
+        return f"Tool 'remote_browser/share': {status}"
+    if action_type == "close":
+        status = remote_browser_close(carbon_id)
+        return f"Tool 'remote_browser/close': {status}"
+    return f"Tool 'remote_browser': Unknown type '{action_type}'"
+
+
+def _tool_take_back(tool_spec, carbon_id):
+    """Complete a pending take-back request, or retract an already-sent event."""
+    request_id = tool_spec.get("request_id", "")
+    event_id = tool_spec.get("event_id", "")
+    if request_id:
+        status = complete_take_back(request_id, tool_spec.get("message", ""))
+        return f"Tool 'take_back': {status}"
+    if event_id:
+        status = take_back_event(
+            event_id,
+            reason=tool_spec.get("reason", ""),
+            force=bool(tool_spec.get("force", False)),
+        )
+        return f"Tool 'take_back': {status}"
+    return "Tool 'take_back': Error: request_id or event_id is required"
+
+
+def _tool_advertising_memory_update(tool_spec, carbon_id):
+    """Publish this silicon's advertising memory to Glass."""
+    content = tool_spec.get("content")
+    if not isinstance(content, str):
+        return "Tool 'advertising_memory/update': Error: content must be a string"
+    resolve_conflict = tool_spec.get("resolve_conflict", False)
+    if not isinstance(resolve_conflict, bool):
+        return (
+            "Tool 'advertising_memory/update': Error: "
+            "resolve_conflict must be a boolean"
+        )
+    try:
+        from core.team_context import update_own_advertising_memory
+
+        outcome = update_own_advertising_memory(
+            content,
+            root=PROJECT_ROOT,
+            resolve_conflict=resolve_conflict,
+        )
+    except Exception as exc:
+        return f"Tool 'advertising_memory/update': Error: {exc}"
+
+    if not isinstance(outcome, dict):
+        return f"Tool 'advertising_memory/update': {outcome or 'saved'}"
+
+    if outcome.get("ok") is True:
+        acknowledge_team_context_result(outcome)
+    status = str(outcome.get("status") or "saved")
+    details = []
+    revision = outcome.get("revision")
+    actual_revision = outcome.get("actual_revision")
+    if isinstance(revision, int) and not isinstance(revision, bool):
+        details.append(f"revision {revision}")
+    if isinstance(actual_revision, int) and not isinstance(actual_revision, bool):
+        details.append(f"Glass is at revision {actual_revision}")
+    if outcome.get("local_saved") and outcome.get("ok") is False:
+        details.append("local draft preserved")
+    detail = str(outcome.get("detail") or "").strip()
+    if detail:
+        details.append(detail)
+    suffix = f" — {'; '.join(details)}" if details else ""
+    error_prefix = "Error: " if outcome.get("ok") is False else ""
+    return f"Tool 'advertising_memory/update': {error_prefix}{status}{suffix}"
+
+
+def _tool_cron(tool_spec, carbon_id):
+    """Run any cron/* tool; core.cron owns the per-action behaviour."""
+    try:
+        return execute_cron_tool(tool_spec)
+    except Exception as e:
+        return f"Tool '{tool_spec.get('tool', '')}': Error: {e}"
+
+
+def _worker_new(tool_spec, carbon_id, worker_type, worker_id):
+    """Spawn a worker, journalling the intent first so a crash can't lose it."""
+    if not worker_type:
+        return "Tool 'worker/new': Error: worker_type is required. Use worker/browser, worker/terminal, or worker/writer"
+    if not worker_id:
+        return "Tool 'worker/new': Error: worker-id is required"
+    task = tool_spec.get("task", "")
+    if not task:
+        return f"Tool 'worker/new' ({worker_id}): Error: task is required"
+
+    lifecycle = current_long_task(carbon_id)
+    lifecycle_task_id = ""
+    pending_work_invocation = {}
+    if lifecycle is not None:
+        lifecycle_task_id = lifecycle.ensure("spawning_worker")
+        durable_task_id = lifecycle.resolve_task_id(
+            str(tool_spec.get("task_id") or "")
+        )
+        if durable_task_id:
+            # Refuse to start the worker if we cannot durably record that we did.
+            pending_work_invocation = lifecycle.journal_worker_start(
+                worker_id,
+                worker_type,
+                task,
+                task_id=durable_task_id,
+            )
+            if not pending_work_invocation:
+                return (
+                    f"Tool 'worker/new' ({worker_type}, {worker_id}): "
+                    "Error: durable worker update admission is "
+                    "unavailable; worker was not started"
+                )
+
+    incognito = tool_spec.get("incognito", False)
+    status = start_worker(worker_id, task, worker_type, carbon_id, incognito=incognito)
+    work_invocation = {}
+    if "Error" not in status:
+        if lifecycle is not None and pending_work_invocation:
+            work_invocation = lifecycle.mark_worker_started(
+                worker_id,
+                queued="queued" in status.lower(),
+            )
+            if not work_invocation:
+                status += " (durable worker update queued for retry)"
+        else:
+            work_invocation = record_worker_started(
+                carbon_id,
+                worker_id,
+                worker_type,
+                task,
+                queued="queued" in status.lower(),
+                task_id=str(
+                    (
+                        lifecycle.resolve_task_id(
+                            str(tool_spec.get("task_id") or "")
+                        )
+                        if lifecycle is not None
+                        else tool_spec.get("task_id")
+                    )
+                    or lifecycle_task_id
+                    or ""
+                ),
+            )
+        trace = Diagnostics.get_active_run(carbon_id)
+        if trace is not None:
+            trace.note_worker_spawned()
+            trace.event("worker.spawned", worker_id=worker_id, worker_type=worker_type)
+    elif lifecycle is not None and pending_work_invocation:
+        lifecycle.discard_worker_intent(worker_id)
+
+    checkback_in = tool_spec.get("checkback_in")
+    if checkback_in and "Error" not in status:
+        try:
+            add_checkback(worker_id, carbon_id, float(checkback_in))
+            status += f" (checkback in {checkback_in} min)"
+        except Exception as e:
+            status += f" (checkback setup failed: {e})"
+
+    return (
+        f"Tool 'worker/new' ({worker_type}, {worker_id}): {status}"
+        + _work_reference_suffix(
+            work_invocation,
+            "task_id",
+            "group_id",
+            "invocation_id",
+        )
+    )
+
+
+def _worker_message(tool_spec, carbon_id, worker_id):
+    """Send follow-up instructions to a worker that is already running."""
+    task = tool_spec.get("message", "")
+    if not worker_id:
+        return "Tool 'worker/message': Error: worker-id is required"
+    if not task:
+        return f"Tool 'worker/message' ({worker_id}): Error: message is required"
+    status = message_worker(worker_id, task, carbon_id)
+    work_invocation = {}
+    if "Error" not in status:
+        work_invocation = record_worker_started(
+            carbon_id,
+            worker_id,
+            "worker",
+            task,
+            queued="queued" in status.lower(),
+            task_id=str(tool_spec.get("task_id") or ""),
+        )
+    return (
+        f"Tool 'worker/message' ({worker_id}): {status}"
+        + _work_reference_suffix(
+            work_invocation,
+            "task_id",
+            "group_id",
+            "invocation_id",
+        )
+    )
+
+
+def _worker_checkback(tool_spec, carbon_id, worker_id):
+    """Schedule a reminder to look in on a worker after N minutes."""
+    checkback_in = tool_spec.get("checkback_in")
+    if not checkback_in:
+        return f"Tool 'worker/checkback' ({worker_id}): Error: checkback_in (minutes) is required"
+    if not worker_id:
+        return "Tool 'worker/checkback': Error: worker-id is required"
+    try:
+        add_checkback(worker_id, carbon_id, float(checkback_in))
+        return f"Tool 'worker/checkback' ({worker_id}): Checkback set for {checkback_in} minutes from now"
+    except Exception as e:
+        return f"Tool 'worker/checkback' ({worker_id}): Error: {e}"
+
+
+def _tool_worker(tool_spec, carbon_id):
+    """Dispatch any worker/* tool to the matching worker action."""
+    worker_type, action_type, worker_id = _parse_worker_tool(tool_spec)
+
+    if action_type == "new":
+        return _worker_new(tool_spec, carbon_id, worker_type, worker_id)
+    if action_type == "message":
+        return _worker_message(tool_spec, carbon_id, worker_id)
+    if action_type == "checkback":
+        return _worker_checkback(tool_spec, carbon_id, worker_id)
+    if action_type == "status":
+        return f"Tool 'worker/status' ({worker_id}): {get_worker_status(worker_id, carbon_id)}"
+    if action_type == "stop":
+        return f"Tool 'worker/stop' ({worker_id}): {stop_worker(worker_id, carbon_id)}"
+    if action_type == "list_active":
+        return f"Tool 'worker/list_active': {list_active(carbon_id)}"
+    if action_type == "list_archive":
+        return f"Tool 'worker/list_archive': {list_archive(carbon_id)}"
+    if action_type == "read_archive":
+        return f"Tool 'worker/read_archive' ({worker_id}): {read_archive(worker_id, carbon_id)}"
+    return f"Tool 'worker': Unknown type '{action_type}'"
+
+
+def _tool_new_session(tool_spec, carbon_id):
+    """Start a fresh manager session, dropping the current conversation."""
+    return f"Tool 'new_session': Done. New session id: {new_session(carbon_id)}"
+
+
+def _tool_restart_silicon_service(tool_spec, carbon_id):
+    """No-op here: execute_all_tools performs the restart after the batch."""
+    return None
+
+
+_TOOL_HANDLERS = {
+    "work_update": _tool_work_update,
+    "reply": _tool_reply,
+    "message_manager": _tool_message_manager,
+    "trust/list": _tool_trust_inspect,
+    "trust/get": _tool_trust_inspect,
+    "trust/set": _tool_trust_set,
+    "remote_browser": _tool_remote_browser,
+    "take_back": _tool_take_back,
+    "advertising_memory/update": _tool_advertising_memory_update,
+    "new_session": _tool_new_session,
+    "restart_silicon_service": _tool_restart_silicon_service,
+}
+
+# Checked only after an exact match fails, so a specific tool name always wins.
+_TOOL_PREFIX_HANDLERS = (
+    ("cron/", _tool_cron),
+    ("worker", _tool_worker),
+)
+
+
 def _execute_single_tool(
     tool_spec,
     carbon_id,
@@ -740,515 +1079,15 @@ def _execute_single_tool(
                 progress_note,
             )
 
-    if tool_name == "work_update":
-        lifecycle = current_long_task(carbon_id)
-        prepared = (
-            lifecycle.prepare_work_update(tool_spec)
-            if lifecycle is not None
-            else [tool_spec]
-        )
-        results = [
-            execute_work_update(prepared_spec, carbon_id)
-            for prepared_spec in prepared
-        ]
-        if lifecycle is not None:
-            lifecycle.record_work_update(tool_spec, prepared, results)
-        return "Tool 'work_update': " + " ".join(str(result) for result in results)
-
-    if tool_name == "reply":
-        message = tool_spec.get("message", "")
-        work_continues = bool(tool_spec.get("work_continues", False))
-        lifecycle = current_long_task(carbon_id)
-        if lifecycle is not None and not work_continues:
-            status = lifecycle.deliver_final_reply(
-                message,
-                has_active_workers=_contact_has_active_workers(carbon_id),
-                reply_sender=reply_user,
-            )
-        else:
-            status = reply_user(
-                message,
-                carbon_id,
-                work_continues=work_continues,
-            )
-        return f"Tool 'reply': {status}"
-
-    elif tool_name == "message_manager":
-        target_carbon_id = tool_spec.get("carbon_id", "")
-        target_silicon_id = tool_spec.get("silicon_id", "")
-        message = tool_spec.get("message", "")
-        lifecycle = current_long_task(carbon_id)
-        call_task_id = (
-            lifecycle.resolve_task_id(str(tool_spec.get("task_id") or ""))
-            if lifecycle is not None
-            else str(tool_spec.get("task_id") or "")
-        )
-        if not message:
-            return "Tool 'message_manager': Error: message is required"
-
-        if target_carbon_id:
-            try:
-                contact = ensure_contact_for_target("carbon", target_carbon_id)
-            except Exception as e:
-                status = _message_failure_status(carbon_id, "carbon", target_carbon_id, e)
-                return f"Tool 'message_manager' (to {target_carbon_id}): Error: {status}"
-            target_id = contact.get("carbon_id") or target_carbon_id
-            target_name = (
-                f"{contact.get('display_name') or contact.get('name') or target_id}'s manager"
-            )
-            try:
-                work_call = prepare_outbound_call(
-                    carbon_id,
-                    target_kind="manager",
-                    target_id=target_id,
-                    target_name=target_name,
-                    message=message,
-                    task_id=call_task_id,
-                )
-            except Exception as exc:
-                status = _call_preparation_failure_status(
-                    carbon_id,
-                    "carbon",
-                    target_id,
-                    exc,
-                )
-                return (
-                    f"Tool 'message_manager' (to {target_id}): Error: {status}"
-                )
-            status = send_manager_message(
-                carbon_id,
-                target_id,
-                message,
-                target_type="carbon",
-                work_call=work_call,
-            )
-            return (
-                f"Tool 'message_manager' (to {target_id}): {status}"
-                + _work_reference_suffix(
-                    work_call,
-                    "task_id",
-                    "work_event_id",
-                    "call_id",
-                )
-            )
-
-        if target_silicon_id:
-            try:
-                contact = ensure_contact_for_target("silicon", target_silicon_id)
-            except Exception as e:
-                status = _message_failure_status(carbon_id, "silicon", target_silicon_id, e)
-                return f"Tool 'message_manager' (to {target_silicon_id}): Error: {status}"
-            target_id = contact.get("silicon_id") or target_silicon_id
-            target_name = str(
-                contact.get("display_name")
-                or contact.get("name")
-                or target_id
-            )
-            try:
-                work_call = prepare_outbound_call(
-                    carbon_id,
-                    target_kind="silicon",
-                    target_id=target_id,
-                    target_name=target_name,
-                    message=message,
-                    task_id=call_task_id,
-                )
-            except Exception as exc:
-                status = _call_preparation_failure_status(
-                    carbon_id,
-                    "silicon",
-                    target_id,
-                    exc,
-                )
-                return (
-                    f"Tool 'message_manager' (to {target_id}): Error: {status}"
-                )
-            status = send_manager_message(
-                carbon_id,
-                target_id,
-                message,
-                target_type="silicon",
-                work_call=work_call,
-            )
-            return (
-                f"Tool 'message_manager' (to {target_id}): {status}"
-                + _work_reference_suffix(
-                    work_call,
-                    "task_id",
-                    "work_event_id",
-                    "call_id",
-                )
-            )
-
-        return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
-
-    elif tool_name in {"trust/list", "trust/get"}:
-        target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
-        target_silicon_id = str(tool_spec.get("silicon_id") or "").strip()
-        if tool_name == "trust/get" and (
-            bool(target_carbon_id) == bool(target_silicon_id)
-        ):
-            return (
-                "Tool 'trust/get': Error: provide exactly one of carbon_id "
-                "or silicon_id"
-            )
-        if tool_name == "trust/list" and target_carbon_id and target_silicon_id:
-            return (
-                "Tool 'trust/list': Error: provide at most one of carbon_id "
-                "or silicon_id"
-            )
-        try:
-            from core.trust import inspect_trust_policy
-
-            policy = inspect_trust_policy(
-                kind=(
-                    "carbon"
-                    if target_carbon_id
-                    else "silicon"
-                    if target_silicon_id
-                    else ""
-                ),
-                public_id=target_carbon_id or target_silicon_id,
-                root=PROJECT_ROOT,
-                refresh=True,
-            )
-        except Exception as exc:
-            return f"Tool '{tool_name}': Error: {exc}"
-        return f"Tool '{tool_name}': {json.dumps(policy, sort_keys=True)}"
-
-    elif tool_name == "trust/set":
-        target_carbon_id = str(tool_spec.get("carbon_id") or "").strip()
-        target_silicon_id = str(tool_spec.get("silicon_id") or "").strip()
-        if bool(target_carbon_id) == bool(target_silicon_id):
-            return (
-                "Tool 'trust/set': Error: provide exactly one of carbon_id "
-                "or silicon_id"
-            )
-        raw_level = tool_spec.get("level")
-        level = None if raw_level in {None, "", "inherit", "team_default"} else str(raw_level)
-        try:
-            from core.trust import set_contact_trust
-
-            initiating_contact = get_contact(carbon_id) or {}
-            result = set_contact_trust(
-                "carbon" if target_carbon_id else "silicon",
-                target_carbon_id or target_silicon_id,
-                level,
-                reason=str(tool_spec.get("reason") or ""),
-                initiated_by_carbon_id=(
-                    carbon_id
-                    if initiating_contact.get("contact_type") == "carbon"
-                    else ""
-                ),
-                root=PROJECT_ROOT,
-            )
-        except Exception as exc:
-            return f"Tool 'trust/set': Error: {exc}"
-        return (
-            f"Tool 'trust/set': {result['target']} is now "
-            f"{result['level']} at Glass revision {result['revision']}"
-        )
-
-    elif tool_name == "remote_browser":
-        action_type = tool_spec.get("type", "share")
-        if action_type == "share":
-            expiry = tool_spec.get("expiry", 60)
-            new = tool_spec.get("new", True)
-            start_url = tool_spec.get("url") or tool_spec.get("start_url") or ""
-            status = remote_browser_share(carbon_id, expiry=expiry, new=new, url=start_url)
-            return f"Tool 'remote_browser/share': {status}"
-        if action_type == "close":
-            status = remote_browser_close(carbon_id)
-            return f"Tool 'remote_browser/close': {status}"
-        return f"Tool 'remote_browser': Unknown type '{action_type}'"
-
-    elif tool_name == "take_back":
-        request_id = tool_spec.get("request_id", "")
-        event_id = tool_spec.get("event_id", "")
-        if request_id:
-            status = complete_take_back(request_id, tool_spec.get("message", ""))
-            return f"Tool 'take_back': {status}"
-        if event_id:
-            status = take_back_event(event_id, reason=tool_spec.get("reason", ""), force=bool(tool_spec.get("force", False)))
-            return f"Tool 'take_back': {status}"
-        return "Tool 'take_back': Error: request_id or event_id is required"
-
-    elif tool_name == "advertising_memory/update":
-        content = tool_spec.get("content")
-        if not isinstance(content, str):
-            return "Tool 'advertising_memory/update': Error: content must be a string"
-        resolve_conflict = tool_spec.get("resolve_conflict", False)
-        if not isinstance(resolve_conflict, bool):
-            return (
-                "Tool 'advertising_memory/update': Error: "
-                "resolve_conflict must be a boolean"
-            )
-        try:
-            from core.team_context import update_own_advertising_memory
-
-            outcome = update_own_advertising_memory(
-                content,
-                root=PROJECT_ROOT,
-                resolve_conflict=resolve_conflict,
-            )
-        except ValueError as exc:
-            return f"Tool 'advertising_memory/update': Error: {exc}"
-        except Exception as exc:
-            return f"Tool 'advertising_memory/update': Error: {exc}"
-
-        if isinstance(outcome, dict):
-            if outcome.get("ok") is True:
-                acknowledge_team_context_result(outcome)
-            status = str(outcome.get("status") or "saved")
-            details = []
-            revision = outcome.get("revision")
-            actual_revision = outcome.get("actual_revision")
-            if isinstance(revision, int) and not isinstance(revision, bool):
-                details.append(f"revision {revision}")
-            if (
-                isinstance(actual_revision, int)
-                and not isinstance(actual_revision, bool)
-            ):
-                details.append(f"Glass is at revision {actual_revision}")
-            if outcome.get("local_saved") and outcome.get("ok") is False:
-                details.append("local draft preserved")
-            detail = str(outcome.get("detail") or "").strip()
-            if detail:
-                details.append(detail)
-            suffix = f" — {'; '.join(details)}" if details else ""
-            error_prefix = "Error: " if outcome.get("ok") is False else ""
-            return (
-                "Tool 'advertising_memory/update': "
-                f"{error_prefix}{status}{suffix}"
-            )
-        return f"Tool 'advertising_memory/update': {outcome or 'saved'}"
-
-    elif tool_name == "extend" or tool_name.startswith("extend/"):
-        action, key = _parse_extend_tool(tool_spec)
-        if action == "request_setup":
-            return request_extend_setup(
-                key,
-                note=tool_spec.get("note", ""),
-                carbon_id=carbon_id,
-            )
-        if action in _EXTEND_DISCOVERY_ACTIONS:
-            return inspect_extend_for_manager(
-                action,
-                tool_key=key,
-                query=tool_spec.get("query", ""),
-                page=tool_spec.get("page", 1),
-                limit=tool_spec.get("limit", 100),
-                status=tool_spec.get("status", ""),
-            )
-        if action != "execute":
-            return f"Tool 'extend/{key or 'unknown'}': Error: unknown type '{action}'"
-        arguments = tool_spec.get("arguments", {})
-        return execute_extend_tool(key, arguments, carbon_id=carbon_id)
-
-    elif tool_name.startswith("integration/"):
-        integration_key, action, key = _parse_integration_tool(tool_spec)
-        if not integration_key:
-            return "Tool 'integration': Error: integration key is required"
-        if action == "request_setup":
-            return request_direct_integration_setup(
-                integration_key,
-                key,
-                note=tool_spec.get("note", ""),
-                carbon_id=carbon_id,
-            )
-        if action in {"list", "ready", "needs_setup", "pending", "show"}:
-            return inspect_integration_for_manager(
-                integration_key,
-                action,
-                tool_key=key,
-                page=tool_spec.get("page", 1),
-                limit=tool_spec.get("limit", 100),
-            )
-        if action != "execute":
-            return (
-                f"Tool 'integration/{integration_key}': "
-                f"Error: unknown type '{action}'"
-            )
-        return execute_direct_integration_tool(
-            integration_key,
-            key,
-            tool_spec.get("arguments", {}),
-            carbon_id=carbon_id,
-        )
-
-    elif tool_name.startswith("cron/"):
-        try:
-            return execute_cron_tool(tool_spec)
-        except Exception as e:
-            return f"Tool '{tool_name}': Error: {e}"
-
-    elif tool_name == "cron/list":
-        try:
-            return execute_cron_tool(tool_spec)
-        except Exception as e:
-            return f"Tool 'cron/list': Error: {e}"
-
-    elif tool_name.startswith("worker"):
-        worker_type, action_type, worker_id = _parse_worker_tool(tool_spec)
-
-        if action_type == "new":
-            if not worker_type:
-                return "Tool 'worker/new': Error: worker_type is required. Use worker/browser, worker/terminal, or worker/writer"
-            if not worker_id:
-                return "Tool 'worker/new': Error: worker-id is required"
-            task = tool_spec.get("task", "")
-            if not task:
-                return f"Tool 'worker/new' ({worker_id}): Error: task is required"
-            lifecycle = current_long_task(carbon_id)
-            lifecycle_task_id = ""
-            pending_work_invocation = {}
-            if lifecycle is not None:
-                lifecycle_task_id = lifecycle.ensure("spawning_worker")
-                requested_task_id = str(tool_spec.get("task_id") or "")
-                durable_task_id = lifecycle.resolve_task_id(
-                    requested_task_id
-                )
-                if durable_task_id:
-                    pending_work_invocation = lifecycle.journal_worker_start(
-                        worker_id,
-                        worker_type,
-                        task,
-                        task_id=durable_task_id,
-                    )
-                    if not pending_work_invocation:
-                        return (
-                            f"Tool 'worker/new' ({worker_type}, {worker_id}): "
-                            "Error: durable worker update admission is "
-                            "unavailable; worker was not started"
-                        )
-            incognito = tool_spec.get("incognito", False)
-            status = start_worker(worker_id, task, worker_type, carbon_id, incognito=incognito)
-            work_invocation = {}
-            if "Error" not in status:
-                if lifecycle is not None and pending_work_invocation:
-                    work_invocation = lifecycle.mark_worker_started(
-                        worker_id,
-                        queued="queued" in status.lower(),
-                    )
-                    if not work_invocation:
-                        status += " (durable worker update queued for retry)"
-                else:
-                    work_invocation = record_worker_started(
-                        carbon_id,
-                        worker_id,
-                        worker_type,
-                        task,
-                        queued="queued" in status.lower(),
-                        task_id=str(
-                            (
-                                lifecycle.resolve_task_id(
-                                    str(tool_spec.get("task_id") or "")
-                                )
-                                if lifecycle is not None
-                                else tool_spec.get("task_id")
-                            )
-                            or lifecycle_task_id
-                            or ""
-                        ),
-                    )
-                trace = Diagnostics.get_active_run(carbon_id)
-                if trace is not None:
-                    trace.note_worker_spawned()
-                    trace.event("worker.spawned", worker_id=worker_id, worker_type=worker_type)
-            elif lifecycle is not None and pending_work_invocation:
-                lifecycle.discard_worker_intent(worker_id)
-
-            # Handle checkback_in if specified
-            checkback_in = tool_spec.get("checkback_in")
-            if checkback_in and "Error" not in status:
-                try:
-                    add_checkback(worker_id, carbon_id, float(checkback_in))
-                    status += f" (checkback in {checkback_in} min)"
-                except Exception as e:
-                    status += f" (checkback setup failed: {e})"
-
-            return (
-                f"Tool 'worker/new' ({worker_type}, {worker_id}): {status}"
-                + _work_reference_suffix(
-                    work_invocation,
-                    "task_id",
-                    "group_id",
-                    "invocation_id",
-                )
-            )
-
-        elif action_type == "message":
-            task = tool_spec.get("message", "")
-            if not worker_id:
-                return "Tool 'worker/message': Error: worker-id is required"
-            if not task:
-                return f"Tool 'worker/message' ({worker_id}): Error: message is required"
-            status = message_worker(worker_id, task, carbon_id)
-            work_invocation = {}
-            if "Error" not in status:
-                work_invocation = record_worker_started(
-                    carbon_id,
-                    worker_id,
-                    "worker",
-                    task,
-                    queued="queued" in status.lower(),
-                    task_id=str(tool_spec.get("task_id") or ""),
-                )
-            return (
-                f"Tool 'worker/message' ({worker_id}): {status}"
-                + _work_reference_suffix(
-                    work_invocation,
-                    "task_id",
-                    "group_id",
-                    "invocation_id",
-                )
-            )
-
-        elif action_type == "checkback":
-            checkback_in = tool_spec.get("checkback_in")
-            if not checkback_in:
-                return f"Tool 'worker/checkback' ({worker_id}): Error: checkback_in (minutes) is required"
-            if not worker_id:
-                return "Tool 'worker/checkback': Error: worker-id is required"
-            try:
-                add_checkback(worker_id, carbon_id, float(checkback_in))
-                return f"Tool 'worker/checkback' ({worker_id}): Checkback set for {checkback_in} minutes from now"
-            except Exception as e:
-                return f"Tool 'worker/checkback' ({worker_id}): Error: {e}"
-
-        elif action_type == "status":
-            status = get_worker_status(worker_id, carbon_id)
-            return f"Tool 'worker/status' ({worker_id}): {status}"
-
-        elif action_type == "stop":
-            status = stop_worker(worker_id, carbon_id)
-            return f"Tool 'worker/stop' ({worker_id}): {status}"
-
-        elif action_type == "list_active":
-            status = list_active(carbon_id)
-            return f"Tool 'worker/list_active': {status}"
-
-        elif action_type == "list_archive":
-            status = list_archive(carbon_id)
-            return f"Tool 'worker/list_archive': {status}"
-
-        elif action_type == "read_archive":
-            output = read_archive(worker_id, carbon_id)
-            return f"Tool 'worker/read_archive' ({worker_id}): {output}"
-
-        else:
-            return f"Tool 'worker': Unknown type '{action_type}'"
-
-    elif tool_name == "new_session":
-        new_id = new_session(carbon_id)
-        return f"Tool 'new_session': Done. New session id: {new_id}"
-
-    elif tool_name == "restart_silicon_service":
-        # Handled separately in execute_all_tools
-        return None
-
-    else:
+    handler = _TOOL_HANDLERS.get(tool_name)
+    if handler is None:
+        for prefix, prefix_handler in _TOOL_PREFIX_HANDLERS:
+            if tool_name.startswith(prefix):
+                handler = prefix_handler
+                break
+    if handler is None:
         return f"Unknown tool: '{tool_name}'"
+    return handler(tool_spec, carbon_id)
 
 
 def execute_all_tools(
@@ -1330,10 +1169,7 @@ def _tool_results_for_log(all_tools, results_by_carbon):
     private_result_contacts = {
         carbon_id
         for carbon_id, tool_spec in all_tools
-        if str(tool_spec.get("tool") or "") == "extend"
-        or str(tool_spec.get("tool") or "").startswith("extend/")
-        or str(tool_spec.get("tool") or "").startswith("integration/")
-        or str(tool_spec.get("tool") or "") == "advertising_memory/update"
+        if str(tool_spec.get("tool") or "") == "advertising_memory/update"
         or str(tool_spec.get("tool") or "") in {"trust/list", "trust/get"}
         or str(tool_spec.get("tool") or "") == "trust/set"
         or str(tool_spec.get("tool") or "") == "work_update"
@@ -1352,10 +1188,7 @@ def _manager_output_for_log(output, tools_data):
     """Redact private invocation material before printing manager output."""
     tools = (tools_data.get("tools") or []) if isinstance(tools_data, dict) else []
     parsed_private = any(
-        str(tool_spec.get("tool") or "") == "extend"
-        or str(tool_spec.get("tool") or "").startswith("extend/")
-        or str(tool_spec.get("tool") or "").startswith("integration/")
-        or str(tool_spec.get("tool") or "") == "advertising_memory/update"
+        str(tool_spec.get("tool") or "") == "advertising_memory/update"
         or str(tool_spec.get("tool") or "") in {"trust/list", "trust/get"}
         or str(tool_spec.get("tool") or "") == "trust/set"
         or str(tool_spec.get("tool") or "") == "work_update"
@@ -1604,10 +1437,13 @@ def _contact_has_active_workers(carbon_id):
         return True
 
 
-def run_all_managers(context_by_carbon):
-    """Run managers and retain one complete graph for each inbound message batch."""
-    # Commands are roots too. They must cross the same durable update fence as
-    # ordinary manager turns, rather than running during ingestion.
+def _partition_pending_contexts(context_by_carbon):
+    """Split inbound contexts into ordinary turns and internal accuracy reviews.
+
+    Commands are roots too: they must cross the same durable update fence as
+    ordinary manager turns rather than running during ingestion.  Returns the
+    queued-root bookkeeping alongside the work that is actually ready to run.
+    """
     queued_root_ids = {}
     queued_root_visibility = {}
     accuracy_review_ids = {}
@@ -1621,13 +1457,12 @@ def run_all_managers(context_by_carbon):
         if queued_root_id:
             queued_root_ids[str(contact_id)] = queued_root_id
             if durable_visibility is not None:
-                queued_root_visibility[str(contact_id)] = (
-                    durable_visibility
-                )
+                queued_root_visibility[str(contact_id)] = durable_visibility
         accuracy_review_id, clean_context = extract_accuracy_review_root(
             clean_context
         )
         if accuracy_review_id:
+            # A stale review root has been superseded; drop it entirely.
             if not accuracy_review_root_is_current(
                 str(contact_id),
                 accuracy_review_id,
@@ -1635,6 +1470,7 @@ def run_all_managers(context_by_carbon):
                 continue
             accuracy_review_ids[str(contact_id)] = accuracy_review_id
         cleaned_contexts[contact_id] = clean_context
+
     ordinary_contexts = {
         contact_id: context
         for contact_id, context in cleaned_contexts.items()
@@ -1648,6 +1484,134 @@ def run_all_managers(context_by_carbon):
             if contact_id in cleaned_contexts
         }
     )
+    return queued_root_ids, queued_root_visibility, accuracy_review_ids, pending
+
+
+def _pause_work(carbon_id, long_tasks, note, *, pause_reason="infrastructure"):
+    """Pause a contact's work, through its lifecycle when it has one.
+
+    Without a lifecycle there is nothing to journal against, so the durable
+    task timer is paused directly instead.
+    """
+    lifecycle = long_tasks.get(carbon_id)
+    if lifecycle is not None:
+        lifecycle.defer(note, pause_reason=pause_reason)
+    else:
+        set_active_task_timer(
+            carbon_id,
+            timer_state="paused",
+            pause_reason=pause_reason,
+        )
+
+
+def _begin_manager_trace(carbon_id, context, traces):
+    """Return (and memoise) the diagnostic trace covering this manager turn.
+
+    Reuses an already-active run when one exists, otherwise opens a new one
+    and inherits any room/message correlation handed off from a prior run.
+    Tracing must never break the turn, so failures degrade to no trace.
+    """
+    if carbon_id in traces:
+        return traces[carbon_id]
+    room_id, message_ids = _trace_correlation(context)
+    try:
+        pending_contexts = Diagnostics.consume_pending_contexts(carbon_id)
+        source_run_ids = list(dict.fromkeys(
+            str(item.get("source_run_id") or "")
+            for item in pending_contexts
+            if item.get("source_run_id")
+        ))
+        inherited_message_ids = [
+            str(event_id)
+            for item in pending_contexts
+            for event_id in (item.get("message_ids") or [])
+            if event_id
+        ]
+        message_ids = list(dict.fromkeys([*message_ids, *inherited_message_ids]))
+        if not room_id:
+            room_id = next(
+                (str(item.get("room_id") or "") for item in pending_contexts if item.get("room_id")),
+                "",
+            )
+        trace = Diagnostics.get_active_run(carbon_id)
+        if trace is None:
+            trace = Diagnostics.start_run(
+                trigger=(
+                    "message" if _trace_correlation(context)[1]
+                    else "handoff" if pending_contexts
+                    else "manager_loop"
+                ),
+                carbon_id=carbon_id,
+                # Only a single unambiguous source can be claimed as the parent.
+                parent_run_id=source_run_ids[0] if len(source_run_ids) == 1 else None,
+                room_id=room_id,
+                message_ids=message_ids,
+                meta={
+                    "source_run_ids": source_run_ids,
+                    "handoff_ids": [
+                        str(item.get("handoff_id") or "")
+                        for item in pending_contexts
+                        if item.get("handoff_id")
+                    ],
+                } if pending_contexts else None,
+            )
+            for event_id in message_ids:
+                trace.event("message.ingress", event_id=event_id, room_id=room_id)
+            for item in pending_contexts:
+                trace.event(
+                    "handoff.accepted",
+                    handoff_id=str(item.get("handoff_id") or ""),
+                    source_run_id=str(item.get("source_run_id") or ""),
+                    target_type=str(item.get("target_type") or ""),
+                    target_id=str(item.get("target_id") or carbon_id),
+                )
+            Diagnostics.register_active(carbon_id, trace)
+        else:
+            for event_id in message_ids:
+                trace.add_message(event_id, room_id)
+        if trace is not None:
+            trace.meta["_manager_running"] = True
+    except Exception:
+        trace = None
+    traces[carbon_id] = trace
+    return trace
+
+
+def _close_manager_trace(carbon_id, traces, activity_groups, long_tasks):
+    """Finish one contact's turn: settle its lifecycle, progress group, and trace."""
+    lifecycle = long_tasks.pop(carbon_id, None)
+    if lifecycle is not None:
+        lifecycle.finish(
+            keep_alive=_contact_has_active_workers(carbon_id),
+        )
+    group = activity_groups.pop(carbon_id, "")
+    if group:
+        send_progress(
+            carbon_id,
+            group,
+            "done",
+            "manager finished",
+            frame_key="manager:done",
+        )
+        settle_manager_activity(carbon_id, group)
+    trace = traces.pop(carbon_id, None)
+    Diagnostics.unregister_active(carbon_id, trace)
+    if trace is not None:
+        try:
+            trace.meta.pop("_manager_running", None)
+            trace.close()
+        except Exception:
+            pass
+
+
+def run_all_managers(context_by_carbon):
+    """Run managers and retain one complete graph for each inbound message batch."""
+    (
+        queued_root_ids,
+        queued_root_visibility,
+        accuracy_review_ids,
+        pending,
+    ) = _partition_pending_contexts(context_by_carbon)
     if not pending:
         return
     max_iterations = 10
@@ -1658,95 +1622,8 @@ def run_all_managers(context_by_carbon):
     accuracy_review_satisfied = set()
     invisible_manager_contacts = set()
 
-    def get_trace(carbon_id, context=""):
-        if carbon_id in traces:
-            return traces[carbon_id]
-        room_id, message_ids = _trace_correlation(context)
-        try:
-            pending_contexts = Diagnostics.consume_pending_contexts(carbon_id)
-            source_run_ids = list(dict.fromkeys(
-                str(item.get("source_run_id") or "")
-                for item in pending_contexts
-                if item.get("source_run_id")
-            ))
-            inherited_message_ids = [
-                str(event_id)
-                for item in pending_contexts
-                for event_id in (item.get("message_ids") or [])
-                if event_id
-            ]
-            message_ids = list(dict.fromkeys([*message_ids, *inherited_message_ids]))
-            if not room_id:
-                room_id = next(
-                    (str(item.get("room_id") or "") for item in pending_contexts if item.get("room_id")),
-                    "",
-                )
-            trace = Diagnostics.get_active_run(carbon_id)
-            if trace is None:
-                trace = Diagnostics.start_run(
-                    trigger=(
-                        "message" if _trace_correlation(context)[1]
-                        else "handoff" if pending_contexts
-                        else "manager_loop"
-                    ),
-                    carbon_id=carbon_id,
-                    parent_run_id=source_run_ids[0] if len(source_run_ids) == 1 else None,
-                    room_id=room_id,
-                    message_ids=message_ids,
-                    meta={
-                        "source_run_ids": source_run_ids,
-                        "handoff_ids": [
-                            str(item.get("handoff_id") or "")
-                            for item in pending_contexts
-                            if item.get("handoff_id")
-                        ],
-                    } if pending_contexts else None,
-                )
-                for event_id in message_ids:
-                    trace.event("message.ingress", event_id=event_id, room_id=room_id)
-                for item in pending_contexts:
-                    trace.event(
-                        "handoff.accepted",
-                        handoff_id=str(item.get("handoff_id") or ""),
-                        source_run_id=str(item.get("source_run_id") or ""),
-                        target_type=str(item.get("target_type") or ""),
-                        target_id=str(item.get("target_id") or carbon_id),
-                    )
-                Diagnostics.register_active(carbon_id, trace)
-            else:
-                for event_id in message_ids:
-                    trace.add_message(event_id, room_id)
-            if trace is not None:
-                trace.meta["_manager_running"] = True
-        except Exception:
-            trace = None
-        traces[carbon_id] = trace
-        return trace
-
     def close_trace(carbon_id):
-        lifecycle = long_tasks.pop(carbon_id, None)
-        if lifecycle is not None:
-            lifecycle.finish(
-                keep_alive=_contact_has_active_workers(carbon_id),
-            )
-        group = activity_groups.pop(carbon_id, "")
-        if group:
-            send_progress(
-                carbon_id,
-                group,
-                "done",
-                "manager finished",
-                frame_key="manager:done",
-            )
-            settle_manager_activity(carbon_id, group)
-        trace = traces.pop(carbon_id, None)
-        Diagnostics.unregister_active(carbon_id, trace)
-        if trace is not None:
-            try:
-                trace.meta.pop("_manager_running", None)
-                trace.close()
-            except Exception:
-                pass
+        _close_manager_trace(carbon_id, traces, activity_groups, long_tasks)
 
     try:
         for iteration in range(max_iterations):
@@ -1759,7 +1636,7 @@ def run_all_managers(context_by_carbon):
             with ThreadPoolExecutor(max_workers=max(len(pending), 1)) as executor:
                 futures = {}
                 for carbon_id, text in pending.items():
-                    trace = get_trace(carbon_id, text)
+                    trace = _begin_manager_trace(carbon_id, text, traces)
                     group = activity_groups.get(carbon_id)
                     durable_visibility = queued_root_visibility.get(
                         str(carbon_id)
@@ -1891,17 +1768,11 @@ def run_all_managers(context_by_carbon):
                             raise RuntimeError(
                                 "internal task accuracy review failed"
                             ) from exc
-                        lifecycle = long_tasks.get(carbon_id)
-                        if lifecycle is not None:
-                            lifecycle.defer(
-                                "Work is paused because the manager is unavailable"
-                            )
-                        else:
-                            set_active_task_timer(
-                                carbon_id,
-                                timer_state="paused",
-                                pause_reason="infrastructure",
-                            )
+                        _pause_work(
+                            carbon_id,
+                            long_tasks,
+                            "Work is paused because the manager is unavailable",
+                        )
                         safe_error = (
                             redact_diagnostic_text(exc, limit=500)
                             or "manager call failed"
@@ -1930,18 +1801,12 @@ def run_all_managers(context_by_carbon):
                             raise RuntimeError(
                                 "internal task accuracy review was rate-limited"
                             )
-                        lifecycle = long_tasks.get(carbon_id)
-                        if lifecycle is not None:
-                            lifecycle.defer(
-                                "Work is paused while the provider is rate-limited",
-                                pause_reason="rate_limited",
-                            )
-                        else:
-                            set_active_task_timer(
-                                carbon_id,
-                                timer_state="paused",
-                                pause_reason="rate_limited",
-                            )
+                        _pause_work(
+                            carbon_id,
+                            long_tasks,
+                            "Work is paused while the provider is rate-limited",
+                            pause_reason="rate_limited",
+                        )
                         reply_user(_rate_limit_reply_text(output), carbon_id)
                         continue
                     if output == TIMEOUT_MSG:
@@ -1955,19 +1820,12 @@ def run_all_managers(context_by_carbon):
                             )
                             pending[carbon_id] = TIMEOUT_MSG
                             continue
-                        lifecycle = long_tasks.get(carbon_id)
-                        if lifecycle is not None:
-                            lifecycle.defer(
-                                "Work paused after the manager provider "
-                                "stopped responding twice",
-                                pause_reason="infrastructure",
-                            )
-                        else:
-                            set_active_task_timer(
-                                carbon_id,
-                                timer_state="paused",
-                                pause_reason="infrastructure",
-                            )
+                        _pause_work(
+                            carbon_id,
+                            long_tasks,
+                            "Work paused after the manager provider "
+                            "stopped responding twice",
+                        )
                         reply_user(
                             MANAGER_TIMEOUT_FINAL_REPLY,
                             carbon_id,
@@ -2055,17 +1913,11 @@ def run_all_managers(context_by_carbon):
             for carbon_id in pending:
                 if carbon_id in accuracy_review_ids:
                     continue
-                lifecycle = long_tasks.get(carbon_id)
-                if lifecycle is not None:
-                    lifecycle.defer(
-                        "Work paused after the manager retry budget was exhausted"
-                    )
-                else:
-                    set_active_task_timer(
-                        carbon_id,
-                        timer_state="paused",
-                        pause_reason="infrastructure",
-                    )
+                _pause_work(
+                    carbon_id,
+                    long_tasks,
+                    "Work paused after the manager retry budget was exhausted",
+                )
                 trace = traces.get(carbon_id)
                 if trace is None:
                     continue

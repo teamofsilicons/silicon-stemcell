@@ -120,7 +120,6 @@ class TeamContextPromptTests(unittest.TestCase):
                 mock.patch.object(DNA, "PROJECT_ROOT", str(root)),
                 mock.patch.object(DNA, "_get_contact_info", return_value=None),
                 mock.patch.object(DNA, "_glass_profile_section", return_value=""),
-                mock.patch("core.extend.render_manager_catalog", return_value=""),
             ):
                 prompt = DNA.get_manager_prompt("carbon-1")
 
@@ -355,7 +354,6 @@ class TeamContextPromptTests(unittest.TestCase):
                 mock.patch.object(DNA, "_glass_profile_section", return_value=""),
                 mock.patch.object(DNA, "_glass_team_context_section", return_value=""),
                 mock.patch.object(DNA, "_glass_trust_policy_section", return_value=""),
-                mock.patch("core.extend.render_manager_catalog", return_value=""),
             ):
                 prompt = DNA.get_manager_prompt("peer-si")
 

@@ -449,7 +449,7 @@ class LocalSnapshotTest(unittest.TestCase):
                     finished.set()
 
             with mock.patch.object(
-                backup,
+                backup.store,
                 "state_file_lock",
                 tracking_lock,
             ), state_store.file_lock(maintenance):
@@ -838,7 +838,7 @@ class LocalSnapshotTest(unittest.TestCase):
             writer_started = threading.Event()
             writer_done = threading.Event()
             errors: list[BaseException] = []
-            original_restore = backup._restore_local_snapshot_in_place_locked
+            original_restore = backup.restore._restore_local_snapshot_in_place_locked
 
             def blocked_restore(*args, **kwargs):
                 restore_entered.set()
@@ -867,7 +867,7 @@ class LocalSnapshotTest(unittest.TestCase):
                     writer_done.set()
 
             with mock.patch.object(
-                backup,
+                backup.restore,
                 "_restore_local_snapshot_in_place_locked",
                 side_effect=blocked_restore,
             ):
@@ -895,7 +895,7 @@ class LocalSnapshotTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = self._root_with_memory(td)
             lock_path = root / backup.RELEASE_SEQUENCE_FLOOR_LOCK
-            original_lock = backup._lock_snapshot_handle
+            original_lock = backup.locks.lock_handle
 
             def replace_after_kernel_lock(handle) -> None:
                 original_lock(handle)
@@ -907,8 +907,8 @@ class LocalSnapshotTest(unittest.TestCase):
                 os.replace(replacement, lock_path)
 
             with mock.patch.object(
-                backup,
-                "_lock_snapshot_handle",
+                backup.locks,
+                "lock_handle",
                 side_effect=replace_after_kernel_lock,
             ):
                 with self.assertRaisesRegex(

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from core import backup, data_policy
+from core.runtime_paths import CODE_ROOT
 
 
 class SnapshotGarbageCollectionTest(unittest.TestCase):
@@ -371,7 +372,7 @@ class SnapshotGarbageCollectionTest(unittest.TestCase):
             with backup._snapshot_store_lock(root):
                 process = subprocess.Popen(
                     [sys.executable, "-c", script, str(root)],
-                    cwd=Path(backup.__file__).resolve().parents[1],
+                    cwd=CODE_ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,

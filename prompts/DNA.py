@@ -421,12 +421,7 @@ def get_manager_prompt(carbon_id):
         _read_prompt("MANAGER.md"),
         _read_prompt("WORK_UPDATES.md"),
         _read_prompt("MANAGER_TOOLS.md"),
-        _read_prompt("EXTEND_TOOLS.md"),
     ])
-
-    extend_catalog = _extend_catalog_section()
-    if extend_catalog:
-        parts.append(extend_catalog)
 
     if contact and contact.get("contact_type") == "silicon":
         parts.append(_read_prompt("SILICON_MANAGER.md"))
@@ -478,18 +473,6 @@ def _persistent_runtime_paths_section():
     )
 
 
-def _extend_catalog_section():
-    """Return the live team catalog without making prompt construction fragile."""
-    try:
-        from core.extend import render_manager_catalog
-
-        return render_manager_catalog()
-    except Exception:
-        # The durable EXTEND_TOOLS.md guide must remain available even while
-        # Glass is disconnected or its team directory cannot be loaded.
-        return ""
-
-
 def get_worker_prompt(worker_type):
     """Build the system prompt for a specific worker type.
     worker_type must be one of: browser, terminal, writer.
@@ -506,10 +489,6 @@ def get_worker_prompt(worker_type):
         _persistent_runtime_paths_section(),
         _read_prompt("WORKER.md"),
         _read_prompt(f"worker/{type_upper}.md"),
-        _read_prompt("EXTEND_TOOLS.md"),
         _read_prompt(f"worker/{type_upper}_WTOOLS.md"),
     ]
-    extend_catalog = _extend_catalog_section()
-    if extend_catalog:
-        parts.append(extend_catalog)
     return "\n\n".join(p for p in parts if p), ""

@@ -1,3 +1,11 @@
+"""Durable queue for manager-to-manager messages.
+
+Messages between silicons outlive the sending turn, so they are journalled to
+``manager_queue.json`` under a lock rather than delivered in-process.  The
+queue is bounded (``MANAGER_QUEUE_MAX_ITEMS``), carries diagnostic lineage so a
+handoff can be correlated across runs, and reports capacity/conflict problems
+through ``ManagerQueueCapacityError`` / ``ManagerQueueConflictError``.
+"""
 import os
 import json
 import threading
