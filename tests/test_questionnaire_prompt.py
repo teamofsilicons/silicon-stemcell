@@ -1,49 +1,75 @@
-import re
+"""The setup questions a manager answers before it does anything.
+
+The old QUESTIONNAIRE.md / FINAL_QUESTIONNAIRE.md pair was replaced by
+prompts/SETUP_QUESTIONS.py, which is a tree rather than prose so it can be
+walked in rounds. These tests hold the properties that make it usable: it is
+rendered into every manager prompt, it comes last, every file it can pull in
+exists, and it forbids acting during the thinking phase.
+"""
 import unittest
 from unittest import mock
 
 from prompts import DNA
+from prompts import SETUP_QUESTIONS
 
 
-class QuestionnairePromptTest(unittest.TestCase):
-    def test_questionnaire_is_loaded_once_into_every_manager_prompt(self):
+class SetupQuestionsPromptTest(unittest.TestCase):
+    def _manager_prompt(self):
         with (
             mock.patch.object(DNA, "_get_contact_info", return_value=None),
             mock.patch.object(DNA, "_glass_profile_section", return_value=""),
             mock.patch.object(DNA, "_glass_team_context_section", return_value=""),
         ):
-            prompt = DNA.get_manager_prompt("carbon-1")
+            return DNA.get_manager_prompt("carbon-1")
 
-        self.assertEqual(prompt.count("prompts/QUESTIONNAIRE.md"), 1)
-        self.assertEqual(prompt.count("prompts/FINAL_QUESTIONNAIRE.md"), 1)
-        questionnaire = DNA._read_prompt("QUESTIONNAIRE.md").strip()
-        final_questionnaire = DNA._read_prompt("FINAL_QUESTIONNAIRE.md").strip()
-        self.assertLess(prompt.index(questionnaire), prompt.index(final_questionnaire))
-        self.assertTrue(prompt.rstrip().endswith(final_questionnaire))
-        silicon_prompt = DNA._read_prompt("SILICON.md")
-        self.assertNotIn("QUESTIONNAIRE.md", silicon_prompt)
-        self.assertNotIn("FINAL_QUESTIONNAIRE.md", silicon_prompt)
+    def test_setup_questions_are_rendered_once_and_come_last(self):
+        prompt = self._manager_prompt()
+        rendered = SETUP_QUESTIONS.render().rstrip()
 
-    def test_questionnaire_keeps_its_internal_only_contract(self):
-        """The questionnaire is an internal decision process, never user-facing.
+        # Other prompts mention the file by name, so count the rendered tree
+        # itself rather than the path.
+        self.assertEqual(prompt.count(SETUP_QUESTIONS.HEADER), 1)
+        self.assertIn(rendered, prompt)
+        self.assertTrue(prompt.rstrip().endswith(rendered))
 
-        The prose changed with the v2.2.x prompt rework; what must not change is
-        that the reasoning stays out of the reply and that work is delegated
-        rather than performed inline by the manager.
-        """
-        questionnaire = DNA._read_prompt("QUESTIONNAIRE.md")
-        prose = " ".join(questionnaire.split())
+    def test_superseded_questionnaires_are_no_longer_loaded(self):
+        prompt = self._manager_prompt()
 
-        self.assertIn("NEVER APPEAR IN THE RESPONSE ITSELF", prose)
-        self.assertIn("DO NOT MENTION THE QUESTIONNAIRE", prose)
-        self.assertIn("internal decision process", prose)
-        self.assertIn(
-            "Never perform time taking actions as a manager yourself", prose
+        self.assertNotIn("prompts/QUESTIONNAIRE.md", prompt)
+        self.assertNotIn("prompts/FINAL_QUESTIONNAIRE.md", prompt)
+
+    def test_thinking_phase_forbids_running_commands(self):
+        rendered = SETUP_QUESTIONS.render()
+
+        self.assertIn("Do not run any command during this phase", rendered)
+        self.assertIn("iwantto", rendered)
+
+    def test_every_question_is_reachable_and_numbered_in_order(self):
+        rendered = SETUP_QUESTIONS.render()
+        numbers = [
+            line.split(".", 1)[0]
+            for line in rendered.splitlines()
+            if line[:1].isdigit() and ". " in line
+        ]
+
+        self.assertGreaterEqual(len(SETUP_QUESTIONS.QUESTIONS), 10)
+        self.assertEqual(
+            numbers,
+            [str(index) for index in range(1, len(SETUP_QUESTIONS.QUESTIONS) + 1)],
         )
+        for entry in SETUP_QUESTIONS.QUESTIONS:
+            self.assertEqual(len(entry), 1, "each entry holds exactly one question")
+            for question in entry:
+                self.assertIn(question, rendered)
 
-    def test_questionnaire_is_a_numbered_list_of_questions(self):
-        questionnaire = DNA._read_prompt("QUESTIONNAIRE.md")
-        numbered = re.findall(r"(?m)^(\d+)\)\s+\S", questionnaire)
-        self.assertGreaterEqual(len(numbered), 10)
-        # Sequential from 1, so no question is dropped or duplicated in edits.
-        self.assertEqual(numbered, [str(i) for i in range(1, len(numbered) + 1)])
+    def test_every_included_file_exists(self):
+        for filename in SETUP_QUESTIONS.included_files():
+            with self.subTest(filename=filename):
+                self.assertTrue(
+                    DNA._prompt_path(filename.removeprefix("prompts/")),
+                )
+                self.assertNotEqual(DNA._read_prompt(filename.removeprefix("prompts/")), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

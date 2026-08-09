@@ -13,9 +13,10 @@ __pycache__/
 # Interface runtime state (contains local trust, rooms, media, watermarks)
 core/interface_state/
 
-# Glass-generated advertising-memory contents
-prompts/advertising/*
-!prompts/advertising/.gitkeep
+# Glass-generated team context and advertising memories (runtime artifacts)
+prompts/TEAM.md
+prompts/TEAM_OF_SILICONS.md
+prompts/advertising/
 
 # Worker outputs (generated at runtime)
 worker/outputs/*.txt
@@ -55,11 +56,11 @@ sessions/
 # Daily activity logs (generated at runtime; backed up via .backupsilicon)
 logs/
 
-# Living data protected from source updates and version control
-core/interface_state/contacts.json
-logs/**
-prompts/CONTACTS.md
-prompts/LORE.md
-prompts/MEMORY.md
-prompts/memory/**
-silicon.json
+# The diagnosis store: every iwantto invocation, for debugging the system
+diagnosis/
+
+# Restart requested by `iwantto restart-silicon`; consumed by the event loop
+.restart_requested
+
+# Local agent/editor settings
+.claude/

@@ -15,7 +15,7 @@ class MessagePromptTest(unittest.TestCase):
         ):
             prompt = DNA.get_manager_prompt("carbon-1")
 
-        filename = "not_be_ignored.md"
+        filename = "NOT_BE_IGNORED.md"
         with open(DNA._prompt_path(filename), encoding="utf-8") as prompt_file:
             exact_contents = prompt_file.read().removesuffix("\n")
 

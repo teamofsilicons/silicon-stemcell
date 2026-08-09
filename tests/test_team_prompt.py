@@ -82,14 +82,51 @@ class TeamContextPromptTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_repository_ships_the_prefetch_team_layout(self):
-        self.assertEqual(
-            (PROJECT_ROOT / "prompts" / "TEAM.md").read_text(encoding="utf-8"),
-            team_context.TEAM_PLACEHOLDER_MARKDOWN,
-        )
-        self.assertTrue(
-            (PROJECT_ROOT / "prompts" / "advertising" / ".gitkeep").is_file()
-        )
+    def test_team_files_are_generated_at_runtime_not_hand_authored(self):
+        """TEAM.md and the advertising mirrors are Glass-owned artifacts.
+
+        They are produced by the runtime layout check rather than written by
+        hand, so a Silicon can never read team data Glass did not verify. The
+        readable `TEAM_OF_SILICONS.md` view is generated from the same content.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "prompts").mkdir()
+            team_context.ensure_team_context_layout(root)
+
+            team_file = root / "prompts" / "TEAM.md"
+            self.assertTrue(team_file.is_file())
+            self.assertEqual(
+                team_file.read_text(encoding="utf-8"),
+                team_context.TEAM_PLACEHOLDER_MARKDOWN,
+            )
+            self.assertTrue((root / "prompts" / "advertising").is_dir())
+
+    def test_verified_team_content_is_mirrored_to_team_of_silicons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompts = root / "prompts"
+            (prompts / "advertising").mkdir(parents=True)
+            self._write_verified_team(
+                root,
+                b"# Acme Silicon Team\n",
+                {
+                    "self-si": "OWN ADVERTISING CONTENT",
+                    "peer-1": "PEER ADVERTISING CONTENT",
+                },
+            )
+            with (
+                mock.patch.object(DNA, "PROMPTS_DIR", str(prompts)),
+                mock.patch.object(DNA, "PROJECT_ROOT", str(root)),
+            ):
+                section = DNA._glass_team_context_section()
+
+            mirror = (prompts / "TEAM_OF_SILICONS.md").read_text(encoding="utf-8")
+
+        self.assertIn("# Acme Silicon Team", section)
+        self.assertIn("# Acme Silicon Team", mirror)
+        self.assertIn("PEER ADVERTISING CONTENT", mirror)
+        self.assertIn("Do not edit", mirror)
 
     def test_manager_prompt_includes_team_and_verified_advertising_contents(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,9 +134,6 @@ class TeamContextPromptTests(unittest.TestCase):
             prompts = root / "prompts"
             advertising = prompts / "advertising"
             advertising.mkdir(parents=True)
-            (prompts / "TEAM_CONTEXT.md").write_text(
-                "Static team policy.", encoding="utf-8"
-            )
             (root / "private.txt").write_text("LOCAL PRIVATE VALUE", encoding="utf-8")
             team_content = (
                 "# Acme Silicon Team\n"
@@ -123,7 +157,6 @@ class TeamContextPromptTests(unittest.TestCase):
             ):
                 prompt = DNA.get_manager_prompt("carbon-1")
 
-        self.assertIn("Static team policy.", prompt)
         self.assertIn("# Acme Silicon Team", prompt)
         self.assertIn("{load-ref!private.txt}", prompt)
         self.assertNotIn("LOCAL PRIVATE VALUE", prompt)

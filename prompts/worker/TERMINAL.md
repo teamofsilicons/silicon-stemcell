@@ -14,4 +14,4 @@ You complete the task given by your manager to the best of your capability.
 
 If you are working on implementing a tool for future use by other Terminal Workers, write it down inside: TERMINAL_WTOOLS.md. Include all information and instructions needed to use, understand and edit the tools.
 
-If you learn any new information or skills when doing your work, write it inside the same tools file under the heading # skills
+If you learn any new information or skills when doing your work, write it inside the same tools file under the heading # skills & tools

@@ -12,7 +12,7 @@ You complete the task given by your manager to the best of your capability.
 
 If you are working on implementing a tool or skill for future use by other Writer Workers, write it down inside: WRITER_WTOOLS.md. Include all information and instructions needed to use, understand and edit the tools.
 
-If you learn any new information or skills when doing your work, write it inside the same tools file under the heading # skills
+If you learn any new information or skills when doing your work, write it inside the same tools file under the heading # skills & tools
 
 Since writer skills can be long, make a new file for it and write the location that skill can be accessed at.
 

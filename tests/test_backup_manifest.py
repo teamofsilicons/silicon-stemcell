@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest import mock
 
 from core import backup
-from core import living_files
 
 
 class BackupManifestTest(unittest.TestCase):
@@ -61,39 +60,6 @@ class BackupManifestTest(unittest.TestCase):
             self.assertEqual(
                 backup.read_manifest(root),
                 list(backup.DEFAULT_MANIFEST),
-            )
-
-
-class LivingFilesTest(unittest.TestCase):
-    def test_seed_only_creates_missing_files(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            templates = root / "templates"
-            (templates / "prompts").mkdir(parents=True)
-            (templates / "prompts" / "MEMORY.md").write_text(
-                "template",
-                encoding="utf-8",
-            )
-            (root / "prompts").mkdir()
-            (root / "prompts" / "MEMORY.md").write_text(
-                "living",
-                encoding="utf-8",
-            )
-            (templates / "prompts" / "LORE.md").write_text(
-                "lore",
-                encoding="utf-8",
-            )
-
-            seeded = living_files.seed_living_files(root, templates)
-
-            self.assertEqual(seeded, ["prompts/LORE.md"])
-            self.assertEqual(
-                (root / "prompts" / "MEMORY.md").read_text(encoding="utf-8"),
-                "living",
-            )
-            self.assertEqual(
-                (root / "prompts" / "LORE.md").read_text(encoding="utf-8"),
-                "lore",
             )
 
 

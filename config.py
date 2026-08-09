@@ -10,6 +10,8 @@ import time
 
 from core.interface import get_unread_events_durable
 from core.cron import check_crons
+from core.heartbeat import check_advisor_heartbeats, check_manager_heartbeats
+from core.iwantto.commands.remind import reap_fired_reminders
 from core.messages import check_manager_messages_durable
 from worker.handler import check_completed_workers_formatted, clean_old_archives
 from update import check_for_system_update
@@ -108,6 +110,49 @@ def _team_context_notice(result):
     return ""
 
 
+ADVERTISING_FILE = "prompts/ADVERTISING.md"
+ADVERTISING_PUBLISH_STATE = "core/interface_state/advertising_publish.json"
+
+
+def _publish_own_advertising():
+    """Carry ``prompts/ADVERTISING.md`` out to the team when it changes.
+
+    Advertising memory is a plain file the Silicon edits directly — there is no
+    command to publish it, by design, because a Silicon should describe itself
+    by writing rather than by remembering to run something. So the sync tick
+    watches the file and publishes it, and only when the content actually
+    changed, so an unchanged file never burns a Glass revision.
+
+    Returns the sync result when a publish was attempted, else ``None``.
+    """
+    import hashlib
+    import os
+
+    from core.runtime_paths import DATA_ROOT
+    from core.state_store import read_json, write_json
+
+    root = os.fspath(DATA_ROOT)
+    path = os.path.join(root, ADVERTISING_FILE)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            content = handle.read()
+    except OSError:
+        return None
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    state_path = os.path.join(root, ADVERTISING_PUBLISH_STATE)
+    state = read_json(state_path, {"version": 1, "sha256": ""})
+    if state.get("sha256") == digest:
+        return None
+
+    from core.team_context import update_own_advertising_memory
+
+    result = update_own_advertising_memory(content, root=root)
+    if isinstance(result, dict) and result.get("ok"):
+        write_json(state_path, {"version": 1, "sha256": digest})
+    return result
+
+
 def _run_team_context_tick():
     global _TEAM_CONTEXT_LAST_NOTICE
     global _TEAM_CONTEXT_PENDING_NOTICE
@@ -123,10 +168,14 @@ def _run_team_context_tick():
         activity = _TEAM_CONTEXT_MAINTENANCE_ACTIVITY
         if activity is not None:
             with heartbeat_scope([activity]):
+                published = _publish_own_advertising()
                 result = team_context_tick()
         else:
+            published = _publish_own_advertising()
             result = team_context_tick()
-        notice = _team_context_notice(result)
+        # A failed publish is what the Silicon needs to hear about; a healthy
+        # tick afterwards must not mask it.
+        notice = _team_context_notice(published) or _team_context_notice(result)
         with _TEAM_CONTEXT_LOCK:
             if result_epoch != _TEAM_CONTEXT_RESULT_EPOCH:
                 # A successful explicit update superseded this in-flight tick.
@@ -287,5 +336,31 @@ EVENT_LOOP = [
         "interval_seconds": 60 * 60,
         "jitter_seconds": 5 * 60,
         "on_error": lambda e: print(f"[Archive Cleanup Error] {e}", flush=True),
+    },
+    {
+        # Checked every minute; the handler decides which managers are due, so
+        # the 13-minute cadence survives a restart instead of resetting.
+        "name": "check_manager_heartbeats",
+        "description": "Beat every manager's heart every 13 minutes",
+        "execute": check_manager_heartbeats,
+        "interval_seconds": 60,
+        "jitter_seconds": 10,
+        "on_error": lambda e: print(f"[Heartbeat Error] {e}", flush=True),
+    },
+    {
+        "name": "check_advisor_heartbeats",
+        "description": "Let every advisor check on its manager every 5 hours",
+        "execute": check_advisor_heartbeats,
+        "interval_seconds": 5 * 60,
+        "jitter_seconds": 60,
+        "on_error": lambda e: print(f"[Advisor Heartbeat Error] {e}", flush=True),
+    },
+    {
+        "name": "reap_reminders",
+        "description": "Delete one-off reminders that have already fired",
+        "execute": reap_fired_reminders,
+        "interval_seconds": 5 * 60,
+        "jitter_seconds": 30,
+        "on_error": lambda e: print(f"[Reminder Reaper Error] {e}", flush=True),
     },
 ]

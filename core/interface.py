@@ -1809,6 +1809,19 @@ def _record_incoming_bookkeeping(
         )
     except Exception:
         pass
+    try:
+        # A reply arriving is what makes earlier messages "read" as far as
+        # `iwantto see --unread` is concerned, so inbound is recorded too.
+        from core.iwantto.message_log import record_inbound
+
+        record_inbound(
+            contact_id,
+            event_id,
+            body,
+            "file" if media_id else "text",
+        )
+    except Exception:
+        pass
 
 
 def _record_incoming_call_bookkeeping(
@@ -2866,6 +2879,26 @@ def reply_contact(
                 elif seg_type == "voice":
                     sent = client.tts(room_id, seg_value)
                 sent_event_id = _sent_event_id(sent)
+                if sent is not None:
+                    # `iwantto see` reads from this record. Glass reports read
+                    # receipts outward only, so what this Silicon sent is only
+                    # knowable if it is written down here as it goes out.
+                    try:
+                        from core.iwantto.journal import record_message
+                        from core.iwantto.message_log import record_outbound
+
+                        record_outbound(
+                            contact_id, sent_event_id, seg_value, seg_type
+                        )
+                        record_message(
+                            "out",
+                            contact_id,
+                            via="interface",
+                            event_id=sent_event_id,
+                            body=seg_value,
+                        )
+                    except Exception:
+                        pass
                 if (
                     seg_type == "text"
                     and contact.get("contact_type") == "silicon"

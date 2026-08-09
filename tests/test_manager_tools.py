@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 import tempfile
@@ -14,28 +15,76 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ManagerToolsDocTest(unittest.TestCase):
-    def test_json_examples_are_valid(self):
-        text = (PROJECT_ROOT / "prompts" / "MANAGER_TOOLS.md").read_text(encoding="utf-8")
-        blocks = re.findall(r"```json\n(.*?)\n```", text, flags=re.S)
-        self.assertGreater(len(blocks), 0)
-        for index, block in enumerate(blocks, 1):
-            with self.subTest(block=index):
-                json.loads(block)
+    """A manager's tools are `iwantto` commands now, not end-of-turn tool JSON."""
 
-    def test_direct_carbon_attribution_requires_exact_quote(self):
-        for filename in ("MANAGER.md", "MANAGER_TOOLS.md"):
-            with self.subTest(filename=filename):
-                text = (PROJECT_ROOT / "prompts" / filename).read_text(
-                    encoding="utf-8"
-                )
-                self.assertRegex(
-                    text,
-                    r"MUST\s+include the carbon's exact original message",
-                )
-                self.assertRegex(
-                    text,
-                    r"(?:Quote it )?verbatim as a clearly\s+labeled quote",
-                )
+    def test_every_command_the_prompts_promise_exists_in_the_cli(self):
+        from core.iwantto.cli import build_parser
+
+        text = "\n".join(
+            (PROJECT_ROOT / "prompts" / name).read_text(encoding="utf-8")
+            for name in ("MANAGER_TOOLS.md", "IWANTTO_CLI_REFERENCE.md")
+        )
+        # Only backticked command spans; prose like "the iwantto cli" is not a
+        # promise that a subcommand named `cli` exists.
+        documented = set(re.findall(r"`iwantto ([a-z][a-z-]+)", text))
+        self.assertTrue(documented, "the prompts document no iwantto commands")
+
+        subparser_action = next(
+            action
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        implemented = set(subparser_action.choices)
+
+        self.assertEqual(
+            sorted(documented - implemented),
+            [],
+            "the prompts promise commands the CLI does not implement",
+        )
+
+    def test_every_flag_the_reference_promises_is_accepted(self):
+        """IWANTTO_CLI_REFERENCE.md is the final authority.
+
+        TODO.md: "iwantto cli reference is the most imp file and the only final
+        file. if you notice any descripency – then update it in accordance to
+        the iwantto cli reference." This is that check, mechanically.
+        """
+        from core.iwantto.cli import build_parser
+
+        reference = (
+            PROJECT_ROOT / "prompts" / "IWANTTO_CLI_REFERENCE.md"
+        ).read_text(encoding="utf-8")
+        subparsers = next(
+            action
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+
+        gaps = []
+        for match in re.finditer(r"`iwantto ([a-z][a-z-]*)([^`]*)`", reference):
+            command, rest = match.group(1), match.group(2)
+            if command not in subparsers.choices:
+                gaps.append((command, "<command missing>"))
+                continue
+            accepted = {
+                option
+                for action in subparsers.choices[command]._actions
+                for option in action.option_strings
+            }
+            gaps.extend(
+                (command, flag)
+                for flag in re.findall(r"(--[a-z][a-z-]*)", rest)
+                if flag not in accepted
+            )
+
+        self.assertEqual(sorted(set(gaps)), [])
+
+    def test_manager_tools_prompt_carries_no_tool_json(self):
+        text = (PROJECT_ROOT / "prompts" / "MANAGER_TOOLS.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('"tools"', text)
+        self.assertIn("iwantto", text)
 
 
 class ManagerActivityVisibilityTest(unittest.TestCase):

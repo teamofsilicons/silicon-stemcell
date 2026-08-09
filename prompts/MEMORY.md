@@ -1,14 +1,18 @@
 # Memory
 
-## Projects
+## Core
 | Name | What |
 |------|------|
 
-## Terms
+## Words
 | Term | Meaning |
 |------|---------|
 
-## Carbon
+## Carbons
+| Key | Value |
+|-----|-------|
+
+## Silicons
 | Key | Value |
 |-----|-------|
 

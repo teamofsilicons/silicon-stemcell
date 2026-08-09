@@ -7,6 +7,7 @@ raw commands, none of which may reach a contact, so every event goes through
 ``sanitize_progress_event`` before it is sent.
 """
 import json
+import os
 import posixpath
 import re
 import time
@@ -627,6 +628,204 @@ def codex_progress_event(msg, state=None):
         return progress_event("codex", DONE, status="error", error=err.get("message") if isinstance(err, dict) else str(err))
 
     return None
+
+
+# How much command output to show in the process log. Set
+# SILICON_LOG_OUTPUT_CHARS=0 for no limit, or a small number to quieten it.
+def _log_output_limit():
+    try:
+        return max(0, int(os.environ.get("SILICON_LOG_OUTPUT_CHARS", "4000")))
+    except (TypeError, ValueError):
+        return 4000
+
+
+def redact_secrets(text):
+    """Strip credential shapes, keeping line structure intact.
+
+    ``redact_diagnostic_text`` collapses whitespace and blanks anything that
+    looks like private manager output — right for a Carbon-visible surface,
+    wrong for a process log you are reading to debug a command. This does the
+    credential scrubbing only.
+    """
+    value = str(text or "")
+    for pattern, replacement in _SENSITIVE_ERROR_PATTERNS:
+        value = pattern.sub(replacement, value)
+    return value
+
+
+def _output_text(value):
+    """Flatten a tool result into text. Claude sends content blocks; Codex sends a string."""
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+            else:
+                parts.append(str(block))
+        return "\n".join(part for part in parts if part)
+    return str(value or "")
+
+
+def _output_block(value, limit):
+    """Render tool output as indented lines, or [] when there is none."""
+    text = _log_safe(_output_text(value)).rstrip()
+    if not text:
+        return []
+    if limit and len(text) > limit:
+        dropped = len(text) - limit
+        text = text[:limit] + f"\n… (+{dropped} more characters)"
+    return [f"    │ {line}" for line in text.splitlines()]
+
+
+# Correlates a tool call to its result across two stream events, so the result
+# can be printed under the command that produced it.
+_LOG_CALLS_KEY = "_log_tool_calls"
+
+
+def _log_safe(text):
+    """Credential-scrub for the process log, keeping the two hard boundaries.
+
+    A terminal log is for the operator, so commands and output belong in it.
+    Peer advertising memory and private manager tool payloads do not — those
+    stay redacted everywhere, including here.
+    """
+    value = str(text or "")
+    if contains_private_manager_tool(value):
+        return _PRIVATE_MANAGER_MARKER
+    if contains_advertising_memory_reference(value):
+        return _ADVERTISING_CONTENT_MARKER
+    return redact_secrets(value)
+
+
+def _reads_private_content(*values):
+    """True when a tool call is reaching for advertising memory.
+
+    The *result* of `cat prompts/advertising/peer.md` is the file's contents,
+    which contain no path to match on — so the call has to be recognised when it
+    starts and its output suppressed by id, not by inspecting the output.
+    """
+    return any(
+        contains_advertising_memory_reference(str(value or ""))
+        or contains_private_manager_tool(str(value or ""))
+        for value in values
+    )
+
+
+def _tool_call_summary(tool_name, tool_input):
+    """One line describing what a tool call is actually doing."""
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    if tool_name == "Bash":
+        return stringify_command(tool_input.get("command")), tool_input.get("description")
+    for key in ("file_path", "path", "notebook_path", "pattern", "query", "url"):
+        if tool_input.get(key):
+            return str(tool_input[key]), None
+    if not tool_input:
+        return "", None
+    try:
+        return compact(json.dumps(tool_input, ensure_ascii=False), 400), None
+    except (TypeError, ValueError):
+        return compact(str(tool_input), 400), None
+
+
+def claude_log_lines(event, state=None):
+    """The operator's view of one raw Claude stream event.
+
+    :func:`progress_event` sanitizes commands and output at construction — they
+    are replaced with markers before they can reach a Carbon or telemetry, which
+    is why the progress surface only ever says "executing command". The raw
+    stream event never leaves this process, so it is the only place a log with
+    real commands and real output can come from.
+
+    Returns a list of lines; output is indented so it stays readable.
+    """
+    state = state if state is not None else {}
+    calls = state.setdefault(_LOG_CALLS_KEY, {})
+    limit = _log_output_limit()
+    etype = event.get("type", "")
+    lines = []
+
+    if etype == "assistant":
+        for block in event.get("message", {}).get("content", []):
+            if block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "?")
+            raw_summary, description = _tool_call_summary(name, block.get("input"))
+            private = _reads_private_content(
+                raw_summary, json.dumps(block.get("input"), default=str)
+            )
+            summary = _log_safe(raw_summary)
+            calls[block.get("id")] = {
+                "name": name,
+                "summary": summary,
+                "private": private,
+            }
+            lines.append(f"{name}: {summary}" if summary else f"{name}")
+            if description:
+                lines.append(f"    ({_log_safe(description)})")
+        return lines
+
+    if etype == "user":
+        for block in event.get("message", {}).get("content", []):
+            if block.get("type") != "tool_result":
+                continue
+            call = calls.pop(block.get("tool_use_id"), {})
+            name = call.get("name") or "tool"
+            summary = call.get("summary") or ""
+            failed = bool(block.get("is_error"))
+            head = f"{name} {'FAILED' if failed else 'done'}"
+            if summary:
+                head += f": {summary}"
+            lines.append(head)
+            if call.get("private"):
+                lines.append(f"    │ {_ADVERTISING_CONTENT_MARKER}")
+                continue
+            lines.extend(_output_block(block.get("content"), limit))
+        return lines
+
+    return lines
+
+
+def codex_log_lines(msg, state=None):
+    """The operator's view of one raw Codex app-server message."""
+    state = state if state is not None else {}
+    calls = state.setdefault(_LOG_CALLS_KEY, {})
+    limit = _log_output_limit()
+    method = msg.get("method", "")
+    params = msg.get("params") or {}
+
+    if method == "item/started":
+        item = params.get("item") or {}
+        item_id = item.get("id") or params.get("itemId")
+        raw_label = codex_item_label(item)
+        private = _reads_private_content(
+            raw_label, json.dumps(item, ensure_ascii=False, default=str)
+        )
+        label = _log_safe(raw_label)
+        name = str(item.get("type") or "item")
+        calls[item_id] = {"name": name, "summary": label, "private": private}
+        return [f"{name}: {label}" if label else name]
+
+    if method == "item/completed":
+        item = params.get("item") or {}
+        item_id = item.get("id") or params.get("itemId")
+        call = calls.pop(item_id, {})
+        name = call.get("name") or str(item.get("type") or "item")
+        summary = call.get("summary") or _log_safe(codex_item_label(item))
+        exit_code = item.get("exitCode")
+        failed = exit_code not in (None, 0)
+        head = f"{name} {'FAILED' if failed else 'done'}"
+        if exit_code is not None:
+            head += f" exit={exit_code}"
+        if summary:
+            head += f": {summary}"
+        private = call.get("private") or _reads_private_content(
+            json.dumps(item, ensure_ascii=False, default=str)
+        )
+        if private:
+            return [head, f"    │ {_ADVERTISING_CONTENT_MARKER}"]
+        return [head, *_output_block(item.get("aggregatedOutput"), limit)]
+
+    return []
 
 
 def progress_display_line(event):

@@ -26,6 +26,7 @@ class CodexAppServer:
         command: str = "codex",
         timeout: float = 180,
         popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
+        env: dict[str, str] | None = None,
     ) -> None:
         self.cwd = cwd
         self.command = command
@@ -33,6 +34,12 @@ class CodexAppServer:
         self.next_id = 1
         self.messages: queue.Queue[tuple[str, str]] = queue.Queue()
         self.stderr_lines: list[str] = []
+        # Serialises stdin writes: the turn loop answers approval requests while
+        # an injector may be steering the same turn from another thread.
+        self._write_lock = threading.Lock()
+        # ``env`` must be a complete environment when given. Callers pass one
+        # per run so a concurrently running manager cannot see another's
+        # identity token, which mutating os.environ would allow.
         self.proc = popen_factory(
             [
                 command,
@@ -50,6 +57,7 @@ class CodexAppServer:
             text=True,
             cwd=cwd,
             bufsize=1,
+            **({"env": env} if env is not None else {}),
         )
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
@@ -88,19 +96,27 @@ class CodexAppServer:
         params: dict[str, Any] | None = None,
         msg_id: int | None = None,
     ) -> int:
-        if msg_id is None:
-            msg_id = self.next_id
-            self.next_id += 1
-        payload: dict[str, Any] = {"id": msg_id, "method": method}
-        if params is not None:
-            payload["params"] = params
-        self.proc.stdin.write(json.dumps(payload) + "\n")
-        self.proc.stdin.flush()
-        return msg_id
+        """Write one request. Safe to call from another thread.
+
+        Unlike :meth:`request` this never touches the message queue, so a
+        caller steering a live turn cannot steal events from the loop that is
+        reading them.
+        """
+        with self._write_lock:
+            if msg_id is None:
+                msg_id = self.next_id
+                self.next_id += 1
+            payload: dict[str, Any] = {"id": msg_id, "method": method}
+            if params is not None:
+                payload["params"] = params
+            self.proc.stdin.write(json.dumps(payload) + "\n")
+            self.proc.stdin.flush()
+            return msg_id
 
     def respond(self, msg_id: int, result: dict[str, Any]) -> None:
-        self.proc.stdin.write(json.dumps({"id": msg_id, "result": result}) + "\n")
-        self.proc.stdin.flush()
+        with self._write_lock:
+            self.proc.stdin.write(json.dumps({"id": msg_id, "result": result}) + "\n")
+            self.proc.stdin.flush()
 
     def handle_server_request(self, message: dict[str, Any]) -> bool:
         """Answer all non-interactive approval/elicitation requests."""

@@ -19,7 +19,7 @@ class RuntimeDataRootTests(unittest.TestCase):
             release_root = (
                 data_root / ".silicon" / "releases" / "test-generation"
             )
-            for directory in ("core", "prompts", "templates", "worker"):
+            for directory in ("core", "prompts", "worker"):
                 shutil.copytree(
                     CODE_ROOT / directory,
                     release_root / directory,
@@ -71,7 +71,6 @@ class RuntimeDataRootTests(unittest.TestCase):
                     diagnostics,
                     glass,
                     interface,
-                    living_files,
                     messages,
                     team_context,
                     work_updates,
@@ -92,7 +91,6 @@ class RuntimeDataRootTests(unittest.TestCase):
                 manager.new_session("carbon-a", brain="claude")
                 handler._save_active({"worker-a": {"pid": 1}})
                 activity_log.log("TEST", "runtime root")
-                living_files.seed_living_files()
                 MaintenanceCoordinator().request_drain(
                     maintenance_id="update-test",
                     deadline_seconds=30,

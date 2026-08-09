@@ -46,7 +46,14 @@ os.environ["PATH"] = os.pathsep.join(
 )
 
 from config import EVENT_LOOP, LOOP_TICK, acknowledge_team_context_result
-from manager import manager_code, parse_manager_output, new_session, _is_rate_limit, TIMEOUT_MSG
+from manager import (
+    INJECTED_PREFIX,
+    manager_code,
+    parse_manager_output,
+    new_session,
+    _is_rate_limit,
+    TIMEOUT_MSG,
+)
 from core.interface import (
     complete_take_back,
     ensure_contact_for_target,
@@ -68,6 +75,8 @@ from core.interface import (
     wait_for_runtime_activity,
 )
 from core.messages import MANAGER_MESSAGES_FILE, send_manager_message
+from core.iwantto import injection
+from core.iwantto import journal as iwantto_journal
 from core.cron import CRON_INVALIDATION_FILE, execute_cron_tool
 from core.maintenance import (
     COORDINATOR as MAINTENANCE,
@@ -343,6 +352,34 @@ def _check_restart_flag():
         except Exception:
             pass
         return f"Silicon service restarted, but error reading restart info: {e}", None
+
+
+RESTART_REQUEST_FILE = os.path.join(PROJECT_ROOT, ".restart_requested")
+
+
+def _check_restart_request():
+    """Honour an `iwantto restart-silicon` request left by a manager.
+
+    A command runs in a child process and cannot re-exec the Stemcell, so it
+    writes a request here and this loop performs the restart.
+    """
+    if not os.path.exists(RESTART_REQUEST_FILE):
+        return
+    carbon_id = None
+    try:
+        with open(RESTART_REQUEST_FILE, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        carbon_id = payload.get("requested_by") or None
+        log(f"[Silicon] Restart requested: {payload.get('reason', '')}")
+    except Exception:
+        pass
+    try:
+        os.remove(RESTART_REQUEST_FILE)
+    except OSError:
+        pass
+    error = _do_restart(carbon_id)
+    if error:
+        log(f"[Silicon] {error}")
 
 
 def _do_restart(carbon_id=None):
@@ -1415,15 +1452,60 @@ def _work_lifecycle_is_visible(trace, context):
     }
 
 
-def _instrumented_manager_call(carbon_id, text, trace, iteration, on_tools, on_progress):
-    if trace is None:
-        return manager_code(text, carbon_id, on_tools=on_tools, on_progress=on_progress)
-    with trace.span(f"round[{iteration}]"):
-        with trace.span("manager_turn"):
+def _instrumented_manager_call(
+    carbon_id,
+    text,
+    trace,
+    iteration,
+    on_tools,
+    on_progress,
+    run_records=None,
+):
+    """Run one manager turn under its own `iwantto` identity.
+
+    The token is issued per turn and lives only as long as the provider
+    subprocess, so a command run mid-turn resolves to this manager and stops
+    resolving the moment the turn ends. ``run_records`` collects what the turn
+    actually did, which is the only evidence the loop gets that a manager acted
+    at all — the actions no longer come back as tool JSON.
+    """
+    from core.iwantto.actor import MANAGER, issue_run_env, revoke_actor
+
+    token, env = issue_run_env(MANAGER, carbon_id, carbon_id)
+    started = time.monotonic()
+    failure = ""
+    try:
+        if trace is None:
             return manager_code(
                 text, carbon_id, on_tools=on_tools, on_progress=on_progress,
-                trace=trace,
+                env=env,
             )
+        with trace.span(f"round[{iteration}]"):
+            with trace.span("manager_turn"):
+                return manager_code(
+                    text, carbon_id, on_tools=on_tools, on_progress=on_progress,
+                    trace=trace, env=env,
+                )
+    except BaseException as exc:
+        failure = type(exc).__name__
+        raise
+    finally:
+        summary = iwantto_journal.run_summary(token)
+        if run_records is not None:
+            run_records[carbon_id] = summary
+        iwantto_journal.record_run(
+            MANAGER,
+            carbon_id,
+            carbon_id,
+            trigger=str(text or "")[:200],
+            seconds=time.monotonic() - started,
+            ok=not failure,
+            detail=failure,
+            iteration=iteration,
+            commands=summary.get("commands") or [],
+        )
+        iwantto_journal.clear_run(token)
+        revoke_actor(token)
 
 
 def _contact_has_active_workers(carbon_id):
@@ -1633,6 +1715,7 @@ def run_all_managers(context_by_carbon):
             log(f"[Silicon] Manager round {iteration + 1} for {list(pending.keys())}...")
             manager_outputs = {}
             already_executed = {}
+            iwantto_runs = {}
             with ThreadPoolExecutor(max_workers=max(len(pending), 1)) as executor:
                 futures = {}
                 for carbon_id, text in pending.items():
@@ -1752,7 +1835,7 @@ def run_all_managers(context_by_carbon):
                         )
                     future = executor.submit(
                         _instrumented_manager_call, carbon_id, text, trace,
-                        iteration, on_tools, on_progress,
+                        iteration, on_tools, on_progress, iwantto_runs,
                     )
                     futures[future] = carbon_id
 
@@ -1831,13 +1914,21 @@ def run_all_managers(context_by_carbon):
                             carbon_id,
                         )
                         continue
-                    if not output or not output.strip():
-                        error_msg = "Manager must output TOOL JSON. You returned empty output."
-                    elif '"tools"' not in output and "'tools'" not in output:
-                        error_msg = "Manager must output TOOL JSON. No tools key found in your output."
-                    else:
-                        error_msg = "TOOL JSON formatting is incorrect. Could not parse valid JSON."
-                    pending[carbon_id] = error_msg
+                    # Managers act through `iwantto` while the turn is running,
+                    # so a turn with no tool JSON is the normal case now. What
+                    # decides completion is whether anything was actually run.
+                    run = iwantto_runs.get(carbon_id) or {}
+                    if run.get("did_nothing") or run.get("acted"):
+                        if carbon_id in accuracy_review_ids:
+                            accuracy_review_satisfied.add(carbon_id)
+                        continue
+                    pending[carbon_id] = (
+                        "You ended your turn without running a single iwantto "
+                        "command. Running at least one is mandatory: do the "
+                        "thing you meant to do, or run "
+                        '`iwantto do-nothing --reason "..."` to say why there '
+                        "is genuinely nothing to do."
+                    )
                     continue
 
                 if is_only_do_nothing(tools_data):
@@ -1966,6 +2057,8 @@ class ManagerDispatcher:
         self._runner = runner or run_all_managers
         self._condition = threading.Condition()
         self._pending = {}
+        # Roots handed to a turn already in flight; completed with it.
+        self._injected = {}
         self._running = set()
         self._threads = set()
         self._closed = False
@@ -2014,6 +2107,36 @@ class ManagerDispatcher:
                     f"{type(exc).__name__}"
                 )
 
+    def _inject_into_live_run(self, admission):
+        """Hand a newly-arrived root to the turn that is already running.
+
+        Durability is unchanged: the root was enqueued before this, and it is
+        completed (or retried) alongside the batch it was injected into, so it
+        shares that run's fate rather than being trusted to a process that has
+        not finished yet.
+        """
+        carbon_id = admission.contact_id
+        accepted = injection.offer(
+            injection.MANAGER,
+            carbon_id,
+            INJECTED_PREFIX + str(admission.context),
+        )
+        if not accepted:
+            return False
+        self._injected.setdefault(carbon_id, []).append(admission)
+        log(f"[Silicon] Injected a new message into the live run for {carbon_id}.")
+        try:
+            iwantto_journal.record_message(
+                "in", carbon_id, via="injected", body=str(admission.context)
+            )
+        except Exception:
+            pass
+        return True
+
+    def _take_injected(self, carbon_id):
+        with self._condition:
+            return self._injected.pop(carbon_id, [])
+
     def _schedule_admissions(self, admissions):
         started = []
         with self._condition:
@@ -2023,6 +2146,12 @@ class ManagerDispatcher:
                 if not isinstance(admission, RootAdmission):
                     continue
                 carbon_id = admission.contact_id
+                # A contact that is mid-turn can take the message now instead
+                # of waiting for the whole run to finish.
+                if carbon_id in self._running and self._inject_into_live_run(
+                    admission
+                ):
+                    continue
                 self._pending.setdefault(carbon_id, []).append(admission)
                 if carbon_id in self._running:
                     continue
@@ -2054,6 +2183,10 @@ class ManagerDispatcher:
                     with self._condition:
                         admissions = self._pending.pop(carbon_id, [])
                         if not admissions:
+                            stranded = self._injected.pop(carbon_id, [])
+                            if stranded:
+                                # Their run finished before this thread exited.
+                                MAINTENANCE.complete_roots(stranded)
                             self._running.discard(carbon_id)
                             self._threads.discard(threading.current_thread())
                             released = True
@@ -2098,13 +2231,19 @@ class ManagerDispatcher:
                                         carbon_id,
                                         review_id,
                                     )
-                            MAINTENANCE.complete_roots(batch)
+                            # Anything injected while that runner was going
+                            # was handled by it, so it completes with it.
+                            MAINTENANCE.complete_roots(
+                                batch + self._take_injected(carbon_id)
+                            )
                             log(
                                 "[Silicon] Manager loop complete for "
                                 f"{carbon_id}."
                             )
                         except Exception as exc:
-                            MAINTENANCE.retry_roots(batch)
+                            MAINTENANCE.retry_roots(
+                                batch + self._take_injected(carbon_id)
+                            )
                             log(
                                 "[Silicon] Manager dispatcher error for "
                                 f"{carbon_id}: {exc}"
@@ -2308,6 +2447,8 @@ def main():
                     maintenance_status.get("phase") != "available"
                 )
                 now = time.monotonic()
+                if not maintenance_active:
+                    _check_restart_request()
                 if not maintenance_active and now >= next_contact_integrity:
                     validate_contacts_integrity()
                     next_contact_integrity = now + 300.0 + contact_jitter
@@ -2436,12 +2577,11 @@ if __name__ == "__main__":
 
         raise SystemExit(maintenance_main(["--root", PROJECT_ROOT, *sys.argv[2:]]))
 
-    # Seed missing living files from tracked templates. Source updates are owned
-    # exclusively by the offline silicon-cli update flow; runtime boot never
-    # fetches Git or mutates repository configuration.
+    # Living files ship in prompts/ and are read in place. Source updates are
+    # owned exclusively by the offline silicon-cli update flow; runtime boot
+    # never fetches Git or mutates repository configuration.
     try:
         from core.backup import ensure_manifest_file
-        from core.living_files import seed_living_files
 
         archived = ensure_manifest_file(PROJECT_ROOT)
         if archived:
@@ -2449,11 +2589,17 @@ if __name__ == "__main__":
                 "[Silicon] Archived legacy backup directory: "
                 + ", ".join(archived)
             )
-        seeded = seed_living_files()
-        if seeded:
-            log(f"[Silicon] Seeded {len(seeded)} living file(s) from templates.")
     except Exception as e:
-        log(f"[Silicon] living-file seed skipped: {e}")
+        log(f"[Silicon] backup manifest check skipped: {e}")
+
+    # Install `iwantto` before any manager or worker can run. It is rewritten
+    # every boot so it always points at the active source generation.
+    try:
+        from core.iwantto.launcher import install as install_iwantto
+
+        log(f"[Silicon] iwantto installed at {install_iwantto()}")
+    except Exception as e:
+        log(f"[Silicon] iwantto launcher install failed: {e}")
 
     # Glass is the single source of truth for provider API keys — pull them into
     # the environment before the brain CLIs or any browser subprocess run, so

@@ -203,7 +203,7 @@ memory, or private conversations. The server and Stemcell both enforce the
 
 Fetched `TEAM.md` data and peer files are generated mirrors; the owning
 Silicon's file is its managed local draft. Advertising-memory contents are
-git-ignored and intentionally absent from `.backupsilicon` and `templates/`;
+git-ignored and intentionally absent from `.backupsilicon`;
 Glass restores canonical published data.
 
 ## Release checks and credential rotation

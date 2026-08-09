@@ -12,6 +12,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import threading
 import sys
 import time
 import uuid
@@ -89,16 +90,111 @@ _BROWSER_PROFILE = _legacy_browser_profile()
 SILICON_BROWSER_PROFILE = _BROWSER_PROFILE
 
 
-def _worker_process_env(contact_id):
-    """Return the environment for a worker process.
+def _worker_process_env(contact_id, worker_id="", worker_type=""):
+    """Return the environment for a worker process, carrying its identity.
 
-    No contact-scoped variable is injected. If one is ever reintroduced, it
-    must be popped from the inherited environment before being set, so a
-    parent manager's value cannot leak one Carbon's context into another
-    Carbon's worker.
+    The worker gets its own `iwantto` token so commands it runs resolve to the
+    worker rather than to the manager that spawned it. ``issue_run_env`` drops
+    any inherited actor variables before setting the new ones, so a parent
+    manager's identity cannot leak one Carbon's context into another Carbon's
+    worker.
     """
+    if not worker_id:
+        return os.environ.copy()
+    from core.iwantto import journal
+    from core.iwantto.actor import WORKER, issue_run_env
 
-    return os.environ.copy()
+    _token, env = issue_run_env(
+        WORKER,
+        worker_id,
+        contact_id,
+        worker_type=worker_type,
+    )
+    # Called exactly once per launch, so it is the one place that sees every
+    # worker run start.
+    journal.record_run(
+        WORKER,
+        worker_id,
+        contact_id,
+        worker_type=worker_type,
+    )
+    return env
+
+
+# Streaming stdin is what makes a running worker reachable. Turn it off with
+# SILICON_STREAMING_INPUT=0 and workers fall back to picking mail up on their
+# next iwantto command.
+def _worker_streaming_enabled():
+    return os.environ.get("SILICON_STREAMING_INPUT", "1") != "0" and not IS_WINDOWS
+
+
+def _start_worker_feeder(worker_id, carbon_id, process, task, output_path):
+    """Keep a worker reachable for as long as it is working.
+
+    A worker is a subprocess in the middle of a job — there is no way to push a
+    line into it once it has started. Streaming stdin is that way: the task goes
+    in first, and anything a manager sends afterwards is written into the same
+    live session, which the worker picks up at its next tool boundary instead of
+    waiting until it next runs a command.
+
+    The thread closes stdin once the worker reports a result, which is what lets
+    it exit. If the Stemcell dies first the pipe closes with it, the worker sees
+    end-of-input, and it finishes on its own.
+    """
+    from core.iwantto import journal, mailbox
+    from manager import _stream_json_user
+
+    def write(text):
+        try:
+            process.stdin.write(_stream_json_user(text))
+            process.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError, ValueError):
+            return False
+
+    def pump():
+        if not write(task):
+            return
+        offset = 0
+        finished = False
+        while process.poll() is None and not finished:
+            delivered = False
+            for item in mailbox.drain("worker", worker_id):
+                sender = str(item.get("from") or "your manager")
+                if write(f"[MESSAGE FROM {sender}]\n{item.get('message') or ''}"):
+                    delivered = True
+                    try:
+                        journal.record_message(
+                            "in", carbon_id, via="injected",
+                            sender=sender, body=str(item.get("message") or ""),
+                        )
+                    except Exception:
+                        pass
+            if delivered:
+                continue
+            # The worker's own stdout is the only signal that it is done.
+            try:
+                with open(output_path, "r", encoding="utf-8", errors="replace") as handle:
+                    handle.seek(offset)
+                    for line in handle:
+                        if '"type":"result"' in line.replace(" ", ""):
+                            finished = True
+                    offset = handle.tell()
+            except OSError:
+                pass
+            if not finished:
+                time.sleep(0.5)
+        # Nothing more is coming; let the worker exit.
+        try:
+            process.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    thread = threading.Thread(
+        target=pump, name=f"worker-feed-{worker_id}", daemon=True
+    )
+    thread.start()
+    return thread
 
 
 def _maintenance_reference():
@@ -548,11 +644,12 @@ def sweep_orphaned_daemons():
     return cleaned
 
 
-def _get_popen_kwargs(env, output_file):
+def _get_popen_kwargs(env, output_file, stdin=None):
     popen_kwargs = dict(
         stdout=output_file,
         stderr=subprocess.PIPE,
         env=env,
+        **({"stdin": stdin} if stdin is not None else {}),
         text=True,
         # Workers execute against the same active source generation as the
         # manager. Relative self-edits are therefore live, restartable, and
@@ -735,9 +832,15 @@ def _launch_claude_worker_process(worker_id, task, worker_type, carbon_id, incog
     ]
     if worker_type == "browser":
         cmd.extend(["--model", BROWSER_WORKER_MODEL])
-    cmd.append(task)
+    streaming = _worker_streaming_enabled()
+    if streaming:
+        # The task arrives on stdin so the pipe stays open for messages the
+        # manager sends while the worker is still working.
+        cmd.append("--input-format=stream-json")
+    else:
+        cmd.append(task)
 
-    env = _worker_process_env(carbon_id)
+    env = _worker_process_env(carbon_id, worker_id, worker_type)
     if worker_type == "browser":
         if incognito:
             # Ephemeral: fresh session, no shared profile/cookies.
@@ -752,12 +855,22 @@ def _launch_claude_worker_process(worker_id, task, worker_type, carbon_id, incog
 
     output_file = open(output_path, "w", encoding="utf-8")
     try:
-        process = subprocess.Popen(cmd, **_get_popen_kwargs(env, output_file))
+        process = subprocess.Popen(
+            cmd,
+            **_get_popen_kwargs(
+                env,
+                output_file,
+                stdin=subprocess.PIPE if streaming else None,
+            ),
+        )
     except Exception as e:
         output_file.close()
         return False, f"Claude launch failed: {e}"
     finally:
         output_file.close()
+
+    if streaming:
+        _start_worker_feeder(worker_id, carbon_id, process, task, output_path)
 
     _record_active_run(worker_id, "claude", session_id, process, task, worker_type, carbon_id, output_path, incognito, run_id)
     mode = "incognito" if incognito else "profiled"
@@ -802,7 +915,7 @@ def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incogn
     if session_id:
         cmd.extend(["--thread-id", session_id])
 
-    env = _worker_process_env(carbon_id)
+    env = _worker_process_env(carbon_id, worker_id, worker_type)
     if worker_type == "browser":
         if incognito:
             # Ephemeral: fresh session, no shared profile/cookies.

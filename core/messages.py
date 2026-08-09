@@ -361,14 +361,22 @@ def send_manager_message(
     message,
     target_type="",
     work_call=None,
+    sender_label="",
 ):
-    """Queue a message from one manager to another and wake the dispatcher."""
+    """Queue a message from one manager to another and wake the dispatcher.
+
+    ``sender_label`` names the sender verbatim for senders that are not another
+    contact's manager — a worker reporting to its own manager, or a previous
+    session handing over its first message.
+    """
     item = {
         "queue_id": uuid.uuid4().hex,
         "from_contact_id": from_contact_id,
         "message": message,
         "timestamp": time.time(),
     }
+    if sender_label:
+        item["sender_label"] = str(sender_label)
     diagnostics = _diagnostic_envelope(
         from_contact_id, to_contact_id, target_type=target_type
     )
@@ -411,7 +419,15 @@ def send_manager_message(
             )
     try:
         from core.interface import notify_runtime_activity
+        from core.iwantto.journal import record_message
 
+        record_message(
+            "out",
+            to_contact_id,
+            via="manager_queue",
+            sender=sender_label or from_contact_id,
+            body=message,
+        )
         notify_runtime_activity()
     except Exception:
         pass
@@ -485,8 +501,10 @@ def _check_manager_messages(*, durable_handoff=False):
                 if queue_id:
                     delivered_ids.add(queue_id)
                 continue
+            sender_label = str(m.get("sender_label") or "")
             item_parts = [
-                f"Message from manager of {sender}:\n{m['message']}"
+                f"Message from {sender_label or f'manager of {sender}'}:"
+                f"\n{m['message']}"
             ]
             if isinstance(work_call, dict) and work_call:
                 correlation = {

@@ -13,14 +13,19 @@ import uuid
 import platform
 import shutil
 import queue
-from contextlib import nullcontext
+import threading
+from contextlib import ExitStack, nullcontext
 
 from prompts.DNA import get_manager_prompt
 from core.codex_app_server import CodexAppServer as _SharedCodexAppServer
 from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from core.iwantto import injection
 from core.progress import (
     DONE,
+    WRITING_FILE,
+    claude_log_lines,
     claude_progress_events,
+    codex_log_lines,
     codex_progress_event,
     contains_advertising_memory_reference,
     contains_private_manager_tool,
@@ -242,8 +247,19 @@ def _attach_usage_to_span(span, progress):
 
 
 def _display_stream_event(event, tag, state=None, progress_events=None):
-    """Print a stream-json event to terminal."""
+    """Print a stream-json event to terminal.
+
+    Rendered from the raw event rather than the progress events, because
+    ``progress_event`` blanks commands and their output at construction so they
+    can never reach a Carbon. The operator running Silicon needs to see exactly
+    what ran and what it printed, and the raw event never leaves this process.
+    """
     progress_events = progress_events if progress_events is not None else claude_progress_events(event, state)
+    log_lines = claude_log_lines(event, state if state is not None else {})
+    if log_lines:
+        for line in log_lines:
+            print(f"  [{tag}] {line}", flush=True)
+        return
     if progress_events:
         for progress in progress_events:
             line = progress_display_line(progress)
@@ -305,18 +321,180 @@ def _notify_progress(on_progress, progress):
 
 
 def _display_codex_stream_event(msg, tag, state):
-    """Print useful Codex app-server notifications as a live activity trace."""
+    """Print useful Codex app-server notifications as a live activity trace.
+
+    Same reasoning as the Claude path: the raw message carries the real command
+    and output, the progress event does not.
+    """
     progress = codex_progress_event(msg, state)
+    log_lines = codex_log_lines(msg, state)
+    if log_lines:
+        for line in log_lines:
+            print(f"  [{tag}] {line}", flush=True)
+        return
     line = progress_display_line(progress)
     if line:
         print(f"  [{tag}] {line}", flush=True)
 
 
+# Streaming stdin is what makes a manager reachable mid-turn. Set
+# SILICON_STREAMING_INPUT=0 to fall back to the single-shot behaviour.
+STREAMING_INPUT = os.environ.get("SILICON_STREAMING_INPUT", "1") != "0"
+
+INJECTED_PREFIX = (
+    "[NEW MESSAGE — arrived while you were working]\n"
+    "This came in after your turn started. Treat it as a fresh trigger: run "
+    "your setup questions for it, then account for it alongside what you are "
+    "already doing.\n\n"
+)
+
+
+def _stream_json_user(text):
+    """One user message in the format `--input-format=stream-json` expects."""
+    return json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": str(text or "")}],
+            },
+        }
+    ) + "\n"
+
+
+class _ClaudeInjector:
+    """Writes a new user message into a running `claude -p` session.
+
+    The session stays reachable until its first `result`. After that the model
+    has finished and anything newer belongs to the next run, so the injector
+    refuses rather than writing into a turn that is already closing.
+    """
+
+    def __init__(self, proc, tag):
+        self._proc = proc
+        self._tag = tag
+        self._lock = threading.Lock()
+        self._open = True
+        self.delivered = 0
+
+    def submit(self, text):
+        with self._lock:
+            if not self._open:
+                return False
+            try:
+                self._proc.stdin.write(_stream_json_user(text))
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                self._open = False
+                return False
+            self.delivered += 1
+            print(f"  [{self._tag}] injected a new message mid-run", flush=True)
+            return True
+
+    def close(self):
+        """Stop accepting and let the provider finish.
+
+        Anything already written is in the pipe and will still be read, so a
+        message accepted a moment before this is not lost.
+        """
+        with self._lock:
+            if not self._open:
+                return
+            self._open = False
+            try:
+                self._proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+
+
+class _CodexInjector:
+    """Steers a live Codex turn with `turn/steer`.
+
+    Uses ``send`` rather than ``request``: ``request`` drains the shared message
+    queue, which would steal events from the loop reading the turn. The response
+    comes back through that loop instead.
+    """
+
+    def __init__(self, client, thread_id, turn_id, tag):
+        self._client = client
+        self._thread_id = thread_id
+        self._turn_id = turn_id
+        self._tag = tag
+        self._lock = threading.Lock()
+        self._open = bool(thread_id and turn_id)
+        self.delivered = 0
+        self.request_ids = set()
+
+    def submit(self, text):
+        with self._lock:
+            if not self._open:
+                return False
+            try:
+                request_id = self._client.send(
+                    "turn/steer",
+                    {
+                        "threadId": self._thread_id,
+                        "expectedTurnId": self._turn_id,
+                        "input": [{"type": "text", "text": str(text or "")}],
+                    },
+                )
+            except (BrokenPipeError, OSError, ValueError):
+                self._open = False
+                return False
+            self.request_ids.add(request_id)
+            self.delivered += 1
+            print(f"  [{self._tag}] steered the live turn with a new message", flush=True)
+            return True
+
+    def close(self):
+        with self._lock:
+            self._open = False
+
+
+def _record_file_write(progress, env, tag):
+    """Journal a file this run wrote, for the diagnosis store.
+
+    The provider stream is the only place a Write/Edit is visible — the file is
+    changed by the provider's own tools, not by Silicon. ``WRITING_FILE``
+    progress events carry the path, so this is where "every file it writes"
+    becomes knowable.
+    """
+    if not progress or progress.get("kind") != WRITING_FILE:
+        return
+    if progress.get("status") != "started":
+        return
+    path = progress.get("path")
+    if not path:
+        return
+    try:
+        from core.iwantto import journal
+        from core.iwantto.actor import CONTACT_ENV, ID_ENV, KIND_ENV
+
+        source = env if env is not None else os.environ
+        journal.record_file_write(
+            path,
+            kind=str(source.get(KIND_ENV) or ""),
+            actor_id=str(source.get(ID_ENV) or tag),
+            contact_id=str(source.get(CONTACT_ENV) or ""),
+            tool=str(progress.get("tool_name") or ""),
+        )
+    except Exception:
+        pass
+
+
 def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
-                   on_progress=None, diag_span=None):
+                   on_progress=None, diag_span=None, env=None,
+                   streaming_input=False, inject_key=""):
     """Run claude CLI with stream-json, show events on terminal.
     on_tools(tools_list) is called for tool JSON found in intermediate assistant texts.
-    Returns (result_text, rate_limit_msg_or_None, returncode, executed_tools)."""
+    Returns (result_text, rate_limit_msg_or_None, returncode, executed_tools).
+
+    ``env``, when given, replaces the inherited environment for this run only.
+    It carries the run's `iwantto` identity token, which must not leak between
+    managers running concurrently."""
+    streaming_input = bool(streaming_input and STREAMING_INPUT)
+    if streaming_input:
+        cmd = [*cmd, "--input-format=stream-json"]
     print(f"  [{tag}] launching: {' '.join(cmd[:6])}...", flush=True)
 
     proc = subprocess.Popen(
@@ -326,14 +504,21 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
         stderr=subprocess.PIPE,
         text=True,
         cwd=PROJECT_ROOT,
+        **({"env": env} if env is not None else {}),
     )
 
+    injector = _ClaudeInjector(proc, tag) if streaming_input else None
     if input_text:
         try:
-            proc.stdin.write(input_text)
-        except BrokenPipeError:
+            proc.stdin.write(
+                _stream_json_user(input_text) if streaming_input else input_text
+            )
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
             print(f"  [{tag}] stdin broken pipe", flush=True)
-    proc.stdin.close()
+    if injector is None:
+        # Single-shot: the provider exits once it has answered.
+        proc.stdin.close()
 
     result_text = ""
     rate_limit_msg = None
@@ -345,71 +530,89 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
     deadline = time.time() + timeout
     progress_state = {}
 
-    while True:
-        if time.time() > deadline:
-            proc.kill()
-            proc.wait()
-            raise subprocess.TimeoutExpired(cmd, timeout)
+    # Reachable while the turn runs: a message arriving now is written
+    # straight into the live session instead of waiting for the next run.
+    registration = (
+        injection.accepting(injection.MANAGER, inject_key, injector.submit)
+        if (injector is not None and inject_key)
+        else nullcontext()
+    )
+    try:
+        with registration:
+            while True:
+                if time.time() > deadline:
+                    proc.kill()
+                    proc.wait()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
 
-        line = proc.stdout.readline()
-        if not line:
-            break
+                line = proc.stdout.readline()
+                if not line:
+                    break
 
-        raw_lines.append(line.rstrip())
-        line = line.strip()
-        if not line:
-            continue
+                raw_lines.append(line.rstrip())
+                line = line.strip()
+                if not line:
+                    continue
 
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
-            # Not JSON — could be plain text output
-            print(f"  [{tag}] raw provider output omitted", flush=True)
-            all_texts.append(line)
-            if _is_rate_limit(line):
-                rate_limit_msg = line
-            continue
+                try:
+                    event = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    # Not JSON — could be plain text output
+                    print(f"  [{tag}] raw provider output omitted", flush=True)
+                    all_texts.append(line)
+                    if _is_rate_limit(line):
+                        rate_limit_msg = line
+                    continue
 
-        progress_events = claude_progress_events(event, progress_state)
-        for progress in progress_events:
-            _attach_usage_to_span(diag_span, progress)
-            _notify_progress(on_progress, progress)
-        _display_stream_event(event, tag, progress_state, progress_events)
+                progress_events = claude_progress_events(event, progress_state)
+                for progress in progress_events:
+                    _attach_usage_to_span(diag_span, progress)
+                    _notify_progress(on_progress, progress)
+                    _record_file_write(progress, env, tag)
+                _display_stream_event(event, tag, progress_state, progress_events)
 
-        etype = event.get("type", "")
+                etype = event.get("type", "")
 
-        if etype == "result":
-            result_text = event.get("result", "")
-            if result_text and _is_rate_limit(result_text):
-                rate_limit_msg = result_text
-            # Track errors — errors array has the actual messages
-            if event.get("is_error"):
-                result_error_subtype = event.get("subtype", "")
-                errors = event.get("errors", [])
-                if errors:
-                    result_error_msg = errors[0]
-                    print(f"  [{tag}] provider error details omitted", flush=True)
+                if etype == "result":
+                    # The model has answered. Stop accepting injections and let it
+                    # exit; anything already written is still in the pipe and read.
+                    if injector is not None:
+                        injector.close()
+                    result_text = event.get("result", "")
+                    if result_text and _is_rate_limit(result_text):
+                        rate_limit_msg = result_text
+                    # Track errors — errors array has the actual messages
+                    if event.get("is_error"):
+                        result_error_subtype = event.get("subtype", "")
+                        errors = event.get("errors", [])
+                        if errors:
+                            result_error_msg = errors[0]
+                            print(f"  [{tag}] provider error details omitted", flush=True)
 
-        elif etype == "assistant":
-            if provider_authentication_failed(event.get("error")):
-                result_error_subtype = "authentication_failed"
-                result_error_msg = "authentication failed"
-            for block in event.get("message", {}).get("content", []):
-                if block.get("type") == "text":
-                    txt = block.get("text", "").strip()
-                    if txt:
-                        all_texts.append(txt)
-                        if _is_rate_limit(txt):
-                            rate_limit_msg = txt
+                elif etype == "assistant":
+                    if provider_authentication_failed(event.get("error")):
+                        result_error_subtype = "authentication_failed"
+                        result_error_msg = "authentication failed"
+                    for block in event.get("message", {}).get("content", []):
+                        if block.get("type") == "text":
+                            txt = block.get("text", "").strip()
+                            if txt:
+                                all_texts.append(txt)
+                                if _is_rate_limit(txt):
+                                    rate_limit_msg = txt
 
-                        # Try to parse as tool JSON and execute mid-stream
-                        if on_tools:
-                            tools_data = parse_manager_output(txt, debug=False)
-                            if tools_data and "tools" in tools_data:
-                                tools_list = tools_data["tools"]
-                                succeeded = on_tools(tools_list)
-                                if succeeded:
-                                    executed_tools.extend(succeeded)
+                                # Try to parse as tool JSON and execute mid-stream
+                                if on_tools:
+                                    tools_data = parse_manager_output(txt, debug=False)
+                                    if tools_data and "tools" in tools_data:
+                                        tools_list = tools_data["tools"]
+                                        succeeded = on_tools(tools_list)
+                                        if succeeded:
+                                            executed_tools.extend(succeeded)
+
+    finally:
+        if injector is not None:
+            injector.close()
 
     stderr = proc.stderr.read()
     rc = proc.wait()
@@ -446,14 +649,30 @@ def _run_streaming(cmd, input_text, tag, timeout=MANAGER_TIMEOUT, on_tools=None,
     )
 
 
-def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None):
+def claude_code(
+    text,
+    carbon_id,
+    on_tools=None,
+    on_progress=None,
+    diag_span=None,
+    session_key=None,
+    system_prompt=None,
+    tag=None,
+    env=None,
+):
     """Invoke the Manager via claude CLI with streaming JSON.
     on_tools(tools_list) is called for mid-stream tool JSON in assistant texts.
-    Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
-    session_id = _get_session_id(carbon_id)
-    system_prompt = get_manager_prompt(carbon_id)
-    prompt_file = _write_prompt_file(carbon_id, system_prompt)
-    tag = f"manager:{carbon_id}"
+    Returns (raw_text_output, rate_limit_message_or_None, executed_tools).
+
+    ``session_key`` and ``system_prompt`` let a non-manager agent — the advisor
+    — reuse this provider path with its own conversation and instructions,
+    while still resolving trust and paths against ``carbon_id``."""
+    session_key = session_key or carbon_id
+    session_id = _get_session_id(session_key)
+    if system_prompt is None:
+        system_prompt = get_manager_prompt(carbon_id)
+    prompt_file = _write_prompt_file(session_key, system_prompt)
+    tag = tag or f"manager:{carbon_id}"
 
     # Stream with --resume
     cmd = [
@@ -473,6 +692,9 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             on_tools=on_tools,
             on_progress=on_progress,
             diag_span=diag_span,
+            env=env,
+            streaming_input=True,
+            inject_key=carbon_id,
         )
         if rc == 0 and result_text.strip():
             return result_text.strip(), rate_limit, executed_tools
@@ -490,7 +712,7 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             # brain — for a codex-brain silicon that returns the codex placeholder
             # string, which claude then rejects ("Invalid session ID"), surfacing
             # a spurious "Manager session not found".
-            new_sid = new_session(carbon_id, brain="claude")
+            new_sid = new_session(session_key, brain="claude")
             # Use --session-id to actually create the session (--resume only looks for existing)
             cmd_new = [
                 CLAUDE_CMD, "-p",
@@ -507,6 +729,9 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
                 on_tools=on_tools,
                 on_progress=on_progress,
                 diag_span=diag_span,
+                env=env,
+                streaming_input=True,
+                inject_key=carbon_id,
             )
             if rc == 0 and result_text.strip():
                 return result_text.strip(), rate_limit, executed_tools
@@ -528,7 +753,7 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
                 executed_tools,
             )
     except subprocess.TimeoutExpired as exc:
-        new_session(carbon_id, brain="claude")
+        new_session(session_key, brain="claude")
         raise ManagerTimeoutError(
             f"Claude manager turn timed out after {MANAGER_TIMEOUT:g} seconds"
         ) from exc
@@ -537,7 +762,7 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
 
     # Fallback: plain text mode with current session
     print(f"  [{tag}] retrying without stream-json...", flush=True)
-    session_id = _get_session_id(carbon_id)  # re-read in case new_session was called above
+    session_id = _get_session_id(session_key)  # re-read in case new_session was called above
     cmd_fallback = [
         CLAUDE_CMD, "-p",
         "--resume", session_id,
@@ -553,6 +778,7 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
             text=True,
             timeout=MANAGER_TIMEOUT,
             cwd=PROJECT_ROOT,
+            **({"env": env} if env is not None else {}),
         )
         output = result.stdout.strip()
         if (
@@ -566,7 +792,7 @@ def claude_code(text, carbon_id, on_tools=None, on_progress=None, diag_span=None
         rl = output if (output and _is_rate_limit(output)) else None
         return output, rl, []
     except subprocess.TimeoutExpired as exc:
-        new_session(carbon_id, brain="claude")
+        new_session(session_key, brain="claude")
         raise ManagerTimeoutError(
             f"Claude manager fallback timed out after "
             f"{MANAGER_TIMEOUT:g} seconds"
@@ -700,7 +926,7 @@ def _redact_codex_agent_message(line, private_item_ids=None):
 class _CodexAppServer(_SharedCodexAppServer):
     """Manager presentation hooks around the shared app-server transport."""
 
-    def __init__(self, tag, timeout=180, stream_log_path=None):
+    def __init__(self, tag, timeout=180, stream_log_path=None, env=None):
         self.tag = tag
         self.stream_log_path = stream_log_path
         self._private_stream_item_ids = set()
@@ -708,6 +934,7 @@ class _CodexAppServer(_SharedCodexAppServer):
             PROJECT_ROOT,
             command=CODEX_CMD,
             timeout=timeout,
+            env=env,
         )
 
     def _handle_stdout_line(self, line):
@@ -787,11 +1014,28 @@ def _codex_start_or_resume_thread(client, carbon_id, system_prompt):
     }
 
 
-def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span=None):
+def codex_app_server(
+    text,
+    carbon_id,
+    on_tools=None,
+    on_progress=None,
+    diag_span=None,
+    session_key=None,
+    system_prompt=None,
+    tag=None,
+    env=None,
+):
     """Invoke the Manager through Codex app-server.
-    Returns (raw_text_output, rate_limit_message_or_None, executed_tools)."""
-    tag = f"manager:{carbon_id}"
-    system_prompt = get_manager_prompt(carbon_id)
+    Returns (raw_text_output, rate_limit_message_or_None, executed_tools).
+
+    ``session_key`` and ``system_prompt`` give the advisor its own Codex thread
+    and instructions on the same transport."""
+    session_key = session_key or carbon_id
+    tag = tag or f"manager:{carbon_id}"
+    if system_prompt is None:
+        system_prompt = get_manager_prompt(carbon_id)
+    # Holds the live-turn registration so a new message can steer this turn.
+    stack = ExitStack()
     client = None
     final_text = ""
     streamed_text = ""
@@ -803,12 +1047,12 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
     stream_display_state = {}
 
     try:
-        client = _CodexAppServer(tag)
+        client = _CodexAppServer(tag, env=env)
         client.request("initialize", {
             "clientInfo": {"name": "silicon", "version": "0.1.0"},
             "capabilities": {"experimentalApi": True},
         }, timeout=30)
-        thread_id, codex_context = _codex_start_or_resume_thread(client, carbon_id, system_prompt)
+        thread_id, codex_context = _codex_start_or_resume_thread(client, session_key, system_prompt)
         codex_progress_event(
             {"type": "silicon.codex_context", **codex_context},
             stream_display_state,
@@ -823,6 +1067,20 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
         }, timeout=60)
         if "error" in turn_resp:
             raise RuntimeError(turn_resp["error"].get("message", "codex turn/start failed"))
+
+        # `turn/steer` requires the id of the turn it is steering and fails if
+        # that turn is no longer the active one, so it is captured here.
+        turn_id = str(
+            ((turn_resp.get("result") or {}).get("turn") or {}).get("id") or ""
+        )
+        injector = _CodexInjector(client, thread_id, turn_id, tag)
+        registration = (
+            injection.accepting(injection.MANAGER, carbon_id, injector.submit)
+            if turn_id
+            else nullcontext()
+        )
+        stack.enter_context(registration)
+        stack.callback(injector.close)
 
         started_at = time.time()
         deadline = started_at + MANAGER_TIMEOUT
@@ -925,7 +1183,7 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
         # A timed-out persisted thread may still contain an unfinished turn.
         # Retrying that same thread can repeat the stall, so the next bounded
         # retry starts with a fresh thread.
-        new_session(carbon_id, brain="codex")
+        new_session(session_key, brain="codex")
         raise ManagerTimeoutError(
             "Codex manager turn stopped producing events before its deadline"
         ) from exc
@@ -934,11 +1192,12 @@ def codex_app_server(text, carbon_id, on_tools=None, on_progress=None, diag_span
             return _provider_not_authenticated_tools("codex"), None, []
         return _safe_manager_error_tools(e), None, []
     finally:
+        stack.close()
         if client:
             client.close()
 
 
-def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None):
+def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None, env=None):
     """Invoke the configured manager brain.
 
     Fallback providers are only tried after the provider above returns a
@@ -955,11 +1214,13 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None):
                     result = codex_app_server(
                         text, carbon_id, on_tools=on_tools,
                         on_progress=on_progress, diag_span=diag_span,
+                        env=env,
                     )
                 else:
                     result = claude_code(
                         text, carbon_id, on_tools=on_tools,
                         on_progress=on_progress, diag_span=diag_span,
+                        env=env,
                     )
         except ManagerTimeoutError:
             result = (
@@ -989,6 +1250,59 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None):
             print(f"  [manager:{carbon_id}] all configured brains failed: {' | '.join(errors)}", flush=True)
         return last
     return '{"tools": [{"tool": "do_nothing"}]}', None, []
+
+
+def run_agent(
+    text,
+    carbon_id,
+    *,
+    session_key,
+    system_prompt,
+    tag,
+    on_progress=None,
+    env=None,
+):
+    """Run a non-manager agent on the manager's configured brain order.
+
+    The advisor is the caller: same provider, same fallback rules, its own
+    session and instructions. Returns the agent's final text, or an empty
+    string if every configured provider failed.
+    """
+    errors = []
+    for provider in get_brain_order():
+        try:
+            if provider == "codex":
+                output, rate_limit, _tools = codex_app_server(
+                    text,
+                    carbon_id,
+                    on_progress=on_progress,
+                    session_key=session_key,
+                    system_prompt=system_prompt,
+                    tag=tag,
+                    env=env,
+                )
+            else:
+                output, rate_limit, _tools = claude_code(
+                    text,
+                    carbon_id,
+                    on_progress=on_progress,
+                    session_key=session_key,
+                    system_prompt=system_prompt,
+                    tag=tag,
+                    env=env,
+                )
+        except ManagerTimeoutError:
+            errors.append(f"{provider}: timed out")
+            continue
+        except Exception as exc:
+            errors.append(f"{provider}: {type(exc).__name__}")
+            continue
+        if output and output.strip() and not rate_limit:
+            return output.strip()
+        errors.append(f"{provider}: {'rate limited' if rate_limit else 'no output'}")
+    if errors:
+        print(f"  [{tag}] no provider produced a result: {' | '.join(errors)}", flush=True)
+    return ""
 
 
 def _manager_provider_failed(output, rate_limit):

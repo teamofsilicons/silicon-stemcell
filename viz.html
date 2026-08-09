@@ -256,7 +256,7 @@ work is a separate LLM CLI subprocess. Read from the outside in.</p>
 serialized turn is supposed to become a worker, and the manager returns immediately with a reply.</p></div>
 
 <!-- ============================ 2 ============================ -->
-<h2 id="loop"><span class="num">02</span>The event loop — 7 handlers, event-driven with recovery clocks</h2>
+<h2 id="loop"><span class="num">02</span>The event loop — 10 handlers, event-driven with recovery clocks</h2>
 <p><code>config.EVENT_LOOP</code> is a list of handler dicts. Each has its own interval and jitter. Native file/inbox notifications
 are the <i>primary</i> trigger; the intervals are only a recovery ceiling for platforms without a healthy watcher.</p>
 
@@ -270,7 +270,12 @@ are the <i>primary</i> trigger; the intervals are only a recovery ceiling for pl
 <tr><td class="k">check_system_updates</td><td>Read-only release check against canonical git tags</td><td class="c">60 min</td><td class="c">5 min</td><td>—</td><td>—</td></tr>
 <tr><td class="k">check_workers</td><td>Reap finished worker processes, parse output, format for the manager</td><td class="c">60 s</td><td class="c">15 s</td><td><b>yes</b></td><td>yes</td></tr>
 <tr><td class="k">clean_archives</td><td>Delete worker archives older than 7 days</td><td class="c">60 min</td><td class="c">5 min</td><td>—</td><td>—</td></tr>
+<tr><td class="k">check_manager_heartbeats</td><td>Beat every manager's heart every <b>13 min</b>, carrying its own active work</td><td class="c">60 s</td><td class="c">10 s</td><td>—</td><td>—</td></tr>
+<tr><td class="k">check_advisor_heartbeats</td><td>Let every advisor check on its manager every <b>5 h</b></td><td class="c">5 min</td><td class="c">60 s</td><td>—</td><td>—</td></tr>
+<tr><td class="k">reap_reminders</td><td>Delete one-off reminders whose cron has already fired</td><td class="c">5 min</td><td class="c">30 s</td><td>—</td><td>—</td></tr>
 </tbody></table></div>
+
+<div class="note"><p>The two heartbeat handlers are checked far more often than they fire: each decides <i>per manager</i> whether that manager is due, so a 13-minute cadence survives a restart instead of resetting to the handler's own interval.</p></div>
 
 <h3>Tick mechanics</h3>
 <div class="chain">
@@ -319,100 +324,146 @@ Bounded at <b>16 concurrent contacts</b>.</p>
   <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">on exception → retry_roots() puts the same context back, same marker, no loss</span></div>
 </div>
 
-<h3>Inside <code>run_all_managers</code> — the tool-result loop</h3>
-<p>This is the innermost agentic cycle and the one that most defines the system's behaviour.</p>
+<h3>Inside <code>run_all_managers</code> — acting mid-run</h3>
+<p>A manager no longer returns a batch of tool JSON for the Stemcell to execute after the turn. It runs
+<code>iwantto</code> as a shell command <i>while the turn is running</i>, the command executes immediately, and the
+result comes straight back on stdout. So a manager can send a message, read the reply, and act on it inside a
+single turn.</p>
 
 <div class="chain">
   <div class="chain-row">
+    <span class="pill c">issue_run_env() → actor token</span>
+    <span class="arrow"></span>
     <span class="pill c">get_manager_prompt(carbon_id)</span>
     <span class="arrow"></span>
     <span class="pill d">provider streams</span>
-    <span class="arrow lbl"><i>mid-stream</i></span>
-    <span class="pill d">reply(work_continues=true) fires immediately</span>
+    <span class="arrow lbl"><i>mid-run</i></span>
+    <span class="pill d">iwantto send / work / delegate …</span>
     <span class="arrow"></span>
-    <span class="pill c">parse_manager_output → tools[]</span>
-    <span class="arrow"></span>
-    <span class="pill c">execute_all_tools()</span>
+    <span class="pill c">executes now, prints result</span>
   </div>
-  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">"Tool execution results:\n…" becomes the next prompt · <b>max 10 iterations</b> · exits when only <code>do_nothing</code> remains</span></div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">the manager reads stdout and keeps going — no round-trip through the Stemcell</span></div>
 </div>
 
 <div class="grid g2">
-  <div class="card"><span class="tag">exit conditions</span>
-    <p><code>is_only_do_nothing()</code> → clean exit. Unparseable output → an error string is fed back as the next prompt.
-    Rate limit → lifecycle deferred + carbon told. Timeout → 1 retry, then paused with <code>pause_reason=infrastructure</code>.
-    Budget exhausted at 10 → <code>manager.iteration_limit</code> span, work paused.</p></div>
-  <div class="card"><span class="tag">de-duplication</span>
-    <p>Tools already executed mid-stream are hashed with <code>json.dumps(sort_keys=True)</code> and skipped in the batch pass,
-    so a streamed reply is never sent twice.</p></div>
+  <div class="card"><span class="tag">how the turn ends</span>
+    <p>The Stemcell never sees the actions, only that the turn finished. What tells it whether the manager
+    <i>did</i> anything is the run record <code>iwantto</code> writes as it goes
+    (<code>core/iwantto/journal.py</code>, keyed by the actor token).
+    <b>acted</b> or <b>do-nothing</b> → the turn is complete.
+    <b>nothing at all</b> → re-prompted, because running at least one command every turn is mandatory.
+    Rate limit → lifecycle deferred. Timeout → 1 retry, then paused. Budget exhausted at 10 iterations → work paused.</p></div>
+  <div class="card"><span class="tag">identity</span>
+    <p>The token is issued per turn into the provider subprocess's own environment — never
+    <code>os.environ</code>, because managers run concurrently in threads. It resolves <code>iwantto</code>'s
+    "I", and stops resolving the moment the turn ends. Tool JSON is still parsed and executed, but only so
+    injected provider-error replies keep working.</p></div>
 </div>
 
 <!-- ============================ 4 ============================ -->
-<h2 id="mtools"><span class="num">04</span>Manager tools — the complete surface</h2>
-<p>Dispatched in <code>main.py:_execute_single_tool</code>. The manager can emit several tools per turn; results come back as
-one concatenated block.</p>
+<h2 id="mtools"><span class="num">04</span><code>iwantto</code> — the complete command surface</h2>
+<p>One CLI, used by managers, advisors, and workers alike. Identity decides what each command means.
+<b>A message goes out directly only when it is run by that contact's own manager</b> — every other case is routed to the
+target's manager, so a contact only ever hears one voice and no two managers ask them the same question twice. An advisor
+shares its manager's "I" and so shares that reach; a <i>worker</i> never does, even toward its own manager's Carbon.
+Implemented in <code>core/iwantto/</code>; installed to <code>&lt;data root&gt;/.local/bin/iwantto</code> on every boot,
+which is already first on <code>PATH</code>.</p>
+
+<div class="tbox"><table>
+<thead><tr><th>Who runs it</th><th>Target</th><th>What happens</th></tr></thead><tbody>
+<tr><td class="k">manager of carbon-a</td><td>carbon-a</td><td><b>direct</b> — Interface DM</td></tr>
+<tr><td class="k">manager of carbon-a</td><td>carbon-b</td><td>routed to carbon-b's manager</td></tr>
+<tr><td class="k">manager of carbon-a</td><td>silicon-x</td><td>routed to silicon-x's local contact manager</td></tr>
+<tr><td class="k">advisor of carbon-a</td><td>carbon-a</td><td><b>direct</b> — shares the manager's "I"</td></tr>
+<tr><td class="k">worker of carbon-a's mgr</td><td>carbon-a</td><td>routed to its own manager — a worker is not the manager</td></tr>
+<tr><td class="k">worker of carbon-a's mgr</td><td>anyone else</td><td>routed, labelled as the worker that asked</td></tr>
+<tr><td class="k">manager of silicon-x</td><td>silicon-x</td><td><b>direct</b> — it is that contact's manager</td></tr>
+</tbody></table></div>
 
 <div class="tools">
 
   <div class="tgroup"><h4>Talking</h4><ul>
-    <li class="m"><b>reply</b><span>Send to the current contact via Interface. <code>work_continues:true</code> = intermediate, fires mid-stream. Supports <code>[file=/path]</code> → <code>send-file</code> and <code>[voice=…]</code> → <code>tts --room</code>.</span></li>
-    <li class="m"><b>message_manager</b><span>Message another manager by <code>carbon_id</code> <i>or</i> <code>silicon_id</code> (never both). Does <b>not</b> go over the wire — it queues a local manager message. The only legal path to another contact.</span></li>
-    <li class="m"><b>take_back</b><span>Retract/replace a sent event by <code>request_id</code> (system-generated) or explicit <code>event_id</code> + <code>force</code>.</span></li>
-    <li class="m"><b>do_nothing</b><span>Terminal tool. Ends the iteration loop.</span></li>
+    <li class="m"><b>send {id}</b><span><code>--text</code> (full markdown) · <code>--file</code> + <code>--caption</code> · <code>--voice</code> + <code>--voice-direction</code> + <code>--voice-gender</code>. Routing is automatic: your own contact directly, anyone else through their manager.</span></li>
+    <li class="m"><b>send manager</b><span>Worker → its manager. Wakes the manager and lands in its mailbox.</span></li>
+    <li class="m"><b>send {worker-id}</b><span>Manager → a running worker, <i>without</i> stopping it. Delivered as a trailer on the worker's next command.</span></li>
+    <li class="m"><b>see</b><span><code>--last N</code> · <code>--dt-from/--dt-to</code> (ISO 8601) · <code>--unread</code> · <code>--id {msgid}</code>. msgid is the Interface event id.</span></li>
+    <li class="m"><b>bundle-unread {id}</b><span>Takes back every unanswered message and replaces the pile with one summary.</span></li>
+    <li class="m"><b>transcribe {path}</b><span>Audio or video → text, via Interface <code>stt</code>.</span></li>
+    <li class="m"><b>request-lords</b><span><code>--title</code> · <code>--description</code>. Saved locally if Glass is unreachable, and says so.</span></li>
   </ul></div>
 
-  <div class="tgroup"><h4>Workers</h4><ul>
-    <li class="w"><b>worker/browser</b><span><code>type:new</code> · <code>worker-id</code> · <code>task</code> · <code>incognito</code> · <code>checkback_in</code></span></li>
-    <li class="w"><b>worker/terminal</b><span><code>type:new</code> — full shell access</span></li>
-    <li class="w"><b>worker/writer</b><span><code>type:new</code> — writing skill + terminal + web</span></li>
-    <li class="w"><b>worker · message</b><span>Resume the same <code>worker-id</code> session with a new instruction</span></li>
-    <li class="w"><b>worker · checkback</b><span>One-shot local timer in minutes; auto-removed on completion</span></li>
-    <li class="w"><b>worker · status</b><span>Live status of one running worker</span></li>
-    <li class="w"><b>worker · stop</b><span>Terminate + archive the run</span></li>
-    <li class="w"><b>worker · list_active</b><span>All running workers for this contact</span></li>
-    <li class="w"><b>worker · list_archive</b><span>All archived runs for this contact</span></li>
-    <li class="w"><b>worker · read_archive</b><span>Full output of one archived run</span></li>
+  <div class="tgroup"><h4>Delegating to workers</h4><ul>
+    <li class="w"><b>delegate --worker {browser|terminal|writer}</b><span><code>--id</code> · <code>--task</code> · <code>--checkback-in Nm</code> (<b>required</b>) · <code>--incognito</code> (browser only)</span></li>
+    <li class="w"><b>delegate --list</b><span>All running workers for this contact</span></li>
+    <li class="w"><b>delegate --id X --progress</b><span>How that worker is doing</span></li>
+    <li class="w"><b>delegate --id X --checkback-in Nm</b><span>Override or re-arm the checkback</span></li>
+    <li class="w"><b>delegate --id X --stop</b><span>Terminate mid-task and archive the run</span></li>
+    <li class="w"><b>delegate --id X --restart --task</b><span>Resume a finished worker with new work</span></li>
+    <li class="w"><b>delegate --archive --last N / --search</b><span>Finished runs; search ranks them by term frequency</span></li>
+  </ul></div>
+
+  <div class="tgroup"><h4>Big work (carbon-visible cards)</h4><ul>
+    <li><b>work --new --id --name</b><span>Starts a work, already running. Ids must be unique among open work.</span></li>
+    <li><b>work --add-task / --add-subtask</b><span>Title + description are both required. Subtask ids read <code>&lt;task&gt;.&lt;n&gt;</code>.</span></li>
+    <li><b>work --task N --start/--end "note"</b><span>Also <code>--subtask 2.1</code>. Nothing is ever deleted — end it with why.</span></li>
+    <li><b>work --expand / --list-subtask</b><span>The whole tree, or one task's children</span></li>
+    <li><b>work --dispatch-update</b><span>Pings the carbon with progress</span></li>
+    <li><b>work --blocker</b><span>Pings the carbon for a decision</span></li>
+    <li><b>work --completed</b><span>Terminal, with a finishing note</span></li>
+    <li><b>work --active / --last N [--by id]</b><span>Open work, or the last N completed</span></li>
   </ul></div>
 
   <div class="tgroup"><h4>Trust (Glass-first)</h4><ul>
-    <li><b>trust/list</b><span>Refresh + list the complete effective policy through the authenticated Glass endpoint</span></li>
-    <li><b>trust/get</b><span>One typed identity — exactly one of <code>carbon_id</code>/<code>silicon_id</code></span></li>
-    <li><b>trust/set</b><span>Commits the same Glass override row the console writes, <i>then</i> updates local <code>contacts.json</code></span></li>
+    <li><b>trust {id}</b><span>Effective level, with the team base and this Silicon's override shown separately</span></li>
+    <li><b>trust {id} --set LEVEL --reason</b><span>Commits the Glass override row. The reason is mandatory and kept locally.</span></li>
+    <li><b>trust {id} --history</b><span>Every change, who made it, and why</span></li>
   </ul></div>
 
-  <div class="tgroup"><h4>Crons (Glass records)</h4><ul>
-    <li><b>cron/create</b><span>Creates a Glass cron record via Interface</span></li>
-    <li><b>cron/update</b><span>Mutates trigger / task / target / active</span></li>
-    <li><b>cron/delete</b><span>Removes the record</span></li>
-    <li><b>cron/list</b><span><code>crons list --mine --json</code></span></li>
+  <div class="tgroup"><h4>Reminders — the only way to be proactive</h4><ul>
+    <li><b>remind {id} --in 2m/3h/4d</b><span>Relative to now. Seconds, months and years are not supported.</span></li>
+    <li><b>remind {id} --at {ISO 8601}</b><span>Exact instant</span></li>
+    <li><b>remind {id} --cron "0 9 * * 1-5" --tz</b><span>Recurring, in an IANA zone</span></li>
+    <li><b>remind --id R --include/--exclude</b><span>Glass cannot patch cron targets, so this deletes and recreates — the local reminder id survives</span></li>
+    <li><b>remind --id R --delete</b><span>There is no update; delete and remake</span></li>
   </ul></div>
 
-  <div class="tgroup"><h4>Work updates (UI cards)</h4><ul>
-    <li><b>work_update · task/create</b><span><code>task_id</code>, title, description, state, <code>realistic_estimate_seconds</code>, <code>client_id</code></span></li>
-    <li><b>work_update · task/update</b><span>Optimistic concurrency via <code>revision</code></span></li>
-    <li><b>work_update · todo/add</b><span>Child todo under a task</span></li>
-    <li><b>work_update · todo/update</b><span>State + description transitions</span></li>
-    <li><b>work_update · milestone / blocker</b><span>Progress markers and blocking conditions</span></li>
-    <li><b>work_update · worker / call / terminal</b><span>Worker invocation cards, manager-call cards, terminal completion</span></li>
+  <div class="tgroup"><h4>Advisor</h4><ul>
+    <li><b>get-advice "…"</b><span><b>Synchronous</b> — blocks until the advisor answers, because advice after you have acted is not advice. Managers only.</span></li>
   </ul></div>
 
-  <div class="tgroup"><h4>Browser handoff to the human</h4><ul>
-    <li><b>remote_browser · share</b><span><code>expiry</code> (60 min), <code>new</code>, <code>url</code>. Runs close → open → share on <code>remote-&lt;contact_id&gt;</code>, then sends the URL via Interface <code>remote-browser</code>.</span></li>
-    <li><b>remote_browser · close</b><span>Saves profile state back. Required after login/OTP is done.</span></li>
-  </ul></div>
-
-  <div class="tgroup"><h4>Self / memory</h4><ul>
-    <li><b>advertising_memory/update</b><span>Replaces the whole team-visible snapshot. ≤100 lines / 65,536 bytes. <code>resolve_conflict:true</code> = CAS against latest Glass revision.</span></li>
-    <li><b>new_session</b><span>Fresh provider session for this contact, prompts only</span></li>
-    <li><b>restart_silicon_service</b><span>Restarts the service; handled specially in <code>execute_all_tools</code> and sequenced last</span></li>
-    <li><b>bash (implicit)</b><span>The manager can run simple commands directly for context, and edits <code>prompts/MEMORY.md</code>, <code>prompts/memory/carbons/*.md</code>, <code>prompts/memory/silicons/*.md</code> as files</span></li>
+  <div class="tgroup"><h4>Auxiliary</h4><ul>
+    <li><b>start-new-session --first-message</b><span>Fresh session; the first message is the one thing carried across the boundary</span></li>
+    <li><b>do-nothing --reason</b><span>Running at least one command every turn is mandatory. This is how you say there is genuinely nothing to do.</span></li>
+    <li><b>restart-silicon --reason</b><span>Leaves a request the event loop performs — a child process cannot re-exec its parent</span></li>
+    <li><b>files (implicit)</b><span>Managers still edit <code>prompts/MEMORY.md</code>, <code>prompts/LORE.md</code>, <code>prompts/memory/**</code> directly as files</span></li>
   </ul></div>
 
 </div>
 
+<div class="note"><p><b>Identity, not flags.</b> Every run the Stemcell spawns is registered in
+<code>core/iwantto/actor.py</code> and handed a token in its environment. <code>iwantto</code> resolves that token back to a
+manager, advisor, or worker — a stale or copied variable cannot name an actor it was never issued for, and a
+parent's token is stripped before a child is spawned so a manager's identity never leaks into its worker.</p></div>
+
 <div class="note warn"><p><b>Boundary rule enforced in prompt, not code:</b> a manager may never read another manager's workers,
-sessions, archives, or memory. <code>message_manager</code> is the only cross-contact channel, and any claim attributed to a
-carbon must carry that carbon's verbatim message as a labeled quote.</p></div>
+sessions, archives, or memory. Routing through the target's manager is the only cross-contact channel, and any claim
+attributed to a carbon must carry that carbon's verbatim message as a labeled quote.</p></div>
+
+<h3>The Advisor</h3>
+<p>One per manager. It does no work and talks to nobody — it exists to help the manager think.</p>
+<pre class="tree">carbon
+  |
+manager — advisor
+  |
+3 workers</pre>
+<div class="grid g3">
+  <div class="card"><span class="tag">context</span><p>Same provider as the manager. Its DNA is exactly three files, in order:
+  <code>INDEX.md</code>, <code>IWANTTO_CLI_REFERENCE.md</code>, <code>ADVISOR.md</code> — then the question.</p></div>
+  <div class="card"><span class="tag">sessions</span><p>Its own conversation (<code>advisor__&lt;contact&gt;</code>), so advice accumulates.
+  A fresh one starts after a <b>2 hour</b> gap, or once a session passes <b>24 hours</b>.</p></div>
+  <div class="card"><span class="tag">heartbeat</span><p>Every <b>5 hours</b> unprompted. Its output reaches the manager the way a
+  worker's result does — as a message marked as being from the advisor.</p></div>
+</div>
 
 <!-- ============================ 5 ============================ -->
 <h2 id="workers"><span class="num">05</span>Workers — types, tools, lifecycle</h2>
@@ -460,28 +511,31 @@ with use. This is a write-back loop into the prompt system (see <b>L12</b>).</p>
 <p>Cycles — where output re-enters as input. Dashed return arrows mark the closing edge.</p>
 
 <div class="loop">
-  <div class="loop-h"><span class="id">L1</span><span class="name">Manager tool-result loop</span><span class="where">main.py:1607 run_all_managers</span></div>
-  <div class="loop-d">The core agentic cycle. Tool results are re-injected as the manager's next prompt until it emits only <code>do_nothing</code>. <b>Bounded at 10 iterations.</b></div>
+  <div class="loop-h"><span class="id">L1</span><span class="name">Manager mid-run command loop</span><span class="where">core/iwantto/cli.py</span></div>
+  <div class="loop-d">The core agentic cycle, and the tightest one: a command runs, prints, and the manager reads its own
+  result without the turn ending. Nothing round-trips through the Stemcell. The outer retry loop
+  (<code>run_all_managers</code>, <b>bounded at 10 iterations</b>) now only re-prompts a manager that ended a turn
+  having run <i>nothing at all</i>.</div>
   <div class="chain"><div class="chain-row">
-    <span class="pill d">manager</span><span class="arrow lbl"><i>tools[]</i></span>
-    <span class="pill c">execute_all_tools</span><span class="arrow lbl"><i>results</i></span>
-    <span class="pill c">pending[carbon_id]</span><span class="arrow"></span>
-    <span class="pill d">next iteration</span>
+    <span class="pill d">manager</span><span class="arrow lbl"><i>iwantto …</i></span>
+    <span class="pill c">resolve actor</span><span class="arrow"></span>
+    <span class="pill c">execute now</span><span class="arrow lbl"><i>stdout</i></span>
+    <span class="pill d">same turn continues</span>
   </div>
-  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">closes ≤10×</span></div></div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">closes within one turn — as many times as the manager needs</span></div></div>
 </div>
 
 <div class="loop">
   <div class="loop-h"><span class="id">L2</span><span class="name">Manager ↔ Manager (the loop you asked about)</span><span class="where">core/messages.py</span></div>
-  <div class="loop-d">Manager A calls <code>message_manager</code> → a local durable queue item is written and the dispatcher is woken.
+  <div class="loop-d">Manager A runs <code>iwantto send B</code> → a local durable queue item is written and the dispatcher is woken.
   <code>check_manager_messages_durable</code> converts it into an ingress root for contact B. B's manager sees
-  <code>"Message from manager of &lt;A&gt;"</code>, and replies by calling <code>message_manager</code> back at A — <b>which closes the loop</b>.
+  <code>"Message from manager of &lt;A&gt;"</code>, and replies by running <code>iwantto send A</code> — <b>which closes the loop</b>.
   Nothing leaves the machine; both managers live in the same process.</div>
   <div class="chain"><div class="chain-row">
-    <span class="pill d">manager A</span><span class="arrow lbl"><i>message_manager</i></span>
+    <span class="pill d">manager A</span><span class="arrow lbl"><i>iwantto send</i></span>
     <span class="pill c">manager_messages.json</span><span class="arrow lbl"><i>notify</i></span>
     <span class="pill c">enqueue_ingress_root</span><span class="arrow"></span>
-    <span class="pill d">manager B turn</span><span class="arrow lbl"><i>message_manager</i></span>
+    <span class="pill d">manager B turn</span><span class="arrow lbl"><i>iwantto send</i></span>
     <span class="pill c">queue again</span>
   </div>
   <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">back to manager A — <b>unbounded by design</b>; only capacity (1,000 items) and work-call correlation constrain it</span></div></div>
@@ -515,18 +569,18 @@ with use. This is a write-back loop into the prompt system (see <b>L12</b>).</p>
 </div>
 
 <div class="loop">
-  <div class="loop-h"><span class="id">L5</span><span class="name">Silicon ↔ Silicon over Glass (two-hop loop)</span><span class="where">MANAGER_TOOLS.md §Message Another Manager</span></div>
+  <div class="loop-h"><span class="id">L5</span><span class="name">Silicon ↔ Silicon over Glass (two-hop loop)</span><span class="where">core/iwantto/routing.py</span></div>
   <div class="loop-d">Cross-machine communication is <b>L2 chained with L6</b>. Your manager talks to the <i>local</i> silicon-contact manager;
   that manager is the one that actually speaks over Interface; the remote Silicon's reply comes back in as a normal inbound event
-  and is relayed to you by <code>message_manager</code>.</div>
+  and is relayed to you the same way.</div>
   <div class="chain"><div class="chain-row">
-    <span class="pill d">your manager</span><span class="arrow lbl"><i>message_manager</i></span>
+    <span class="pill d">your manager</span><span class="arrow lbl"><i>iwantto send</i></span>
     <span class="pill d">local silicon-contact manager</span><span class="arrow lbl"><i>reply</i></span>
     <span class="pill b">Interface → Glass</span><span class="arrow"></span>
     <span class="pill a">remote Silicon</span><span class="arrow lbl"><i>inbound</i></span>
     <span class="pill d">same contact manager</span>
   </div>
-  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">message_manager back to you — full round trip</span></div></div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">routed back to you — full round trip</span></div></div>
 </div>
 
 <div class="loop">
@@ -693,6 +747,76 @@ with use. This is a write-back loop into the prompt system (see <b>L12</b>).</p>
   <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">queued roots resume exactly where they were</span></div></div>
 </div>
 
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L18</span><span class="name">Manager heartbeat</span><span class="where">core/heartbeat.py</span></div>
+  <div class="loop-d">Every <b>13 minutes</b> a manager is woken with <i>"congrats, your heart is beating, make it count!"</i>
+  even though nobody messaged it. This is the only reason a Silicon can act rather than only react. Each beat carries that
+  manager's own active work, so the first thing it sees is what it already has running.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill c">check_manager_heartbeats</span><span class="arrow lbl"><i>due?</i></span>
+    <span class="pill c">build_context + active work</span><span class="arrow"></span>
+    <span class="pill d">manager turn</span><span class="arrow lbl"><i>acts</i></span>
+    <span class="pill c">last_beat_at = now</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">forever, per contact — a new contact starts its clock instead of beating immediately</span></div></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L19</span><span class="name">Manager ↔ Advisor (synchronous)</span><span class="where">core/advisor.py</span></div>
+  <div class="loop-d"><code>iwantto get-advice</code> <b>blocks</b>. The advisor runs on the same provider with its own
+  session and its own three-file DNA, answers, and the manager reads the advice before deciding anything else — advice that
+  arrives after you have acted is not advice.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">manager</span><span class="arrow lbl"><i>get-advice</i></span>
+    <span class="pill c">rotate session?</span><span class="arrow"></span>
+    <span class="pill d">advisor turn</span><span class="arrow lbl"><i>advice</i></span>
+    <span class="pill d">manager acts on it</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">the advisor can read context with the same CLI, so its own commands nest inside the manager's turn</span></div></div>
+  <div class="kv"><span><b>new session</b> after a 2 h gap</span><span><b>hard rotate</b> at 24 h</span><span><b>never</b> messages carbons or does the work</span></div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L20</span><span class="name">Advisor heartbeat</span><span class="where">core/advisor.py:run_heartbeats</span></div>
+  <div class="loop-d">Every <b>5 hours</b> the advisor is woken unprompted: <i>"Your manager did not trigger you, This is a
+  heartbeat…"</i>. Its answer is delivered to the manager exactly the way a worker's result is — as a message marked as
+  being from the advisor.</div>
+</div>
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L21</span><span class="name">Worker mailbox (answer without interrupting)</span><span class="where">core/iwantto/mailbox.py</span></div>
+  <div class="loop-d">A running worker cannot be pushed to. But it comes back to <code>iwantto</code> constantly, and that is
+  the opening: <code>iwantto send &lt;worker-id&gt;</code> leaves mail, and the worker picks it up as a trailer on its next
+  command — without being stopped. The same channel carries a worker's question up to its manager.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill d">worker</span><span class="arrow lbl"><i>send manager</i></span>
+    <span class="pill c">queue + mailbox</span><span class="arrow"></span>
+    <span class="pill d">manager turn</span><span class="arrow lbl"><i>send worker-id</i></span>
+    <span class="pill c">mailbox</span><span class="arrow lbl"><i>next command</i></span>
+    <span class="pill d">worker reads it</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">mid-task, both directions, without either side stopping</span></div></div>
+</div>
+
+
+<div class="loop">
+  <div class="loop-h"><span class="id">L22</span><span class="name">Mid-run injection — reaching a turn that is already going</span><span class="where">core/iwantto/injection.py</span></div>
+  <div class="loop-d">A message arriving while a manager works no longer waits for the run to finish. Both providers accept input
+  during a turn — Claude through streaming stdin (<code>--input-format=stream-json</code>), Codex through
+  <code>turn/steer</code> — and the model picks it up at its <b>next tool boundary</b> and adapts. It is not interrupted:
+  measured end to end, a message injected 7s into a turn was absorbed at 12s and honoured in the same turn, one
+  <code>result</code> event.</div>
+  <div class="chain"><div class="chain-row">
+    <span class="pill b">new inbound event</span><span class="arrow"></span>
+    <span class="pill c">dispatcher.submit</span><span class="arrow lbl"><i>contact busy?</i></span>
+    <span class="pill c">injection.offer</span><span class="arrow lbl"><i>accepted</i></span>
+    <span class="pill d">live turn absorbs it</span>
+  </div>
+  <div class="ret"><svg viewBox="0 0 100 26" preserveAspectRatio="none"><path d="M99.5,0 L99.5,18 Q99.5,24 93,24 L7,24 Q0.5,24 0.5,18 L0.5,4" fill="none" stroke="#fb7185" stroke-width=".4" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"/><path d="M0.5,0 l-1.6,4 l3.2,0 z" fill="#fb7185" vector-effect="non-scaling-stroke"/></svg><span class="rl">refused → falls back to the durable queue, i.e. the old behaviour — trying can never lose a message</span></div></div>
+  <div class="kv"><span><b>durability</b> the injected root completes with the batch it entered, and is retried with it if that run fails</span><span><b>window</b> open until the turn's first <code>result</code></span><span><b>workers</b> same mechanism, fed by a per-worker thread; mailbox remains the fallback</span><span><b>off switch</b> <code>SILICON_STREAMING_INPUT=0</code></span></div>
+</div>
+
 <!-- ============================ 7 ============================ -->
 <h2 id="trust"><span class="num">07</span>Trust levels &amp; how a manager prompt is built</h2>
 
@@ -715,23 +839,32 @@ with use. This is a write-back loop into the prompt system (see <b>L12</b>).</p>
 <div>
 <h3>Prompt assembly — <code>DNA.get_manager_prompt()</code></h3>
 <div class="tree"><b>DNA.py</b>          <u>instruction set (self-documenting)</u>
+<b>INDEX.md</b>        <u>what every file in prompts/ is</u>
+<b>HOW_TO_PROMPTS.md</b> <u>how to use and keep them</u>
 <b>SOUL.md</b>         <u>behaviour</u>
+<b>LEARN.md</b> · <b>I_DONT_KNOW.md</b>
 <b>SILICON.md</b>      <u>who this Silicon is</u>
-<b>not_be_ignored.md</b>
-<b>LORE.md</b>         <u>backstory (data root)</u>
+<b>ADVERTISING.md</b>  <u>what the team knows you do</u>
 <b>CONTACTS.md</b>     <u>(data root)</u>
-<b>TEAM_CONTEXT.md</b> + Glass team section
+Glass profile + <b>Team of Silicons</b> + trust policy
 <b>trust/&lt;level&gt;.md</b>  <u>← resolved effective trust</u>
 <b>MEMORY.md</b>       <u>global memory (data root)</u>
+memory/carbons|silicons/&lt;id&gt;.md
 <b>MANAGER.md</b>      <u>role</u>
-<b>WORK_UPDATES.md</b> <u>card discipline</u>
-<b>MANAGER_TOOLS.md</b> <u>the tool contract</u>
+<b>IWANTTO_CLI_REFERENCE.md</b> <u>the command contract</u>
+<b>MANAGER_TOOLS.md</b> · <b>GIVE_UPDATES.md</b>
 <b>SILICON_MANAGER.md</b> <u>if contact is a Silicon</u>
+  <u>else</u> <b>NOT_BE_IGNORED.md</b>
 <b>BOOT.md</b>         <u>only until setup is done</u>
-<b>QUESTIONNAIRE.md</b> + <b>FINAL_QUESTIONNAIRE.md</b>
+<b>SETUP_QUESTIONS.py</b> <u>rendered tree, always last</u>
 </div>
 <p class="hint"><code>{load-ref!path}</code> inlines other files, with cycle protection, depth cap 8, and root containment
 checks — the same mechanism workers use to pull in long skills.</p>
+<p class="hint"><b>Setup questions come last on purpose.</b> Every trigger — message, heartbeat, cron, another manager —
+walks the tree in <code>prompts/SETUP_QUESTIONS.py</code> before anything is done. Running commands during that phase is
+forbidden: it is for thinking. Answers can pull in <code>GIVE_UPDATES.md</code>, <code>NONCARBON_COMMS.md</code>, or
+<code>BE_PROACTIVE.md</code>. So the shape of a trigger is
+<code>msg → setup questions → work → done</code>.</p>
 </div>
 </div>
 
@@ -739,10 +872,10 @@ checks — the same mechanism workers use to pull in long skills.</p>
 <h2 id="files"><span class="num">08</span>File map — where to look</h2>
 <div class="tbox"><table>
 <thead><tr><th>File</th><th>Lines</th><th>Responsibility</th></tr></thead><tbody>
-<tr><td class="k">main.py</td><td class="c">2,431</td><td>Event loop, tool dispatch, <code>ManagerDispatcher</code>, <code>EventLoopSchedule</code>, trace wiring</td></tr>
-<tr><td class="k">manager.py</td><td class="c">1,069</td><td>Provider invocation (Claude stream-json / Codex app-server), session files, output parsing, timeouts</td></tr>
+<tr><td class="k">main.py</td><td class="c">2,468</td><td>Event loop, tool dispatch, <code>ManagerDispatcher</code>, <code>EventLoopSchedule</code>, trace wiring</td></tr>
+<tr><td class="k">manager.py</td><td class="c">1,121</td><td>Provider invocation (Claude stream-json / Codex app-server), per-run environments, session files, output parsing, timeouts</td></tr>
 <tr><td class="k">glass_agent.py</td><td class="c">2,001</td><td>Glass WebSocket sidecar: commands, invalidations, terminal relay, dependency report, backups</td></tr>
-<tr><td class="k">config.py</td><td class="c">284</td><td><code>EVENT_LOOP</code> handler table + the team-context tick thread</td></tr>
+<tr><td class="k">config.py</td><td class="c">317</td><td><code>EVENT_LOOP</code> handler table + the team-context tick thread</td></tr>
 <tr><td class="k">update.py</td><td class="c">942</td><td>Read-only release checks against stable <code>vX.Y.Z</code> tags; <code>rotate-key</code></td></tr>
 <tr><td class="k">worker/handler.py</td><td class="c">1,995</td><td>Worker lifecycle: launch, browser queue, archive, reap, orphan sweep, output parsing</td></tr>
 <tr><td class="k">core/interface.py</td><td class="c">3,282</td><td>Interface CLI adapter, contacts, durable inbox tailer, replies, media, runtime file watch</td></tr>
@@ -753,10 +886,13 @@ checks — the same mechanism workers use to pull in long skills.</p>
 <tr><td class="k">core/maintenance.py</td><td class="c">1,338</td><td>Durable root queue, admission fence, leases, heartbeats, notices</td></tr>
 <tr><td class="k">core/diagnostics.py</td><td class="c">971</td><td>Runs, spans, handoff lineage</td></tr>
 <tr><td class="k">core/trust.py</td><td class="c">583</td><td>Glass-first trust sync + local mutation</td></tr>
-<tr><td class="k">core/messages.py</td><td class="c">536</td><td>Inter-manager queue (L2)</td></tr>
+<tr><td class="k">core/messages.py</td><td class="c">545</td><td>Inter-manager queue (L2), with sender labels for workers and prior sessions</td></tr>
+<tr><td class="k">core/iwantto/</td><td class="c">~2,000</td><td>The <code>iwantto</code> CLI: actor identity, routing, message log, mailbox, diagnosis journal, launcher, and every command</td></tr>
+<tr><td class="k">core/advisor.py</td><td class="c">213</td><td>One advisor per manager: prompt, session rotation, synchronous advice, 5-hourly heartbeat</td></tr>
+<tr><td class="k">core/heartbeat.py</td><td class="c">126</td><td>The 13-minute manager heartbeat and the active work it carries</td></tr>
 <tr><td class="k">core/cron/</td><td class="c">583</td><td>Glass cron execution + local worker checkbacks</td></tr>
-<tr><td class="k">prompts/</td><td class="c">~2,200</td><td>The behavioural surface: DNA, SOUL, MANAGER_TOOLS, WORK_UPDATES, trust levels, worker prompts + skills</td></tr>
-<tr><td class="k">tests/</td><td class="c">41 files</td><td>Concurrency, scheduler, handoffs, trust, backup manifest, prompt construction</td></tr>
+<tr><td class="k">prompts/</td><td class="c">~3,900</td><td>The behavioural surface: DNA, INDEX, SOUL, IWANTTO_CLI_REFERENCE, ADVISOR, SETUP_QUESTIONS, trust levels, worker prompts + skills</td></tr>
+<tr><td class="k">tests/</td><td class="c">41 files</td><td>Concurrency, scheduler, handoffs, trust, backup manifest, prompt construction, CLI identity + routing, advisor, heartbeats</td></tr>
 </tbody></table></div>
 
 <footer>
