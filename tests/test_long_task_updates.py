@@ -3448,6 +3448,59 @@ class LongTaskLifecycleTest(unittest.TestCase):
             any(item.get("run_id") == "overflow-run" for item in queued)
         )
 
+    def test_new_accuracy_review_replaces_only_stale_accuracy_reviews(self):
+        now = time.time()
+
+        def fill(state):
+            state["contacts"]["carbon-a"] = {
+                "active": True,
+                "contact_id": "carbon-a",
+                "run_id": "active-run",
+                "pending_reply": {"message": "Work continues."},
+                "updated_at": now,
+            }
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+        self.assertTrue(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a",
+                "ordinary-run",
+                "message:\nKeep this user request",
+                visible=True,
+            )
+        )
+        self.assertTrue(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a",
+                "review-run-1",
+                "Internal task accuracy review. First checkpoint.",
+                visible=False,
+            )
+        )
+        self.assertTrue(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a",
+                "review-run-2",
+                f"{long_task_updates._ACCURACY_REVIEW_MARKER} review-2\n"
+                "Internal task accuracy review. Latest checkpoint.",
+                visible=False,
+            )
+        )
+
+        state = long_task_updates.read_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+        )
+        queued = state["queued_roots"]["carbon-a"]
+        self.assertEqual(
+            [item["run_id"] for item in queued],
+            ["ordinary-run", "review-run-2"],
+        )
+
     def test_live_lease_blocks_second_process_and_expiry_allows_takeover(self):
         first = self.lifecycle()
         saved = long_task_updates._state_entry("carbon-a")

@@ -64,6 +64,26 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
         self.assertEqual(status["phase"], "draining")
         write.assert_not_called()
 
+    def test_failed_root_admission_retries_with_bounded_backoff(self):
+        result = self.coordinator.enqueue_root("carbon-a", "active task")
+        self.assertIsNotNone(result.admission)
+
+        expected_delays = [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0]
+        admission = result.admission
+        for attempt, expected_delay in enumerate(expected_delays, start=1):
+            self.coordinator.retry_roots([admission], delay=5.0)
+            state = json.loads((self.root / "state.json").read_text())
+            item = state["root_queue"][0]
+            self.assertEqual(item["attempts"], attempt)
+            self.assertEqual(
+                item["not_before"],
+                self.clock.value + expected_delay,
+            )
+            self.clock.advance(expected_delay)
+            claimed = self.coordinator.claim_pending_roots()
+            self.assertEqual(len(claimed), 1)
+            admission = claimed[0]
+
     def test_active_lineage_finishes_while_new_root_is_durably_queued(self):
         first = self.coordinator.enqueue_root("carbon-a", "active task")
         self.assertIsNotNone(first.admission)

@@ -80,6 +80,16 @@ _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 _QUEUED_ROOT_MARKER = "durable_queued_root_id:"
 _QUEUED_ROOT_VISIBILITY_MARKER = "durable_queued_root_visible:"
 _ACCURACY_REVIEW_MARKER = "durable_accuracy_review_id:"
+ACCURACY_REVIEW_CONTEXT_PREFIX = "Internal task accuracy review."
+
+
+def _is_internal_accuracy_review(context):
+    """Return whether a queued root is a supersedable accuracy review."""
+    text = str(context or "").lstrip()
+    if text.startswith(_ACCURACY_REVIEW_MARKER):
+        _, _, text = text.partition("\n")
+        text = text.lstrip()
+    return text.startswith(ACCURACY_REVIEW_CONTEXT_PREFIX)
 
 
 def _default_state() -> dict[str, Any]:
@@ -485,6 +495,15 @@ def queue_long_task_root_if_blocked(
         items = queued.setdefault(contact_id, [])
         if any(item.get("root_id") == root_id for item in items):
             return
+        # Only the newest periodic accuracy review remains meaningful. Keeping
+        # stale reviews while a contact is blocked can fill the durable queue
+        # with superseded copies that can never drain.
+        if _is_internal_accuracy_review(context):
+            items[:] = [
+                item
+                for item in items
+                if not _is_internal_accuracy_review(item.get("context"))
+            ]
         total = sum(
             len(value)
             for value in queued.values()

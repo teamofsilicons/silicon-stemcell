@@ -40,6 +40,18 @@ MAX_CONTINUATION_RECEIPTS = 2_000
 CONTINUATION_RECEIPT_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_INGRESS_RECEIPTS = 5_000
 INGRESS_RECEIPT_TTL_SECONDS = 7 * 24 * 60 * 60
+RETRY_BACKOFF_CAP_SECONDS = 300.0
+RETRY_BACKOFF_MAX_DOUBLINGS = 6
+
+
+def _retry_backoff_seconds(delay: float, attempts: int) -> float:
+    """Back off failed root admission without allowing retry storms."""
+    base = max(0.0, float(delay))
+    doublings = min(
+        max(0, int(attempts) - 1),
+        RETRY_BACKOFF_MAX_DOUBLINGS,
+    )
+    return min(base * (2 ** doublings), RETRY_BACKOFF_CAP_SECONDS)
 
 ACTIVE_PHASES = {"draining", "updating", "validating", "rolling_back"}
 PUBLIC_MESSAGES = {
@@ -981,8 +993,12 @@ class MaintenanceCoordinator:
                 item["claim_token"] = ""
                 item["claim_until"] = 0.0
                 item["lease_id"] = ""
-                item["attempts"] = _integer(item.get("attempts")) + 1
-                item["not_before"] = now + max(0.0, float(delay))
+                attempts = _integer(item.get("attempts")) + 1
+                item["attempts"] = attempts
+                item["not_before"] = now + _retry_backoff_seconds(
+                    delay,
+                    attempts,
+                )
 
         self._transaction(mutate)
 
