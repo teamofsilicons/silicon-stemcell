@@ -1729,6 +1729,53 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertEqual(handled, [])
         execute.assert_not_called()
 
+    def test_deferred_accuracy_review_remains_durable_without_failing_turn(self):
+        review_id = "review-deferred"
+        context = (
+            f"{long_task_updates._ACCURACY_REVIEW_MARKER} {review_id}\n"
+            "Review the active task estimate."
+        )
+        trace = mock.MagicMock()
+        trace.trigger = "manager_loop"
+        trace.run_id = "accuracy-run"
+        trace.meta = {}
+
+        with (
+            mock.patch.object(
+                main,
+                "accuracy_review_root_is_current",
+                return_value=True,
+            ),
+            mock.patch.object(
+                main,
+                "queue_long_task_root_if_blocked",
+                return_value=True,
+            ) as queue_root,
+            mock.patch.object(
+                main.Diagnostics,
+                "consume_pending_contexts",
+                return_value=[],
+            ),
+            mock.patch.object(
+                main.Diagnostics,
+                "get_active_run",
+                return_value=None,
+            ),
+            mock.patch.object(
+                main.Diagnostics,
+                "start_run",
+                return_value=trace,
+            ),
+            mock.patch.object(main.Diagnostics, "register_active"),
+            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(main, "handle_commands") as handle_commands,
+        ):
+            main.run_all_managers({"carbon-a": context})
+
+        handle_commands.assert_not_called()
+        queue_root.assert_called_once()
+        self.assertEqual(queue_root.call_args.args[0], "carbon-a")
+
     def test_accuracy_review_turn_executes_only_work_update_and_stays_invisible(
         self,
     ):

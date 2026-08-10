@@ -73,6 +73,69 @@ class ManagerInvocationTest(_IsolatedJournal):
         self.assertFalse(runs[0]["ok"])
         self.assertEqual(runs[0]["detail"], "RuntimeError")
 
+    def test_undirected_brain_failure_is_suppressed(self):
+        import main
+
+        provider_failure = (
+            '{"tools": [{"tool": "reply", '
+            '"message": "Codex not authenticated."}]}'
+        )
+        records = {("visible_activity", "carbon-a", 0): False}
+        with (
+            mock.patch.object(
+                main,
+                "manager_code",
+                return_value=(provider_failure, None, []),
+            ),
+            mock.patch.object(
+                main,
+                "_manager_provider_failed",
+                return_value=True,
+            ),
+        ):
+            output, rate_limit, executed = main._instrumented_manager_call(
+                "carbon-a",
+                "internal root",
+                None,
+                0,
+                None,
+                None,
+                records,
+            )
+
+        self.assertEqual(
+            output,
+            '{"tools": [{"tool": "do_nothing"}]}',
+        )
+        self.assertIsNone(rate_limit)
+        self.assertEqual(executed, [])
+
+    def test_visible_brain_failure_is_preserved(self):
+        import main
+
+        provider_failure = (
+            '{"tools": [{"tool": "reply", '
+            '"message": "Usage limit reached."}]}'
+        )
+        with mock.patch.object(
+            main,
+            "_manager_provider_failed",
+            return_value=True,
+        ):
+            result = main._suppress_undirected_brain_failure(
+                (provider_failure, True, []),
+                "carbon-a",
+                True,
+            )
+
+        self.assertEqual(result, (provider_failure, True, []))
+        self.assertTrue(main._is_terminal_brain_failure(provider_failure))
+        self.assertFalse(
+            main._is_terminal_brain_failure(
+                '{"tools": [{"tool": "reply", "message": "Try again."}]}'
+            )
+        )
+
     def test_every_advisor_turn_is_recorded(self):
         from core import advisor
 

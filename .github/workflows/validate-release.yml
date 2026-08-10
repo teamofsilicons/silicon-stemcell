@@ -33,10 +33,9 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install the declared Silicon CLI
+      - name: Install the runtime-contract validator CLI
         run: |
-          cli_version="$(python -c 'import json; print(json.load(open("silicon.info"))["runtime_contract"]["silicon_cli"])')"
-          python -m pip install --disable-pip-version-check "silicon-cli==${cli_version}"
+          python -m pip install --disable-pip-version-check "silicon-cli==1.0.49"
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0

@@ -52,6 +52,7 @@ from manager import (
     parse_manager_output,
     new_session,
     _is_rate_limit,
+    _manager_provider_failed,
     TIMEOUT_MSG,
 )
 from core.interface import (
@@ -1452,6 +1453,35 @@ def _work_lifecycle_is_visible(trace, context):
     }
 
 
+_TERMINAL_BRAIN_FAILURE_MARKERS = ("usage limit", "not authenticated")
+
+
+def _is_terminal_brain_failure(output):
+    """Return whether another manager round cannot recover this failure."""
+    tools_data = parse_manager_output(output or "", debug=False)
+    if not tools_data:
+        return False
+    for tool in tools_data.get("tools", []):
+        if not isinstance(tool, dict) or tool.get("tool") != "reply":
+            continue
+        message = str(tool.get("message") or "").lower()
+        if any(marker in message for marker in _TERMINAL_BRAIN_FAILURE_MARKERS):
+            return True
+    return False
+
+
+def _suppress_undirected_brain_failure(result, carbon_id, visible_activity):
+    """Keep an internal brain outage out of a Carbon's inbox."""
+    output, rate_limit, executed_tools = result
+    if visible_activity or not _manager_provider_failed(output, rate_limit):
+        return result
+    log(
+        f"[Silicon] brain unavailable on an undirected root for {carbon_id}; "
+        "suppressing the failure reply"
+    )
+    return '{"tools": [{"tool": "do_nothing"}]}', rate_limit, executed_tools
+
+
 def _instrumented_manager_call(
     carbon_id,
     text,
@@ -1474,18 +1504,30 @@ def _instrumented_manager_call(
     token, env = issue_run_env(MANAGER, carbon_id, carbon_id)
     started = time.monotonic()
     failure = ""
+    visible_activity = True
+    if run_records is not None:
+        visible_activity = bool(
+            run_records.get(
+                ("visible_activity", str(carbon_id), iteration),
+                True,
+            )
+        )
     try:
         if trace is None:
-            return manager_code(
+            result = manager_code(
                 text, carbon_id, on_tools=on_tools, on_progress=on_progress,
                 env=env,
             )
-        with trace.span(f"round[{iteration}]"):
-            with trace.span("manager_turn"):
-                return manager_code(
-                    text, carbon_id, on_tools=on_tools, on_progress=on_progress,
-                    trace=trace, env=env,
-                )
+        else:
+            with trace.span(f"round[{iteration}]"):
+                with trace.span("manager_turn"):
+                    result = manager_code(
+                        text, carbon_id, on_tools=on_tools,
+                        on_progress=on_progress, trace=trace, env=env,
+                    )
+        return _suppress_undirected_brain_failure(
+            result, carbon_id, visible_activity
+        )
     except BaseException as exc:
         failure = type(exc).__name__
         raise
@@ -1702,6 +1744,10 @@ def run_all_managers(context_by_carbon):
     long_tasks = {}
     timeout_retries = {}
     accuracy_review_satisfied = set()
+    # Deferral is an ordering decision, not a failed accuracy review. A root
+    # parked behind the durable long-task queue never reaches the manager and
+    # therefore cannot mark itself satisfied during this pass.
+    accuracy_review_deferred = set()
     invisible_manager_contacts = set()
 
     def close_trace(carbon_id):
@@ -1750,6 +1796,8 @@ def run_all_managers(context_by_carbon):
                         text,
                         visible=visible_activity,
                     ):
+                        if carbon_id in accuracy_review_ids:
+                            accuracy_review_deferred.add(carbon_id)
                         continue
                     if not group and visible_activity:
                         group = begin_manager_activity(
@@ -1833,6 +1881,9 @@ def run_all_managers(context_by_carbon):
                             "calling manager",
                             frame_key=f"manager:round:{iteration}",
                         )
+                    iwantto_runs[
+                        ("visible_activity", str(carbon_id), iteration)
+                    ] = visible_activity
                     future = executor.submit(
                         _instrumented_manager_call, carbon_id, text, trace,
                         iteration, on_tools, on_progress, iwantto_runs,
@@ -1993,7 +2044,9 @@ def run_all_managers(context_by_carbon):
                         accuracy_review_satisfied.add(carbon_id)
                     if carbon_id in accuracy_review_ids:
                         close_terminal_accuracy_lifecycle(carbon_id)
-                    if results:
+                    if results and not _is_terminal_brain_failure(
+                        manager_outputs.get(carbon_id, "")
+                    ):
                         pending[carbon_id] = "Tool execution results:\n" + "\n".join(results)
 
             for carbon_id in [cid for cid in traces if cid not in pending]:
@@ -2034,7 +2087,9 @@ def run_all_managers(context_by_carbon):
                     "internal task accuracy review exhausted its retry budget"
                 )
         unsatisfied_accuracy_reviews = (
-            set(accuracy_review_ids) - accuracy_review_satisfied
+            set(accuracy_review_ids)
+            - accuracy_review_satisfied
+            - accuracy_review_deferred
         )
         if unsatisfied_accuracy_reviews:
             raise RuntimeError(

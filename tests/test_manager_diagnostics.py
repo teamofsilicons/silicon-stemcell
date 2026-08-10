@@ -112,17 +112,34 @@ class ManagerFailureDiagnosticsTests(unittest.TestCase):
         self.assertTrue(manager._manager_provider_failed(output, None))
 
     def test_provider_is_error_marks_span_and_run_error(self):
-        trace = Diagnostics.start_run(
-            "message", "carbon-x", base_dir=tempfile.mkdtemp(prefix="diag-provider-error-")
-        )
-        with trace.span("provider_call") as span:
-            manager._attach_usage_to_span(span, {
-                "kind": "done",
-                "status": "success",
-                "is_error": True,
-                "preview": "Failed to authenticate",
-            })
-        rollup = trace.close()
+        with tempfile.TemporaryDirectory(prefix="diag-provider-config-") as data_root:
+            with open(
+                os.path.join(data_root, "silicon.json"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write("{}\n")
+            with (
+                mock.patch.object(diagnostics, "DATA_ROOT", data_root),
+                mock.patch.object(
+                    diagnostics,
+                    "_RUNTIME_METADATA_CACHE",
+                    None,
+                ),
+            ):
+                trace = Diagnostics.start_run(
+                    "message",
+                    "carbon-x",
+                    base_dir=tempfile.mkdtemp(prefix="diag-provider-error-"),
+                )
+                with trace.span("provider_call") as span:
+                    manager._attach_usage_to_span(span, {
+                        "kind": "done",
+                        "status": "success",
+                        "is_error": True,
+                        "preview": "Failed to authenticate",
+                    })
+                rollup = trace.close()
         self.assertEqual(span.status, "error")
         self.assertEqual(span.meta["error"], "Failed to authenticate")
         self.assertEqual(rollup["status"], "error")
