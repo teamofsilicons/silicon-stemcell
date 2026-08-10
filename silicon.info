@@ -1,8 +1,8 @@
 {
-    "version": "3.0.2",
+    "version": "3.0.3",
     "project": "Silicon",
     "website": "https://teamofsilicons.com/",
-    "runtime_image": "ghcr.io/teamofsilicons/silicon-runtime@sha256:8147930bc945a85b890b09869e458b37de88fd6dfb5ede65ac5f10ddffec493a",
+    "runtime_image": "ghcr.io/teamofsilicons/silicon-runtime@sha256:cd00435901ef4c7958d9eefa2cbe32b2c59789f0fc611d38f4ed9fed9724d105",
     "runtime_contract": {
         "schema": 1,
         "sha256": "c035519e1941381cb03ea00b21b865a0787c6d966df252730a1f990c95dfeeb5",
