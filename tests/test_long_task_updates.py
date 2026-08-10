@@ -1765,7 +1765,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 main.Diagnostics,
                 "start_run",
                 return_value=trace,
-            ),
+            ) as start_run,
             mock.patch.object(main.Diagnostics, "register_active"),
             mock.patch.object(main.Diagnostics, "unregister_active"),
             mock.patch.object(main, "handle_commands") as handle_commands,
@@ -1775,6 +1775,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
         handle_commands.assert_not_called()
         queue_root.assert_called_once()
         self.assertEqual(queue_root.call_args.args[0], "carbon-a")
+        start_run.assert_not_called()
 
     def test_accuracy_review_turn_executes_only_work_update_and_stays_invisible(
         self,
@@ -2913,7 +2914,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
         begin_activity.assert_not_called()
         send_progress.assert_not_called()
 
-    def test_dispatcher_retry_owns_claimed_root_after_long_task_ack(self):
+    def test_dispatcher_retry_preserves_claimed_root_until_runner_ack(self):
         from core.maintenance import MaintenanceCoordinator
 
         prior = self.lifecycle()
@@ -2955,18 +2956,24 @@ class LongTaskLifecycleTest(unittest.TestCase):
             )
             calls.append((root_id, clean_context))
             if len(calls) == 1:
-                raise RuntimeError("process failed after queue acknowledgement")
+                raise RuntimeError("process failed before lifecycle admission")
+            long_task_updates.acknowledge_queued_long_task_root(root_id)
 
         dispatcher = main.ManagerDispatcher(runner=runner)
         try:
             with mock.patch.object(main, "MAINTENANCE", coordinator):
                 dispatcher.submit(claimed)
-                # submit acknowledged only after enqueue_root durably admitted
-                # the exact marked context.
+                # Dispatcher admission must not erase the lifecycle queue's
+                # live FIFO claim before the runner crosses its own fence.
                 self.assertEqual(
                     long_task_updates.claim_ready_long_task_roots(),
                     {},
                 )
+                queued = long_task_updates.read_json(
+                    long_task_updates.LONG_TASK_STATE_FILE,
+                    long_task_updates._default_state(),
+                )["queued_roots"]["carbon-a"]
+                self.assertEqual(len(queued), 1)
                 self.assertTrue(dispatcher.wait_for_idle(2))
                 self.assertEqual(
                     coordinator.public_status()["queued_message_count"],
@@ -2987,6 +2994,11 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertTrue(calls[0][0])
         self.assertEqual(calls[0], calls[1])
         self.assertEqual(calls[0][1], second_context)
+        state = long_task_updates.read_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+        )
+        self.assertNotIn("carbon-a", state["queued_roots"])
 
     def test_tick_claims_accuracy_review_and_dispatcher_retries_exact_root(
         self,
@@ -3106,6 +3118,71 @@ class LongTaskLifecycleTest(unittest.TestCase):
 
         self.assertEqual(set(first), {"carbon-a"})
         self.assertEqual(second, {})
+
+    def test_only_live_claimed_fifo_head_crosses_backlog_fence(self):
+        now = time.time()
+
+        def fill(state):
+            state["queued_roots"]["carbon-a"] = [
+                {
+                    "root_id": "queued-root:first",
+                    "run_id": "run-first",
+                    "context": "message:\nFirst request",
+                    "visible": True,
+                    "created_at": now - 10,
+                    "claim_owner": "",
+                    "claim_pid": 0,
+                    "claim_until": 0.0,
+                },
+                {
+                    "root_id": "queued-root:second",
+                    "run_id": "run-second",
+                    "context": "message:\nSecond request",
+                    "visible": True,
+                    "created_at": now,
+                    "claim_owner": "",
+                    "claim_pid": 0,
+                    "claim_until": 0.0,
+                },
+            ]
+
+        long_task_updates.update_json(
+            long_task_updates.LONG_TASK_STATE_FILE,
+            long_task_updates._default_state(),
+            fill,
+        )
+        claimed = long_task_updates.claim_ready_long_task_roots()
+        head = claimed["carbon-a"]
+
+        self.assertFalse(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a",
+                "run-first",
+                head,
+                visible=True,
+                claimed_root_id="queued-root:first",
+            )
+        )
+        copied_second = (
+            f"{long_task_updates._QUEUED_ROOT_MARKER} queued-root:second\n"
+            f"{long_task_updates._QUEUED_ROOT_VISIBILITY_MARKER} 1\n"
+            "message:\nSecond request"
+        )
+        self.assertTrue(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a",
+                "run-second",
+                copied_second,
+                visible=True,
+                claimed_root_id="queued-root:second",
+            )
+        )
+        unclaimed = "message:\nUnclaimed later request"
+        self.assertTrue(
+            long_task_updates.queue_long_task_root_if_blocked(
+                "carbon-a", "run-third", unclaimed, visible=True
+            )
+        )
 
     def test_finish_closes_terminal_task_even_when_task_id_remains(self):
         lifecycle = self.lifecycle()

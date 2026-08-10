@@ -132,7 +132,6 @@ from core.long_task_updates import (
     complete_accuracy_review_root,
     current_long_task,
     extract_accuracy_review_root,
-    extract_queued_long_task_root,
     extract_queued_long_task_root_metadata,
     queue_long_task_root_if_blocked,
     recover_long_task_lifecycles,
@@ -1758,14 +1757,19 @@ def run_all_managers(context_by_carbon):
             if not pending:
                 break
 
-            log(f"[Silicon] Manager round {iteration + 1} for {list(pending.keys())}...")
             manager_outputs = {}
             already_executed = {}
             iwantto_runs = {}
             with ThreadPoolExecutor(max_workers=max(len(pending), 1)) as executor:
                 futures = {}
                 for carbon_id, text in pending.items():
-                    trace = _begin_manager_trace(carbon_id, text, traces)
+                    # A deferred root has not started a manager round.  Do not
+                    # create and later complete a diagnostic run until the
+                    # durable long-task fence actually admits its provider.
+                    try:
+                        trace = Diagnostics.get_active_run(carbon_id)
+                    except Exception:
+                        trace = None
                     group = activity_groups.get(carbon_id)
                     durable_visibility = queued_root_visibility.get(
                         str(carbon_id)
@@ -1795,10 +1799,19 @@ def run_all_managers(context_by_carbon):
                         root_run_id,
                         text,
                         visible=visible_activity,
+                        claimed_root_id=queued_root_ids.get(
+                            str(carbon_id), ""
+                        ),
                     ):
                         if carbon_id in accuracy_review_ids:
                             accuracy_review_deferred.add(carbon_id)
                         continue
+                    trace = _begin_manager_trace(carbon_id, text, traces)
+                    if not futures:
+                        log(
+                            f"[Silicon] Manager round {iteration + 1} for "
+                            f"{list(pending.keys())}..."
+                        )
                     if not group and visible_activity:
                         group = begin_manager_activity(
                             carbon_id,
@@ -1839,7 +1852,7 @@ def run_all_managers(context_by_carbon):
                         if lifecycle is not None:
                             long_tasks[carbon_id] = lifecycle
                             acknowledge_queued_long_task_root(
-                                queued_root_ids.pop(carbon_id, "")
+                                queued_root_ids.pop(str(carbon_id), "")
                             )
                     if (
                         lifecycle is not None
@@ -2122,15 +2135,11 @@ class ManagerDispatcher:
     def submit(self, context_by_carbon):
         """Durably enqueue roots and start only those admitted before the fence."""
         admissions = []
-        transferred_long_task_roots = []
         transferred_accuracy_reviews = []
         for carbon_id, context in (context_by_carbon or {}).items():
             if not context:
                 continue
             result = MAINTENANCE.enqueue_root(carbon_id, str(context))
-            queued_root_id, _ = extract_queued_long_task_root(str(context))
-            if queued_root_id:
-                transferred_long_task_roots.append(queued_root_id)
             accuracy_review_id, _ = extract_accuracy_review_root(str(context))
             if accuracy_review_id:
                 transferred_accuracy_reviews.append(
@@ -2139,17 +2148,10 @@ class ManagerDispatcher:
             if result.admission is not None:
                 admissions.append(result.admission)
         self._schedule_admissions(admissions)
-        # enqueue_root is the durable ownership handoff. The lifecycle queue
-        # can be acknowledged before the runner starts because retry_roots
-        # retains the same context (and marker) after any runner failure.
-        for root_id in transferred_long_task_roots:
-            try:
-                acknowledge_queued_long_task_root(root_id)
-            except Exception as exc:
-                log(
-                    "[Silicon] Long-task root acknowledgement deferred: "
-                    f"{type(exc).__name__}"
-                )
+        # Keep a queued long-task head and its lease intact until
+        # run_all_managers crosses the lifecycle fence.  Maintenance owns the
+        # admission retry, but acknowledging here would also erase the only
+        # FIFO authority that permits the claimed head to launch.
         for contact_id, review_id in transferred_accuracy_reviews:
             try:
                 acknowledge_accuracy_review_dispatched(

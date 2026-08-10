@@ -424,6 +424,35 @@ def _has_queued_root_backlog(contact_id: str) -> bool:
     return bool(isinstance(items, list) and items)
 
 
+def _is_claimed_queue_head(contact_id: str, root_id: str) -> bool:
+    """Return whether *root_id* is this process's leased FIFO queue head.
+
+    A queue marker alone is not authority to cross the backlog fence.  It
+    must still name the oldest item and carry the live lease created by
+    :func:`claim_ready_long_task_roots`.  That narrow escape edge lets the
+    claimed head launch while every later or stale root remains fenced.
+    """
+    root_id = str(root_id or "")
+    if not root_id:
+        return False
+    state = read_json(LONG_TASK_STATE_FILE, _default_state())
+    queued = state.get("queued_roots") if isinstance(state, dict) else {}
+    items = queued.get(str(contact_id)) if isinstance(queued, dict) else []
+    if (
+        not isinstance(items, list)
+        or not items
+        or not isinstance(items[0], dict)
+    ):
+        return False
+    head = items[0]
+    return bool(
+        str(head.get("root_id") or "") == root_id
+        and str(head.get("claim_owner") or "") == _PROCESS_TOKEN
+        and int(head.get("claim_pid") or 0) == os.getpid()
+        and float(head.get("claim_until") or 0) > time.time()
+    )
+
+
 def _active_entries() -> list[tuple[str, dict[str, Any]]]:
     state = read_json(LONG_TASK_STATE_FILE, _default_state())
     contacts = state.get("contacts") if isinstance(state, dict) else {}
@@ -451,6 +480,7 @@ def queue_long_task_root_if_blocked(
     context: str,
     *,
     visible: bool,
+    claimed_root_id: str = "",
 ) -> bool:
     """Durably defer an unrelated root while terminal delivery is fenced."""
     contact_id = str(contact_id)
@@ -481,8 +511,15 @@ def queue_long_task_root_if_blocked(
             )
         )
     # Once a root has crossed the durable queue fence, later roots must stay
-    # behind it even if the stale lifecycle was just recovered.
-    blocked = blocked or _has_queued_root_backlog(contact_id)
+    # behind it even if the stale lifecycle was just recovered.  Only the
+    # live, process-owned FIFO claim may cross the backlog part of the fence;
+    # it never bypasses an active lifecycle's terminal-delivery fence.
+    backlog_blocked = _has_queued_root_backlog(contact_id)
+    if backlog_blocked and _is_claimed_queue_head(
+        contact_id, claimed_root_id
+    ):
+        backlog_blocked = False
+    blocked = blocked or backlog_blocked
     if not blocked:
         return False
 
