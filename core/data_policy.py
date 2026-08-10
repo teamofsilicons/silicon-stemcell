@@ -127,7 +127,14 @@ _CLASS_BY_NAME: Mapping[str, OwnershipClass] = MappingProxyType(
     {item.name: item for item in MANDATORY_CLASSES}
 )
 _GLOB_MAGIC = frozenset("*?[")
-_ATOMIC_WRITE_TEMP_RE = re.compile(r"^\..+\.[0-9]+\.[0-9]+\.tmp$")
+# State writers use both the original ``.<pid>.<thread>.tmp`` spelling and
+# tempfile-style eight-character nonces.  Neither name is durable: the file is
+# fsync'd and renamed over its visible sibling.  Snapshotting one creates a
+# race where the protected-path walk observes it and the copy quite correctly
+# finds that it has disappeared after the rename.
+_ATOMIC_WRITE_TEMP_RE = re.compile(
+    r"^\..+\.(?:[0-9]+\.[0-9]+|[A-Za-z0-9_-]{8})\.tmp$"
+)
 _FORBIDDEN_PREFIXES = (
     ".git",
     ".silicon/snapshots",

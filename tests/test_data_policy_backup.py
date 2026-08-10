@@ -333,6 +333,8 @@ class DataPolicyTest(unittest.TestCase):
             (state / "maintenance.json").write_text("{}", encoding="utf-8")
             atomic_temporary = state / ".maintenance.json.26.133064281805504.tmp"
             atomic_temporary.write_text("incomplete", encoding="utf-8")
+            tempfile_temporary = state / ".maintenance.json.jl_0y4vb.tmp"
+            tempfile_temporary.write_text("incomplete", encoding="utf-8")
             ordinary_temporary = state / "operator-notes.tmp"
             ordinary_temporary.write_text("keep", encoding="utf-8")
 
@@ -348,6 +350,10 @@ class DataPolicyTest(unittest.TestCase):
             self.assertIn("core/interface_state/operator-notes.tmp", protected)
             self.assertNotIn(
                 "core/interface_state/.maintenance.json.26.133064281805504.tmp",
+                protected,
+            )
+            self.assertNotIn(
+                "core/interface_state/.maintenance.json.jl_0y4vb.tmp",
                 protected,
             )
 
