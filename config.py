@@ -14,17 +14,13 @@ from manager.advisor import run_heartbeats as check_advisor_heartbeats
 from manager.advisor.heartbeat import check_manager_heartbeats
 from diagnostics.iwantto.commands.remind import reap_fired_reminders
 from interface.messages import check_manager_messages_durable
-from worker.handler import check_completed_workers_formatted, clean_old_archives
+from worker.handler import check_completed_workers_formatted
 from interface.release.updater import check_for_system_update
 
 # Native inbox and runtime-file notifications are the primary scheduler.  This
 # value remains as the recovery ceiling for platforms where a watcher cannot be
 # installed; individual handlers declare their own safety cadence below.
 LOOP_TICK = 60
-ARCHIVE_FOR = (
-    7 * 24 * 60 * 60
-)  # Time in seconds to keep archived worker states (7 days)
-
 _TEAM_CONTEXT_LOCK = threading.Lock()
 _TEAM_CONTEXT_RUNNING = False
 _TEAM_CONTEXT_PENDING_NOTICE = ""
@@ -317,12 +313,6 @@ EVENT_LOOP = [
         "jitter_seconds": 15,
         "run_on_activity": True,
         "run_on_startup": True,
-    },
-    {
-        "name": "clean_archives",
-        "execute": lambda: clean_old_archives(ARCHIVE_FOR),
-        "interval_seconds": 60 * 60,
-        "jitter_seconds": 5 * 60,
     },
     {
         # Checked every minute; the handler decides which managers are due, so

@@ -76,6 +76,7 @@ from interface import (
     wait_for_runtime_activity,
 )
 from interface.messages import MANAGER_MESSAGES_FILE, send_manager_message
+from diagnostics.logs import announce_session, silicon_log
 from diagnostics.iwantto import injection
 from diagnostics.iwantto import journal as iwantto_journal
 from interface.cron import CRON_INVALIDATION_FILE, execute_cron_tool
@@ -178,7 +179,31 @@ def _install_diagnostic_shutdown_hooks():
 
 
 def log(msg):
+    """Say it on the terminal and keep it in the runtime's own log."""
     print(msg, flush=True)
+    silicon_log().event("RUNTIME", msg)
+
+
+def _announce_session():
+    """Record where this process starts in every log that will grow from it."""
+    from inference import brain_order
+
+    session_id = f"{int(time.time())}-{os.getpid()}"
+    announce_session(
+        session_id=session_id,
+        provider=",".join(brain_order()),
+        version=_local_version(),
+    )
+    return session_id
+
+
+def _local_version() -> str:
+    try:
+        from interface.release.updater import _local_version as read_version
+
+        return read_version()
+    except Exception:
+        return ""
 
 
 def _bootstrap_team_context():
@@ -2408,6 +2433,7 @@ def _merge_due_internal_roots(
 
 def main():
     _install_diagnostic_shutdown_hooks()
+    _announce_session()
     log("[Silicon] Starting event loop...")
     log(
         "[Silicon] Event-driven scheduler active; independent recovery "

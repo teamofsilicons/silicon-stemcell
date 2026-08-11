@@ -116,6 +116,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                     "manager_sessions": str(Path(inference.SESSIONS_DIR)),
                     "manager_config": str(Path(inference.config.SILICON_CONFIG_FILE)),
                     "worker_outputs": str(Path(handler.OUTPUTS_DIR)),
+                    "worker_state": str(Path(handler.WORKER_STATE_DIR)),
                     "worker_code": str(Path(codex_provider.APP_WORKER)),
                     "worker_workspace": str(Path(handler.WORKSPACE_ROOT)),
                     "backup_default": str(backup._instance_root()),
@@ -167,6 +168,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 "manager_sessions",
                 "manager_config",
                 "worker_outputs",
+                "worker_state",
                 "backup_default",
                 "update_state",
                 "restart_flag",
@@ -212,9 +214,15 @@ class RuntimeDataRootTests(unittest.TestCase):
             )
             self.assertTrue((data_root / "sessions" / "carbon-a.txt").is_file())
             self.assertTrue(
-                (data_root / "worker" / "outputs" / "_active_workers.json").is_file()
+                (
+                    data_root
+                    / "interface"
+                    / "state"
+                    / "workers"
+                    / "_active_workers.json"
+                ).is_file()
             )
-            self.assertTrue(any((data_root / "logs").glob("*.txt")))
+            self.assertTrue((data_root / "logs" / "silicon.log").is_file())
 
     def test_rejects_relative_or_release_store_data_root(self):
         from helpers.paths import RuntimePathError, validated_data_root

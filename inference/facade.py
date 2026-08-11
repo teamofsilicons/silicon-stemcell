@@ -8,6 +8,9 @@ that goes back to the same manager through the normal loop.
 """
 from __future__ import annotations
 
+import time
+
+from diagnostics.logs import agent_log
 from interface.progress import (
     provider_not_authenticated_message,
     redact_diagnostic_text,
@@ -23,8 +26,10 @@ from inference.registry import get_provider
 class Inference:
     """The configured brains, in the order they should be tried."""
 
-    def __init__(self, order: list[str] | None = None) -> None:
+    def __init__(self, order: list[str] | None = None, *, kind: str = "manager") -> None:
         self._order = list(order) if order else None
+        # Which kind of agent is thinking, so its calls land in its own trail.
+        self.kind = kind
 
     @property
     def order(self) -> list[str]:
@@ -63,6 +68,7 @@ class Inference:
         failures = []
         for name in self.order:
             provider = get_provider(name)
+            started = time.monotonic()
             try:
                 with provider_span(trace, name) as diag_span:
                     request.diag_span = diag_span
@@ -72,6 +78,7 @@ class Inference:
             except Exception as exc:
                 result = TurnResult(error_tools(exc))
 
+            self._record(name, request, result, started)
             last = result
             if not provider_failed(result.output, result.rate_limit):
                 return result
@@ -91,6 +98,35 @@ class Inference:
             return last
         return TurnResult('{"tools": [{"tool": "do_nothing"}]}')
 
+    def _record(self, provider: str, request, result, started: float) -> None:
+        """Journal one call: what went in, what came out, what it cost.
+
+        The prompt and the answer are both bounded and kept locally. This is
+        the only place a step can be reconstructed after the fact, so it holds
+        the real text rather than a summary.
+        """
+        log = agent_log(self.kind, request.resolved_session_key())
+        elapsed = round(time.monotonic() - started, 3)
+        log.inference(
+            "in",
+            provider=provider,
+            session_key=request.resolved_session_key(),
+            contact_id=request.contact_id,
+            tag=request.resolved_tag(),
+            system_prompt=request.system_prompt,
+            input=request.text,
+        )
+        log.inference(
+            "out",
+            provider=provider,
+            session_key=request.resolved_session_key(),
+            contact_id=request.contact_id,
+            seconds=elapsed,
+            rate_limited=bool(result.rate_limit),
+            tools_executed=len(result.executed_tools),
+            output=result.output,
+        )
+
     def run_agent(self, request: TurnRequest) -> str:
         """Run a non-manager agent and return its final text.
 
@@ -100,8 +136,10 @@ class Inference:
         failures = []
         for name in self.order:
             provider = get_provider(name)
+            started = time.monotonic()
             try:
                 result = provider.run_turn(request)
+                self._record(name, request, result, started)
             except ProviderTimeoutError:
                 failures.append(f"{name}: timed out")
                 continue

@@ -14,9 +14,12 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
-from helpers.paths import CODE_ROOT, DATA_ROOT
+from diagnostics.logs import LOGS_DIR
+from helpers.migrate import copy_tree_once
+from helpers.paths import CODE_ROOT, DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, update_json, write_json
 from inference import (
     STDIN_STREAM,
@@ -33,15 +36,23 @@ CODE_WORKER_DIR = os.fspath(CODE_ROOT / "worker")
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 WORKSPACE_ROOT = os.fspath(CODE_ROOT)
 WORKER_DIR = os.path.join(PROJECT_ROOT, "worker")
-OUTPUTS_DIR = os.path.join(WORKER_DIR, "outputs")
 SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
 
-ACTIVE_FILE = os.path.join(OUTPUTS_DIR, "_active_workers.json")
-BROWSER_QUEUE_FILE = os.path.join(OUTPUTS_DIR, "_browser_queue.json")
-ARCHIVE_META_FILE = os.path.join(OUTPUTS_DIR, "_archive_meta.json")
-WORKER_REGISTRY_FILE = os.path.join(OUTPUTS_DIR, "_worker_registry.json")
+# `worker/` holds code. What a worker produced is a log, and what Silicon knows
+# about its workers is durable state; neither belongs next to the source.
+LEGACY_OUTPUTS_DIR = os.path.join(WORKER_DIR, "outputs")
+OUTPUTS_DIR = os.fspath(LOGS_DIR / "worker")
+WORKER_STATE_DIR = os.fspath(STATE_DIR / "workers")
+copy_tree_once(Path(LEGACY_OUTPUTS_DIR), Path(OUTPUTS_DIR))
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+os.makedirs(WORKER_STATE_DIR, exist_ok=True)
+
+ACTIVE_FILE = os.path.join(WORKER_STATE_DIR, "_active_workers.json")
+BROWSER_QUEUE_FILE = os.path.join(WORKER_STATE_DIR, "_browser_queue.json")
+ARCHIVE_META_FILE = os.path.join(WORKER_STATE_DIR, "_archive_meta.json")
+WORKER_REGISTRY_FILE = os.path.join(WORKER_STATE_DIR, "_worker_registry.json")
 PROFILED_BROWSER_LOCK_FILE = os.path.join(
-    OUTPUTS_DIR,
+    WORKER_STATE_DIR,
     ".profiled-browser-launch.json",
 )
 
@@ -379,7 +390,7 @@ def _worker_launch_lock_path(worker_id):
         char if char.isalnum() or char in "-_." else "-"
         for char in str(worker_id or "worker")
     )[:80]
-    return os.path.join(OUTPUTS_DIR, f".launch-{safe_id}.json")
+    return os.path.join(WORKER_STATE_DIR, f".launch-{safe_id}.json")
 
 
 def _remove_active_worker(worker_id, expected_run_id="", expected_claim_token=""):
@@ -435,7 +446,7 @@ def _utc_timestamp_slug():
 
 
 def _run_output_path(worker_id, run_id):
-    return os.path.join(OUTPUTS_DIR, f"{worker_id}-{run_id}.txt")
+    return os.path.join(OUTPUTS_DIR, f"{worker_id}-{run_id}.log")
 
 
 def _make_archive_id(worker_id, run_id):
@@ -534,7 +545,7 @@ def _archive_active_output(worker_id, worker_info, carbon_id):
 
     run_id = worker_info.get("run_id") or _utc_timestamp_slug()
     archive_id = _make_archive_id(worker_id, run_id)
-    archive_path = os.path.join(OUTPUTS_DIR, f"{archive_id}.txt")
+    archive_path = os.path.join(OUTPUTS_DIR, f"{archive_id}.log")
 
     if os.path.abspath(output_path) != os.path.abspath(archive_path):
         os.rename(output_path, archive_path)
@@ -833,7 +844,7 @@ def _launch_worker_process(worker_id, task, worker_type, carbon_id, incognito=Fa
         resume=resume,
         streaming=_worker_streaming_enabled(),
         cwd=WORKSPACE_ROOT,
-        scratch_dir=OUTPUTS_DIR,
+        scratch_dir=WORKER_STATE_DIR,
         model=BROWSER_WORKER_MODEL if worker_type == "browser" else "",
     ))
 
@@ -1446,7 +1457,7 @@ def list_archive(carbon_id):
     archives = []
     for archive_id, info in meta.items():
         if info.get("carbon_id") == carbon_id:
-            fpath = os.path.join(OUTPUTS_DIR, f"{archive_id}.txt")
+            fpath = os.path.join(OUTPUTS_DIR, f"{archive_id}.log")
             if os.path.exists(fpath):
                 provider = info.get("provider", "unknown")
                 archives.append(f"- {archive_id} ({provider})")
@@ -1464,7 +1475,7 @@ def read_archive(archive_id, carbon_id):
     if archive_info and archive_info.get("carbon_id") != carbon_id:
         return f"Error: Archive '{archive_id}' does not belong to you."
 
-    archive_path = os.path.join(OUTPUTS_DIR, f"{archive_id}.txt")
+    archive_path = os.path.join(OUTPUTS_DIR, f"{archive_id}.log")
     if not os.path.exists(archive_path):
         return f"Error: Archive '{archive_id}' not found."
 
@@ -1501,8 +1512,6 @@ def _worker_completion_context(completion):
 
 _sweep_call_counter = 0
 _SWEEP_INTERVAL = 10
-_next_archive_cleanup = 0.0
-ARCHIVE_CLEANUP_INTERVAL_SECONDS = 60 * 60
 
 
 def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, output_path):
@@ -1705,42 +1714,6 @@ def check_completed_workers_formatted():
         if parts:
             result[carbon_id] = "\n\n".join(parts)
     return result
-
-
-def clean_old_archives(archive_for_seconds, *, force=False):
-    global _next_archive_cleanup
-    monotonic_now = time.monotonic()
-    if not force and monotonic_now < _next_archive_cleanup:
-        return {}
-    _next_archive_cleanup = (
-        monotonic_now + ARCHIVE_CLEANUP_INTERVAL_SECONDS
-    )
-    if not os.path.exists(OUTPUTS_DIR):
-        return {}
-
-    now = time.time()
-    removed_archive_ids = []
-
-    for fname in os.listdir(OUTPUTS_DIR):
-        if fname.startswith("_") or fname == ".gitkeep":
-            continue
-        fpath = os.path.join(OUTPUTS_DIR, fname)
-        if os.path.isfile(fpath):
-            age = now - os.path.getmtime(fpath)
-            if age > archive_for_seconds:
-                os.remove(fpath)
-                base = fname.replace(".txt", "")
-                removed_archive_ids.append(base)
-
-    if removed_archive_ids:
-        def remove_meta(meta):
-            if isinstance(meta, dict):
-                for archive_id in removed_archive_ids:
-                    meta.pop(archive_id, None)
-
-        update_json(ARCHIVE_META_FILE, {}, remove_meta)
-
-    return {}
 
 
 # --- Output parsing ---

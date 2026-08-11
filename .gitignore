@@ -19,12 +19,8 @@ prompts/TEAM.md
 prompts/TEAM_OF_SILICONS.md
 prompts/advertising/
 
-# Worker outputs (generated at runtime)
-worker/outputs/*.txt
-worker/outputs/_active_workers.json
-worker/outputs/_archive_meta.json
-worker/outputs/_browser_queue.json
-worker/outputs/_worker_registry.json
+# Worker outputs (generated at runtime; now under logs/ and interface/state/)
+worker/outputs/
 interface/cron/checkbacks.json
 interface/cron/*.json.lock
 worker/outputs/*.json.lock

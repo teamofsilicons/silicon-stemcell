@@ -22,7 +22,10 @@ INJECTED_PREFIX = (
     "[NEW MESSAGE from your carbon]\n\n"
 )
 
-INFERENCE = Inference()
+INFERENCE = Inference(kind="manager")
+# The advisor thinks on the same providers but keeps its own session and its
+# own trail, so its calls never land in a manager's log.
+ADVISOR_INFERENCE = Inference(kind="advisor")
 
 
 class ManagerTimeoutError(ProviderTimeoutError):
@@ -67,7 +70,7 @@ def run_agent(
     session and instructions. Returns the agent's final text, or an empty
     string if every configured provider failed.
     """
-    return INFERENCE.run_agent(
+    return ADVISOR_INFERENCE.run_agent(
         TurnRequest(
             text=text,
             contact_id=carbon_id,
@@ -81,6 +84,7 @@ def run_agent(
 
 
 __all__ = [
+    "ADVISOR_INFERENCE",
     "INFERENCE",
     "INJECTED_PREFIX",
     "TIMEOUT_MSG",
