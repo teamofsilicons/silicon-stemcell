@@ -41,7 +41,7 @@ def _set_checkback(worker_id: str, actor, minutes: int) -> str:
 
 
 def _new(args, actor) -> str:
-    from worker.handler import start_worker
+    from worker import start_worker
 
     worker_type = str(args.worker or "").lower()
     if worker_type not in WORKER_TYPES:
@@ -77,7 +77,7 @@ def _new(args, actor) -> str:
 
 
 def _restart(args, actor) -> str:
-    from worker.handler import message_worker
+    from worker import message_worker
 
     task = str(args.task or "").strip()
     if not task:
@@ -95,7 +95,7 @@ def _restart(args, actor) -> str:
 
 def _search_archives(actor, term: str) -> str:
     """Rank finished worker runs by how often the term appears in them."""
-    from worker.handler import OUTPUTS_DIR, _load_archive_meta
+    from worker import OUTPUTS_DIR, _load_archive_meta
 
     needle = str(term or "").strip().lower()
     if not needle:
@@ -132,7 +132,7 @@ def _search_archives(actor, term: str) -> str:
 
 
 def cmd_delegate(args, actor) -> str:
-    from worker.handler import (
+    from worker import (
         get_worker_status,
         list_active,
         list_archive,

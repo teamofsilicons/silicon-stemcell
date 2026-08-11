@@ -86,7 +86,7 @@ from manager.runtime.maintenance import (
     heartbeat_scope,
 )
 from manager.runtime.health import start_runtime_health, stop_runtime_health
-from worker.handler import (
+from worker import (
     ACTIVE_FILE,
     BROWSER_QUEUE_FILE,
     start_worker,
@@ -2609,7 +2609,7 @@ def main():
 def run_headed_browser():
     """Open headed browser via silicon-browser for manual login.
     silicon-browser has built-in stealth and bundles its own browser."""
-    from worker.handler import SILICON_BROWSER_PROFILE
+    from worker import SILICON_BROWSER_PROFILE
 
     log("[Silicon] Opening headed browser for login")
     log(f"[Silicon] Profile: {SILICON_BROWSER_PROFILE}")

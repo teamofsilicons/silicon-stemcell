@@ -17,7 +17,9 @@ from helpers.state import (
     update_json,
     update_json_if_changed,
 )
-from worker import handler
+import worker.constants
+from worker import registry as registry_module
+from worker import pool as handler
 
 
 class BackgroundOutboxTest(unittest.TestCase):
@@ -203,14 +205,14 @@ class ConcurrentJsonStateTest(unittest.TestCase):
 
             def create():
                 results.append(
-                    handler._create_worker_record(
+                    registry_module._create_worker_record(
                         "same-worker",
                         "terminal",
                         "carbon-a",
                     )
                 )
 
-            with mock.patch.object(handler, "WORKER_REGISTRY_FILE", registry):
+            with mock.patch.object(worker.constants, "WORKER_REGISTRY_FILE", registry):
                 threads = [threading.Thread(target=create) for _ in range(2)]
                 for thread in threads:
                     thread.start()

@@ -87,13 +87,15 @@ class RuntimeDataRootTests(unittest.TestCase):
                 import main
                 import manager
                 from interface.release import updater as update
-                from worker import handler
+                import worker.constants
+                from worker import pool as handler
+                from worker import registry as registry_module
 
                 data = DATA_ROOT
                 messages._save_manager_messages({"carbon-a": [{"message": "hi"}]})
                 checkback.add_checkback("worker-a", "carbon-a", 5)
                 manager.new_session("carbon-a", brain="claude")
-                handler._save_active({"worker-a": {"pid": 1}})
+                registry_module._save_active({"worker-a": {"pid": 1}})
                 activity_log.log("TEST", "runtime root")
                 MaintenanceCoordinator().request_drain(
                     maintenance_id="update-test",
@@ -115,10 +117,10 @@ class RuntimeDataRootTests(unittest.TestCase):
                     "work_updates": str(work_updates.WORK_UPDATES_FILE),
                     "manager_sessions": str(Path(inference.SESSIONS_DIR)),
                     "manager_config": str(Path(inference.config.SILICON_CONFIG_FILE)),
-                    "worker_outputs": str(Path(handler.OUTPUTS_DIR)),
-                    "worker_state": str(Path(handler.WORKER_STATE_DIR)),
+                    "worker_outputs": str(Path(worker.constants.OUTPUTS_DIR)),
+                    "worker_state": str(Path(worker.constants.WORKER_STATE_DIR)),
                     "worker_code": str(Path(codex_provider.APP_WORKER)),
-                    "worker_workspace": str(Path(handler.WORKSPACE_ROOT)),
+                    "worker_workspace": str(Path(worker.constants.WORKSPACE_ROOT)),
                     "backup_default": str(backup._instance_root()),
                     "update_state": str(update.UPDATE_STATE_FILE),
                     "update_info": str(update.SILICON_INFO_FILE),

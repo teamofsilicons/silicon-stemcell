@@ -799,7 +799,8 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertIn("Error: work_update task/create failed", result)
 
     def test_failed_queued_browser_launch_marks_exact_worker_failed(self):
-        from worker import handler
+        from worker import browser as browser_module
+        from worker import dispatch as handler
 
         queued = {
             "worker_id": "browser-one",
@@ -809,7 +810,9 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             "providers": ["codex"],
         }
         with (
-            mock.patch.object(handler, "_is_profiled_browser_active", return_value=False),
+            mock.patch.object(
+                browser_module, "profiled_browser_active", return_value=False
+            ),
             mock.patch.object(handler, "_load_browser_queue", return_value=[queued]),
             mock.patch.object(handler, "_save_browser_queue") as save_queue,
             mock.patch.object(

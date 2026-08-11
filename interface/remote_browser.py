@@ -124,7 +124,7 @@ def _remote_browser_share_locked(contact_id: str, expiry: int = 60, new: bool = 
         return err
     assert contact is not None
 
-    from worker.handler import SILICON_BROWSER_PROFILE
+    from worker import constants as worker_constants
 
     try:
         minutes = int(expiry or 60)
@@ -139,7 +139,7 @@ def _remote_browser_share_locked(contact_id: str, expiry: int = 60, new: bool = 
     def open_session() -> str:
         open_cmd = _remote_browser_cmd(
             session_name,
-            SILICON_BROWSER_PROFILE,
+            worker_constants.SILICON_BROWSER_PROFILE,
             "open",
             start_url,
             "--timeout",
@@ -151,7 +151,7 @@ def _remote_browser_share_locked(contact_id: str, expiry: int = 60, new: bool = 
         return ""
 
     if new:
-        close_cmd = _remote_browser_cmd(session_name, SILICON_BROWSER_PROFILE, "close")
+        close_cmd = _remote_browser_cmd(session_name, worker_constants.SILICON_BROWSER_PROFILE, "close")
         subprocess.run(close_cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60)
         open_error = open_session()
         if open_error:
@@ -159,7 +159,7 @@ def _remote_browser_share_locked(contact_id: str, expiry: int = 60, new: bool = 
 
     cmd = _remote_browser_cmd(
         session_name,
-        SILICON_BROWSER_PROFILE,
+        worker_constants.SILICON_BROWSER_PROFILE,
         "share",
         "--expiry",
         str(minutes),
@@ -192,7 +192,7 @@ def remote_browser_close(contact_id: str) -> str:
 
 
 def _remote_browser_close_locked(contact_id: str) -> str:
-    from worker.handler import SILICON_BROWSER_PROFILE
+    from worker import constants as worker_constants
 
     session_name = f"remote-{contact_id}"
     cmd = [
@@ -200,7 +200,7 @@ def _remote_browser_close_locked(contact_id: str) -> str:
         "--session",
         session_name,
         "--profile",
-        SILICON_BROWSER_PROFILE,
+        worker_constants.SILICON_BROWSER_PROFILE,
         "close",
     ]
     proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=60)

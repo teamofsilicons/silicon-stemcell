@@ -157,7 +157,7 @@ class ManagerInvocationTest(_IsolatedJournal):
         self.assertFalse(runs[0]["heartbeat"])
 
     def test_every_worker_run_is_recorded(self):
-        import worker.handler as worker_handler
+        import worker.process as worker_handler
 
         worker_handler._worker_process_env("carbon-a", "researcher", "browser")
 

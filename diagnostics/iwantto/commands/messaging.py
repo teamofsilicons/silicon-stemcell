@@ -97,7 +97,7 @@ def _build_message(args) -> tuple[str, str]:
 def _my_worker(actor, worker_id: str) -> dict:
     """The worker with this id, if it belongs to the caller's manager."""
     try:
-        from worker.handler import _get_worker_record
+        from worker.registry import _get_worker_record
 
         record = _get_worker_record(worker_id)
     except Exception:

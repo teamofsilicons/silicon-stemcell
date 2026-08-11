@@ -192,7 +192,7 @@ class InterfaceStateTest(unittest.TestCase):
         ]
 
         with (
-            mock.patch("worker.handler.SILICON_BROWSER_PROFILE", "profile-a"),
+            mock.patch("worker.constants.SILICON_BROWSER_PROFILE", "profile-a"),
             mock.patch("subprocess.run", side_effect=completed) as run,
             mock.patch.object(interface.client, "InterfaceClient", return_value=fake_client),
             mock.patch.object(interface.remote_browser, "_save_remote_browser_event"),
@@ -260,7 +260,7 @@ class InterfaceStateTest(unittest.TestCase):
         ]
 
         with (
-            mock.patch("worker.handler.SILICON_BROWSER_PROFILE", "profile-a"),
+            mock.patch("worker.constants.SILICON_BROWSER_PROFILE", "profile-a"),
             mock.patch.object(interface.remote_browser, "REMOTE_BROWSER_START_URL", "https://default.test"),
             mock.patch("subprocess.run", side_effect=completed) as run,
             mock.patch.object(interface.client, "InterfaceClient", return_value=fake_client),

@@ -617,7 +617,7 @@ class RuntimeGatingTests(unittest.TestCase):
 
     def test_new_worker_is_rejected_without_prefence_lineage(self):
         import manager.runtime.maintenance
-        import worker.handler
+        import worker.pool
 
         with tempfile.TemporaryDirectory() as temp:
             coordinator = MaintenanceCoordinator(
@@ -630,7 +630,7 @@ class RuntimeGatingTests(unittest.TestCase):
                 "COORDINATOR",
                 coordinator,
             ):
-                result = worker.handler.start_worker(
+                result = worker.start_worker(
                     "worker-during-update",
                     "should not launch",
                     "terminal",
@@ -640,7 +640,7 @@ class RuntimeGatingTests(unittest.TestCase):
 
     def test_legacy_active_worker_is_adopted_before_quiescence(self):
         import manager.runtime.maintenance
-        import worker.handler
+        import worker.pool
 
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -671,16 +671,16 @@ class RuntimeGatingTests(unittest.TestCase):
                 "COORDINATOR",
                 coordinator,
             ), mock.patch.object(
-                worker.handler,
+                worker.constants,
                 "ACTIVE_FILE",
                 str(active_file),
             ), mock.patch.object(
-                worker.handler,
+                worker.constants,
                 "BROWSER_QUEUE_FILE",
                 str(queue_file),
             ):
                 self.assertEqual(
-                    worker.handler.reconcile_maintenance_activities(),
+                    worker.reconcile_maintenance_activities(),
                     1,
                 )
             self.assertEqual(

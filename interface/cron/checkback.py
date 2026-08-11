@@ -13,7 +13,7 @@ import time
 
 from helpers.paths import DATA_ROOT
 from helpers.state import read_json, update_json
-from worker.handler import get_worker_status
+from worker import get_worker_status
 
 CHECKBACK_FILE = os.fspath(DATA_ROOT / "interface" / "cron" / "checkbacks.json")
 

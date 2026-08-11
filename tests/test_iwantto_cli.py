@@ -293,7 +293,7 @@ class SendRoutingTest(_IsolatedState):
 
     def test_a_manager_answers_a_worker_without_stopping_it(self):
         record = {"carbon_id": "carbon-a", "state": "active"}
-        with mock.patch("worker.handler._get_worker_record", return_value=record):
+        with mock.patch("worker.registry._get_worker_record", return_value=record):
             result = _run(
                 ["send", "researcher", "--text", "save it under /tmp"], self.manager
             )
@@ -305,7 +305,7 @@ class SendRoutingTest(_IsolatedState):
     def test_a_worker_belonging_to_another_manager_is_not_addressable(self):
         record = {"carbon_id": "carbon-z", "state": "active"}
         with (
-            mock.patch("worker.handler._get_worker_record", return_value=record),
+            mock.patch("worker.registry._get_worker_record", return_value=record),
             mock.patch.object(routing_module, "_local_contacts", return_value={}),
             mock.patch.object(routing_module, "_trust_directory", return_value=[]),
         ):
@@ -546,7 +546,7 @@ class DelegateTest(_IsolatedState):
     def test_a_started_worker_gets_its_checkback_scheduled(self):
         with (
             mock.patch(
-                "worker.handler.start_worker", return_value="Done. started"
+                "worker.start_worker", return_value="Done. started"
             ) as start,
             mock.patch("interface.cron.checkback.add_checkback") as add_checkback,
         ):
