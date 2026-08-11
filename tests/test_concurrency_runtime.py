@@ -19,7 +19,6 @@ from helpers.state import (
 )
 import worker.constants
 from worker import registry as registry_module
-from worker import pool as handler
 
 
 class BackgroundOutboxTest(unittest.TestCase):

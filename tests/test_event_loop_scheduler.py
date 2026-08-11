@@ -1,7 +1,8 @@
 import unittest
 from unittest import mock
 
-import main
+import manager.loop_config as m_manager_loop_config
+import manager.loop as m_manager_loop
 
 
 class EventLoopScheduleTest(unittest.TestCase):
@@ -24,7 +25,7 @@ class EventLoopScheduleTest(unittest.TestCase):
         ]
 
     def test_startup_and_activity_do_not_reset_independent_deadlines(self):
-        schedule = main.EventLoopSchedule(
+        schedule = m_manager_loop.EventLoopSchedule(
             self.handlers,
             now=100.0,
             identity="silicon-a",
@@ -41,17 +42,17 @@ class EventLoopScheduleTest(unittest.TestCase):
         self.assertEqual(schedule.next_due["interactive"], interactive_deadline)
 
     def test_slow_handlers_are_jittered_deterministically(self):
-        first = main.EventLoopSchedule(
+        first = m_manager_loop.EventLoopSchedule(
             self.handlers,
             now=0.0,
             identity="silicon-a",
         )
-        second = main.EventLoopSchedule(
+        second = m_manager_loop.EventLoopSchedule(
             self.handlers,
             now=0.0,
             identity="silicon-a",
         )
-        other = main.EventLoopSchedule(
+        other = m_manager_loop.EventLoopSchedule(
             self.handlers,
             now=0.0,
             identity="silicon-b",
@@ -62,8 +63,8 @@ class EventLoopScheduleTest(unittest.TestCase):
         self.assertLessEqual(first.next_due["hourly"], 3900.0)
 
     def test_empty_selection_runs_no_handlers(self):
-        with mock.patch.object(main, "EVENT_LOOP", self.handlers):
-            self.assertEqual(main.run_event_loop_tick(set()), {})
+        with mock.patch.object(m_manager_loop_config, "EVENT_LOOP", self.handlers):
+            self.assertEqual(m_manager_loop.run_event_loop_tick(set()), {})
 
 
 if __name__ == "__main__":

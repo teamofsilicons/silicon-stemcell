@@ -1,3 +1,4 @@
+import manager.dispatcher as m_manager_dispatcher
 import json
 import multiprocessing
 import os
@@ -484,8 +485,6 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
 
 class DispatcherMaintenanceTests(unittest.TestCase):
     def test_active_dispatch_finishes_and_later_message_waits(self):
-        import main
-
         with tempfile.TemporaryDirectory() as temp:
             coordinator = MaintenanceCoordinator(
                 temp,
@@ -501,8 +500,8 @@ class DispatcherMaintenanceTests(unittest.TestCase):
                     started.set()
                     self.assertTrue(finish.wait(5))
 
-            dispatcher = main.ManagerDispatcher(runner=runner)
-            with mock.patch.object(main, "MAINTENANCE", coordinator):
+            dispatcher = m_manager_dispatcher.ManagerDispatcher(runner=runner)
+            with mock.patch.object(m_manager_dispatcher, "MAINTENANCE", coordinator):
                 dispatcher.submit({"carbon-a": "first"})
                 self.assertTrue(started.wait(5))
                 drain = coordinator.request_drain()
@@ -534,8 +533,6 @@ class DispatcherMaintenanceTests(unittest.TestCase):
             dispatcher.shutdown(wait=True)
 
     def test_runtime_ack_waits_for_inbox_claims_and_volatile_outbox(self):
-        import main
-
         with tempfile.TemporaryDirectory() as temp:
             coordinator = MaintenanceCoordinator(
                 temp,
@@ -547,57 +544,57 @@ class DispatcherMaintenanceTests(unittest.TestCase):
             dispatcher.replay_maintenance_queue.return_value = 0
 
             with mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "MAINTENANCE",
                 coordinator,
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "reconcile_maintenance_activities",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "start_listener",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "stop_listener",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "schedule_maintenance_notices",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "maintenance_inbox_quiescent",
                 return_value=False,
             ), mock.patch(
                 "helpers.process.flush_best_effort",
                 return_value=True,
             ):
-                main._maintenance_runtime_tick(dispatcher)
+                m_manager_dispatcher._maintenance_runtime_tick(dispatcher)
             self.assertFalse(coordinator.public_status()["safe_to_stop"])
 
             with mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "MAINTENANCE",
                 coordinator,
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "reconcile_maintenance_activities",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "start_listener",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "stop_listener",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "schedule_maintenance_notices",
             ), mock.patch.object(
-                main,
+                m_manager_dispatcher,
                 "maintenance_inbox_quiescent",
                 return_value=True,
             ), mock.patch(
                 "helpers.process.flush_best_effort",
                 return_value=True,
             ):
-                main._maintenance_runtime_tick(dispatcher)
+                m_manager_dispatcher._maintenance_runtime_tick(dispatcher)
             self.assertTrue(coordinator.public_status()["safe_to_stop"])
 
 

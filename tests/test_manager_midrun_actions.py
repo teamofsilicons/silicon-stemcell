@@ -13,6 +13,10 @@ import unittest
 from unittest import mock
 
 import main
+from interface import outbound as i_outbound
+from interface import work_updates as i_work_updates
+import manager.tracing as m_manager_tracing
+import manager.turn as m_manager_turn
 from diagnostics.iwantto import actor as actor_module
 from diagnostics.iwantto import journal as journal_module
 
@@ -43,37 +47,37 @@ class MidRunCompletionTest(unittest.TestCase):
 
         with (
             mock.patch.object(
-                main, "handle_commands", side_effect=lambda value: dict(value)
+                m_manager_turn, "handle_commands", side_effect=lambda value: dict(value)
             ),
             mock.patch.object(
-                main.Diagnostics, "consume_pending_contexts", return_value=[]
+                m_manager_turn.Diagnostics, "consume_pending_contexts", return_value=[]
             ),
-            mock.patch.object(main.Diagnostics, "get_active_run", return_value=None),
-            mock.patch.object(main.Diagnostics, "start_run", return_value=trace),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "get_active_run", return_value=None),
+            mock.patch.object(m_manager_turn.Diagnostics, "start_run", return_value=trace),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main, "_instrumented_manager_call", side_effect=fake_call
+                m_manager_turn, "_instrumented_manager_call", side_effect=fake_call
             ),
             mock.patch.object(
-                main, "queue_long_task_root_if_blocked", return_value=False
+                m_manager_turn, "queue_long_task_root_if_blocked", return_value=False
             ),
-            mock.patch.object(main, "begin_long_task_run", return_value=lifecycle),
-            mock.patch.object(main, "acknowledge_queued_long_task_root"),
+            mock.patch.object(m_manager_turn, "begin_long_task_run", return_value=lifecycle),
+            mock.patch.object(m_manager_turn, "acknowledge_queued_long_task_root"),
             mock.patch.object(
-                main, "begin_manager_activity", return_value="group-a"
+                m_manager_turn, "begin_manager_activity", return_value="group-a"
             ),
-            mock.patch.object(main, "settle_manager_activity"),
-            mock.patch.object(main, "touch_manager_call_activity"),
-            mock.patch.object(main, "send_progress"),
-            mock.patch.object(main, "reply_user") as reply_user,
+            mock.patch.object(m_manager_tracing, "settle_manager_activity"),
+            mock.patch.object(i_work_updates, "touch_manager_call_activity"),
+            mock.patch.object(i_outbound, "send_progress"),
+            mock.patch.object(i_outbound, "reply_contact") as reply_user,
             mock.patch.object(
                 main, "_contact_has_active_workers", return_value=False
             ),
-            mock.patch.object(main, "execute_all_tools") as execute_all_tools,
+            mock.patch.object(m_manager_turn, "execute_all_tools") as execute_all_tools,
         ):
             execute_all_tools.return_value = ({}, {})
-            main.run_all_managers({"carbon-a": _context()})
+            m_manager_turn.run_all_managers({"carbon-a": _context()})
 
         return calls, lifecycle, reply_user, execute_all_tools
 
@@ -152,8 +156,8 @@ class RunIdentityTest(unittest.TestCase):
             return ("done", None, [])
 
         records = {}
-        with mock.patch.object(main, "manager_code", side_effect=fake_manager_code):
-            main._instrumented_manager_call(
+        with mock.patch.object(m_manager_tracing, "manager_code", side_effect=fake_manager_code):
+            m_manager_tracing._instrumented_manager_call(
                 "carbon-a", "hi", None, 0, None, None, records
             )
 
@@ -174,9 +178,9 @@ class RunIdentityTest(unittest.TestCase):
             seen["token"] = kwargs["env"][actor_module.TOKEN_ENV]
             raise RuntimeError("provider died")
 
-        with mock.patch.object(main, "manager_code", side_effect=exploding):
+        with mock.patch.object(m_manager_tracing, "manager_code", side_effect=exploding):
             with self.assertRaises(RuntimeError):
-                main._instrumented_manager_call("carbon-a", "hi", None, 0, None, None)
+                m_manager_tracing._instrumented_manager_call("carbon-a", "hi", None, 0, None, None)
 
         self.assertIsNone(actor_module.lookup_token(seen["token"]))
 

@@ -302,7 +302,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
 
 class EventLoopWiringTest(unittest.TestCase):
     def test_the_heartbeats_and_the_reaper_are_on_the_event_loop(self):
-        import config
+        from manager import loop_config as config
 
         handlers = {entry["name"]: entry for entry in config.EVENT_LOOP}
 

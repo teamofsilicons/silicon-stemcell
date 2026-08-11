@@ -1,3 +1,4 @@
+import manager.tracing as m_manager_tracing
 """The diagnosis store — everything that happens inside this Silicon.
 
 TODO.md names four things it must hold, so a session can be reconstructed when
@@ -40,7 +41,6 @@ class _IsolatedJournal(unittest.TestCase):
 
 class ManagerInvocationTest(_IsolatedJournal):
     def test_every_manager_turn_is_recorded_with_what_it_did(self):
-        import main
 
         def fake_manager_code(_text, _carbon_id, **kwargs):
             token = kwargs["env"][actor_module.TOKEN_ENV]
@@ -48,8 +48,8 @@ class ManagerInvocationTest(_IsolatedJournal):
             journal.note_invocation(token, "work")
             return ("done", None, [])
 
-        with mock.patch.object(main, "manager_code", side_effect=fake_manager_code):
-            main._instrumented_manager_call("carbon-a", "hello", None, 0, None, None)
+        with mock.patch.object(m_manager_tracing, "manager_code", side_effect=fake_manager_code):
+            m_manager_tracing._instrumented_manager_call("carbon-a", "hello", None, 0, None, None)
 
         runs = self.events(journal.RUN)
         self.assertEqual(len(runs), 1)
@@ -61,13 +61,12 @@ class ManagerInvocationTest(_IsolatedJournal):
         self.assertIsInstance(runs[0]["seconds"], float)
 
     def test_a_failed_manager_turn_is_recorded_as_failed(self):
-        import main
 
         with mock.patch.object(
-            main, "manager_code", side_effect=RuntimeError("provider died")
+            m_manager_tracing, "manager_code", side_effect=RuntimeError("provider died")
         ):
             with self.assertRaises(RuntimeError):
-                main._instrumented_manager_call("carbon-a", "hi", None, 0, None, None)
+                m_manager_tracing._instrumented_manager_call("carbon-a", "hi", None, 0, None, None)
 
         runs = self.events(journal.RUN)
         self.assertEqual(len(runs), 1)
@@ -75,7 +74,6 @@ class ManagerInvocationTest(_IsolatedJournal):
         self.assertEqual(runs[0]["detail"], "RuntimeError")
 
     def test_undirected_brain_failure_is_suppressed(self):
-        import main
 
         provider_failure = (
             '{"tools": [{"tool": "reply", '
@@ -84,17 +82,17 @@ class ManagerInvocationTest(_IsolatedJournal):
         records = {("visible_activity", "carbon-a", 0): False}
         with (
             mock.patch.object(
-                main,
+                m_manager_tracing,
                 "manager_code",
                 return_value=(provider_failure, None, []),
             ),
             mock.patch.object(
-                main,
+                m_manager_tracing,
                 "provider_failed",
                 return_value=True,
             ),
         ):
-            output, rate_limit, executed = main._instrumented_manager_call(
+            output, rate_limit, executed = m_manager_tracing._instrumented_manager_call(
                 "carbon-a",
                 "internal root",
                 None,
@@ -112,27 +110,26 @@ class ManagerInvocationTest(_IsolatedJournal):
         self.assertEqual(executed, [])
 
     def test_visible_brain_failure_is_preserved(self):
-        import main
 
         provider_failure = (
             '{"tools": [{"tool": "reply", '
             '"message": "Usage limit reached."}]}'
         )
         with mock.patch.object(
-            main,
+            m_manager_tracing,
             "provider_failed",
             return_value=True,
         ):
-            result = main._suppress_undirected_brain_failure(
+            result = m_manager_tracing._suppress_undirected_brain_failure(
                 (provider_failure, True, []),
                 "carbon-a",
                 True,
             )
 
         self.assertEqual(result, (provider_failure, True, []))
-        self.assertTrue(main._is_terminal_brain_failure(provider_failure))
+        self.assertTrue(m_manager_tracing._is_terminal_brain_failure(provider_failure))
         self.assertFalse(
-            main._is_terminal_brain_failure(
+            m_manager_tracing._is_terminal_brain_failure(
                 '{"tools": [{"tool": "reply", "message": "Try again."}]}'
             )
         )
@@ -374,7 +371,7 @@ class AdvertisingPublishTest(unittest.TestCase):
             handle.write(text)
 
     def test_a_changed_file_is_published_once(self):
-        import config
+        from interface import team_tick as config
 
         self._write("I do market research.")
         with mock.patch(
@@ -390,7 +387,7 @@ class AdvertisingPublishTest(unittest.TestCase):
         self.assertIsNone(second, "an unchanged file must not burn a revision")
 
     def test_editing_the_file_publishes_again(self):
-        import config
+        from interface import team_tick as config
 
         self._write("v1")
         with mock.patch(
@@ -406,7 +403,7 @@ class AdvertisingPublishTest(unittest.TestCase):
         )
 
     def test_a_failed_publish_is_retried_next_tick(self):
-        import config
+        from interface import team_tick as config
 
         self._write("v1")
         with mock.patch(
@@ -419,6 +416,6 @@ class AdvertisingPublishTest(unittest.TestCase):
         self.assertEqual(publish.call_count, 2)
 
     def test_a_missing_file_is_not_an_error(self):
-        import config
+        from interface import team_tick as config
 
         self.assertIsNone(config._publish_own_advertising())

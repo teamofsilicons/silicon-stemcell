@@ -8,7 +8,19 @@ from unittest import mock
 
 import inference
 import inference.sessions
-import main
+import manager.activity as m_manager_activity
+import manager.tools.memory as m_manager_tools_memory
+from interface import outbound as i_outbound
+from interface import work_updates as i_work_updates
+import manager.tools.browser as m_manager_tools_browser
+import manager.tools.messaging as m_manager_tools_messaging
+import manager.tools.work as m_manager_tools_work
+import manager.tools.worker as m_manager_tools_worker
+import manager.settings as m_manager_settings
+import manager.tools.helpers as m_manager_tools_helpers
+import manager.tools.registry as m_manager_tools_registry
+import manager.tracing as m_manager_tracing
+import manager.turn as m_manager_turn
 import manager
 from prompts import loader as DNA
 from diagnostics import activity as activity_log
@@ -121,32 +133,32 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
             [],
         )
         with (
-            mock.patch.object(main, "handle_commands", side_effect=lambda value: value),
+            mock.patch.object(m_manager_turn, "handle_commands", side_effect=lambda value: value),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=pending_contexts,
             ),
-            mock.patch.object(main.Diagnostics, "get_active_run", return_value=None),
-            mock.patch.object(main.Diagnostics, "start_run", return_value=trace),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "get_active_run", return_value=None),
+            mock.patch.object(m_manager_turn.Diagnostics, "start_run", return_value=trace),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 return_value=terminal,
             ),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "begin_manager_activity",
                 return_value=f"group-{trigger}",
             ) as begin_activity,
-            mock.patch.object(main, "settle_manager_activity") as settle_activity,
-            mock.patch.object(main, "touch_manager_call_activity"),
-            mock.patch.object(main, "set_active_task_timer"),
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(m_manager_tracing, "settle_manager_activity") as settle_activity,
+            mock.patch.object(i_work_updates, "touch_manager_call_activity"),
+            mock.patch.object(m_manager_turn, "set_active_task_timer"),
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
         ):
-            main.run_all_managers({"carbon-a": context})
+            m_manager_turn.run_all_managers({"carbon-a": context})
         return begin_activity, settle_activity, send_progress
 
     def test_direct_carbon_root_exposes_one_settled_activity_group(self):
@@ -177,23 +189,23 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
         trace.meta = {"_manager_running": True}
         with (
             mock.patch.object(
-                main,
+                m_manager_tools_helpers,
                 "current_manager_activity_group",
                 return_value="",
             ),
-            mock.patch.object(main.Diagnostics, "get_active_run", return_value=trace),
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(m_manager_turn.Diagnostics, "get_active_run", return_value=trace),
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
             mock.patch.object(
-                main,
+                m_manager_tools_work,
                 "execute_work_update",
                 return_value="Done. internal update",
             ),
             mock.patch.object(
-                main,
+                i_work_updates,
                 "touch_manager_call_activity",
             ) as touch_manager_call_activity,
         ):
-            handler = main._make_provider_progress_handler("carbon-a", "")
+            handler = m_manager_tracing._make_provider_progress_handler("carbon-a", "")
             handler(
                 {
                     "provider": "codex",
@@ -203,11 +215,11 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
                 },
                 "running internal command",
             )
-            result = main._execute_single_tool(
+            result = m_manager_tools_registry._execute_single_tool(
                 {"tool": "work_update", "action": "task/update"},
                 "carbon-a",
             )
-            failure = main._message_failure_status(
+            failure = m_manager_tools_helpers._message_failure_status(
                 "carbon-a",
                 "silicon",
                 "peer-a",
@@ -289,62 +301,62 @@ class ManagerToolExecutionTest(unittest.TestCase):
 
         with (
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "handle_commands",
                 side_effect=lambda contexts: dict(contexts),
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 side_effect=[timeout_result, timeout_result],
             ) as manager_call,
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "queue_long_task_root_if_blocked",
                 return_value=False,
             ),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "begin_long_task_run",
                 return_value=lifecycle,
             ),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "acknowledge_queued_long_task_root",
             ),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "begin_manager_activity",
                 return_value="group-message",
             ),
-            mock.patch.object(main, "settle_manager_activity"),
-            mock.patch.object(main, "touch_manager_call_activity"),
-            mock.patch.object(main, "send_progress"),
-            mock.patch.object(main, "reply_user") as reply_user,
+            mock.patch.object(m_manager_tracing, "settle_manager_activity"),
+            mock.patch.object(i_work_updates, "touch_manager_call_activity"),
+            mock.patch.object(i_outbound, "send_progress"),
+            mock.patch.object(i_outbound, "reply_contact") as reply_user,
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
         ):
-            main.run_all_managers(
+            m_manager_turn.run_all_managers(
                 {
                     "carbon-a": (
                         "room_id: room-a\n"
@@ -359,12 +371,12 @@ class ManagerToolExecutionTest(unittest.TestCase):
             reply_user.call_args_list,
             [
                 mock.call(
-                    main.MANAGER_TIMEOUT_RETRY_REPLY,
+                    m_manager_settings.MANAGER_TIMEOUT_RETRY_REPLY,
                     "carbon-a",
                     work_continues=True,
                 ),
                 mock.call(
-                    main.MANAGER_TIMEOUT_FINAL_REPLY,
+                    m_manager_settings.MANAGER_TIMEOUT_FINAL_REPLY,
                     "carbon-a",
                 ),
             ],
@@ -415,13 +427,13 @@ class ManagerToolExecutionTest(unittest.TestCase):
         )
 
     def test_worker_new_requires_worker_id_and_task(self):
-        missing_id = main.execute_single_tool(
+        missing_id = m_manager_tools_registry.execute_single_tool(
             {"tool": "worker/browser", "type": "new", "task": "research"},
             "carbon-a",
         )
         self.assertEqual(missing_id, "Tool 'worker/new': Error: worker-id is required")
 
-        missing_task = main.execute_single_tool(
+        missing_task = m_manager_tools_registry.execute_single_tool(
             {"tool": "worker/browser", "type": "new", "worker-id": "researcher"},
             "carbon-a",
         )
@@ -445,9 +457,9 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 "interface.trust.inspect_trust_policy",
                 return_value=snapshot,
             ) as inspect,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main.execute_single_tool(
+            result = m_manager_tools_registry.execute_single_tool(
                 {"tool": "trust/list"},
                 "carbon-a",
             )
@@ -455,14 +467,14 @@ class ManagerToolExecutionTest(unittest.TestCase):
         inspect.assert_called_once_with(
             kind="",
             public_id="",
-            root=main.PROJECT_ROOT,
+            root=m_manager_settings.PROJECT_ROOT,
             refresh=True,
         )
         self.assertIn('"revision": "7:2"', result)
         self.assertIn('"id": "peer-si"', result)
 
     def test_trust_get_requires_one_typed_identity(self):
-        result = main.execute_single_tool(
+        result = m_manager_tools_registry.execute_single_tool(
             {"tool": "trust/get"},
             "carbon-a",
         )
@@ -486,11 +498,11 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
 
         with (
-            mock.patch.object(main, "start_worker", return_value="Done. started") as start_worker,
-            mock.patch.object(main, "add_checkback") as add_checkback,
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(m_manager_tools_worker, "start_worker", return_value="Done. started") as start_worker,
+            mock.patch.object(m_manager_tools_worker, "add_checkback") as add_checkback,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         start_worker.assert_called_once_with(
             "public-research",
@@ -518,15 +530,15 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
 
         with (
-            mock.patch.object(main, "start_worker", return_value="Done. started"),
+            mock.patch.object(m_manager_tools_worker, "start_worker", return_value="Done. started"),
             mock.patch.object(
-                main,
+                m_manager_tools_worker,
                 "record_worker_started",
                 return_value=reference,
             ) as record_started,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         record_started.assert_called_once_with(
             "carbon-a",
@@ -554,7 +566,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
 
         with (
             mock.patch.object(
-                main,
+                m_manager_tools_messaging,
                 "ensure_contact_for_target",
                 return_value={
                     "carbon_id": "carbon-b",
@@ -562,18 +574,18 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 },
             ),
             mock.patch.object(
-                main,
+                m_manager_tools_messaging,
                 "prepare_outbound_call",
                 return_value=work_call,
             ),
             mock.patch.object(
-                main,
+                m_manager_tools_messaging,
                 "send_manager_message",
                 return_value="Done. queued",
             ) as send_manager_message,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         send_manager_message.assert_called_once_with(
             "carbon-a",
@@ -620,23 +632,23 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 }
                 with (
                     mock.patch.object(
-                        main,
+                        m_manager_tools_messaging,
                         "ensure_contact_for_target",
                         return_value=contact,
                     ),
                     mock.patch.object(
-                        main,
+                        m_manager_tools_messaging,
                         "prepare_outbound_call",
                         return_value=work_call,
                     ),
                     mock.patch.object(
-                        main,
+                        m_manager_tools_messaging,
                         "send_manager_message",
                         return_value="Done. queued",
                     ) as send_manager_message,
-                    mock.patch.object(main, "send_progress"),
+                    mock.patch.object(i_outbound, "send_progress"),
                 ):
-                    result = main.execute_single_tool(spec, "carbon-a")
+                    result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
                 send_manager_message.assert_called_once()
                 self.assertIn("Done. queued", result)
@@ -676,27 +688,27 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 }
                 with (
                     mock.patch.object(
-                        main,
+                        m_manager_tools_messaging,
                         "ensure_contact_for_target",
                         return_value=contact,
                     ),
                     mock.patch.object(
-                        main,
+                        m_manager_tools_messaging,
                         "prepare_outbound_call",
                         side_effect=OSError(
                             "disk failed while handling Private manager message."
                         ),
                     ),
                     mock.patch.object(
-                        main,
+                        m_manager_tools_messaging,
                         "send_manager_message",
                     ) as send_manager_message,
                     mock.patch(
                         "interface.work_updates.enqueue_outbound_call",
                     ) as enqueue_outbound_call,
-                    mock.patch.object(main, "send_progress"),
+                    mock.patch.object(i_outbound, "send_progress"),
                 ):
-                    result = main.execute_single_tool(spec, "carbon-a")
+                    result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
                 send_manager_message.assert_not_called()
                 enqueue_outbound_call.assert_not_called()
@@ -713,11 +725,11 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
 
         with (
-            mock.patch.object(main, "ensure_contact_for_target", side_effect=Exception("api 404: Target not found.")),
-            mock.patch.object(main, "send_manager_message") as send_manager_message,
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(m_manager_tools_messaging, "ensure_contact_for_target", side_effect=Exception("api 404: Target not found.")),
+            mock.patch.object(m_manager_tools_messaging, "send_manager_message") as send_manager_message,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         send_manager_message.assert_not_called()
         self.assertIn("Message failed: carbon 'missing-carbon' could not be reached.", result)
@@ -745,10 +757,10 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
 
         with (
-            mock.patch.object(main, "remote_browser_share", return_value="Done. shared") as share,
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(m_manager_tools_browser, "remote_browser_share", return_value="Done. shared") as share,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         share.assert_called_once_with(
             "carbon-a",
@@ -776,12 +788,12 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 return_value=outcome,
             ) as update_memory,
             mock.patch.object(
-                main,
+                m_manager_tools_memory,
                 "acknowledge_team_context_result",
             ) as acknowledge,
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         update_memory.assert_called_once_with(
             spec["content"],
@@ -815,9 +827,9 @@ class ManagerToolExecutionTest(unittest.TestCase):
                     "revision": 8,
                 },
             ) as update_memory,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main.execute_single_tool(spec, "carbon-a")
+            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
 
         update_memory.assert_called_once_with(
             spec["content"],
@@ -840,9 +852,9 @@ class ManagerToolExecutionTest(unittest.TestCase):
                     "actual_revision": 7,
                 },
             ),
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main.execute_single_tool(
+            result = m_manager_tools_registry.execute_single_tool(
                 {
                     "tool": "advertising_memory/update",
                     "content": "# Current work\n- Local draft",
@@ -857,7 +869,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         )
 
     def test_advertising_memory_update_requires_string_content(self):
-        result = main.execute_single_tool(
+        result = m_manager_tools_registry.execute_single_tool(
             {"tool": "advertising_memory/update"},
             "carbon-a",
         )
@@ -867,7 +879,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             "Tool 'advertising_memory/update': Error: content must be a string",
         )
 
-        invalid_resolution = main.execute_single_tool(
+        invalid_resolution = m_manager_tools_registry.execute_single_tool(
             {
                 "tool": "advertising_memory/update",
                 "content": "",
@@ -894,7 +906,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             }
         )
 
-        rendered = main._manager_output_for_log(output, json.loads(output))
+        rendered = m_manager_tools_registry._manager_output_for_log(output, json.loads(output))
 
         self.assertEqual(rendered, "[Private tool invocation omitted]")
         self.assertNotIn(content, rendered)
@@ -906,7 +918,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             f'"content":"{content}"'
         )
 
-        rendered = main._manager_output_for_log(output, {})
+        rendered = m_manager_tools_registry._manager_output_for_log(output, {})
 
         self.assertEqual(rendered, "[Private tool invocation omitted]")
         self.assertNotIn(content, rendered)
@@ -986,13 +998,13 @@ class ManagerToolExecutionTest(unittest.TestCase):
             "PEER ADVERTISING CONTENT"
         )
 
-        rendered = main._manager_output_for_log(output, {})
+        rendered = m_manager_tools_registry._manager_output_for_log(output, {})
 
         self.assertEqual(rendered, "[Advertising memory content omitted]")
         self.assertNotIn("PEER ADVERTISING CONTENT", rendered)
 
     def test_manager_process_log_redacts_provider_credentials(self):
-        rendered = main._manager_output_for_log(
+        rendered = m_manager_tools_registry._manager_output_for_log(
             "provider failed: api_key=scs_live_supersecret",
             {},
         )
@@ -1126,7 +1138,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             f'"content":"{content}'
         )
 
-        rendered = main._rate_limit_reply_text(output)
+        rendered = m_manager_tools_registry._rate_limit_reply_text(output)
 
         self.assertEqual(
             rendered,
@@ -1145,7 +1157,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         ):
             with self.subTest(tool=tool_name):
                 self.assertEqual(
-                    main._diagnostic_tool_metadata({
+                    m_manager_tools_registry._diagnostic_tool_metadata({
                         "tool": tool_name,
                         "content": payload,
                         "type": payload,
@@ -1156,14 +1168,14 @@ class ManagerToolExecutionTest(unittest.TestCase):
                     {"tool": tool_name},
                 )
 
-        trace = main.Diagnostics.start_run(
+        trace = m_manager_turn.Diagnostics.start_run(
             "message",
             "carbon-private-diagnostics",
             base_dir=tempfile.mkdtemp(prefix="private-tool-diag-"),
         )
-        main.Diagnostics.register_active("carbon-private-diagnostics", trace)
+        m_manager_turn.Diagnostics.register_active("carbon-private-diagnostics", trace)
         self.addCleanup(
-            main.Diagnostics.unregister_active,
+            m_manager_turn.Diagnostics.unregister_active,
             "carbon-private-diagnostics",
             trace,
         )
@@ -1172,9 +1184,9 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 "interface.team_context.update_own_advertising_memory",
                 return_value={"ok": True, "status": "uploaded", "revision": 1},
             ),
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            main.execute_single_tool(
+            m_manager_tools_registry.execute_single_tool(
                 {
                     "tool": "advertising_memory/update",
                     "content": payload,

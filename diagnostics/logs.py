@@ -148,6 +148,12 @@ def silicon_log() -> AgentLog:
     return agent_log("silicon")
 
 
+def runtime_log(message: str) -> None:
+    """Say it on the terminal and keep it in the runtime's own log."""
+    print(message, flush=True)
+    silicon_log().event("RUNTIME", message)
+
+
 def announce_session(session_id: str = "", provider: str = "", version: str = "") -> None:
     """Record a process start once, at the top of the runtime log."""
     silicon_log().session_start(session_id, provider, version)

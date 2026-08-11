@@ -14,7 +14,7 @@ import threading
 import unittest
 from unittest import mock
 
-import main
+import manager.dispatcher as m_manager_dispatcher
 from inference.claude.injector import ClaudeInjector
 from inference.codex.injector import CodexInjector
 from diagnostics.iwantto import injection
@@ -170,13 +170,13 @@ class DispatcherDurabilityTest(unittest.TestCase):
     """An injected root must share the fate of the run it was injected into."""
 
     def _dispatcher(self):
-        dispatcher = main.ManagerDispatcher(runner=lambda _contexts: None)
+        dispatcher = m_manager_dispatcher.ManagerDispatcher(runner=lambda _contexts: None)
         dispatcher._running.add("carbon-a")
         return dispatcher
 
     @staticmethod
     def _admission(context="new message"):
-        admission = mock.Mock(spec=main.RootAdmission)
+        admission = mock.Mock(spec=m_manager_dispatcher.RootAdmission)
         admission.contact_id = "carbon-a"
         admission.context = context
         return admission
@@ -208,13 +208,13 @@ class DispatcherDurabilityTest(unittest.TestCase):
         self.assertEqual(dispatcher._injected.get("carbon-a", []), [])
 
     def test_an_idle_contact_is_never_injected_into(self):
-        dispatcher = main.ManagerDispatcher(runner=lambda _contexts: None)
+        dispatcher = m_manager_dispatcher.ManagerDispatcher(runner=lambda _contexts: None)
         received = []
 
         with injection.accepting(
             injection.MANAGER, "carbon-a", lambda t: received.append(t) or True
         ):
-            with mock.patch.object(main.threading, "Thread"):
+            with mock.patch.object(m_manager_dispatcher.threading, "Thread"):
                 dispatcher._schedule_admissions([self._admission()])
 
         self.assertEqual(received, [])

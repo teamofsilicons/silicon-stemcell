@@ -35,7 +35,6 @@ class RuntimeDataRootTests(unittest.TestCase):
                 )
             for filename in (
                 ".silicon-data-root-v1",
-                "config.py",
                 "glass_agent.py",
                 "main.py",
                 "silicon.info",
@@ -86,6 +85,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from inference.codex import provider as codex_provider
                 import main
                 import manager
+                import manager.settings as m_manager_settings
                 from interface.release import updater as update
                 import worker.constants
                 from worker import pool as handler
@@ -124,7 +124,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                     "backup_default": str(backup._instance_root()),
                     "update_state": str(update.UPDATE_STATE_FILE),
                     "update_info": str(update.SILICON_INFO_FILE),
-                    "restart_flag": str(main.RESTART_FLAG),
+                    "restart_flag": str(m_manager_settings.RESTART_FLAG),
                     "glass_agent_root": str(agent_config.silicon_dir()),
                     "memory_prompt": DNA._read_prompt("MEMORY.md"),
                     "manager_prompt_path": DNA._prompt_path("MANAGER.md"),

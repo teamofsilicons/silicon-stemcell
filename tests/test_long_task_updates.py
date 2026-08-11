@@ -6,7 +6,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import main
+import manager.activity as m_manager_activity
+from interface import long_tasks as i_long_tasks
+from interface import outbound as i_outbound
+import manager.tools.messaging as m_manager_tools_messaging
+import manager.tools.work as m_manager_tools_work
+import manager.tools.worker as m_manager_tools_worker
+import manager.dispatcher as m_manager_dispatcher
+import manager.tools.registry as m_manager_tools_registry
+import manager.tracing as m_manager_tracing
+import manager.turn as m_manager_turn
 from interface import long_tasks as long_task_updates
 from interface import work_updates
 
@@ -1319,23 +1328,23 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 return_value=ERROR,
             ),
             mock.patch.object(
-                main,
+                i_long_tasks,
                 "current_long_task",
                 return_value=lifecycle,
             ),
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
             mock.patch.object(
-                main,
-                "reply_user",
+                i_outbound,
+                "reply_contact",
                 return_value="Message sent",
             ) as reply,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            main._execute_single_tool(
+            m_manager_tools_registry._execute_single_tool(
                 {"tool": "reply", "message": "All done."},
                 "carbon-a",
             )
@@ -1355,14 +1364,14 @@ class LongTaskLifecycleTest(unittest.TestCase):
             "refresh_task_snapshot",
             return_value={"task_id": lifecycle.task_id, "state": "running"},
         ), mock.patch.object(
-            main,
-            "reply_user",
+            i_outbound,
+            "reply_contact",
             return_value="Message sent",
         ) as reply:
             self.assertEqual(
                 lifecycle._flush_final_reply(
                     has_active_workers=False,
-                    reply_sender=main.reply_user,
+                    reply_sender=i_outbound.reply_contact,
                     force=True,
                 ),
                 "Message sent",
@@ -1453,25 +1462,25 @@ class LongTaskLifecycleTest(unittest.TestCase):
         )
         with (
             mock.patch.object(
-                main,
+                i_long_tasks,
                 "current_long_task",
                 return_value=lifecycle,
             ),
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
             mock.patch.object(
-                main,
-                "reply_user",
+                i_outbound,
+                "reply_contact",
                 side_effect=lambda *_args, **_kwargs: (
                     order.append("reply") or "Message sent"
                 ),
             ) as reply,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            main._execute_single_tool(
+            m_manager_tools_registry._execute_single_tool(
                 {"tool": "reply", "message": "All done."},
                 "carbon-a",
             )
@@ -1508,20 +1517,20 @@ class LongTaskLifecycleTest(unittest.TestCase):
         lifecycle.resolve_task_id.return_value = "task-a"
         with (
             mock.patch.object(
-                main,
+                i_long_tasks,
                 "current_long_task",
                 return_value=lifecycle,
             ),
             mock.patch.object(
-                main,
+                m_manager_tools_worker,
                 "start_worker",
                 side_effect=lambda *_args, **_kwargs: (
                     order.append("worker") or "Done. started"
                 ),
             ),
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            main._execute_single_tool(
+            m_manager_tools_registry._execute_single_tool(
                 {
                     "tool": "worker/terminal",
                     "type": "new",
@@ -1539,17 +1548,17 @@ class LongTaskLifecycleTest(unittest.TestCase):
         lifecycle = self.lifecycle()
         with (
             mock.patch.object(
-                main,
+                i_long_tasks,
                 "current_long_task",
                 return_value=lifecycle,
             ),
             mock.patch.object(
-                main,
+                m_manager_tools_worker,
                 "start_worker",
                 return_value="Done. started",
             ) as start,
             mock.patch.object(
-                main,
+                m_manager_tools_worker,
                 "record_worker_started",
                 return_value={},
             ) as publish,
@@ -1557,9 +1566,9 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 long_task_updates,
                 "execute_work_update",
             ) as work_update,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main._execute_single_tool(
+            result = m_manager_tools_registry._execute_single_tool(
                 {
                     "tool": "worker/terminal",
                     "type": "new",
@@ -1596,7 +1605,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch.object(
-                main,
+                i_long_tasks,
                 "current_long_task",
                 return_value=lifecycle,
             ),
@@ -1606,13 +1615,13 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 return_value=ERROR,
             ),
             mock.patch.object(
-                main,
+                m_manager_tools_worker,
                 "start_worker",
                 side_effect=start_worker,
             ) as start,
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            result = main._execute_single_tool(
+            result = m_manager_tools_registry._execute_single_tool(
                 {
                     "tool": "worker/terminal",
                     "type": "new",
@@ -1689,11 +1698,11 @@ class LongTaskLifecycleTest(unittest.TestCase):
             return "Done"
 
         with mock.patch.object(
-            main,
+            m_manager_tools_registry,
             "execute_single_tool",
             side_effect=execute,
         ):
-            main.execute_all_tools(
+            m_manager_tools_registry.execute_all_tools(
                 [
                     (
                         "carbon-a",
@@ -1714,11 +1723,11 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertEqual(order, ["worker/terminal", "reply"])
 
     def test_accuracy_review_suppresses_intermediate_reply_tools(self):
-        handler = main._make_mid_stream_handler(
+        handler = m_manager_tracing._make_mid_stream_handler(
             "carbon-a",
             allow_intermediate_replies=False,
         )
-        with mock.patch.object(main, "execute_single_tool") as execute:
+        with mock.patch.object(m_manager_tracing, "execute_single_tool") as execute:
             handled = handler(
                 [
                     {
@@ -1745,35 +1754,35 @@ class LongTaskLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "accuracy_review_root_is_current",
                 return_value=True,
             ),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "queue_long_task_root_if_blocked",
                 return_value=True,
             ) as queue_root,
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ) as start_run,
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
-            mock.patch.object(main, "handle_commands") as handle_commands,
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn, "handle_commands") as handle_commands,
         ):
-            main.run_all_managers({"carbon-a": context})
+            m_manager_turn.run_all_managers({"carbon-a": context})
 
         handle_commands.assert_not_called()
         queue_root.assert_called_once()
@@ -1820,49 +1829,49 @@ class LongTaskLifecycleTest(unittest.TestCase):
         finished = '{"tools":[{"tool":"do_nothing"}]}'
 
         with (
-            mock.patch.object(main, "handle_commands") as handle_commands,
+            mock.patch.object(m_manager_turn, "handle_commands") as handle_commands,
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 side_effect=[
                     (output, None, []),
                     (finished, None, []),
                 ],
             ),
-            mock.patch.object(main, "begin_manager_activity") as begin_activity,
-            mock.patch.object(main, "send_progress") as send_progress,
-            mock.patch.object(main, "reply_user") as reply,
+            mock.patch.object(m_manager_turn, "begin_manager_activity") as begin_activity,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
+            mock.patch.object(i_outbound, "reply_contact") as reply,
             mock.patch.object(
-                main,
+                m_manager_tools_work,
                 "execute_work_update",
                 return_value=DONE,
             ) as execute_work_update,
-            mock.patch.object(main, "send_manager_message") as message_manager,
-            mock.patch.object(main, "start_worker") as start_worker,
+            mock.patch.object(m_manager_tools_messaging, "send_manager_message") as message_manager,
+            mock.patch.object(m_manager_tools_worker, "start_worker") as start_worker,
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
         ):
-            main.run_all_managers(root)
+            m_manager_turn.run_all_managers(root)
 
         begin_activity.assert_not_called()
         handle_commands.assert_not_called()
@@ -1913,34 +1922,34 @@ class LongTaskLifecycleTest(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(main, "handle_commands") as handle_commands,
+            mock.patch.object(m_manager_turn, "handle_commands") as handle_commands,
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 return_value=(forbidden, None, []),
             ),
-            mock.patch.object(main, "reply_user") as reply,
-            mock.patch.object(main, "send_manager_message") as message_manager,
-            mock.patch.object(main, "start_worker") as start_worker,
+            mock.patch.object(i_outbound, "reply_contact") as reply,
+            mock.patch.object(m_manager_tools_messaging, "send_manager_message") as message_manager,
+            mock.patch.object(m_manager_tools_worker, "start_worker") as start_worker,
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
@@ -1949,7 +1958,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 "no accepted action",
             ),
         ):
-            main.run_all_managers(root)
+            m_manager_turn.run_all_managers(root)
 
         handle_commands.assert_not_called()
         reply.assert_not_called()
@@ -1970,29 +1979,29 @@ class LongTaskLifecycleTest(unittest.TestCase):
         finished = '{"tools":[{"tool":"do_nothing"}]}'
         with (
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "handle_commands",
                 side_effect=lambda value: value,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 side_effect=[
                     (create, None, []),
@@ -2000,19 +2009,19 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 ],
             ),
             mock.patch.object(
-                main,
+                m_manager_tools_work,
                 "execute_work_update",
                 return_value=DONE,
             ),
-            mock.patch.object(main, "begin_manager_activity") as begin_activity,
-            mock.patch.object(main, "send_progress") as send_progress,
+            mock.patch.object(m_manager_turn, "begin_manager_activity") as begin_activity,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
         ):
-            main.run_all_managers(
+            m_manager_turn.run_all_managers(
                 {"carbon-a": "Internal scheduled maintenance root"}
             )
 
@@ -2092,46 +2101,46 @@ class LongTaskLifecycleTest(unittest.TestCase):
         lifecycle = mock.Mock()
         with (
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "handle_commands",
                 side_effect=lambda value: value,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 return_value=("not tool json", None, []),
             ),
-            mock.patch.object(main, "parse_manager_output", return_value=None),
-            mock.patch.object(main, "is_rate_limit", return_value=False),
-            mock.patch.object(main, "begin_manager_activity", return_value="group-a"),
-            mock.patch.object(main, "settle_manager_activity"),
+            mock.patch.object(m_manager_tracing, "parse_manager_output", return_value=None),
+            mock.patch.object(m_manager_turn, "is_rate_limit", return_value=False),
+            mock.patch.object(m_manager_turn, "begin_manager_activity", return_value="group-a"),
+            mock.patch.object(m_manager_tracing, "settle_manager_activity"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "begin_long_task_run",
                 return_value=lifecycle,
             ),
-            mock.patch.object(main, "_contact_has_active_workers", return_value=False),
-            mock.patch.object(main, "send_progress"),
-            mock.patch.object(main, "set_active_task_timer") as set_timer,
+            mock.patch.object(m_manager_activity, "_contact_has_active_workers", return_value=False),
+            mock.patch.object(i_outbound, "send_progress"),
+            mock.patch.object(m_manager_turn, "set_active_task_timer") as set_timer,
         ):
-            main.run_all_managers(
+            m_manager_turn.run_all_managers(
                 {
                     "carbon-a": (
                         "room_id: room-a\nevent_id: event-a\n"
@@ -2789,34 +2798,34 @@ class LongTaskLifecycleTest(unittest.TestCase):
         trace.meta = {}
         with (
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "handle_commands",
                 side_effect=lambda contexts: dict(contexts),
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_work_lifecycle_is_visible",
                 return_value=False,
             ) as infer_visibility,
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 return_value=(
                     '{"tools":[{"tool":"do_nothing"}]}',
@@ -2825,19 +2834,19 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 ),
             ),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "begin_manager_activity",
                 return_value="visible-group",
             ) as begin_activity,
-            mock.patch.object(main, "send_progress") as send_progress,
-            mock.patch.object(main, "settle_manager_activity"),
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
+            mock.patch.object(m_manager_tracing, "settle_manager_activity"),
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
         ):
-            main.run_all_managers({"carbon-a": context})
+            m_manager_turn.run_all_managers({"carbon-a": context})
 
         infer_visibility.assert_not_called()
         begin_activity.assert_called_once()
@@ -2867,34 +2876,34 @@ class LongTaskLifecycleTest(unittest.TestCase):
         trace.meta = {}
         with (
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "handle_commands",
                 side_effect=lambda contexts: dict(contexts),
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "consume_pending_contexts",
                 return_value=[],
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "get_active_run",
                 return_value=None,
             ),
             mock.patch.object(
-                main.Diagnostics,
+                m_manager_turn.Diagnostics,
                 "start_run",
                 return_value=trace,
             ),
-            mock.patch.object(main.Diagnostics, "register_active"),
-            mock.patch.object(main.Diagnostics, "unregister_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "register_active"),
+            mock.patch.object(m_manager_turn.Diagnostics, "unregister_active"),
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_work_lifecycle_is_visible",
                 return_value=True,
             ) as infer_visibility,
             mock.patch.object(
-                main,
+                m_manager_turn,
                 "_instrumented_manager_call",
                 return_value=(
                     '{"tools":[{"tool":"do_nothing"}]}',
@@ -2902,16 +2911,16 @@ class LongTaskLifecycleTest(unittest.TestCase):
                     [],
                 ),
             ),
-            mock.patch.object(main, "begin_manager_activity") as begin_activity,
-            mock.patch.object(main, "send_progress") as send_progress,
-            mock.patch.object(main, "settle_manager_activity"),
+            mock.patch.object(m_manager_turn, "begin_manager_activity") as begin_activity,
+            mock.patch.object(i_outbound, "send_progress") as send_progress,
+            mock.patch.object(m_manager_tracing, "settle_manager_activity"),
             mock.patch.object(
-                main,
+                m_manager_activity,
                 "_contact_has_active_workers",
                 return_value=False,
             ),
         ):
-            main.run_all_managers({"carbon-a": context})
+            m_manager_turn.run_all_managers({"carbon-a": context})
 
         infer_visibility.assert_not_called()
         begin_activity.assert_not_called()
@@ -2962,9 +2971,9 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 raise RuntimeError("process failed before lifecycle admission")
             long_task_updates.acknowledge_queued_long_task_root(root_id)
 
-        dispatcher = main.ManagerDispatcher(runner=runner)
+        dispatcher = m_manager_dispatcher.ManagerDispatcher(runner=runner)
         try:
-            with mock.patch.object(main, "MAINTENANCE", coordinator):
+            with mock.patch.object(m_manager_dispatcher, "MAINTENANCE", coordinator):
                 dispatcher.submit(claimed)
                 # Dispatcher admission must not erase the lifecycle queue's
                 # live FIFO claim before the runner crosses its own fence.
@@ -3034,11 +3043,11 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.register_lifecycle(lifecycle)
 
         with mock.patch.object(
-            main,
+            m_manager_dispatcher,
             "claim_ready_long_task_roots",
             return_value={},
         ):
-            excluded = main._merge_due_internal_roots(
+            excluded = m_manager_dispatcher._merge_due_internal_roots(
                 {"carbon-a": "event_id: user-root"},
                 maintenance_active=False,
             )
@@ -3046,7 +3055,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 excluded,
                 {"carbon-a": "event_id: user-root"},
             )
-            claimed = main._merge_due_internal_roots(
+            claimed = m_manager_dispatcher._merge_due_internal_roots(
                 {"carbon-user": "event_id: another-root"},
                 maintenance_active=False,
             )
@@ -3072,9 +3081,9 @@ class LongTaskLifecycleTest(unittest.TestCase):
             if len(calls) == 1:
                 raise RuntimeError("accuracy manager interrupted")
 
-        dispatcher = main.ManagerDispatcher(runner=runner)
+        dispatcher = m_manager_dispatcher.ManagerDispatcher(runner=runner)
         try:
-            with mock.patch.object(main, "MAINTENANCE", coordinator):
+            with mock.patch.object(m_manager_dispatcher, "MAINTENANCE", coordinator):
                 dispatcher.submit({"carbon-a": claimed["carbon-a"]})
                 self.assertTrue(dispatcher.wait_for_idle(2))
                 pending = lifecycle.accuracy_schedule["pending_review"]
@@ -3781,9 +3790,9 @@ class LongTaskLifecycleTest(unittest.TestCase):
             return "Done. started"
 
         with (
-            mock.patch.object(main, "current_long_task", return_value=lifecycle),
-            mock.patch.object(main, "start_worker", side_effect=slow_start),
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_long_tasks, "current_long_task", return_value=lifecycle),
+            mock.patch.object(m_manager_tools_worker, "start_worker", side_effect=slow_start),
+            mock.patch.object(i_outbound, "send_progress"),
             mock.patch.object(
                 long_task_updates,
                 "record_worker_started",
@@ -3791,7 +3800,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
             ) as publish,
         ):
             thread = threading.Thread(
-                target=main._execute_single_tool,
+                target=m_manager_tools_registry._execute_single_tool,
                 args=(
                     {
                         "tool": "worker/terminal",
@@ -3815,13 +3824,13 @@ class LongTaskLifecycleTest(unittest.TestCase):
         lifecycle.task_id = "task-a"
         lifecycle.task_confirmed = True
         with (
-            mock.patch.object(main, "current_long_task", return_value=lifecycle),
+            mock.patch.object(i_long_tasks, "current_long_task", return_value=lifecycle),
             mock.patch.object(
-                main, "start_worker", return_value="Error: provider unavailable"
+                m_manager_tools_worker, "start_worker", return_value="Error: provider unavailable"
             ),
-            mock.patch.object(main, "send_progress"),
+            mock.patch.object(i_outbound, "send_progress"),
         ):
-            main._execute_single_tool(
+            m_manager_tools_registry._execute_single_tool(
                 {
                     "tool": "worker/terminal",
                     "type": "new",
@@ -3837,10 +3846,10 @@ class LongTaskLifecycleTest(unittest.TestCase):
         lifecycle.ensure.return_value = "task-a"
         lifecycle.journal_worker_start.return_value = {}
         with (
-            mock.patch.object(main, "current_long_task", return_value=lifecycle),
-            mock.patch.object(main, "start_worker") as start,
+            mock.patch.object(i_long_tasks, "current_long_task", return_value=lifecycle),
+            mock.patch.object(m_manager_tools_worker, "start_worker") as start,
         ):
-            result = main._execute_single_tool(
+            result = m_manager_tools_registry._execute_single_tool(
                 {
                     "tool": "worker/terminal",
                     "type": "new",
@@ -3936,10 +3945,10 @@ class LongTaskLifecycleTest(unittest.TestCase):
     def test_direct_room_handoff_is_visible_but_internal_handoff_is_not(self):
         direct = mock.Mock(trigger="handoff", room_id="room-a")
         internal = mock.Mock(trigger="handoff", room_id="")
-        self.assertTrue(main._work_lifecycle_is_visible(direct, "handoff"))
-        self.assertFalse(main._work_lifecycle_is_visible(internal, "handoff"))
+        self.assertTrue(m_manager_tracing._work_lifecycle_is_visible(direct, "handoff"))
+        self.assertFalse(m_manager_tracing._work_lifecycle_is_visible(internal, "handoff"))
         self.assertTrue(
-            main._work_lifecycle_is_visible(
+            m_manager_tracing._work_lifecycle_is_visible(
                 internal,
                 "room_id: room-a\nevent_id: event-a\nmessage:\nContinue",
             )

@@ -3,8 +3,10 @@ import time
 import unittest
 from unittest import mock
 
-import config
+from interface import team_tick as config
+from manager import loop_config
 import main
+import manager.dispatcher as m_manager_dispatcher
 
 
 class TeamContextLifecycleTest(unittest.TestCase):
@@ -69,8 +71,8 @@ class TeamContextLifecycleTest(unittest.TestCase):
         dispatcher.shutdown.assert_called_once_with(wait=False)
 
     def test_recovery_loop_runs_team_context_tick(self):
-        self.assertEqual(config.LOOP_TICK, 60)
-        self.assertEqual(config.EVENT_LOOP[0]["name"], "check_team_context")
+        self.assertEqual(loop_config.LOOP_TICK, 60)
+        self.assertEqual(loop_config.EVENT_LOOP[0]["name"], "check_team_context")
         finished = threading.Event()
 
         with mock.patch(
@@ -106,7 +108,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             if contact_id == "carbon-b":
                 other_finished.set()
 
-        dispatcher = main.ManagerDispatcher(runner=runner)
+        dispatcher = m_manager_dispatcher.ManagerDispatcher(runner=runner)
         dispatcher.submit({"carbon-a": "first"})
         self.assertTrue(first_started.wait(2))
         dispatcher.submit({"carbon-a": "second", "carbon-b": "independent"})
