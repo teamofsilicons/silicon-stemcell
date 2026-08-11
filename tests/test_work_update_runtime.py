@@ -7,7 +7,15 @@ from copy import deepcopy
 from pathlib import Path
 from unittest import mock
 
-import interface.adapter as interface
+import interface
+import interface.client
+import interface.contacts
+import interface.events
+import interface.inbox
+import interface.ingest
+import interface.outbound
+import interface.remote_browser
+import interface.state
 import interface.work_updates as work_updates
 from helpers.process import flush_best_effort
 
@@ -366,14 +374,14 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.old_work_state = work_updates.WORK_UPDATES_FILE
-        self.old_contacts = interface.CONTACTS_FILE
-        self.old_backup = interface.CONTACTS_BACKUP_FILE
-        self.old_legacy = interface.LEGACY_TELEGRAM_CONTACTS_FILE
+        self.old_contacts = interface.constants.CONTACTS_FILE
+        self.old_backup = interface.constants.CONTACTS_BACKUP_FILE
+        self.old_legacy = interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE
         work_updates.WORK_UPDATES_FILE = root / "work_updates.json"
         work_updates._CALL_RETRY_INFLIGHT.clear()
-        interface.CONTACTS_FILE = root / "contacts.json"
-        interface.CONTACTS_BACKUP_FILE = root / "contacts-backup.json"
-        interface.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy-contacts.json"
+        interface.constants.CONTACTS_FILE = root / "contacts.json"
+        interface.constants.CONTACTS_BACKUP_FILE = root / "contacts-backup.json"
+        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy-contacts.json"
         self.contacts = {
             "carbon-a": {
                 "contact_type": "carbon",
@@ -406,9 +414,9 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.contact_patch.stop()
         work_updates.WORK_UPDATES_FILE = self.old_work_state
         work_updates._CALL_RETRY_INFLIGHT.clear()
-        interface.CONTACTS_FILE = self.old_contacts
-        interface.CONTACTS_BACKUP_FILE = self.old_backup
-        interface.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
+        interface.constants.CONTACTS_FILE = self.old_contacts
+        interface.constants.CONTACTS_BACKUP_FILE = self.old_backup
+        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
         self.tmp.cleanup()
 
     def _create_task(self, client, contact_id="carbon-a", task_id="task-fitness"):
@@ -479,12 +487,12 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         trace = mock.Mock()
         with (
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "get_contact",
                 return_value=self.contacts["carbon-a"],
             ),
             mock.patch.object(
-                interface,
+                interface.client,
                 "InterfaceClient",
                 return_value=rejected_client,
             ),
@@ -2500,7 +2508,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
 
     def test_standalone_call_outer_event_can_be_correlated_for_replies(self):
-        interface._remember_work_event_reference(
+        interface.ingest._remember_work_event_reference(
             {
                 "event_id": "outer-call-event",
                 "room_id": "room-a",
@@ -2515,7 +2523,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            interface._work_event_reference("room-a", "outer-call-event"),
+            interface.ingest._work_event_reference("room-a", "outer-call-event"),
             {
                 "kind": "call",
                 "work_event_id": "standalone-call-event",
@@ -2524,7 +2532,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
 
     def test_reply_to_outer_blocker_event_reaches_manager_context(self):
-        state = interface._default_contacts_state()
+        state = interface.state._default_contacts_state()
         state["own_ids"] = ["silicon-self"]
         state["rooms"]["room-a"] = "carbon-a"
         state["contacts"]["carbon-a"] = {
@@ -2533,7 +2541,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             "last_processed_event_id": "",
             "last_polled_event_id": "",
         }
-        interface._save_state(state)
+        interface.state._save_state(state)
         client = FakeWorkClient()
         blocker_event = {
             "event_id": "outer-event-blocker",

@@ -266,7 +266,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         }
         with (
             mock.patch(
-                "interface.adapter.get_contact",
+                "interface.get_contact",
                 side_effect=lambda value: {
                     "contact_type": (
                         "silicon" if value == "silicon-b" else "carbon"

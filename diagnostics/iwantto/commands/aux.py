@@ -85,7 +85,7 @@ def cmd_restart_silicon(args, actor) -> str:
     except OSError as exc:
         raise _error(f"Could not request a restart: {exc}")
     try:
-        from interface.adapter import notify_runtime_activity
+        from interface import notify_runtime_activity
 
         notify_runtime_activity()
     except Exception:

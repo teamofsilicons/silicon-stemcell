@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from interface import adapter as interface
+import interface
 
 from interface import work_updates
 from helpers.process import BestEffortOutbox, flush_best_effort
@@ -72,11 +72,11 @@ class PrimaryDeliveryLatencyTest(unittest.TestCase):
         client.progress.side_effect = slow_progress
         with (
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "get_contact",
                 return_value={"room_id": "room-a"},
             ),
-            mock.patch.object(interface, "InterfaceClient", return_value=client),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=client),
         ):
             started = time.monotonic()
             interface.send_progress(
@@ -113,16 +113,16 @@ class PrimaryDeliveryLatencyTest(unittest.TestCase):
             "display_name": "Carbon A",
         }
         with (
-            mock.patch.object(interface, "_load_state", return_value={}),
+            mock.patch.object(interface.ingest, "_load_state", return_value={}),
             mock.patch.object(
-                interface,
+                interface.ingest,
                 "_contact_for_room",
                 return_value=("carbon-a", contact, False),
             ),
-            mock.patch.object(interface, "_already_processed", return_value=False),
-            mock.patch.object(interface, "_remember_processed"),
+            mock.patch.object(interface.ingest, "_already_processed", return_value=False),
+            mock.patch.object(interface.ingest, "_remember_processed"),
             mock.patch.object(
-                interface,
+                interface.ingest,
                 "_record_incoming_bookkeeping",
                 side_effect=slow_bookkeeping,
             ),
@@ -269,15 +269,15 @@ class CorrelationAndDiagnosticsTest(unittest.TestCase):
             "display_name": "Carbon A",
         }
         with (
-            mock.patch.object(interface, "_load_state", return_value={}),
+            mock.patch.object(interface.ingest, "_load_state", return_value={}),
             mock.patch.object(
-                interface,
+                interface.ingest,
                 "_contact_for_room",
                 return_value=("carbon-a", contact, False),
             ),
-            mock.patch.object(interface, "_already_processed", return_value=False),
-            mock.patch.object(interface, "_remember_processed"),
-            mock.patch.object(interface, "submit_best_effort", return_value=True),
+            mock.patch.object(interface.ingest, "_already_processed", return_value=False),
+            mock.patch.object(interface.ingest, "_remember_processed"),
+            mock.patch("helpers.process.submit_best_effort", return_value=True),
             mock.patch(
                 "diagnostics.store.Diagnostics.get_active_run",
                 return_value=active,

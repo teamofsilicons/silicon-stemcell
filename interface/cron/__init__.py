@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from interface.cron.checkback import get_checkback_jobs
-from interface.adapter import InterfaceClient, InterfaceError, ensure_contact_for_target
+from interface import InterfaceClient, InterfaceError, ensure_contact_for_target
 from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, update_json, write_json
 

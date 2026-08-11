@@ -186,7 +186,7 @@ class MessagesSentTest(_IsolatedJournal):
         with (
             mock.patch.object(messages_module, "_queue_lineage_handoff", return_value=False),
             mock.patch.object(messages_module, "_append_manager_queue_item"),
-            mock.patch("interface.adapter.notify_runtime_activity"),
+            mock.patch("interface.notify_runtime_activity"),
         ):
             messages_module.send_manager_message(
                 "carbon-a", "carbon-b", "can you help?", target_type="carbon"
@@ -205,7 +205,7 @@ class MessagesSentTest(_IsolatedJournal):
         with (
             mock.patch.object(messages_module, "_queue_lineage_handoff", return_value=False),
             mock.patch.object(messages_module, "_append_manager_queue_item"),
-            mock.patch("interface.adapter.notify_runtime_activity"),
+            mock.patch("interface.notify_runtime_activity"),
         ):
             messages_module.send_manager_message(
                 "researcher",

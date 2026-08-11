@@ -163,7 +163,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
                 side_effect=conflict_tick,
             ),
             mock.patch(
-                "interface.adapter.get_central_contact_id",
+                "interface.get_central_contact_id",
                 return_value="central-carbon",
             ),
         ):
@@ -251,7 +251,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             return "central-carbon"
 
         with mock.patch(
-            "interface.adapter.get_central_contact_id",
+            "interface.get_central_contact_id",
             side_effect=recover_before_contact_lookup_finishes,
         ):
             delivered = config.check_team_context()
@@ -336,7 +336,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             config._TEAM_CONTEXT_RUNNING = True
 
         with mock.patch(
-            "interface.adapter.get_central_contact_id",
+            "interface.get_central_contact_id",
             side_effect=["", "central-carbon"],
         ):
             self.assertIsNone(config.check_team_context())

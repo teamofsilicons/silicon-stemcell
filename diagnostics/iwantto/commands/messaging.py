@@ -37,7 +37,7 @@ def _error(message):
 def _own_label(actor) -> str:
     """How this Silicon names itself to the manager on the other side."""
     try:
-        from interface.adapter import get_own_profile
+        from interface import get_own_profile
 
         profile = get_own_profile() or {}
     except Exception:
@@ -153,7 +153,7 @@ def _send_to_worker(actor, worker_id: str, record: dict, message: str) -> str:
 
 def _send_direct(actor, target, message: str, kind: str) -> str:
     """Straight into the Interface DM — only for the caller's own contact."""
-    from interface.adapter import reply_contact
+    from interface import reply_contact
 
     status = reply_contact(message, target.fixed_id, work_continues=True)
     if str(status).startswith("Error"):
@@ -163,7 +163,7 @@ def _send_direct(actor, target, message: str, kind: str) -> str:
 
 def _send_via_manager(actor, target, message: str) -> str:
     """Hand the message to the target's manager, starting one if there is none."""
-    from interface.adapter import ensure_contact_for_target
+    from interface import ensure_contact_for_target
     from interface.messages import send_manager_message
 
     try:
@@ -302,7 +302,7 @@ def cmd_bundle_unread(args, actor) -> str:
     summary is sent in their place, so the contact opens the conversation to one
     readable message instead of eleven.
     """
-    from interface.adapter import take_back_event
+    from interface import take_back_event
 
     try:
         target = resolve_target(
@@ -352,7 +352,7 @@ def cmd_bundle_unread(args, actor) -> str:
 
 
 def cmd_transcribe(args, actor) -> str:
-    from interface.adapter import InterfaceClient
+    from interface import InterfaceClient
 
     path = os.path.abspath(os.path.expanduser(str(args.path or "")))
     if not os.path.exists(path):

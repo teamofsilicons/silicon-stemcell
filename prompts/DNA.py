@@ -244,7 +244,7 @@ def _mirror_team_of_silicons(content):
 def _get_contact_info(carbon_id):
     """Load contact info for a fixed Interface contact id."""
     try:
-        from interface.adapter import get_contact
+        from interface import get_contact
 
         return get_contact(carbon_id)
     except Exception:
@@ -254,7 +254,7 @@ def _get_contact_info(carbon_id):
 def _glass_profile_section():
     """Bounded Glass identity data that is not duplicated from TEAM.md."""
     try:
-        from interface.adapter import get_own_profile
+        from interface import get_own_profile
 
         profile = get_own_profile() or {}
     except Exception:

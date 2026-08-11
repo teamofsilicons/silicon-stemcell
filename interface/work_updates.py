@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from helpers.process import submit_best_effort
-from interface.adapter import (
+from interface import (
     InterfaceClient,
     InterfaceError,
     STATE_DIR,

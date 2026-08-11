@@ -55,7 +55,7 @@ from manager import (
     provider_failed,
     TIMEOUT_MSG,
 )
-from interface.adapter import (
+from interface import (
     complete_take_back,
     ensure_contact_for_target,
     get_contact,

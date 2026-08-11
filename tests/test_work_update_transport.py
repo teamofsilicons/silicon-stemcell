@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from interface.adapter import (
+from interface import (
     InterfaceClient,
     InterfaceError,
     WorkCallMutationError,

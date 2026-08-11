@@ -44,7 +44,7 @@ def _default() -> dict:
 
 
 def _client():
-    from interface.adapter import InterfaceClient
+    from interface import InterfaceClient
 
     return InterfaceClient()
 

@@ -8,7 +8,7 @@ flight, remembers the notice to surface once a tick lands, and exposes
 import threading
 import time
 
-from interface.adapter import get_unread_events_durable
+from interface import get_unread_events_durable
 from interface.cron import check_crons
 from manager.advisor import run_heartbeats as check_advisor_heartbeats
 from manager.advisor.heartbeat import check_manager_heartbeats
@@ -254,7 +254,7 @@ def check_team_context():
 
     if notice:
         try:
-            from interface.adapter import get_central_contact_id
+            from interface import get_central_contact_id
 
             contact_id = get_central_contact_id()
         except Exception:

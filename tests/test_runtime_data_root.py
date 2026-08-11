@@ -74,7 +74,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from helpers.paths import CODE_ROOT, DATA_ROOT
                 from diagnostics import activity as activity_log
                 from diagnostics import store as diagnostics
-                from interface import adapter as interface
+                import interface
                 from interface import backup, cron, messages, team_context
                 from interface import config as glass
                 from interface import work_updates

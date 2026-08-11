@@ -19,7 +19,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from interface.adapter import STATE_DIR
+from interface import STATE_DIR
 from helpers.state import read_json, update_json, update_json_if_changed
 from interface.work_updates import (
     active_task_id,

@@ -56,7 +56,7 @@ class Target:
 
 def _local_contacts() -> dict:
     try:
-        from interface.adapter import get_contacts
+        from interface import get_contacts
 
         contacts = get_contacts()
     except Exception:

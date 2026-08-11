@@ -177,7 +177,7 @@ def ask(contact_id: str, question: str, *, heartbeat: bool = False) -> str:
 
 def contacts_due_for_heartbeat(now: float | None = None) -> list:
     """Managers whose advisor has not been heard from in five hours."""
-    from interface.adapter import get_contacts
+    from interface import get_contacts
 
     now = _now() if now is None else now
     state = read_json(ADVISOR_STATE_FILE, _default_state())

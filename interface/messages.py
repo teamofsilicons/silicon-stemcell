@@ -172,7 +172,7 @@ def _ensure_manager_work_calls(contact_id, item):
     if not isinstance(work_call, dict) or not work_call:
         return {}
 
-    from interface.adapter import get_contact
+    from interface import get_contact
     from interface.work_updates import enqueue_inbound_call, enqueue_outbound_call
 
     queue_id = str(item.get("queue_id") or "")
@@ -396,7 +396,7 @@ def send_manager_message(
         item,
     ):
         try:
-            from interface.adapter import notify_runtime_activity
+            from interface import notify_runtime_activity
 
             notify_runtime_activity()
         except Exception:
@@ -418,7 +418,7 @@ def send_manager_message(
                 flush=True,
             )
     try:
-        from interface.adapter import notify_runtime_activity
+        from interface import notify_runtime_activity
         from diagnostics.iwantto.journal import record_message
 
         record_message(

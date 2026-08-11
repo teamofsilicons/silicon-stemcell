@@ -170,7 +170,7 @@ class AdvisorHeartbeatTest(unittest.TestCase):
         self.contacts = {"carbon-a": {"contact_type": "carbon"}}
 
     def test_a_never_run_advisor_waits_a_full_interval_before_its_first_beat(self):
-        with mock.patch("interface.adapter.get_contacts", return_value=self.contacts):
+        with mock.patch("interface.get_contacts", return_value=self.contacts):
             first = advisor_module.contacts_due_for_heartbeat()
             second = advisor_module.contacts_due_for_heartbeat()
 
@@ -187,7 +187,7 @@ class AdvisorHeartbeatTest(unittest.TestCase):
             ).update({"last_heartbeat_at": stale}),
         )
 
-        with mock.patch("interface.adapter.get_contacts", return_value=self.contacts):
+        with mock.patch("interface.get_contacts", return_value=self.contacts):
             due = advisor_module.contacts_due_for_heartbeat()
 
         self.assertEqual(due, ["carbon-a"])
@@ -242,7 +242,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
         )
 
     def test_a_new_contact_starts_its_clock_instead_of_beating_immediately(self):
-        with mock.patch("interface.adapter.get_contacts", return_value=self.contacts):
+        with mock.patch("interface.get_contacts", return_value=self.contacts):
             self.assertIsNone(heartbeat_module.check_manager_heartbeats())
             self.assertIsNone(heartbeat_module.check_manager_heartbeats())
 
@@ -257,7 +257,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
         )
 
         with (
-            mock.patch("interface.adapter.get_contacts", return_value=self.contacts),
+            mock.patch("interface.get_contacts", return_value=self.contacts),
             mock.patch.object(
                 heartbeat_module, "_active_work_section", return_value=""
             ),

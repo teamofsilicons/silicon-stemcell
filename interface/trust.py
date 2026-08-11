@@ -229,7 +229,7 @@ def _apply_confirmed_policy(
     bootstrapped: bool = True,
 ) -> dict[str, Any]:
     validated = _validate_policy(payload)
-    from interface.adapter import apply_glass_trust_policy
+    from interface import apply_glass_trust_policy
 
     changed = apply_glass_trust_policy(validated["entries"])
 
@@ -314,7 +314,7 @@ def reconcile_trust_policy(
                 )
             # The full confirmed snapshot is retained locally, so a prior crash
             # between cache and contacts application can still self-repair.
-            from interface.adapter import apply_glass_trust_policy
+            from interface import apply_glass_trust_policy
 
             changed = apply_glass_trust_policy(state.get("entries", {}))
             _update_state(

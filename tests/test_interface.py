@@ -9,7 +9,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import interface.adapter as interface
+import interface
+import interface.client
+import interface.contacts
+import interface.events
+import interface.inbox
+import interface.ingest
+import interface.outbound
+import interface.remote_browser
+import interface.state
 
 
 class InterfaceStateTest(unittest.TestCase):
@@ -17,44 +25,44 @@ class InterfaceStateTest(unittest.TestCase):
         interface.stop_runtime_file_watch()
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.old_contacts = interface.CONTACTS_FILE
-        self.old_backup = interface.CONTACTS_BACKUP_FILE
-        self.old_media = interface.MEDIA_DIR
-        self.old_inbox_consumer = interface.INBOX_CONSUMER_FILE
-        self.old_default_inbox = interface.DEFAULT_INBOX_FILE
-        self.old_legacy = interface.LEGACY_TELEGRAM_CONTACTS_FILE
-        interface.CONTACTS_FILE = root / "contacts.json"
-        interface.CONTACTS_BACKUP_FILE = root / "contacts_backup.json"
-        interface.MEDIA_DIR = root / "media"
-        interface.INBOX_CONSUMER_FILE = root / "interface_inbox_consumer.json"
-        interface.DEFAULT_INBOX_FILE = root / "inbox.jsonl"
-        interface.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy" / "contacts.json"
-        with interface._inbox_scan_lock:
-            interface._inbox_scan_state.clear()
-        with interface._activity_condition:
-            interface._activity_pending = 0
-        with interface._inbox_retry_lock:
-            interface._inbox_retry_records.clear()
+        self.old_contacts = interface.constants.CONTACTS_FILE
+        self.old_backup = interface.constants.CONTACTS_BACKUP_FILE
+        self.old_media = interface.constants.MEDIA_DIR
+        self.old_inbox_consumer = interface.constants.INBOX_CONSUMER_FILE
+        self.old_default_inbox = interface.constants.DEFAULT_INBOX_FILE
+        self.old_legacy = interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE
+        interface.constants.CONTACTS_FILE = root / "contacts.json"
+        interface.constants.CONTACTS_BACKUP_FILE = root / "contacts_backup.json"
+        interface.constants.MEDIA_DIR = root / "media"
+        interface.constants.INBOX_CONSUMER_FILE = root / "interface_inbox_consumer.json"
+        interface.constants.DEFAULT_INBOX_FILE = root / "inbox.jsonl"
+        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy" / "contacts.json"
+        with interface.inbox._inbox_scan_lock:
+            interface.inbox._inbox_scan_state.clear()
+        with interface.inbox._activity_condition:
+            interface.inbox._activity_pending = 0
+        with interface.inbox._inbox_retry_lock:
+            interface.inbox._inbox_retry_records.clear()
         while True:
             try:
-                interface._event_queue.get_nowait()
+                interface.inbox._event_queue.get_nowait()
             except Exception:
                 break
 
     def tearDown(self):
         interface.stop_runtime_file_watch()
-        interface.CONTACTS_FILE = self.old_contacts
-        interface.CONTACTS_BACKUP_FILE = self.old_backup
-        interface.MEDIA_DIR = self.old_media
-        interface.INBOX_CONSUMER_FILE = self.old_inbox_consumer
-        interface.DEFAULT_INBOX_FILE = self.old_default_inbox
-        interface.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
-        with interface._inbox_scan_lock:
-            interface._inbox_scan_state.clear()
-        with interface._activity_condition:
-            interface._activity_pending = 0
-        with interface._inbox_retry_lock:
-            interface._inbox_retry_records.clear()
+        interface.constants.CONTACTS_FILE = self.old_contacts
+        interface.constants.CONTACTS_BACKUP_FILE = self.old_backup
+        interface.constants.MEDIA_DIR = self.old_media
+        interface.constants.INBOX_CONSUMER_FILE = self.old_inbox_consumer
+        interface.constants.DEFAULT_INBOX_FILE = self.old_default_inbox
+        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
+        with interface.inbox._inbox_scan_lock:
+            interface.inbox._inbox_scan_state.clear()
+        with interface.inbox._activity_condition:
+            interface.inbox._activity_pending = 0
+        with interface.inbox._inbox_retry_lock:
+            interface.inbox._inbox_retry_records.clear()
         self.tmp.cleanup()
 
     def test_new_contacts_fail_closed_and_ids_are_fixed(self):
@@ -74,8 +82,8 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual(state["contacts"]["carbon-a"]["carbon_id"], "carbon-a")
 
     def test_legacy_contacts_import_discards_local_trust_authority(self):
-        interface.LEGACY_TELEGRAM_CONTACTS_FILE.parent.mkdir(parents=True)
-        interface.LEGACY_TELEGRAM_CONTACTS_FILE.write_text(
+        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE.parent.mkdir(parents=True)
+        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE.write_text(
             '{"contacts":{"old-carbon":{"carbon_id":"old-carbon","contact_type":"carbon","trust_level":"high","is_central_carbon":true,"name":"Old Carbon"}}}',
             encoding="utf-8",
         )
@@ -160,9 +168,9 @@ class InterfaceStateTest(unittest.TestCase):
             }
         }
 
-        self.assertEqual(interface._extract_event_id(posted), "evt1")
+        self.assertEqual(interface.remote_browser._extract_event_id(posted), "evt1")
         self.assertEqual(
-            interface._extract_remote_browser_url(posted, fallback="https://api.steel.dev/x"),
+            interface.remote_browser._extract_remote_browser_url(posted, fallback="https://api.steel.dev/x"),
             "https://browser.teamofsilicons.com/s/session-123",
         )
 
@@ -185,8 +193,8 @@ class InterfaceStateTest(unittest.TestCase):
         with (
             mock.patch("worker.handler.SILICON_BROWSER_PROFILE", "profile-a"),
             mock.patch("subprocess.run", side_effect=completed) as run,
-            mock.patch.object(interface, "InterfaceClient", return_value=fake_client),
-            mock.patch.object(interface, "_save_remote_browser_event"),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=fake_client),
+            mock.patch.object(interface.remote_browser, "_save_remote_browser_event"),
         ):
             result = interface.remote_browser_share("carbon-a", expiry=120, new=True, url="example.com")
 
@@ -252,10 +260,10 @@ class InterfaceStateTest(unittest.TestCase):
 
         with (
             mock.patch("worker.handler.SILICON_BROWSER_PROFILE", "profile-a"),
-            mock.patch.object(interface, "REMOTE_BROWSER_START_URL", "https://default.test"),
+            mock.patch.object(interface.remote_browser, "REMOTE_BROWSER_START_URL", "https://default.test"),
             mock.patch("subprocess.run", side_effect=completed) as run,
-            mock.patch.object(interface, "InterfaceClient", return_value=fake_client),
-            mock.patch.object(interface, "_save_remote_browser_event"),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=fake_client),
+            mock.patch.object(interface.remote_browser, "_save_remote_browser_event"),
         ):
             result = interface.remote_browser_share("carbon-a", expiry=45, new=False)
 
@@ -347,9 +355,8 @@ class InterfaceStateTest(unittest.TestCase):
             },
         }
 
-        with mock.patch.object(
-            interface,
-            "submit_best_effort",
+        with mock.patch(
+            "helpers.process.submit_best_effort",
             side_effect=run_immediately,
         ):
             processed = interface.process_incoming_event(event, client=FakeClient())
@@ -387,8 +394,8 @@ class InterfaceStateTest(unittest.TestCase):
         client = FakeClient()
         local_path = str(Path(self.tmp.name) / "media" / "evt-media_report.pdf")
         with (
-            mock.patch.object(interface, "_download_url", return_value=local_path),
-            mock.patch.object(interface, "submit_best_effort", side_effect=run_immediately),
+            mock.patch.object(interface.ingest, "_download_url", return_value=local_path),
+            mock.patch("helpers.process.submit_best_effort", side_effect=run_immediately),
             mock.patch("diagnostics.activity.incoming") as log_incoming,
             mock.patch("diagnostics.store.Diagnostics.get_active_run", return_value=None),
             mock.patch("diagnostics.store.Diagnostics.start_run", side_effect=RuntimeError),
@@ -464,8 +471,8 @@ class InterfaceStateTest(unittest.TestCase):
             return str(path)
 
         with (
-            mock.patch.object(interface, "_download_url", side_effect=downloaded),
-            mock.patch.object(interface, "submit_best_effort", side_effect=run_immediately),
+            mock.patch.object(interface.ingest, "_download_url", side_effect=downloaded),
+            mock.patch("helpers.process.submit_best_effort", side_effect=run_immediately),
             mock.patch("diagnostics.store.Diagnostics.get_active_run", return_value=None),
             mock.patch("diagnostics.store.Diagnostics.start_run", side_effect=RuntimeError),
         ):
@@ -493,7 +500,7 @@ class InterfaceStateTest(unittest.TestCase):
 
         with (
             mock.patch.object(
-                interface,
+                interface.ingest,
                 "_download_url",
                 return_value=str(Path(self.tmp.name) / "media" / "evt-album_evidence.pdf"),
             ),
@@ -534,7 +541,7 @@ class InterfaceStateTest(unittest.TestCase):
     def test_self_sender_handle_updates_watermark_and_drops_echo(self):
         state = interface.get_contacts()
         state["own_ids"] = ["api-dev-test"]
-        interface._save_state(state)
+        interface.state._save_state(state)
         event = {
             "type": "m.text",
             "event_id": "evt-self",
@@ -598,17 +605,17 @@ class InterfaceStateTest(unittest.TestCase):
                 "content": {"body": "hello from durable inbox"},
             },
         }
-        interface.DEFAULT_INBOX_FILE.write_text(
+        interface.constants.DEFAULT_INBOX_FILE.write_text(
             json.dumps(frame) + "\n",
             encoding="utf-8",
         )
-        interface._queue_inbox_records(
-            interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        interface.inbox._queue_inbox_records(
+            interface.inbox._read_new_inbox_records(interface.constants.DEFAULT_INBOX_FILE)
         )
         fake = FakeClient()
         with (
-            mock.patch.object(interface, "InterfaceClient", return_value=fake),
-            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=fake),
+            mock.patch.object(interface.inbox, "start_listener"),
             mock.patch(
                 "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
@@ -621,11 +628,11 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertIn("hello from durable inbox", contexts["carbon-a"])
         self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-sync")
         consumer = json.loads(
-            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+            interface.constants.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
         )
         self.assertEqual(
             consumer["offset"],
-            interface.DEFAULT_INBOX_FILE.stat().st_size,
+            interface.constants.DEFAULT_INBOX_FILE.stat().st_size,
         )
 
     def test_uncommitted_inbox_record_replays_after_restart(self):
@@ -633,18 +640,18 @@ class InterfaceStateTest(unittest.TestCase):
             {"type": "event", "room_id": "room-a", "event": {"event_id": "evt-1"}},
             {"type": "event", "room_id": "room-a", "event": {"event_id": "evt-2"}},
         ]
-        interface.DEFAULT_INBOX_FILE.write_text(
+        interface.constants.DEFAULT_INBOX_FILE.write_text(
             "".join(json.dumps(frame) + "\n" for frame in frames),
             encoding="utf-8",
         )
 
-        records = interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        records = interface.inbox._read_new_inbox_records(interface.constants.DEFAULT_INBOX_FILE)
         self.assertEqual([r.frame["event"]["event_id"] for r in records], ["evt-1", "evt-2"])
-        interface._commit_inbox_record(records[0])
+        interface.inbox._commit_inbox_record(records[0])
 
-        with interface._inbox_scan_lock:
-            interface._inbox_scan_state.clear()
-        replay = interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        with interface.inbox._inbox_scan_lock:
+            interface.inbox._inbox_scan_state.clear()
+        replay = interface.inbox._read_new_inbox_records(interface.constants.DEFAULT_INBOX_FILE)
 
         self.assertEqual([r.frame["event"]["event_id"] for r in replay], ["evt-2"])
 
@@ -665,12 +672,12 @@ class InterfaceStateTest(unittest.TestCase):
                 "content": {"body": "Please review this."},
             },
         }
-        interface.DEFAULT_INBOX_FILE.write_text(
+        interface.constants.DEFAULT_INBOX_FILE.write_text(
             json.dumps(frame) + "\n",
             encoding="utf-8",
         )
-        interface._queue_inbox_records(
-            interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        interface.inbox._queue_inbox_records(
+            interface.inbox._read_new_inbox_records(interface.constants.DEFAULT_INBOX_FILE)
         )
         fake = mock.Mock()
         bookkeeping = mock.Mock(
@@ -680,15 +687,15 @@ class InterfaceStateTest(unittest.TestCase):
             ]
         )
         with (
-            mock.patch.object(interface, "InterfaceClient", return_value=fake),
-            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=fake),
+            mock.patch.object(interface.inbox, "start_listener"),
             mock.patch.object(
-                interface,
+                interface.contacts,
                 "discover_rooms",
                 return_value=interface.get_contacts(),
             ),
             mock.patch.object(
-                interface,
+                interface.ingest,
                 "_record_incoming_call_bookkeeping",
                 bookkeeping,
             ),
@@ -698,17 +705,17 @@ class InterfaceStateTest(unittest.TestCase):
             ),
         ):
             self.assertEqual(interface.get_unread_events(), {})
-            self.assertFalse(interface.INBOX_CONSUMER_FILE.exists())
+            self.assertFalse(interface.constants.INBOX_CONSUMER_FILE.exists())
             recovered = interface.get_unread_events()
 
         self.assertIn("Please review this.", recovered["silicon-b"])
         self.assertEqual(bookkeeping.call_count, 2)
         consumer = json.loads(
-            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+            interface.constants.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
         )
         self.assertEqual(
             consumer["offset"],
-            interface.DEFAULT_INBOX_FILE.stat().st_size,
+            interface.constants.DEFAULT_INBOX_FILE.stat().st_size,
         )
 
     def test_lost_root_acceptance_response_replays_without_duplicate_turn(self):
@@ -730,12 +737,12 @@ class InterfaceStateTest(unittest.TestCase):
                 "content": {"body": "Run this exactly once."},
             },
         }
-        interface.DEFAULT_INBOX_FILE.write_text(
+        interface.constants.DEFAULT_INBOX_FILE.write_text(
             json.dumps(frame) + "\n",
             encoding="utf-8",
         )
-        interface._queue_inbox_records(
-            interface._read_new_inbox_records(interface.DEFAULT_INBOX_FILE)
+        interface.inbox._queue_inbox_records(
+            interface.inbox._read_new_inbox_records(interface.constants.DEFAULT_INBOX_FILE)
         )
         coordinator = MaintenanceCoordinator(
             self.tmp.name,
@@ -748,14 +755,14 @@ class InterfaceStateTest(unittest.TestCase):
             raise OSError("response lost")
 
         with (
-            mock.patch.object(interface, "InterfaceClient", return_value=mock.Mock()),
-            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=mock.Mock()),
+            mock.patch.object(interface.inbox, "start_listener"),
             mock.patch.object(
-                interface,
+                interface.contacts,
                 "discover_rooms",
                 return_value=interface.get_contacts(),
             ),
-            mock.patch.object(interface, "submit_best_effort", return_value=True),
+            mock.patch("helpers.process.submit_best_effort", return_value=True),
             mock.patch(
                 "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
@@ -777,21 +784,21 @@ class InterfaceStateTest(unittest.TestCase):
         ):
             self.assertEqual(interface.get_unread_events_durable(), {})
 
-        self.assertFalse(interface.INBOX_CONSUMER_FILE.exists())
+        self.assertFalse(interface.constants.INBOX_CONSUMER_FILE.exists())
         first_turn = coordinator.claim_pending_roots()
         self.assertEqual(len(first_turn), 1)
         self.assertIn("Run this exactly once.", first_turn[0].context)
         coordinator.complete_roots(first_turn)
 
         with (
-            mock.patch.object(interface, "InterfaceClient", return_value=mock.Mock()),
-            mock.patch.object(interface, "start_listener"),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=mock.Mock()),
+            mock.patch.object(interface.inbox, "start_listener"),
             mock.patch.object(
-                interface,
+                interface.contacts,
                 "discover_rooms",
                 return_value=interface.get_contacts(),
             ),
-            mock.patch.object(interface, "submit_best_effort", return_value=True),
+            mock.patch("helpers.process.submit_best_effort", return_value=True),
             mock.patch(
                 "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
@@ -809,11 +816,11 @@ class InterfaceStateTest(unittest.TestCase):
             self.assertEqual(interface.get_unread_events_durable(), {})
 
         consumer = json.loads(
-            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+            interface.constants.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
         )
         self.assertEqual(
             consumer["offset"],
-            interface.DEFAULT_INBOX_FILE.stat().st_size,
+            interface.constants.DEFAULT_INBOX_FILE.stat().st_size,
         )
         self.assertEqual(coordinator.claim_pending_roots(), [])
 
@@ -839,12 +846,12 @@ class InterfaceStateTest(unittest.TestCase):
         fake = mock.Mock()
         fake.whoami.return_value = {"silicon_id": "self-si"}
         fake.rooms_list.return_value = {"rooms": []}
-        interface._event_queue.put(interface.InboxRecord(snapshot))
+        interface.inbox._event_queue.put(interface.InboxRecord(snapshot))
 
         with (
-            mock.patch.object(interface, "InterfaceClient", return_value=fake),
-            mock.patch.object(interface, "start_listener"),
-            mock.patch.object(interface, "discover_rooms", return_value=interface.get_contacts()),
+            mock.patch.object(interface.client, "InterfaceClient", return_value=fake),
+            mock.patch.object(interface.inbox, "start_listener"),
+            mock.patch.object(interface.contacts, "discover_rooms", return_value=interface.get_contacts()),
         ):
             contexts = interface.get_unread_events()
 
@@ -880,7 +887,7 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertTrue(interface.wait_for_runtime_activity(1.5))
 
     def test_listener_queues_appended_inbox(self):
-        interface.DEFAULT_INBOX_FILE.write_text("", encoding="utf-8")
+        interface.constants.DEFAULT_INBOX_FILE.write_text("", encoding="utf-8")
         ready = threading.Event()
         stop = threading.Event()
 
@@ -889,32 +896,32 @@ class InterfaceStateTest(unittest.TestCase):
                 ready.set()
                 return {
                     "running": True,
-                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                    "inbox": str(interface.constants.DEFAULT_INBOX_FILE),
                 }
 
             def daemon_status(self):
                 return {
                     "running": True,
-                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                    "inbox": str(interface.constants.DEFAULT_INBOX_FILE),
                     "cursors": {},
                 }
 
-        with mock.patch.object(interface, "InterfaceClient", FakeClient):
+        with mock.patch.object(interface.client, "InterfaceClient", FakeClient):
             thread = threading.Thread(
-                target=interface._listener_loop,
+                target=interface.inbox._listener_loop,
                 args=(stop,),
                 daemon=True,
             )
             thread.start()
             try:
                 self.assertTrue(ready.wait(1))
-                with interface.DEFAULT_INBOX_FILE.open(
+                with interface.constants.DEFAULT_INBOX_FILE.open(
                     "a",
                     encoding="utf-8",
                 ) as inbox:
                     inbox.write('{"type":"test-notification"}\n')
                     inbox.flush()
-                record = interface._event_queue.get(timeout=1)
+                record = interface.inbox._event_queue.get(timeout=1)
             finally:
                 stop.set()
                 thread.join(1)
@@ -931,14 +938,14 @@ class InterfaceStateTest(unittest.TestCase):
                 calls["local"] += 1
                 return {
                     "running": True,
-                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                    "inbox": str(interface.constants.DEFAULT_INBOX_FILE),
                 }
 
             def daemon_status(self):
                 calls["deep"] += 1
                 return {
                     "running": True,
-                    "inbox": str(interface.DEFAULT_INBOX_FILE),
+                    "inbox": str(interface.constants.DEFAULT_INBOX_FILE),
                     "cursors": {},
                 }
 
@@ -959,22 +966,22 @@ class InterfaceStateTest(unittest.TestCase):
                     stop_event.set()
 
         with (
-            mock.patch.object(interface, "InterfaceClient", FakeClient),
-            mock.patch.object(interface, "PathChangeWaiter", FakeWaiter),
+            mock.patch.object(interface.client, "InterfaceClient", FakeClient),
+            mock.patch.object(interface.inbox, "PathChangeWaiter", FakeWaiter),
             mock.patch.object(
-                interface,
+                interface.inbox,
                 "_read_new_inbox_records",
                 return_value=[],
             ),
-            mock.patch.object(interface, "DAEMON_HEALTH_SECONDS", 0.01),
-            mock.patch.object(interface, "DAEMON_DEEP_HEALTH_SECONDS", 60),
+            mock.patch.object(interface.inbox, "DAEMON_HEALTH_SECONDS", 0.01),
+            mock.patch.object(interface.inbox, "DAEMON_DEEP_HEALTH_SECONDS", 60),
             mock.patch.object(
-                interface,
+                interface.inbox,
                 "DAEMON_DEEP_HEALTH_JITTER_SECONDS",
                 0,
             ),
         ):
-            interface._listener_loop(stop)
+            interface.inbox._listener_loop(stop)
 
         self.assertGreaterEqual(calls["local"], 3)
         self.assertEqual(calls["deep"], 1)
@@ -996,7 +1003,7 @@ class InterfaceStateTest(unittest.TestCase):
             def tts(self, room_id, text):
                 calls.append(("tts", room_id, text))
 
-        with mock.patch.object(interface, "InterfaceClient", FakeClient):
+        with mock.patch.object(interface.client, "InterfaceClient", FakeClient):
             result = interface.reply_contact(
                 f"one [file={existing}] two [voice=hello [short pause]] three [file=/missing/nope]",
                 "carbon-a",
@@ -1021,7 +1028,7 @@ class InterfaceStateTest(unittest.TestCase):
             def tts(self, room_id, text):
                 return {"event_id": "voice-1"}
 
-        with mock.patch.object(interface, "InterfaceClient", FakeClient):
+        with mock.patch.object(interface.client, "InterfaceClient", FakeClient):
             self.assertEqual(
                 interface.reply_contact(
                     "first [voice=pause] second",
@@ -1056,9 +1063,9 @@ class InterfaceStateTest(unittest.TestCase):
                 return {"event_id": "event-voice-1"}
 
         with (
-            mock.patch.object(interface, "InterfaceClient", FakeClient),
+            mock.patch.object(interface.client, "InterfaceClient", FakeClient),
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "_record_sent_call_message",
             ) as record,
         ):
@@ -1110,7 +1117,7 @@ class InterfaceStateTest(unittest.TestCase):
                 return_value=True,
             ) as enqueue,
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "get_contact",
                 return_value={
                     "contact_type": "silicon",
@@ -1119,7 +1126,7 @@ class InterfaceStateTest(unittest.TestCase):
                 },
             ),
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "get_own_profile",
                 return_value={
                     "silicon_id": "silicon-a",
@@ -1127,7 +1134,7 @@ class InterfaceStateTest(unittest.TestCase):
                 },
             ),
         ):
-            interface._record_sent_call_message(
+            interface.outbound._record_sent_call_message(
                 "silicon-b",
                 "Hello Babbage.",
                 "event-sent-1",
@@ -1151,7 +1158,7 @@ class InterfaceStateTest(unittest.TestCase):
                 "interface.work_updates.prepare_outbound_call",
             ) as prepare,
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "get_own_profile",
                 return_value={
                     "silicon_id": "silicon-a",
@@ -1159,7 +1166,7 @@ class InterfaceStateTest(unittest.TestCase):
                 },
             ),
         ):
-            interface._record_sent_call_message(
+            interface.outbound._record_sent_call_message(
                 "silicon-b",
                 "Existing call answer.",
                 "event-sent-2",
@@ -1180,7 +1187,7 @@ class InterfaceStateTest(unittest.TestCase):
         )
         state = interface.get_contacts()
         state["own_ids"] = ["silicon-self"]
-        interface._save_state(state)
+        interface.state._save_state(state)
 
         class FakeClient:
             def send(self, _room_id, _message, **_kwargs):
@@ -1193,9 +1200,9 @@ class InterfaceStateTest(unittest.TestCase):
             ]
         )
         with (
-            mock.patch.object(interface, "InterfaceClient", FakeClient),
+            mock.patch.object(interface.client, "InterfaceClient", FakeClient),
             mock.patch.object(
-                interface,
+                interface.outbound,
                 "_record_sent_call_message",
                 bookkeeping,
             ),
@@ -1404,7 +1411,7 @@ class InterfaceClientTest(unittest.TestCase):
             )
 
     def test_json_parser_uses_last_json_line(self):
-        self.assertEqual(interface._parse_json_output("noise\n{\"ok\": true}\n"), {"ok": True})
+        self.assertEqual(interface.rpc._parse_json_output("noise\n{\"ok\": true}\n"), {"ok": True})
 
     def test_remote_browser_url_parser(self):
         self.assertEqual(
@@ -1419,7 +1426,7 @@ class GlassProfileSyncTest(InterfaceStateTest):
         interface.upsert_contact("carbon", "lord-1", room_id="room-lord")
         interface.upsert_contact("carbon", "alice", room_id="room-alice")
 
-        interface._sync_profile_from_glass(
+        interface.contacts._sync_profile_from_glass(
             {"silicon_id": "self", "central_carbon": {"carbon_id": "alice", "username": "alice", "name": "Alice"}}
         )
 
@@ -1434,12 +1441,12 @@ class GlassProfileSyncTest(InterfaceStateTest):
 
     def test_absent_central_carbon_key_keeps_trust_projection_unchanged(self):
         interface.upsert_contact("carbon", "alice", room_id="room-a")
-        interface._sync_profile_from_glass({"silicon_id": "self", "name": "Ada Silicon"})
+        interface.contacts._sync_profile_from_glass({"silicon_id": "self", "name": "Ada Silicon"})
         self.assertFalse(interface.get_contact("alice")["is_central_carbon"])
         self.assertEqual(interface.get_contact("alice")["trust_level"], "very_low")
 
     def test_profile_caches_description_for_prompts(self):
-        interface._sync_profile_from_glass(
+        interface.contacts._sync_profile_from_glass(
             {
                 "silicon_id": "self",
                 "name": "Ada Silicon",
@@ -1469,7 +1476,7 @@ class GlassProfileSyncTest(InterfaceStateTest):
         self.assertEqual(profile["central_carbon"], None)
 
     def test_partial_profile_payload_preserves_last_known_role_metadata(self):
-        interface._sync_profile_from_glass(
+        interface.contacts._sync_profile_from_glass(
             {
                 "silicon_id": "self",
                 "name": "Ada Silicon",
@@ -1484,7 +1491,7 @@ class GlassProfileSyncTest(InterfaceStateTest):
             }
         )
 
-        interface._sync_profile_from_glass(
+        interface.contacts._sync_profile_from_glass(
             {
                 "silicon_id": "self",
                 "tagline": "available",

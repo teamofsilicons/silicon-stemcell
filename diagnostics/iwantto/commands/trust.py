@@ -76,7 +76,7 @@ def _show(target) -> str:
 
 
 def _set(target, level: str, reason: str, actor) -> str:
-    from interface.adapter import get_contact
+    from interface import get_contact
     from interface.trust import set_contact_trust
 
     if level not in LEVELS and level not in {"inherit", "team_default"}:

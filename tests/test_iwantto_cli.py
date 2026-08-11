@@ -132,7 +132,7 @@ class SendRoutingTest(_IsolatedState):
     def test_a_manager_reaches_its_own_contact_directly(self):
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=self._contacts()),
-            mock.patch("interface.adapter.reply_contact", return_value="Message sent") as reply,
+            mock.patch("interface.reply_contact", return_value="Message sent") as reply,
             mock.patch("interface.messages.send_manager_message") as via_manager,
         ):
             result = _run(["send", "carbon-a", "--text", "hey"], self.manager)
@@ -146,8 +146,8 @@ class SendRoutingTest(_IsolatedState):
     def test_anyone_else_is_reached_through_their_manager(self):
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=self._contacts()),
-            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
-            mock.patch("interface.adapter.reply_contact") as reply,
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.reply_contact") as reply,
             mock.patch(
                 "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
@@ -171,7 +171,7 @@ class SendRoutingTest(_IsolatedState):
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=contacts),
             mock.patch.object(routing_module, "_trust_directory", return_value=directory),
-            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
             mock.patch.object(messaging, "_own_label", return_value="my-silicon"),
             mock.patch(
                 "interface.messages.send_manager_message", return_value="Done. queued"
@@ -230,10 +230,10 @@ class SendRoutingTest(_IsolatedState):
                         routing_module, "_local_contacts", return_value=contacts
                     ),
                     mock.patch(
-                        "interface.adapter.ensure_contact_for_target", return_value={}
+                        "interface.ensure_contact_for_target", return_value={}
                     ),
                     mock.patch(
-                        "interface.adapter.reply_contact", return_value="Message sent"
+                        "interface.reply_contact", return_value="Message sent"
                     ) as direct,
                     mock.patch(
                         "interface.messages.send_manager_message",
@@ -252,7 +252,7 @@ class SendRoutingTest(_IsolatedState):
         }
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=contacts),
-            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
             mock.patch(
                 "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
@@ -404,9 +404,9 @@ class SeeAndBundleTest(_IsolatedState):
                 routing_module, "_local_contacts", return_value=self._contacts
             ),
             mock.patch(
-                "interface.adapter.take_back_event", return_value="Taken back"
+                "interface.take_back_event", return_value="Taken back"
             ) as take_back,
-            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
             mock.patch(
                 "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,

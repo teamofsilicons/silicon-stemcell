@@ -274,7 +274,7 @@ class TeamContextPromptTests(unittest.TestCase):
                 "name": "Grace",
             },
         }
-        with mock.patch("interface.adapter.get_own_profile", return_value=profile):
+        with mock.patch("interface.get_own_profile", return_value=profile):
             section = DNA._glass_profile_section()
 
         self.assertIn("Ada (silicon_id: silicon-1)", section)

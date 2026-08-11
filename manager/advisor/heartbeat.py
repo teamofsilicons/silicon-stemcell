@@ -60,7 +60,7 @@ def _active_work_section(contact_id: str) -> str:
 
 def contacts_due(now: float | None = None) -> list:
     """Every contact whose manager has not beaten in the last interval."""
-    from interface.adapter import get_contacts
+    from interface import get_contacts
 
     now = _now() if now is None else now
     state = read_json(HEARTBEAT_STATE_FILE, _default_state())

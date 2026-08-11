@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import interface.adapter as interface
+import interface as interface
 from interface import trust
 
 
@@ -59,18 +59,18 @@ class TrustPolicyTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.old_data_root = trust.DATA_ROOT
-        self.old_contacts = interface.CONTACTS_FILE
-        self.old_backup = interface.CONTACTS_BACKUP_FILE
+        self.old_contacts = interface.constants.CONTACTS_FILE
+        self.old_backup = interface.constants.CONTACTS_BACKUP_FILE
         trust.DATA_ROOT = self.root
-        interface.CONTACTS_FILE = self.root / "interface/state/contacts.json"
-        interface.CONTACTS_BACKUP_FILE = (
+        interface.constants.CONTACTS_FILE = self.root / "interface/state/contacts.json"
+        interface.constants.CONTACTS_BACKUP_FILE = (
             self.root / "interface/state/contacts_backup.json"
         )
 
     def tearDown(self):
         trust.DATA_ROOT = self.old_data_root
-        interface.CONTACTS_FILE = self.old_contacts
-        interface.CONTACTS_BACKUP_FILE = self.old_backup
+        interface.constants.CONTACTS_FILE = self.old_contacts
+        interface.constants.CONTACTS_BACKUP_FILE = self.old_backup
         self.tmp.cleanup()
 
     def test_confirmed_policy_updates_typed_contacts_and_unknowns_fail_closed(self):

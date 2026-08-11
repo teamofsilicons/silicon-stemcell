@@ -265,7 +265,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 mock.patch.object(codex_provider, "TracedAppServer",
                                   return_value=fake_client),
                 mock.patch.object(codex_provider, "INACTIVITY_TIMEOUT", 0.0),
-                mock.patch("interface.adapter.reply_contact") as reply_contact,
+                mock.patch("interface.reply_contact") as reply_contact,
             ):
                 provider = codex_provider.CodexProvider()
                 with self.assertRaises(inference.ProviderTimeoutError):
