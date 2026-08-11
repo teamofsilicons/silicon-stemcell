@@ -1225,15 +1225,6 @@ def heartbeat_scope(
                 thread.join(timeout=1)
 
 
-def request_drain(
-    *, deadline_seconds: float | None = None, maintenance_id: str = ""
-) -> dict[str, Any]:
-    return COORDINATOR.request_drain(
-        deadline_seconds=deadline_seconds,
-        maintenance_id=maintenance_id,
-    )
-
-
 def public_status(root: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     coordinator = COORDINATOR if root is None else MaintenanceCoordinator(root)
     return coordinator.public_status()

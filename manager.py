@@ -342,10 +342,7 @@ def _display_codex_stream_event(msg, tag, state):
 STREAMING_INPUT = os.environ.get("SILICON_STREAMING_INPUT", "1") != "0"
 
 INJECTED_PREFIX = (
-    "[NEW MESSAGE — arrived while you were working]\n"
-    "This came in after your turn started. Treat it as a fresh trigger: run "
-    "your setup questions for it, then account for it alongside what you are "
-    "already doing.\n\n"
+    "[NEW MESSAGE from your carbon]\n\n"
 )
 
 

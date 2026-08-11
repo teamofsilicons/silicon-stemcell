@@ -103,42 +103,6 @@ class WorkUpdateTransportTest(unittest.TestCase):
             timeout=30,
         )
 
-    def test_work_task_read_commands_build_exact_argv(self):
-        self.client.work_task_list(
-            "room-1",
-            state="running",
-            cursor="next page",
-            limit=25,
-        )
-        self.client.work_task_list()
-        self.client.work_task_show("task-1")
-
-        self.assertEqual(
-            self.run.call_args_list,
-            [
-                mock.call(
-                    [
-                        "work",
-                        "task",
-                        "list",
-                        "room-1",
-                        "--state",
-                        "running",
-                        "--cursor",
-                        "next page",
-                        "--limit",
-                        "25",
-                    ],
-                    timeout=60,
-                ),
-                mock.call(["work", "task", "list"], timeout=60),
-                mock.call(
-                    ["work", "task", "show", "task-1"],
-                    timeout=60,
-                ),
-            ],
-        )
-
     def test_work_mutations_build_exact_argv_with_compact_json(self):
         payload = {
             "client_id": "caller-owned-id",
@@ -273,37 +237,22 @@ class WorkUpdateTransportTest(unittest.TestCase):
         self.assertNotIn("private", str(raised.exception))
         self.assertNotIn("secret", str(raised.exception))
 
-    def test_task_transition_wrappers_build_exact_argv(self):
+    def test_task_transition_builds_exact_argv(self):
         payload = {"client_id": "transition-id", "body": "Finished"}
         data = '{"client_id":"transition-id","body":"Finished"}'
 
         self.client.work_task_transition("task-1", "complete", payload)
-        self.client.work_task_complete("task-2", payload)
-        self.client.work_task_fail("task-3", payload)
-        self.client.work_task_cancel("task-4", payload)
+        self.client.work_task_transition("task-2", "fail", payload)
 
         self.assertEqual(
             self.run.call_args_list,
             [
-                mock.call(
-                    ["work", "complete", "task-1", "--data", data],
-                    timeout=60,
-                ),
-                mock.call(
-                    ["work", "complete", "task-2", "--data", data],
-                    timeout=60,
-                ),
-                mock.call(
-                    ["work", "fail", "task-3", "--data", data],
-                    timeout=60,
-                ),
-                mock.call(
-                    ["work", "cancel", "task-4", "--data", data],
-                    timeout=60,
-                ),
+                mock.call(["work", "complete", "task-1", "--data", data], timeout=60),
+                mock.call(["work", "fail", "task-2", "--data", data], timeout=60),
             ],
         )
 
 
 if __name__ == "__main__":
     unittest.main()
+

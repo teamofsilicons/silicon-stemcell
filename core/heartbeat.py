@@ -95,9 +95,6 @@ def _record(contact_id: str, now: float) -> None:
 def build_context(contact_id: str) -> str:
     return (
         f"[HEARTBEAT]\n{BEAT_MESSAGE}\n"
-        "Nobody messaged you. This is your own time — use it to check on what "
-        "you already started, chase what has gone quiet, write down what you "
-        "have only in your head, and be proactive for your carbon."
         f"{_active_work_section(contact_id)}"
     )
 
@@ -113,11 +110,3 @@ def check_manager_heartbeats():
         contexts[contact_id] = build_context(contact_id)
         _record(contact_id, now)
     return contexts
-
-
-def check_advisor_heartbeats():
-    """Event-loop handler for the five-hourly advisor check-in."""
-    from core import advisor
-
-    contexts = advisor.run_heartbeats()
-    return contexts or None

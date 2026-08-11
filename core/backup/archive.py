@@ -18,6 +18,7 @@ from core.backup._common import (
     gzip,
     json,
     os,
+    load_glass_config,
     silicon_api_request,
     stat,
     tarfile,
@@ -25,7 +26,6 @@ from core.backup._common import (
 )
 from core.backup.locks import (
     _instance_root,
-    _load_glass_config,
 )
 from core.backup.manifest import (
     installed_release_id,
@@ -213,7 +213,7 @@ def run_backup(
         logger("backup: protected-data policy matched no files")
         return False
 
-    config = _load_glass_config(root)
+    config, _config_path = load_glass_config(root)
     if not str(config.get("api_key") or config.get("silicon_api_key") or "").strip():
         archive.close()
         raise ValueError(".glass.json does not contain an api_key")

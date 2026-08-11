@@ -10,7 +10,8 @@ import time
 
 from core.interface import get_unread_events_durable
 from core.cron import check_crons
-from core.heartbeat import check_advisor_heartbeats, check_manager_heartbeats
+from core.advisor import run_heartbeats as check_advisor_heartbeats
+from core.heartbeat import check_manager_heartbeats
 from core.iwantto.commands.remind import reap_fired_reminders
 from core.messages import check_manager_messages_durable
 from worker.handler import check_completed_workers_formatted, clean_old_archives
@@ -274,93 +275,73 @@ def check_team_context():
 EVENT_LOOP = [
     {
         "name": "check_team_context",
-        "description": "Sync the Silicon team directory and advertising memory",
         "execute": check_team_context,
         "interval_seconds": 60,
         "jitter_seconds": 15,
         "run_on_startup": True,
-        "on_error": lambda e: print(f"[Team Context Error] {e}", flush=True),
     },
     {
         "name": "check_interface",
-        "description": "Check for unread Silicon Interface events",
         "execute": get_unread_events_durable,
         "interval_seconds": 60,
         "jitter_seconds": 15,
         "run_on_activity": True,
         "run_on_startup": True,
-        "on_error": lambda e: print(f"[Interface Error] {e}", flush=True),
     },
     {
         "name": "check_crons",
-        "description": "Check if any cron jobs need to run",
         "execute": check_crons,
         "interval_seconds": 30,
         "jitter_seconds": 10,
         "run_on_activity": True,
         "run_on_startup": True,
-        "on_error": lambda e: print(f"[Cron Error] {e}", flush=True),
     },
     {
         "name": "check_manager_messages",
-        "description": "Check for pending inter-manager messages",
         "execute": check_manager_messages_durable,
         "interval_seconds": 60,
         "jitter_seconds": 15,
         "run_on_activity": True,
         "run_on_startup": True,
-        "on_error": lambda e: print(f"[Manager Messages Error] {e}", flush=True),
     },
     {
         "name": "check_system_updates",
-        "description": "Check whether a Silicon system update is available",
         "execute": check_for_system_update,
         "interval_seconds": 60 * 60,
         "jitter_seconds": 5 * 60,
-        "on_error": lambda e: print(f"[Update Error] {e}", flush=True),
     },
     {
         "name": "check_workers",
-        "description": "Check if any workers completed execution",
         "execute": check_completed_workers_formatted,
         "interval_seconds": 60,
         "jitter_seconds": 15,
         "run_on_activity": True,
         "run_on_startup": True,
-        "on_error": lambda e: print(f"[Worker Check Error] {e}", flush=True),
     },
     {
         "name": "clean_archives",
-        "description": "Remove old worker archives",
         "execute": lambda: clean_old_archives(ARCHIVE_FOR),
         "interval_seconds": 60 * 60,
         "jitter_seconds": 5 * 60,
-        "on_error": lambda e: print(f"[Archive Cleanup Error] {e}", flush=True),
     },
     {
         # Checked every minute; the handler decides which managers are due, so
         # the 13-minute cadence survives a restart instead of resetting.
         "name": "check_manager_heartbeats",
-        "description": "Beat every manager's heart every 13 minutes",
         "execute": check_manager_heartbeats,
         "interval_seconds": 60,
         "jitter_seconds": 10,
-        "on_error": lambda e: print(f"[Heartbeat Error] {e}", flush=True),
     },
     {
         "name": "check_advisor_heartbeats",
-        "description": "Let every advisor check on its manager every 5 hours",
         "execute": check_advisor_heartbeats,
         "interval_seconds": 5 * 60,
         "jitter_seconds": 60,
-        "on_error": lambda e: print(f"[Advisor Heartbeat Error] {e}", flush=True),
     },
     {
         "name": "reap_reminders",
-        "description": "Delete one-off reminders that have already fired",
         "execute": reap_fired_reminders,
         "interval_seconds": 5 * 60,
         "jitter_seconds": 30,
-        "on_error": lambda e: print(f"[Reminder Reaper Error] {e}", flush=True),
     },
 ]

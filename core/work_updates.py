@@ -1359,6 +1359,22 @@ def _remember_event(contact_id: str, snapshot: dict[str, Any]) -> None:
         _write_state(state)
 
 
+_ACTION_HANDLERS = {
+    "task/update": "_task_update",
+    "todo/add": "_todo_add",
+    "todo/update": "_todo_update",
+    "milestone": "_milestone",
+    "blocker/create": "_blocker_create",
+    "blocker/resolve": "_blocker_resolve",
+    "worker-group/create": "_worker_group_create",
+    "worker-group/update": "_worker_group_update",
+    "worker/create": "_worker_create",
+    "worker/update": "_worker_update",
+    "call/create": "_call_create",
+    "call/update": "_call_update",
+}
+
+
 class WorkUpdates:
     """High-level durable update adapter for one contact manager."""
 
@@ -1411,30 +1427,9 @@ class WorkUpdates:
 
         if action == "task/create":
             return self._task_create(payload)
-        if action == "task/update":
-            return self._task_update(spec, payload)
-        if action == "todo/add":
-            return self._todo_add(spec, payload)
-        if action == "todo/update":
-            return self._todo_update(spec, payload)
-        if action == "milestone":
-            return self._milestone(spec, payload)
-        if action == "blocker/create":
-            return self._blocker_create(spec, payload)
-        if action == "blocker/resolve":
-            return self._blocker_resolve(spec, payload)
-        if action == "worker-group/create":
-            return self._worker_group_create(spec, payload)
-        if action == "worker-group/update":
-            return self._worker_group_update(spec, payload)
-        if action == "worker/create":
-            return self._worker_create(spec, payload)
-        if action == "worker/update":
-            return self._worker_update(spec, payload)
-        if action == "call/create":
-            return self._call_create(spec, payload)
-        if action == "call/update":
-            return self._call_update(spec, payload)
+        handler = _ACTION_HANDLERS.get(action)
+        if handler is not None:
+            return getattr(self, handler)(spec, payload)
         if action in TERMINAL_ACTIONS:
             return self._terminal(action, spec, payload)
         raise WorkUpdateError(f"Unknown work_update action '{action}'.")

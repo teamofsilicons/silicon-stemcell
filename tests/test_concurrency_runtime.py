@@ -8,7 +8,13 @@ from unittest import mock
 
 from core import interface, work_updates
 from core.background import BestEffortOutbox, flush_best_effort
-from core.state_store import read_json, update_json, update_json_if_changed
+from core.state_store import (
+    lock_handle,
+    read_json,
+    unlock_handle,
+    update_json,
+    update_json_if_changed,
+)
 from worker import handler
 
 
@@ -288,6 +294,22 @@ class CorrelationAndDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result[0], "carbon-a")
         active.add_message.assert_not_called()
         active.event.assert_not_called()
+
+
+class LockHandleTest(unittest.TestCase):
+    def test_non_blocking_lock_reports_contention_instead_of_waiting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "contended.lock"
+            path.touch()
+            with path.open("r+b") as holder:
+                self.assertTrue(lock_handle(holder))
+                # A second handle on the same file is a distinct flock owner.
+                with path.open("r+b") as rival:
+                    self.assertFalse(lock_handle(rival, blocking=False))
+                unlock_handle(holder)
+                with path.open("r+b") as rival:
+                    self.assertTrue(lock_handle(rival, blocking=False))
+                    unlock_handle(rival)
 
 
 if __name__ == "__main__":

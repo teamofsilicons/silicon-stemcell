@@ -36,7 +36,12 @@ from core.glass import (
     silicon_api_request,
 )
 from core.runtime_paths import DATA_ROOT
-from core.state_store import atomic_write_bytes
+from core.state_store import (
+    atomic_write_bytes,
+    fsync_directory,
+    lock_handle,
+    unlock_handle,
+)
 
 PROJECT_ROOT = DATA_ROOT
 TEAM_CONTEXT_PATH = "prompts/TEAM.md"
@@ -90,40 +95,36 @@ class TeamContextIdentityChanged(TeamContextError):
     pass
 
 
-def validate_advertising_memory(content: str) -> str:
-    """Validate the exact Glass advertising-memory limits without truncating."""
-
+def _validate_memory(content: str, max_lines: int, max_bytes: int, oversize: str) -> str:
     if not isinstance(content, str):
         raise ValueError("Advertising memory content must be a string.")
     if "\x00" in content:
         raise ValueError("Advertising memory cannot contain NUL characters.")
-    if len(content.splitlines()) > MAX_ADVERTISING_MEMORY_LINES:
-        raise ValueError(
-            f"Advertising memory cannot exceed {MAX_ADVERTISING_MEMORY_LINES} lines."
-        )
-    if len(content.encode("utf-8")) > MAX_ADVERTISING_MEMORY_BYTES:
-        raise ValueError(
-            f"Advertising memory cannot exceed {MAX_ADVERTISING_MEMORY_BYTES} UTF-8 bytes."
-        )
+    if len(content.splitlines()) > max_lines:
+        raise ValueError(oversize.format(limit=max_lines, unit="lines"))
+    if len(content.encode("utf-8")) > max_bytes:
+        raise ValueError(oversize.format(limit=max_bytes, unit="UTF-8 bytes"))
     return content
+
+
+def validate_advertising_memory(content: str) -> str:
+    """Validate the exact Glass advertising-memory limits without truncating."""
+    return _validate_memory(
+        content,
+        MAX_ADVERTISING_MEMORY_LINES,
+        MAX_ADVERTISING_MEMORY_BYTES,
+        "Advertising memory cannot exceed {limit} {unit}.",
+    )
 
 
 def validate_advertised_memory(content: str) -> str:
     """Validate a Glass-composed peer memory with its managed integration block."""
-
-    if not isinstance(content, str):
-        raise ValueError("Advertising memory content must be a string.")
-    if "\x00" in content:
-        raise ValueError("Advertising memory cannot contain NUL characters.")
-    if len(content.splitlines()) > MAX_ADVERTISED_MEMORY_LINES:
-        raise ValueError(
-            f"Advertised memory cannot exceed {MAX_ADVERTISED_MEMORY_LINES} lines."
-        )
-    if len(content.encode("utf-8")) > MAX_ADVERTISED_MEMORY_BYTES:
-        raise ValueError(
-            "Advertised memory exceeds the Glass-managed mirror size limit."
-        )
-    return content
+    return _validate_memory(
+        content,
+        MAX_ADVERTISED_MEMORY_LINES,
+        MAX_ADVERTISED_MEMORY_BYTES,
+        "Advertised memory cannot exceed {limit} {unit}.",
+    )
 
 
 def _sha256(data: bytes) -> str:
@@ -234,19 +235,6 @@ def ensure_team_context_layout(
         "team_path": TEAM_CONTEXT_PATH,
         "advertising_directory": ADVERTISING_DIRECTORY,
     }
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt" or not hasattr(os, "O_DIRECTORY"):
-        return
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    except FileNotFoundError:
-        return
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _ensure_private_archive_directory(root: Path, path: Path) -> None:
@@ -391,41 +379,6 @@ def _thread_lock(path: Path) -> threading.Lock:
         return lock
 
 
-def _try_process_lock(fd: int) -> bool:
-    if os.name == "nt":
-        import msvcrt
-
-        if os.fstat(fd).st_size == 0:
-            os.write(fd, b"\0")
-        os.lseek(fd, 0, os.SEEK_SET)
-        try:
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
-        return True
-
-    import fcntl
-
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return False
-    return True
-
-
-def _release_process_lock(fd: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        return
-
-    import fcntl
-
-    fcntl.flock(fd, fcntl.LOCK_UN)
-
-
 @contextmanager
 def _sync_lock(root: Path) -> Iterator[None]:
     path = _lock_file(root)
@@ -440,14 +393,14 @@ def _sync_lock(root: Path) -> Iterator[None]:
     if not local_lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
         raise TeamContextLockTimeout("Team context synchronization is already running.")
 
-    fd = -1
+    handle = None
     acquired = False
     try:
         flags = os.O_CREAT | os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags, 0o600)
-        opened = os.fstat(fd)
+        handle = os.fdopen(os.open(path, flags, 0o600), "r+b")
+        opened = os.fstat(handle.fileno())
         after = os.stat(path, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -459,7 +412,7 @@ def _sync_lock(root: Path) -> Iterator[None]:
             )
         _assert_local_path(root, path)
         deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
-        while not _try_process_lock(fd):
+        while not lock_handle(handle, blocking=False):
             if time.monotonic() >= deadline:
                 raise TeamContextLockTimeout(
                     "Team context synchronization is already running."
@@ -468,13 +421,13 @@ def _sync_lock(root: Path) -> Iterator[None]:
         acquired = True
         yield
     finally:
-        if acquired and fd >= 0:
-            try:
-                _release_process_lock(fd)
-            except OSError:
-                pass
-        if fd >= 0:
-            os.close(fd)
+        if handle is not None:
+            if acquired:
+                try:
+                    unlock_handle(handle)
+                except OSError:
+                    pass
+            handle.close()
         local_lock.release()
 
 
@@ -1093,7 +1046,7 @@ def _remove_unverified_peer_file(root: Path, silicon_id: str) -> bool:
     if existed:
         _write_visibility_block(root)
     path.unlink(missing_ok=True)
-    _fsync_directory(path.parent)
+    fsync_directory(path.parent)
     return existed
 
 
@@ -1614,7 +1567,7 @@ def _prune_stale_peers(
             if existed:
                 _write_visibility_block(root)
             path.unlink(missing_ok=True)
-            _fsync_directory(path.parent)
+            fsync_directory(path.parent)
             removed += int(existed)
         except (OSError, TeamContextError):
             errors.append(silicon_id)
@@ -1677,7 +1630,7 @@ def _archive_unsynced_own_draft(
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
-            _fsync_directory(path.parent)
+            fsync_directory(path.parent)
         except Exception:
             if not moved:
                 try:
@@ -1845,7 +1798,7 @@ def _quarantine_unscoped_advertising_files(
         entry_stat = os.stat(entry, follow_symlinks=False)
         if stat.S_ISLNK(entry_stat.st_mode):
             entry.unlink(missing_ok=True)
-            _fsync_directory(entry.parent)
+            fsync_directory(entry.parent)
             moved += 1
             continue
 
@@ -1862,8 +1815,8 @@ def _quarantine_unscoped_advertising_files(
         _ensure_private_archive_directory(root, archive_directory)
         _assert_local_path(root, archive_path)
         os.replace(entry, archive_path)
-        _fsync_directory(entry.parent)
-        _fsync_directory(archive_directory)
+        fsync_directory(entry.parent)
+        fsync_directory(archive_directory)
         if stat.S_ISREG(entry_stat.st_mode):
             try:
                 archive_path.chmod(0o600)
@@ -1998,7 +1951,7 @@ def _transition_identity(
                 old_path = _advertising_file(root, previous["silicon_id"])
                 _assert_local_path(root, old_path)
                 old_path.unlink(missing_ok=True)
-                _fsync_directory(old_path.parent)
+                fsync_directory(old_path.parent)
 
     principal_changed = previous is not None and (
         previous["silicon_id"] != canonical["silicon_id"]
@@ -2441,7 +2394,7 @@ def _rollback_uncommitted_peer_files(
             rollback_path = _advertising_file(root, silicon_id)
             _assert_local_path(root, rollback_path)
             rollback_path.unlink(missing_ok=True)
-            _fsync_directory(rollback_path.parent)
+            fsync_directory(rollback_path.parent)
         except (OSError, TeamContextError):
             pass
 

@@ -504,11 +504,6 @@ def inspect_trust_policy(
     return snapshot
 
 
-def has_confirmed_policy(*, root: str | Path | None = None) -> bool:
-    state = _load_state(_root(root))
-    return _state_has_confirmed_policy(state)
-
-
 def set_contact_trust(
     kind: str,
     public_id: str,

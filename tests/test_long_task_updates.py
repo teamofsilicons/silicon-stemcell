@@ -258,12 +258,12 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertEqual(schedule["next_checkpoint"], 1)
         self.assertEqual(schedule["pending_review"], {})
         self.assertEqual(
-            long_task_updates._goal_seconds_from_data(
+            long_task_updates._estimate_goal_from_data(
                 {
                     "estimate_seconds": 120,
                     "realistic_estimate_seconds": 100,
                 }
-            ),
+            )[1],
             120,
         )
 
@@ -669,8 +669,10 @@ class LongTaskLifecycleTest(unittest.TestCase):
         sender.assert_called_once()
         execute.assert_not_called()
         claimed = long_task_updates.claim_ready_long_task_roots()
-        _, clean_context = long_task_updates.extract_queued_long_task_root(
-            claimed["carbon-a"]
+        _, clean_context, _ = (
+            long_task_updates.extract_queued_long_task_root_metadata(
+                claimed["carbon-a"]
+            )
         )
         self.assertEqual(clean_context, next_context)
 
@@ -2951,8 +2953,8 @@ class LongTaskLifecycleTest(unittest.TestCase):
 
         def runner(payload):
             context = payload["carbon-a"]
-            root_id, clean_context = (
-                long_task_updates.extract_queued_long_task_root(context)
+            root_id, clean_context, _ = (
+                long_task_updates.extract_queued_long_task_root_metadata(context)
             )
             calls.append((root_id, clean_context))
             if len(calls) == 1:
@@ -3354,8 +3356,10 @@ class LongTaskLifecycleTest(unittest.TestCase):
         claimed = long_task_updates.claim_ready_long_task_roots()
 
         self.assertEqual(set(claimed), {"carbon-a"})
-        root_id, context = long_task_updates.extract_queued_long_task_root(
-            claimed["carbon-a"]
+        root_id, context, _ = (
+            long_task_updates.extract_queued_long_task_root_metadata(
+                claimed["carbon-a"]
+            )
         )
         self.assertEqual(root_id, "queued-root:first")
         self.assertEqual(context, "message:\nFirst request")

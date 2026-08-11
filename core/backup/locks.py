@@ -15,7 +15,6 @@ from core.backup._common import (
     chmod_open_file,
     contextmanager,
     data_policy,
-    load_glass_config,
     lock_handle,
     os,
     stat,
@@ -29,9 +28,6 @@ def _instance_root(start: str | os.PathLike | None = None) -> Path:
     if start:
         return Path(start).resolve()
     return DATA_ROOT
-def _load_glass_config(root: Path) -> dict:
-    config, _path = load_glass_config(root)
-    return config
 def _unique_manifest_archive_path(root: Path) -> Path:
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     base = root / f"{MANIFEST_ARCHIVE_PREFIX}.{stamp}"

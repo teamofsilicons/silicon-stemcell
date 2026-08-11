@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import update
+from core import state_store
 
 
 class FakeResponse:
@@ -614,19 +615,19 @@ class SystemUpdateTest(unittest.TestCase):
             {"X-Silicon-Key": "scs_live_rotated"},
         )
 
-    def test_auth_key_lock_serializes_local_rotation_processes(self):
+    def test_auth_key_lock_serializes_local_rotation(self):
         first_entered = threading.Event()
         release_first = threading.Event()
         second_entered = threading.Event()
 
         def first():
-            with update._auth_key_lock():
+            with state_store.file_lock(update.UPDATE_STATE_FILE.parent / update.AUTH_KEY_LOCK_NAME):
                 first_entered.set()
                 release_first.wait(timeout=2)
 
         def second():
             first_entered.wait(timeout=2)
-            with update._auth_key_lock():
+            with state_store.file_lock(update.UPDATE_STATE_FILE.parent / update.AUTH_KEY_LOCK_NAME):
                 second_entered.set()
 
         first_thread = threading.Thread(target=first)

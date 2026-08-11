@@ -1316,12 +1316,6 @@ def run_event_loop_tick(handler_names=None):
 
         except Exception as e:
             log(f"[Silicon] Error in {handler['name']}: {e}")
-            on_error = handler.get("on_error")
-            if on_error:
-                try:
-                    on_error(str(e))
-                except Exception:
-                    pass
 
     # Merge context lists into strings
     merged = {}
@@ -1987,11 +1981,9 @@ def run_all_managers(context_by_carbon):
                             accuracy_review_satisfied.add(carbon_id)
                         continue
                     pending[carbon_id] = (
-                        "You ended your turn without running a single iwantto "
-                        "command. Running at least one is mandatory: do the "
-                        "thing you meant to do, or run "
-                        '`iwantto do-nothing --reason "..."` to say why there '
-                        "is genuinely nothing to do."
+                        "You ended without running a single iwantto command."
+                        "Running at least one is required."
+                        'run `iwantto do-nothing --reason "..."` to say why there is genuinely nothing to do.'
                     )
                     continue
 

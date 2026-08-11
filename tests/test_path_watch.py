@@ -9,12 +9,10 @@ from core import path_watch
 
 
 class PathChangeWaiterTest(unittest.TestCase):
-    def test_inotify_backends_keep_the_native_wait_contract(self):
+    def test_inotify_backend_keeps_the_native_wait_contract(self):
         self.assertIn("wait", path_watch._InotifyBackend.__dict__)
         self.assertIn("close", path_watch._InotifyBackend.__dict__)
-        self.assertIn("wait", path_watch._InotifySetBackend.__dict__)
-        self.assertIn("close", path_watch._InotifySetBackend.__dict__)
-        backend = object.__new__(path_watch._InotifySetBackend)
+        backend = object.__new__(path_watch._InotifyBackend)
         backend._fd = -1
         backend._targets = {}
         backend.close()

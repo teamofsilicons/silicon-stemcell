@@ -213,7 +213,9 @@ class TrustPolicyTests(unittest.TestCase):
             root=self.root,
         )
 
-        self.assertTrue(trust.has_confirmed_policy(root=self.root))
+        self.assertTrue(
+            trust._state_has_confirmed_policy(trust._load_state(self.root))
+        )
         self.assertEqual(
             trust.cached_trust_level("carbon", "alice", root=self.root),
             "high",
@@ -246,7 +248,9 @@ class TrustPolicyTests(unittest.TestCase):
             self.root,
             policy("very_high", team_revision=3, silicon_revision=3),
         )
-        self.assertTrue(trust.has_confirmed_policy(root=self.root))
+        self.assertTrue(
+            trust._state_has_confirmed_policy(trust._load_state(self.root))
+        )
         self.assertEqual(
             trust.cached_trust_level("carbon", "alice", root=self.root),
             "very_high",

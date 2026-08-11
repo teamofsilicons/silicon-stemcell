@@ -37,10 +37,7 @@ SESSION_GAP_SECONDS = 2 * 60 * 60
 SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 HEARTBEAT_INTERVAL_SECONDS = 5 * 60 * 60
 
-HEARTBEAT_PROMPT = (
-    "Your manager did not trigger you, This is a heartbeat. Check on your "
-    "manager's work and give any advice you want."
-)
+HEARTBEAT_PROMPT = "[HEARTBEAT] Is your manager doing a good job, or should they change something?"
 
 # The files that make an advisor, in the order it reads them.
 ADVISOR_PROMPT_FILES = ("INDEX.md", "IWANTTO_CLI_REFERENCE.md", "ADVISOR.md")
@@ -223,7 +220,6 @@ def run_heartbeats() -> dict:
             continue
         contexts[contact_id] = (
             "[Message from your Advisor]\n"
-            "Your advisor checked in on its own — you did not ask for this.\n\n"
             f"{advice}"
         )
     return contexts

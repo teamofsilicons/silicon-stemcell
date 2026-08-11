@@ -8,7 +8,6 @@ Git configuration.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import re
@@ -23,6 +22,7 @@ import requests
 
 from core.glass import GlassConfigurationError, validate_authenticated_origin
 from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from core.state_store import atomic_write_bytes, file_lock
 
 PROJECT_ROOT = DATA_ROOT
 DOTENV_FILE = PROJECT_ROOT / ".env"
@@ -42,7 +42,7 @@ GIT_TIMEOUT = 45
 MAX_GIT_RELEASE_REFS = 100_000
 MAX_GIT_RELEASE_METADATA_BYTES = 16 * 1024 * 1024
 PENDING_AUTH_KEY_NAME = "SILICON_UPDATE_PENDING_AUTH_KEY"
-AUTH_KEY_LOCK_NAME = ".silicon-update-auth-key.lock"
+AUTH_KEY_LOCK_NAME = ".silicon-update-auth-key"
 _SILICON_KEY_TEXT_RE = re.compile(r"scs_live_[A-Za-z0-9_-]+")
 _STABLE_TAG_RE = re.compile(
     r"\Av(0|[1-9][0-9]{0,2})\."
@@ -124,68 +124,9 @@ def _read_env_py(path: Path | None = None) -> dict[str, str]:
     return values
 
 
-def _atomic_write_secret(path: Path, content: str) -> None:
+def _write_secret(path: Path, content: str) -> None:
     """Atomically replace a local credential file with owner-only durability."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        path.chmod(0o600)
-        try:
-            directory = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        except OSError:
-            # Directory fsync is unavailable on some supported platforms. The
-            # file itself was still flushed before the atomic replacement.
-            pass
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-@contextlib.contextmanager
-def _auth_key_lock():
-    """Serialize recovery/rotation across updater processes on this install."""
-
-    lock_path = UPDATE_STATE_FILE.parent / AUTH_KEY_LOCK_NAME
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    locked = False
-    try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(descriptor, 0o600)
-        if os.name == "nt":  # pragma: no cover - exercised on Windows installs
-            import msvcrt
-
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"\0")
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        locked = True
-        yield
-    finally:
-        if locked:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows installs
-                import msvcrt
-
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+    atomic_write_bytes(path, content.encode("utf-8"), mode=0o600, dir_mode=None)
 
 
 def _upsert_key_value(path: Path, key: str, value: str, *, python_string: bool = False) -> None:
@@ -207,7 +148,7 @@ def _upsert_key_value(path: Path, key: str, value: str, *, python_string: bool =
     if not replaced:
         out.append(rendered)
 
-    _atomic_write_secret(path, "\n".join(out).rstrip() + "\n")
+    _write_secret(path, "\n".join(out).rstrip() + "\n")
 
 
 def _replace_json_auth_key(
@@ -244,7 +185,7 @@ def _replace_json_auth_key(
     target["api_key"] = auth_key
     if "silicon_api_key" in target:
         target["silicon_api_key"] = auth_key
-    _atomic_write_secret(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    _write_secret(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def _remove_key_value(path: Path, key: str) -> None:
@@ -256,7 +197,7 @@ def _remove_key_value(path: Path, key: str) -> None:
         for line in path.read_text(encoding="utf-8").splitlines()
         if not pattern.match(line)
     ]
-    _atomic_write_secret(path, "\n".join(lines).rstrip() + ("\n" if lines else ""))
+    _write_secret(path, "\n".join(lines).rstrip() + ("\n" if lines else ""))
 
 
 def _remove_json_auth_keys(path: Path, *, nested: bool = False) -> None:
@@ -278,10 +219,7 @@ def _remove_json_auth_keys(path: Path, *, nested: bool = False) -> None:
             target.pop(key, None)
             changed = True
     if changed:
-        _atomic_write_secret(
-            path,
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        )
+        _write_secret(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def _canonical_glass_defaults() -> dict[str, str]:
@@ -592,7 +530,7 @@ def _rotate_auth_key_locked() -> str:
 def _rotate_auth_key() -> str:
     """Rotate with the current key, without ever relying on a shared credential."""
 
-    with _auth_key_lock():
+    with file_lock(UPDATE_STATE_FILE.parent / AUTH_KEY_LOCK_NAME):
         return _rotate_auth_key_locked()
 
 

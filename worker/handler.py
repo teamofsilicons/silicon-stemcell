@@ -161,7 +161,7 @@ def _start_worker_feeder(worker_id, carbon_id, process, task, output_path):
             delivered = False
             for item in mailbox.drain("worker", worker_id):
                 sender = str(item.get("from") or "your manager")
-                if write(f"[MESSAGE FROM {sender}]\n{item.get('message') or ''}"):
+                if write(f"[MESSAGE FROM Your Manager]\n{item.get('message') or ''}"):
                     delivered = True
                     try:
                         journal.record_message(

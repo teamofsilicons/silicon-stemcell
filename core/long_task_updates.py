@@ -162,11 +162,6 @@ def _estimate_goal_from_data(data: Any) -> tuple[bool, float]:
     return False, 0.0
 
 
-def _goal_seconds_from_data(data: Any) -> float:
-    """Return the exact displayed goal implied by manager estimate input."""
-    return _estimate_goal_from_data(data)[1]
-
-
 def _goal_materially_changed(previous: float, current: float) -> bool:
     previous = _non_negative_number(previous)
     current = _non_negative_number(current)
@@ -624,14 +619,6 @@ def claim_ready_long_task_roots(
 
     update_json_if_changed(LONG_TASK_STATE_FILE, _default_state(), mutate)
     return claimed
-
-
-def extract_queued_long_task_root(context: str) -> tuple[str, str]:
-    """Remove dispatcher-only durable metadata before invoking the manager."""
-    root_id, clean_context, _ = extract_queued_long_task_root_metadata(
-        context
-    )
-    return root_id, clean_context
 
 
 def extract_queued_long_task_root_metadata(

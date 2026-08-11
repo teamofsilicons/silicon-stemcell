@@ -42,11 +42,21 @@ def _thread_lock(key: str) -> threading.RLock:
         return _LOCKS.setdefault(key, threading.RLock())
 
 
-def lock_handle(handle) -> None:
-    """Take an exclusive advisory lock on an already-open file handle."""
+def lock_handle(handle, *, blocking: bool = True) -> bool:
+    """Take an exclusive advisory lock on an already-open file handle.
+
+    Returns false only when ``blocking`` is false and another process holds the
+    lock; a blocking call always returns true once it has the lock.
+    """
     if fcntl is not None:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        return
+        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        try:
+            fcntl.flock(handle.fileno(), flags)
+        except (BlockingIOError, OSError):
+            if blocking:
+                raise
+            return False
+        return True
     if msvcrt is not None:  # pragma: no cover - Windows
         handle.seek(0)
         # msvcrt locks a byte range, so the file needs at least one byte.
@@ -54,7 +64,14 @@ def lock_handle(handle) -> None:
             handle.write(b"\0")
             handle.flush()
         handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(handle.fileno(), mode, 1)
+        except OSError:
+            if blocking:
+                raise
+            return False
+    return True
 
 
 def unlock_handle(handle) -> None:

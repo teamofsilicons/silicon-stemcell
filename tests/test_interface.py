@@ -850,12 +850,6 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertIn("recovered at the barrier", contexts["carbon-a"])
 
-    def test_foreground_listener_keeps_cli_v2_sync_enabled(self):
-        client = interface.InterfaceClient.__new__(interface.InterfaceClient)
-        with mock.patch.object(interface.InterfaceClient, "popen") as popen:
-            client.listen_all_process()
-        popen.assert_called_once_with(["listen", "all"])
-
     def test_daemon_status_rejects_pre_v2_contract(self):
         client = interface.InterfaceClient.__new__(interface.InterfaceClient)
         with mock.patch.object(client, "run", return_value={"text": "unknown command"}):

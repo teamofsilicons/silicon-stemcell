@@ -623,14 +623,6 @@ class InterfaceClient:
         value = str(status.get("inbox") or "").strip()
         return Path(value).expanduser() if value else DEFAULT_INBOX_FILE
 
-    def listen_all_process(self) -> subprocess.Popen:
-        """Foreground v2 listener for diagnostics only.
-
-        Runtime ingestion uses the CLI daemon's durable inbox so a Stemcell
-        restart cannot lose frames already accepted by Glass.
-        """
-        return self.popen(["listen", "all"])
-
     def send(
         self,
         room_id: str,
@@ -734,24 +726,6 @@ class InterfaceClient:
 
     def work_task_create(self, payload: dict[str, Any]) -> Any:
         return self._work_mutation(["work", "task", "create"], payload)
-
-    def work_task_list(
-        self,
-        room_id: str = "",
-        state: str = "",
-        cursor: str = "",
-        limit: int | None = None,
-    ) -> Any:
-        args = ["work", "task", "list"]
-        if room_id:
-            args.append(room_id)
-        if state:
-            args.extend(["--state", state])
-        if cursor:
-            args.extend(["--cursor", cursor])
-        if limit is not None:
-            args.extend(["--limit", str(limit)])
-        return self.run(args, timeout=60)
 
     def work_task_show(self, task_id: str) -> Any:
         return self.run(["work", "task", "show", task_id], timeout=60)
@@ -887,15 +861,6 @@ class InterfaceClient:
         payload: dict[str, Any],
     ) -> Any:
         return self._work_mutation(["work", transition, task_id], payload)
-
-    def work_task_complete(self, task_id: str, payload: dict[str, Any]) -> Any:
-        return self.work_task_transition(task_id, "complete", payload)
-
-    def work_task_fail(self, task_id: str, payload: dict[str, Any]) -> Any:
-        return self.work_task_transition(task_id, "fail", payload)
-
-    def work_task_cancel(self, task_id: str, payload: dict[str, Any]) -> Any:
-        return self.work_task_transition(task_id, "cancel", payload)
 
     def remote_browser(self, room_id: str, url: str, ttl_minutes: int) -> Any:
         return self.run(["remote-browser", room_id, url, "--ttl-minutes", str(ttl_minutes)], timeout=30)
