@@ -19,7 +19,9 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from interface import progress as P          # noqa: E402
+from interface import progress as P
+from inference.claude import progress as CLAUDE_P
+from inference.codex import progress as CODEX_P          # noqa: E402
 from diagnostics import store as D       # noqa: E402
 
 
@@ -112,7 +114,7 @@ class TestClaudeTokenHarvest(unittest.TestCase):
     """10.2.a"""
 
     def test_usage_normalized_from_result(self):
-        done = _done(P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
+        done = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
         usage = done.get("usage")
         self.assertIsNotNone(usage)
         self.assertEqual(usage["input"], 1200)
@@ -125,7 +127,7 @@ class TestClaudeTokenHarvest(unittest.TestCase):
         self.assertAlmostEqual(done["cost_usd"], 0.01734)
 
     def test_unified_accessor_maps_to_set_tokens(self):
-        done = _done(P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
+        done = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
         kw = P.usage_from_done_event(done)
         self.assertEqual(kw["input"], 1200)
         self.assertEqual(kw["output"], 340)
@@ -137,10 +139,10 @@ class TestClaudeTokenHarvest(unittest.TestCase):
 
     def test_model_identity_propagates_from_claude_init(self):
         state = {}
-        self.assertEqual(P.claude_progress_events({
+        self.assertEqual(CLAUDE_P.claude_progress_events({
             "type": "system", "subtype": "init", "model": "claude-opus-4-6",
         }, state), [])
-        done = _done(P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE, state))
+        done = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE, state))
         self.assertEqual(done["model"], "claude-opus-4-6")
         self.assertEqual(done["model_provider"], "anthropic")
         self.assertEqual(P.usage_from_done_event(done)["model"], "claude-opus-4-6")
@@ -162,13 +164,13 @@ class TestBackwardCompatibility(unittest.TestCase):
     """Phase 2 must be strictly additive (memo 4.2)."""
 
     def test_result_without_usage_omits_key(self):
-        done = _done(P.claude_progress_events(CLAUDE_RESULT_NO_USAGE))
+        done = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_NO_USAGE))
         self.assertNotIn("usage", done)              # key omitted, not null
         self.assertEqual(done["duration_ms"], 980)   # existing fields intact
         self.assertAlmostEqual(done["cost_usd"], 0.002)
 
     def test_accessor_safe_on_legacy_done(self):
-        done = _done(P.claude_progress_events(CLAUDE_RESULT_NO_USAGE))
+        done = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_NO_USAGE))
         kw = P.usage_from_done_event(done)
         self.assertEqual(kw["input"], 0)
         self.assertEqual(kw["output"], 0)
@@ -176,7 +178,7 @@ class TestBackwardCompatibility(unittest.TestCase):
 
     def test_display_line_unchanged_by_usage(self):
         # The new usage key must not alter the human-facing display line.
-        with_usage = _done(P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
+        with_usage = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
         line = P.progress_display_line(with_usage)
         self.assertEqual(line, "done 4.2s $0.0173")
 
@@ -189,7 +191,7 @@ class TestBackwardCompatibility(unittest.TestCase):
                  "input": {"file_path": "/x.py"}},
             ]},
         }
-        events = P.claude_progress_events(evt)
+        events = CLAUDE_P.claude_progress_events(evt)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["kind"], P.READING_FILE)
         self.assertEqual(events[0]["path"], "/x.py")
@@ -203,14 +205,14 @@ class TestCodexTokenHarvest(unittest.TestCase):
         # The tokenUsage notification stashes usage in state and is not itself a
         # display/DONE event.
         state = {}
-        out = P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
+        out = CODEX_P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
         self.assertIsNone(out)
-        self.assertIn(P._CODEX_LAST_USAGE_STATE_KEY, state)
+        self.assertIn(CODEX_P._CODEX_LAST_USAGE_STATE_KEY, state)
 
     def test_usage_normalized_on_turn_completed(self):
         state = {}
-        P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
-        done = P.codex_progress_event(CODEX_TURN_COMPLETED, state)
+        CODEX_P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
+        done = CODEX_P.codex_progress_event(CODEX_TURN_COMPLETED, state)
         usage = done.get("usage")
         self.assertIsNotNone(usage)
         # cachedInputTokens (2432) is a SUBSET of inputTokens (27174): subtract.
@@ -227,8 +229,8 @@ class TestCodexTokenHarvest(unittest.TestCase):
 
     def test_uses_last_not_total_on_multi_turn(self):
         state = {}
-        P.codex_progress_event(CODEX_TOKEN_USAGE_MULTI_TURN, state)
-        done = P.codex_progress_event(CODEX_TURN_COMPLETED, state)
+        CODEX_P.codex_progress_event(CODEX_TOKEN_USAGE_MULTI_TURN, state)
+        done = CODEX_P.codex_progress_event(CODEX_TURN_COMPLETED, state)
         usage = done["usage"]
         # Must reflect this turn (last: 5000/1000/40), not the cumulative total.
         self.assertEqual(usage["input"], 5000 - 1000)   # 4000
@@ -241,15 +243,15 @@ class TestCodexTokenHarvest(unittest.TestCase):
 
     def test_no_usage_omits_key_and_does_not_crash(self):
         # turn/completed with no preceding tokenUsage event -> key omitted.
-        done = P.codex_progress_event(CODEX_TURN_NO_USAGE, {})
+        done = CODEX_P.codex_progress_event(CODEX_TURN_NO_USAGE, {})
         self.assertNotIn("usage", done)
         self.assertEqual(done["status"], "completed")
 
     def test_accessor_maps_codex_usage_to_set_tokens(self):
         state = {}
-        P.codex_progress_event(CODEX_CONTEXT, state)
-        P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
-        done = P.codex_progress_event(CODEX_TURN_COMPLETED, state)
+        CODEX_P.codex_progress_event(CODEX_CONTEXT, state)
+        CODEX_P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
+        done = CODEX_P.codex_progress_event(CODEX_TURN_COMPLETED, state)
         kw = P.usage_from_done_event(done)
         self.assertEqual(kw["input"], 24742)
         self.assertEqual(kw["cache_read"], 2432)
@@ -272,7 +274,7 @@ class TestTracerIntegration(unittest.TestCase):
         with trace.span("round[0]"):
             with trace.span("manager_turn"):
                 with trace.span("provider_call") as s:
-                    done = _done(P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
+                    done = _done(CLAUDE_P.claude_progress_events(CLAUDE_RESULT_WITH_USAGE))
                     s.set_tokens(**P.usage_from_done_event(done))
         rollup = trace.close()
         self.assertEqual(rollup["tokens"]["input"], 1200)
@@ -290,13 +292,13 @@ class TestTracerIntegration(unittest.TestCase):
         import tempfile
         base = tempfile.mkdtemp(prefix="diag_codex_harvest_")
         state = {}
-        P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
+        CODEX_P.codex_progress_event(CODEX_TOKEN_USAGE_UPDATED, state)
         trace = D.Diagnostics.start_run("manager_loop", "carbon-codex",
                                         base_dir=base)
         with trace.span("round[0]"):
             with trace.span("manager_turn"):
                 with trace.span("provider_call") as s:
-                    done = P.codex_progress_event(CODEX_TURN_COMPLETED, state)
+                    done = CODEX_P.codex_progress_event(CODEX_TURN_COMPLETED, state)
                     s.set_tokens(**P.usage_from_done_event(done))
         rollup = trace.close()
         self.assertEqual(rollup["tokens"]["input"], 24742)

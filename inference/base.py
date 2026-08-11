@@ -73,6 +73,15 @@ class InferenceProvider(ABC):
         an event with the ones before it.
         """
 
+    @abstractmethod
+    def log_lines(self, event: dict, state: dict) -> list[str]:
+        """The operator-facing trace for one raw event.
+
+        Rendered from the raw event rather than the progress event, because a
+        progress event blanks commands and their output at construction so they
+        can never reach a Carbon. The operator needs to see exactly what ran.
+        """
+
     def session_id_from_output(self, raw: str) -> str:
         """The session id a provider only reveals in its own output stream."""
         return self.read_output(raw).session_id

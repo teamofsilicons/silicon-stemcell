@@ -8,9 +8,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from diagnostics.iwantto import injection
+from inference.claude.progress import claude_log_lines, claude_progress_events
 from interface.progress import (
-    claude_log_lines,
-    claude_progress_events,
     progress_display_line,
     provider_authentication_failed,
 )

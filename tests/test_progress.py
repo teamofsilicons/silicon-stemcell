@@ -2,11 +2,17 @@ import unittest
 
 from interface.progress import (
     EXECUTING,
-    claude_progress_events,
-    codex_progress_event,
     progress_display_line,
     progress_event,
+)
+from interface.redaction import (
     redact_private_manager_output,
+)
+from inference.claude.progress import (
+    claude_progress_events,
+)
+from inference.codex.progress import (
+    codex_progress_event,
 )
 
 

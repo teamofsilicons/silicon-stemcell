@@ -12,7 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from inference.codex.app_server import CodexAppServer as _SharedCodexAppServer
-from interface.progress import codex_progress_event
+from inference.codex.progress import codex_progress_event
 
 
 CODEX_CMD = shutil.which("codex") or shutil.which("codex.cmd") or "codex"

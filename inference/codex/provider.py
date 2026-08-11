@@ -12,9 +12,8 @@ import time
 from contextlib import ExitStack, nullcontext
 
 from diagnostics.iwantto import injection
+from inference.codex.progress import codex_log_lines, codex_progress_event
 from interface.progress import (
-    codex_log_lines,
-    codex_progress_event,
     progress_display_line,
     provider_authentication_failed,
 )
@@ -234,6 +233,9 @@ class CodexProvider(InferenceProvider):
     def progress_events(self, event: dict, state: dict) -> list[dict]:
         progress = codex_progress_event(event, state)
         return [progress] if progress else []
+
+    def log_lines(self, event: dict, state: dict) -> list[str]:
+        return codex_log_lines(event, state)
 
 
 class _Turn:

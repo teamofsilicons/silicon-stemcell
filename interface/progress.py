@@ -1,17 +1,26 @@
 """Progress frames shown to a contact while work is in flight.
 
-Builds the small, schema-versioned events the interface renders (reading a
-file, executing, thinking, done) and -- just as importantly -- redacts them.
-Provider output can contain private manager tool calls, advertising memory, or
-raw commands, none of which may reach a contact, so every event goes through
-``sanitize_progress_event`` before it is sent.
+Builds the small, schema-versioned events the interface renders — reading a
+file, executing, thinking, done — and sanitizes every one of them on the way
+out. What counts as unsafe, and how it is removed, lives in
+:mod:`interface.redaction`.
+
+Nothing here knows which provider produced an event. Normalizing a raw stream
+into this vocabulary is each provider's own job, behind
+``InferenceProvider.progress_events``.
 """
-import json
-import os
-import posixpath
-import re
 import time
 
+from interface.redaction import (
+    _ADVERTISING_CONTENT_MARKER,
+    _COMMAND_MARKER,
+    _COMMAND_OUTPUT_MARKER,
+    _PRIVATE_MANAGER_MARKER,
+    compact,
+    contains_advertising_memory_reference,
+    contains_private_manager_tool,
+    redact_diagnostic_text,
+)
 
 PROGRESS_SCHEMA_VERSION = 1
 
@@ -24,127 +33,25 @@ DONE = "done"
 
 DISPLAY_KINDS = {READING_FILE, WRITING_FILE, EXECUTING, SEARCHING_WEB, THINKING, DONE}
 _FAILURE_STATUS_MARKERS = ("error", "failed", "timeout", "cancel")
-_PRIVATE_MANAGER_MARKER = "[private manager tool invocation omitted]"
-_ADVERTISING_CONTENT_MARKER = "[advertising memory content omitted]"
-_COMMAND_MARKER = "[command omitted]"
-_COMMAND_OUTPUT_MARKER = "[command output omitted]"
-_ADVERTISING_PATH_RE = re.compile(
-    r"(?i)(?:^|[^A-Za-z0-9._-])prompts[/\\]+advertising(?:[/\\]|$)"
+_PROVIDER_AUTH_FAILURE_MARKERS = (
+    "authentication_failed",
+    "authentication failed",
+    "failed to authenticate",
+    "not authenticated",
+    "not logged in",
+    "login required",
+    "please run /login",
+    "oauth session expired",
+    "oauth token expired",
+    "invalid api key",
+    "incorrect api key",
+    "401 unauthorized",
 )
-# Both spellings of the state directory: an upgraded instance still has the
-# legacy copy on disk, and a draft leaking through either path is the same leak.
-_DRAFT_ARCHIVE_PATH_RE = re.compile(
-    r"(?i)(?:^|[^A-Za-z0-9._-])"
-    r"(?:core[/\\]+interface_state|interface[/\\]+state)[/\\]+"
-    r"team_context_drafts(?:[/\\]|$)"
-)
-_PATH_TOKEN_RE = re.compile(
-    r"(?:[A-Za-z]:)?[/\\]?[A-Za-z0-9._*?\[\]-]+"
-    r"(?:[/\\]+[A-Za-z0-9._*?\[\]-]+)+"
-)
-_SENSITIVE_ERROR_PATTERNS = (
-    (re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)\S+"), r"\1[redacted]"),
-    (re.compile(r"(?i)\b(?:sk|sct|scs|ghp|github_pat)_[a-z0-9_-]{8,}\b"), "[redacted credential]"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted credential]"),
-    (
-        re.compile(
-            r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|secret|password)"
-            r"\s*[:=]\s*['\"]?[^\s,'\"]+"
-        ),
-        r"\1=[redacted]",
-    ),
-)
+
 
 
 def now_ms():
     return int(time.time() * 1000)
-
-
-def compact(text, limit=240):
-    text = " ".join(str(text or "").split())
-    if len(text) > limit:
-        return text[:limit - 1] + "..."
-    return text
-
-
-def contains_private_manager_tool(value):
-    text = str(value or "")
-    # JSON's solidus escape is semantically identical to "/". Normalize it
-    # before the malformed/plain-text fallback so a truncated invocation still
-    # fails closed instead of printing its content.
-    normalized_text = re.sub(r"\\u002[fF]", "/", text).replace("\\/", "/")
-    decoder = json.JSONDecoder()
-    index = 0
-    while index < len(normalized_text):
-        start = normalized_text.find("{", index)
-        if start < 0:
-            break
-        try:
-            parsed, consumed = decoder.raw_decode(normalized_text[start:])
-        except (json.JSONDecodeError, ValueError):
-            index = start + 1
-            continue
-        index = start + max(consumed, 1)
-        if not isinstance(parsed, dict) or not isinstance(parsed.get("tools"), list):
-            continue
-        for tool_spec in parsed["tools"]:
-            if not isinstance(tool_spec, dict):
-                continue
-            tool = str(tool_spec.get("tool") or "")
-            if (
-                tool == "advertising_memory/update"
-                or tool == "work_update"
-                or tool in {"trust/list", "trust/get", "trust/set"}
-            ):
-                return True
-    # Fail closed for incomplete/plain private invocations that still use the
-    # canonical spelling. Complete escaped JSON is handled by raw_decode above.
-    return (
-        "advertising_memory/update" in normalized_text
-        or bool(
-            re.search(
-                r"""["']tool["']\s*:\s*["']work_update["']""",
-                normalized_text,
-            )
-        )
-        or bool(
-            re.search(
-                r"""["']tool["']\s*:\s*["']trust/(?:list|get|set)["']""",
-                normalized_text,
-            )
-        )
-    )
-
-
-def contains_advertising_memory_reference(value):
-    text = re.sub(r"\\u002[fF]", "/", str(value or "")).replace("\\/", "/")
-    # Inspect a quote-stripped copy as well: shell commands can legally quote
-    # individual path components. Lexically collapse "." and ".." segments so
-    # aliases such as prompts/x/../advertising cannot evade content redaction.
-    candidates = [text, text.replace('"', "").replace("'", "")]
-    normalized_candidates: list[str] = []
-    for candidate in candidates:
-        slash_normalized = candidate.replace("\\", "/")
-        normalized_candidates.append(slash_normalized)
-        normalized_candidates.extend(
-            posixpath.normpath(match.group(0))
-            for match in _PATH_TOKEN_RE.finditer(slash_normalized)
-        )
-    text = "\n".join(normalized_candidates)
-    return bool(
-        _ADVERTISING_PATH_RE.search(text)
-        or _DRAFT_ARCHIVE_PATH_RE.search(text)
-    )
-
-
-def redact_private_manager_output(value, limit=240):
-    """Keep private manager-tool payloads out of progress and terminal logs."""
-    text = str(value or "")
-    if contains_private_manager_tool(text):
-        return _PRIVATE_MANAGER_MARKER
-    if contains_advertising_memory_reference(text):
-        return _ADVERTISING_CONTENT_MARKER
-    return compact(text, limit=limit)
 
 
 def sanitize_progress_event(event):
@@ -210,32 +117,6 @@ def progress_is_error(event):
     return any(marker in status for marker in _FAILURE_STATUS_MARKERS)
 
 
-def redact_diagnostic_text(value, limit=500):
-    """Bound diagnostic text and redact common credential formats."""
-    text = " ".join(str(value or "").split())
-    private_safe = redact_private_manager_output(text, limit=limit)
-    if private_safe in {_PRIVATE_MANAGER_MARKER, _ADVERTISING_CONTENT_MARKER}:
-        return private_safe
-    for pattern, replacement in _SENSITIVE_ERROR_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return compact(text, limit=limit)
-
-
-_PROVIDER_AUTH_FAILURE_MARKERS = (
-    "authentication_failed",
-    "authentication failed",
-    "failed to authenticate",
-    "not authenticated",
-    "not logged in",
-    "login required",
-    "please run /login",
-    "oauth session expired",
-    "oauth token expired",
-    "invalid api key",
-    "incorrect api key",
-    "401 unauthorized",
-)
-
 
 def provider_authentication_failed(*values):
     """Return true only for explicit provider authentication evidence."""
@@ -283,11 +164,6 @@ def progress_event(provider, kind, **fields):
     return sanitize_progress_event(event)
 
 
-def stringify_command(command):
-    if isinstance(command, list):
-        return " ".join(str(part) for part in command)
-    return str(command or "")
-
 
 def _first_present(mapping, keys):
     for key in keys:
@@ -309,526 +185,6 @@ def _as_int(value):
     except (TypeError, ValueError):
         return 0
 
-
-def _normalize_claude_usage(event):
-    """Read the Claude 'result' event usage block into a normalized token dict.
-
-    Claude stream-json terminal 'result' events carry a top-level 'usage' object
-    (input_tokens, output_tokens, cache_read_input_tokens,
-    cache_creation_input_tokens) plus a top-level 'num_turns'. Returns None when
-    no usage block is present, so progress_event() simply omits the key.
-    """
-    usage = event.get("usage")
-    if not isinstance(usage, dict):
-        return None
-    normalized = {
-        "input": _as_int(usage.get("input_tokens")),
-        "output": _as_int(usage.get("output_tokens")),
-        "cache_read": _as_int(usage.get("cache_read_input_tokens")),
-        "cache_creation": _as_int(usage.get("cache_creation_input_tokens")),
-    }
-    if event.get("num_turns") is not None:
-        normalized["num_turns"] = _as_int(event.get("num_turns"))
-    return normalized
-
-
-# Codex token schema, LOCKED against a real captured event (2026-06-26, memo Q1).
-# Tokens do NOT ride on turn/completed; they arrive on a separate
-# `thread/tokenUsage/updated` notification whose params.tokenUsage carries two
-# blocks:
-#     "total" -> cumulative across the whole thread
-#     "last"  -> this turn only   (the one we want; "use last, not total")
-# Real shape:
-#     {"totalTokens","inputTokens","cachedInputTokens","outputTokens",
-#      "reasoningOutputTokens"}
-#
-# Critical cross-provider difference: Codex reports cachedInputTokens as a
-# SUBSET of inputTokens (confirmed by totalTokens == inputTokens + outputTokens,
-# with cachedInputTokens NOT added on top). Claude is the opposite -- its
-# cache_read_input_tokens is a separate bucket excluded from input_tokens. The
-# diagnostics rollup defines total = input + output + cache_read + cache_creation
-# (see core/diagnostics _Tokens.total), so to keep the four buckets meaning the
-# same thing across providers we subtract the cached portion back out of input.
-# Then the four-way sum reconstructs Codex's totalTokens exactly:
-#     (inputTokens - cachedInputTokens) + outputTokens + cachedInputTokens + 0
-#       = inputTokens + outputTokens = totalTokens
-_CODEX_LAST_USAGE_STATE_KEY = "codex_last_token_usage"
-_CODEX_MODEL_STATE_KEY = "codex_model"
-_CODEX_MODEL_PROVIDER_STATE_KEY = "codex_model_provider"
-
-
-def _normalize_codex_usage(last):
-    """Normalize a Codex tokenUsage `last` block into the shared token dict.
-
-    `last` is params.tokenUsage.last from a thread/tokenUsage/updated event
-    (stashed in state until turn/completed fires). Returns None when absent or
-    empty, so progress_event() simply omits the usage key.
-    """
-    if not isinstance(last, dict):
-        return None
-    input_tokens = _as_int(last.get("inputTokens"))
-    cached = _as_int(last.get("cachedInputTokens"))
-    output_tokens = _as_int(last.get("outputTokens"))
-    normalized = {
-        # cachedInputTokens is a subset of inputTokens -> subtract it back out
-        "input": max(0, input_tokens - cached),
-        "output": output_tokens,
-        "cache_read": cached,
-        "cache_creation": 0,  # Codex has no cache-creation concept
-    }
-    if not any(normalized.values()):
-        return None
-    return normalized
-
-
-def _claude_tool_progress(block):
-    tool_name = block.get("name", "")
-    tool_input = block.get("input") or {}
-    item_id = block.get("id")
-
-    if tool_name in {"Read", "Glob", "Grep", "LS", "NotebookRead"}:
-        path = _first_present(tool_input, ["file_path", "path", "notebook_path"]) or tool_input.get("pattern")
-        return progress_event("claude", READING_FILE, status="started", item_id=item_id, tool_name=tool_name, path=path)
-
-    if tool_name in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
-        path = _first_present(tool_input, ["file_path", "path", "notebook_path"])
-        return progress_event("claude", WRITING_FILE, status="started", item_id=item_id, tool_name=tool_name, path=path)
-
-    if tool_name in {"WebSearch", "WebFetch"}:
-        query = _first_present(tool_input, ["query", "url"])
-        return progress_event("claude", SEARCHING_WEB, status="started", item_id=item_id, tool_name=tool_name, query=query)
-
-    if tool_name == "Bash":
-        command = stringify_command(tool_input.get("command"))
-        return progress_event(
-            "claude",
-            EXECUTING,
-            status="started",
-            item_id=item_id,
-            tool_name=tool_name,
-            command=command,
-            description=tool_input.get("description"),
-        )
-
-    return progress_event("claude", EXECUTING, status="started", item_id=item_id, tool_name=tool_name)
-
-
-def claude_progress_events(event, state=None):
-    state = state if state is not None else {}
-    etype = event.get("type", "")
-    events = []
-
-    if etype == "system" and event.get("subtype") == "init":
-        if event.get("model"):
-            state["claude_model"] = str(event["model"])
-
-    elif etype == "assistant":
-        for block in event.get("message", {}).get("content", []):
-            btype = block.get("type", "")
-            if btype == "thinking":
-                events.append(progress_event("claude", THINKING, status="started"))
-            elif btype == "tool_use":
-                progress = _claude_tool_progress(block)
-                item_id = progress.get("item_id")
-                if item_id:
-                    state.setdefault("items", {})[item_id] = progress
-                events.append(progress)
-
-    elif etype == "user":
-        for block in event.get("message", {}).get("content", []):
-            if block.get("type") != "tool_result":
-                continue
-            item_id = block.get("tool_use_id")
-            started = state.get("items", {}).get(item_id, {})
-            kind = started.get("kind", EXECUTING)
-            content = block.get("content", "")
-            events.append(progress_event(
-                "claude",
-                kind,
-                status="completed",
-                item_id=item_id,
-                tool_name=started.get("tool_name"),
-                path=started.get("path"),
-                query=started.get("query"),
-                command=started.get("command"),
-                is_error=block.get("is_error", False),
-                output=content,
-                preview=compact(content),
-            ))
-
-    elif etype == "result":
-        result = event.get("result", "")
-        events.append(progress_event(
-            "claude",
-            DONE,
-            status=event.get("subtype") or ("error" if event.get("is_error") else "success"),
-            is_error=event.get("is_error", False),
-            duration_ms=event.get("duration_ms"),
-            cost_usd=event.get("total_cost_usd") or event.get("cost_usd"),
-            usage=_normalize_claude_usage(event),
-            preview=redact_private_manager_output(result),
-            model=state.get("claude_model"),
-            model_provider="anthropic",
-        ))
-
-    return events
-
-
-def codex_item_label(item):
-    item_type = item.get("type", "item")
-    if item_type == "commandExecution":
-        return stringify_command(item.get("command") or item.get("cmd") or item.get("argv"))
-    if item_type == "fileChange":
-        changes = item.get("changes") or []
-        paths = [str(change.get("path")) for change in changes if change.get("path")]
-        return ", ".join(paths) if paths else item.get("path") or item.get("filePath") or "file change"
-    if item_type == "mcpToolCall":
-        return f"{item.get('server') or item.get('serverName') or '?'}.{item.get('tool') or item.get('name') or '?'}"
-    if item_type == "dynamicToolCall":
-        return str(item.get("tool") or "dynamic tool")
-    if item_type == "webSearch":
-        return str(item.get("query") or item.get("action") or "web search")
-    return item_type
-
-
-def _codex_kind_for_item(item):
-    item_type = item.get("type", "item")
-    label = codex_item_label(item)
-    label_lower = label.lower()
-
-    if item_type == "commandExecution":
-        return EXECUTING
-    if item_type == "fileChange":
-        return WRITING_FILE
-    if item_type == "webSearch":
-        return SEARCHING_WEB
-    if item_type in {"reasoning", "plan"}:
-        return THINKING
-    if item_type in {"mcpToolCall", "dynamicToolCall", "collabToolCall"}:
-        if any(word in label_lower for word in ("read", "grep", "glob", "list", "search_file")):
-            return READING_FILE
-        if any(word in label_lower for word in ("write", "edit", "patch", "update", "apply")):
-            return WRITING_FILE
-        if "web" in label_lower or "search" in label_lower:
-            return SEARCHING_WEB
-        return EXECUTING
-    return ""
-
-
-def codex_progress_event(msg, state=None):
-    state = state if state is not None else {}
-    if msg.get("type") == "silicon.codex_context":
-        if msg.get("model"):
-            state[_CODEX_MODEL_STATE_KEY] = str(msg["model"])
-        if msg.get("model_provider"):
-            state[_CODEX_MODEL_PROVIDER_STATE_KEY] = str(msg["model_provider"])
-        return None
-    method = msg.get("method", "")
-    params = msg.get("params") or {}
-
-    if method == "thread/tokenUsage/updated":
-        # Stash this turn's `last` usage block so it's available when
-        # turn/completed fires. Not itself a display event.
-        usage_block = params.get("tokenUsage") or {}
-        last = usage_block.get("last")
-        if isinstance(last, dict) and last:
-            state[_CODEX_LAST_USAGE_STATE_KEY] = last
-        return None
-
-    if method == "turn/completed":
-        turn = params.get("turn") or {}
-        return progress_event(
-            "codex",
-            DONE,
-            status=turn.get("status"),
-            duration_ms=turn.get("durationMs"),
-            usage=_normalize_codex_usage(state.get(_CODEX_LAST_USAGE_STATE_KEY)),
-            model=state.get(_CODEX_MODEL_STATE_KEY),
-            model_provider=state.get(_CODEX_MODEL_PROVIDER_STATE_KEY),
-            error=(turn.get("error") or {}).get("message") if isinstance(turn.get("error"), dict) else None,
-        )
-
-    if method == "item/started":
-        item = params.get("item") or {}
-        item_id = item.get("id") or params.get("itemId")
-        item_type = item.get("type", "item")
-        kind = _codex_kind_for_item(item)
-        label = codex_item_label(item)
-        if item_id and kind:
-            state.setdefault("items", {})[item_id] = {
-                "kind": kind,
-                "label": label,
-                "item_type": item_type,
-                "advertising_memory": (
-                    contains_advertising_memory_reference(label)
-                    or contains_advertising_memory_reference(
-                        json.dumps(item, ensure_ascii=False)
-                    )
-                ),
-            }
-        if kind == READING_FILE:
-            return progress_event("codex", kind, status="started", item_id=item_id, path=label)
-        if kind == WRITING_FILE:
-            return progress_event("codex", kind, status="started", item_id=item_id, path=label)
-        if kind == SEARCHING_WEB:
-            return progress_event("codex", kind, status="started", item_id=item_id, query=label)
-        if kind == EXECUTING:
-            return progress_event("codex", kind, status="started", item_id=item_id, command=label)
-        if kind == THINKING:
-            return progress_event("codex", kind, status="started", item_id=item_id)
-        return None
-
-    if method == "item/completed":
-        item = params.get("item") or {}
-        item_id = item.get("id") or params.get("itemId")
-        remembered = state.get("items", {}).get(item_id, {})
-        kind = remembered.get("kind") or _codex_kind_for_item(item)
-        label = codex_item_label(item) if item else remembered.get("label", "")
-        if kind not in DISPLAY_KINDS or kind == DONE:
-            return None
-        output = item.get("aggregatedOutput", "")
-        advertising_memory = bool(
-            remembered.get("advertising_memory")
-            or contains_advertising_memory_reference(
-                json.dumps(item, ensure_ascii=False)
-            )
-        )
-        if advertising_memory:
-            output = _ADVERTISING_CONTENT_MARKER
-        return progress_event(
-            "codex",
-            kind,
-            status="completed",
-            item_id=item_id,
-            path=label if kind in {READING_FILE, WRITING_FILE} else None,
-            query=label if kind == SEARCHING_WEB else None,
-            command=label if kind == EXECUTING else None,
-            exit_code=item.get("exitCode"),
-            output=output,
-            preview=compact(output),
-        )
-
-    if method in {"item/commandExecution/outputDelta", "item/fileChange/outputDelta"}:
-        item_id = params.get("itemId")
-        remembered = state.get("items", {}).get(item_id, {})
-        kind = remembered.get("kind", EXECUTING)
-        if kind not in DISPLAY_KINDS or kind == DONE:
-            kind = EXECUTING
-        delta = params.get("delta", "")
-        if remembered.get("advertising_memory"):
-            delta = _ADVERTISING_CONTENT_MARKER
-        return progress_event("codex", kind, status="output", item_id=item_id, delta=delta, preview=compact(delta))
-
-    if method == "item/reasoning/summaryTextDelta":
-        delta = params.get("delta", "")
-        return progress_event("codex", THINKING, status="output", item_id=params.get("itemId"), summary_delta=delta, preview=compact(delta))
-
-    if method == "item/fileChange/patchUpdated":
-        return progress_event("codex", WRITING_FILE, status="updated", item_id=params.get("itemId"), path=params.get("path") or params.get("filePath"))
-
-    if method == "error":
-        err = params.get("error") or params
-        return progress_event("codex", DONE, status="error", error=err.get("message") if isinstance(err, dict) else str(err))
-
-    return None
-
-
-# How much command output to show in the process log. Set
-# SILICON_LOG_OUTPUT_CHARS=0 for no limit, or a small number to quieten it.
-def _log_output_limit():
-    try:
-        return max(0, int(os.environ.get("SILICON_LOG_OUTPUT_CHARS", "4000")))
-    except (TypeError, ValueError):
-        return 4000
-
-
-def redact_secrets(text):
-    """Strip credential shapes, keeping line structure intact.
-
-    ``redact_diagnostic_text`` collapses whitespace and blanks anything that
-    looks like private manager output — right for a Carbon-visible surface,
-    wrong for a process log you are reading to debug a command. This does the
-    credential scrubbing only.
-    """
-    value = str(text or "")
-    for pattern, replacement in _SENSITIVE_ERROR_PATTERNS:
-        value = pattern.sub(replacement, value)
-    return value
-
-
-def _output_text(value):
-    """Flatten a tool result into text. Claude sends content blocks; Codex sends a string."""
-    if isinstance(value, list):
-        parts = []
-        for block in value:
-            if isinstance(block, dict):
-                parts.append(str(block.get("text") or block.get("content") or ""))
-            else:
-                parts.append(str(block))
-        return "\n".join(part for part in parts if part)
-    return str(value or "")
-
-
-def _output_block(value, limit):
-    """Render tool output as indented lines, or [] when there is none."""
-    text = _log_safe(_output_text(value)).rstrip()
-    if not text:
-        return []
-    if limit and len(text) > limit:
-        dropped = len(text) - limit
-        text = text[:limit] + f"\n… (+{dropped} more characters)"
-    return [f"    │ {line}" for line in text.splitlines()]
-
-
-# Correlates a tool call to its result across two stream events, so the result
-# can be printed under the command that produced it.
-_LOG_CALLS_KEY = "_log_tool_calls"
-
-
-def _log_safe(text):
-    """Credential-scrub for the process log, keeping the two hard boundaries.
-
-    A terminal log is for the operator, so commands and output belong in it.
-    Peer advertising memory and private manager tool payloads do not — those
-    stay redacted everywhere, including here.
-    """
-    value = str(text or "")
-    if contains_private_manager_tool(value):
-        return _PRIVATE_MANAGER_MARKER
-    if contains_advertising_memory_reference(value):
-        return _ADVERTISING_CONTENT_MARKER
-    return redact_secrets(value)
-
-
-def _reads_private_content(*values):
-    """True when a tool call is reaching for advertising memory.
-
-    The *result* of `cat prompts/advertising/peer.md` is the file's contents,
-    which contain no path to match on — so the call has to be recognised when it
-    starts and its output suppressed by id, not by inspecting the output.
-    """
-    return any(
-        contains_advertising_memory_reference(str(value or ""))
-        or contains_private_manager_tool(str(value or ""))
-        for value in values
-    )
-
-
-def _tool_call_summary(tool_name, tool_input):
-    """One line describing what a tool call is actually doing."""
-    tool_input = tool_input if isinstance(tool_input, dict) else {}
-    if tool_name == "Bash":
-        return stringify_command(tool_input.get("command")), tool_input.get("description")
-    for key in ("file_path", "path", "notebook_path", "pattern", "query", "url"):
-        if tool_input.get(key):
-            return str(tool_input[key]), None
-    if not tool_input:
-        return "", None
-    try:
-        return compact(json.dumps(tool_input, ensure_ascii=False), 400), None
-    except (TypeError, ValueError):
-        return compact(str(tool_input), 400), None
-
-
-def claude_log_lines(event, state=None):
-    """The operator's view of one raw Claude stream event.
-
-    :func:`progress_event` sanitizes commands and output at construction — they
-    are replaced with markers before they can reach a Carbon or telemetry, which
-    is why the progress surface only ever says "executing command". The raw
-    stream event never leaves this process, so it is the only place a log with
-    real commands and real output can come from.
-
-    Returns a list of lines; output is indented so it stays readable.
-    """
-    state = state if state is not None else {}
-    calls = state.setdefault(_LOG_CALLS_KEY, {})
-    limit = _log_output_limit()
-    etype = event.get("type", "")
-    lines = []
-
-    if etype == "assistant":
-        for block in event.get("message", {}).get("content", []):
-            if block.get("type") != "tool_use":
-                continue
-            name = str(block.get("name") or "?")
-            raw_summary, description = _tool_call_summary(name, block.get("input"))
-            private = _reads_private_content(
-                raw_summary, json.dumps(block.get("input"), default=str)
-            )
-            summary = _log_safe(raw_summary)
-            calls[block.get("id")] = {
-                "name": name,
-                "summary": summary,
-                "private": private,
-            }
-            lines.append(f"{name}: {summary}" if summary else f"{name}")
-            if description:
-                lines.append(f"    ({_log_safe(description)})")
-        return lines
-
-    if etype == "user":
-        for block in event.get("message", {}).get("content", []):
-            if block.get("type") != "tool_result":
-                continue
-            call = calls.pop(block.get("tool_use_id"), {})
-            name = call.get("name") or "tool"
-            summary = call.get("summary") or ""
-            failed = bool(block.get("is_error"))
-            head = f"{name} {'FAILED' if failed else 'done'}"
-            if summary:
-                head += f": {summary}"
-            lines.append(head)
-            if call.get("private"):
-                lines.append(f"    │ {_ADVERTISING_CONTENT_MARKER}")
-                continue
-            lines.extend(_output_block(block.get("content"), limit))
-        return lines
-
-    return lines
-
-
-def codex_log_lines(msg, state=None):
-    """The operator's view of one raw Codex app-server message."""
-    state = state if state is not None else {}
-    calls = state.setdefault(_LOG_CALLS_KEY, {})
-    limit = _log_output_limit()
-    method = msg.get("method", "")
-    params = msg.get("params") or {}
-
-    if method == "item/started":
-        item = params.get("item") or {}
-        item_id = item.get("id") or params.get("itemId")
-        raw_label = codex_item_label(item)
-        private = _reads_private_content(
-            raw_label, json.dumps(item, ensure_ascii=False, default=str)
-        )
-        label = _log_safe(raw_label)
-        name = str(item.get("type") or "item")
-        calls[item_id] = {"name": name, "summary": label, "private": private}
-        return [f"{name}: {label}" if label else name]
-
-    if method == "item/completed":
-        item = params.get("item") or {}
-        item_id = item.get("id") or params.get("itemId")
-        call = calls.pop(item_id, {})
-        name = call.get("name") or str(item.get("type") or "item")
-        summary = call.get("summary") or _log_safe(codex_item_label(item))
-        exit_code = item.get("exitCode")
-        failed = exit_code not in (None, 0)
-        head = f"{name} {'FAILED' if failed else 'done'}"
-        if exit_code is not None:
-            head += f" exit={exit_code}"
-        if summary:
-            head += f": {summary}"
-        private = call.get("private") or _reads_private_content(
-            json.dumps(item, ensure_ascii=False, default=str)
-        )
-        if private:
-            return [head, f"    │ {_ADVERTISING_CONTENT_MARKER}"]
-        return [head, *_output_block(item.get("aggregatedOutput"), limit)]
-
-    return []
 
 
 def progress_display_line(event):
@@ -893,10 +249,10 @@ def usage_from_done_event(event):
     """Unified token/cost view for the diagnostics tracer (memo Section 4.4).
 
     Maps a normalized DONE event onto the keyword arguments accepted by the
-    Diagnostics span.set_tokens(...) API, so manager.py can record a provider
+    Diagnostics span.set_tokens(...) API, so a caller can record a provider
     call in one line:
 
-        for ev in claude_progress_events(raw, state):
+        for ev in provider.progress_events(raw, state):
             if ev.get("kind") == DONE:
                 span.set_tokens(**usage_from_done_event(ev))
 

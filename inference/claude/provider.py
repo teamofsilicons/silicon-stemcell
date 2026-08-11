@@ -5,7 +5,8 @@ import platform
 import shutil
 import subprocess
 
-from interface.progress import claude_progress_events, provider_authentication_failed
+from inference.claude.progress import claude_log_lines, claude_progress_events
+from interface.progress import provider_authentication_failed
 from helpers.paths import CODE_ROOT
 from inference.base import InferenceProvider
 from inference.claude import output as claude_output
@@ -232,3 +233,6 @@ class ClaudeProvider(InferenceProvider):
 
     def progress_events(self, event: dict, state: dict) -> list[dict]:
         return claude_progress_events(event, state)
+
+    def log_lines(self, event: dict, state: dict) -> list[str]:
+        return claude_log_lines(event, state)

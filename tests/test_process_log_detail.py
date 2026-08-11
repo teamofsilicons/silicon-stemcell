@@ -15,10 +15,14 @@ from unittest import mock
 
 from interface.progress import (
     EXECUTING,
-    claude_log_lines,
-    codex_log_lines,
     progress_display_line,
     progress_event,
+)
+from inference.claude.progress import (
+    claude_log_lines,
+)
+from inference.codex.progress import (
+    codex_log_lines,
 )
 
 
