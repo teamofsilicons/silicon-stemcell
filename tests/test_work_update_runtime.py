@@ -7,8 +7,8 @@ from copy import deepcopy
 from pathlib import Path
 from unittest import mock
 
-import core.interface as interface
-import core.work_updates as work_updates
+import interface.adapter as interface
+import interface.work_updates as work_updates
 from helpers.process import flush_best_effort
 
 
@@ -489,7 +489,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 return_value=rejected_client,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.get_active_run",
+                "diagnostics.store.Diagnostics.get_active_run",
                 return_value=trace,
             ),
         ):
@@ -2559,9 +2559,9 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             },
         }
         with (
-            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
-            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
-            mock.patch("core.activity_log.incoming"),
+            mock.patch("diagnostics.store.Diagnostics.get_active_run", return_value=None),
+            mock.patch("diagnostics.store.Diagnostics.start_run", side_effect=RuntimeError),
+            mock.patch("diagnostics.activity.incoming"),
         ):
             self.assertIsNone(interface.process_incoming_event(blocker_event, client))
             contact_id, context = interface.process_incoming_event(reply_event, client)

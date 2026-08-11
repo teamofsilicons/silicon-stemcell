@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-import core.backup as backup
-import core.cron as cron
-from core import glass
+import interface.backup as backup
+import interface.cron as cron
+from interface import config as glass
 
 
 class FakeCronClient:

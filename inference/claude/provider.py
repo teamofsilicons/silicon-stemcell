@@ -5,7 +5,7 @@ import platform
 import shutil
 import subprocess
 
-from core.progress import claude_progress_events, provider_authentication_failed
+from interface.progress import claude_progress_events, provider_authentication_failed
 from helpers.paths import CODE_ROOT
 from inference.base import InferenceProvider
 from inference.claude import output as claude_output

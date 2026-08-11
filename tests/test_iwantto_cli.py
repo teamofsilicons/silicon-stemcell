@@ -12,14 +12,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-from core.iwantto import actor as actor_module
-from core.iwantto import journal as journal_module
-from core.iwantto import mailbox as mailbox_module
-from core.iwantto import message_log as message_log_module
-from core.iwantto import routing as routing_module
-from core.iwantto.actor import MANAGER, WORKER, Actor
-from core.iwantto.cli import CommandError, build_parser, main as cli_main
-from core.iwantto.commands import messaging
+from diagnostics.iwantto import actor as actor_module
+from diagnostics.iwantto import journal as journal_module
+from diagnostics.iwantto import mailbox as mailbox_module
+from diagnostics.iwantto import message_log as message_log_module
+from diagnostics.iwantto import routing as routing_module
+from diagnostics.iwantto.actor import MANAGER, WORKER, Actor
+from diagnostics.iwantto.cli import CommandError, build_parser, main as cli_main
+from diagnostics.iwantto.commands import messaging
 
 
 def _args(argv):
@@ -132,8 +132,8 @@ class SendRoutingTest(_IsolatedState):
     def test_a_manager_reaches_its_own_contact_directly(self):
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=self._contacts()),
-            mock.patch("core.interface.reply_contact", return_value="Message sent") as reply,
-            mock.patch("core.messages.send_manager_message") as via_manager,
+            mock.patch("interface.adapter.reply_contact", return_value="Message sent") as reply,
+            mock.patch("interface.messages.send_manager_message") as via_manager,
         ):
             result = _run(["send", "carbon-a", "--text", "hey"], self.manager)
 
@@ -146,10 +146,10 @@ class SendRoutingTest(_IsolatedState):
     def test_anyone_else_is_reached_through_their_manager(self):
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=self._contacts()),
-            mock.patch("core.interface.ensure_contact_for_target", return_value={}),
-            mock.patch("core.interface.reply_contact") as reply,
+            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.adapter.reply_contact") as reply,
             mock.patch(
-                "core.messages.send_manager_message", return_value="Done. queued"
+                "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
         ):
             result = _run(["send", "carbon-b", "--text", "can you help?"], self.manager)
@@ -171,10 +171,10 @@ class SendRoutingTest(_IsolatedState):
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=contacts),
             mock.patch.object(routing_module, "_trust_directory", return_value=directory),
-            mock.patch("core.interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
             mock.patch.object(messaging, "_own_label", return_value="my-silicon"),
             mock.patch(
-                "core.messages.send_manager_message", return_value="Done. queued"
+                "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
         ):
             _run(["send", "carbon-new", "--text", "hello"], self.manager)
@@ -230,13 +230,13 @@ class SendRoutingTest(_IsolatedState):
                         routing_module, "_local_contacts", return_value=contacts
                     ),
                     mock.patch(
-                        "core.interface.ensure_contact_for_target", return_value={}
+                        "interface.adapter.ensure_contact_for_target", return_value={}
                     ),
                     mock.patch(
-                        "core.interface.reply_contact", return_value="Message sent"
+                        "interface.adapter.reply_contact", return_value="Message sent"
                     ) as direct,
                     mock.patch(
-                        "core.messages.send_manager_message",
+                        "interface.messages.send_manager_message",
                         return_value="Done. queued",
                     ) as via_manager,
                 ):
@@ -252,9 +252,9 @@ class SendRoutingTest(_IsolatedState):
         }
         with (
             mock.patch.object(routing_module, "_local_contacts", return_value=contacts),
-            mock.patch("core.interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
             mock.patch(
-                "core.messages.send_manager_message", return_value="Done. queued"
+                "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
         ):
             _run(["send", "carbon-b", "--text", "a question"], self.worker)
@@ -266,7 +266,7 @@ class SendRoutingTest(_IsolatedState):
     def test_a_worker_reaches_its_manager_by_name(self):
         with (
             mock.patch(
-                "core.messages.send_manager_message", return_value="Done. queued"
+                "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
         ):
             result = _run(
@@ -404,11 +404,11 @@ class SeeAndBundleTest(_IsolatedState):
                 routing_module, "_local_contacts", return_value=self._contacts
             ),
             mock.patch(
-                "core.interface.take_back_event", return_value="Taken back"
+                "interface.adapter.take_back_event", return_value="Taken back"
             ) as take_back,
-            mock.patch("core.interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.adapter.ensure_contact_for_target", return_value={}),
             mock.patch(
-                "core.messages.send_manager_message", return_value="Done. queued"
+                "interface.messages.send_manager_message", return_value="Done. queued"
             ) as via_manager,
         ):
             result = _run(
@@ -452,7 +452,7 @@ class DispatcherTest(_IsolatedState):
         buffer = io.StringIO()
         with (
             mock.patch(
-                "core.iwantto.cli.resolve_actor", return_value=self.manager
+                "diagnostics.iwantto.cli.resolve_actor", return_value=self.manager
             ),
             contextlib.redirect_stderr(buffer),
         ):
@@ -463,7 +463,7 @@ class DispatcherTest(_IsolatedState):
 
     def test_a_successful_command_is_recorded_against_its_run(self):
         with mock.patch(
-            "core.iwantto.cli.resolve_actor", return_value=self.manager
+            "diagnostics.iwantto.cli.resolve_actor", return_value=self.manager
         ):
             code = cli_main(["do-nothing", "--reason", "nothing needs doing"])
 
@@ -484,10 +484,10 @@ class DispatcherTest(_IsolatedState):
         buffer = io.StringIO()
         with (
             mock.patch(
-                "core.iwantto.cli.resolve_actor", return_value=self.worker
+                "diagnostics.iwantto.cli.resolve_actor", return_value=self.worker
             ),
             mock.patch(
-                "core.messages.send_manager_message", return_value="Done. queued"
+                "interface.messages.send_manager_message", return_value="Done. queued"
             ),
             contextlib.redirect_stdout(buffer),
         ):
@@ -500,7 +500,7 @@ class DispatcherTest(_IsolatedState):
 
     def test_every_invocation_lands_in_the_diagnosis_store(self):
         with mock.patch(
-            "core.iwantto.cli.resolve_actor", return_value=self.manager
+            "diagnostics.iwantto.cli.resolve_actor", return_value=self.manager
         ):
             cli_main(["do-nothing", "--reason", "quiet"])
 
@@ -523,7 +523,7 @@ class AdviceGuardTest(_IsolatedState):
         self.assertIn("You are the advisor", str(advisor_asks.exception))
 
     def test_advice_is_synchronous_and_returned_to_the_caller(self):
-        with mock.patch("core.advisor.ask", return_value="Delegate it.") as ask:
+        with mock.patch("manager.advisor.ask", return_value="Delegate it.") as ask:
             result = _run(["get-advice", "should I do this myself?"], self.manager)
 
         ask.assert_called_once_with("carbon-a", "should I do this myself?")
@@ -548,7 +548,7 @@ class DelegateTest(_IsolatedState):
             mock.patch(
                 "worker.handler.start_worker", return_value="Done. started"
             ) as start,
-            mock.patch("core.cron.checkback.add_checkback") as add_checkback,
+            mock.patch("interface.cron.checkback.add_checkback") as add_checkback,
         ):
             result = _run(
                 [

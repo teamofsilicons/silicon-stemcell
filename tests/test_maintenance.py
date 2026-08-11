@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core.maintenance import (
+from manager.runtime.maintenance import (
     IngressRootConflictError,
     LEASE_TTL_SECONDS,
     MaintenanceCoordinator,
@@ -58,7 +58,7 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
     def test_status_read_does_not_rewrite_unchanged_state(self):
         self.coordinator.request_drain(deadline_seconds=60)
 
-        with mock.patch("core.maintenance.write_json") as write:
+        with mock.patch("manager.runtime.maintenance.write_json") as write:
             status = self.coordinator.public_status()
 
         self.assertEqual(status["phase"], "draining")
@@ -460,7 +460,7 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
         env = os.environ.copy()
         env["SILICON_DATA_ROOT"] = str(data_root)
         script = (
-            "from core.maintenance import COORDINATOR;"
+            "from manager.runtime.maintenance import COORDINATOR;"
             "COORDINATOR.request_drain(maintenance_id='generation-test');"
             "print(COORDINATOR.state_file)"
         )
@@ -603,20 +603,20 @@ class DispatcherMaintenanceTests(unittest.TestCase):
 
 class RuntimeGatingTests(unittest.TestCase):
     def test_cron_sweep_does_not_claim_during_maintenance(self):
-        from core.cron import check_crons
+        from interface.cron import check_crons
 
         with mock.patch(
-            "core.maintenance.accepting_new_roots",
+            "manager.runtime.maintenance.accepting_new_roots",
             return_value=False,
-        ), mock.patch("core.cron._check_checkbacks") as checkbacks, mock.patch(
-            "core.cron._check_glass_crons"
+        ), mock.patch("interface.cron._check_checkbacks") as checkbacks, mock.patch(
+            "interface.cron._check_glass_crons"
         ) as crons:
             self.assertEqual(check_crons(), {})
             checkbacks.assert_not_called()
             crons.assert_not_called()
 
     def test_new_worker_is_rejected_without_prefence_lineage(self):
-        import core.maintenance
+        import manager.runtime.maintenance
         import worker.handler
 
         with tempfile.TemporaryDirectory() as temp:
@@ -626,7 +626,7 @@ class RuntimeGatingTests(unittest.TestCase):
             )
             coordinator.request_drain()
             with mock.patch.object(
-                core.maintenance,
+                manager.runtime.maintenance,
                 "COORDINATOR",
                 coordinator,
             ):
@@ -639,7 +639,7 @@ class RuntimeGatingTests(unittest.TestCase):
             self.assertIn("preparing an update", result)
 
     def test_legacy_active_worker_is_adopted_before_quiescence(self):
-        import core.maintenance
+        import manager.runtime.maintenance
         import worker.handler
 
         with tempfile.TemporaryDirectory() as temp:
@@ -667,7 +667,7 @@ class RuntimeGatingTests(unittest.TestCase):
             coordinator.request_drain()
 
             with mock.patch.object(
-                core.maintenance,
+                manager.runtime.maintenance,
                 "COORDINATOR",
                 coordinator,
             ), mock.patch.object(
@@ -689,8 +689,8 @@ class RuntimeGatingTests(unittest.TestCase):
             )
 
     def test_manager_handoff_keeps_prefence_lineage_during_drain(self):
-        import core.maintenance
-        from core import messages
+        import manager.runtime.maintenance
+        from interface import messages
 
         with tempfile.TemporaryDirectory() as temp:
             coordinator = MaintenanceCoordinator(
@@ -704,7 +704,7 @@ class RuntimeGatingTests(unittest.TestCase):
             drain = coordinator.request_drain()
             queue_file = Path(temp) / "manager_queue.json"
             with mock.patch.object(
-                core.maintenance,
+                manager.runtime.maintenance,
                 "COORDINATOR",
                 coordinator,
             ), mock.patch.object(

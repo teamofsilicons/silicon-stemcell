@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import core.interface as interface
+import interface.adapter as interface
 
 
 class InterfaceStateTest(unittest.TestCase):
@@ -389,9 +389,9 @@ class InterfaceStateTest(unittest.TestCase):
         with (
             mock.patch.object(interface, "_download_url", return_value=local_path),
             mock.patch.object(interface, "submit_best_effort", side_effect=run_immediately),
-            mock.patch("core.activity_log.incoming") as log_incoming,
-            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
-            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
+            mock.patch("diagnostics.activity.incoming") as log_incoming,
+            mock.patch("diagnostics.store.Diagnostics.get_active_run", return_value=None),
+            mock.patch("diagnostics.store.Diagnostics.start_run", side_effect=RuntimeError),
         ):
             processed = interface.process_incoming_event(
                 {
@@ -466,8 +466,8 @@ class InterfaceStateTest(unittest.TestCase):
         with (
             mock.patch.object(interface, "_download_url", side_effect=downloaded),
             mock.patch.object(interface, "submit_best_effort", side_effect=run_immediately),
-            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
-            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
+            mock.patch("diagnostics.store.Diagnostics.get_active_run", return_value=None),
+            mock.patch("diagnostics.store.Diagnostics.start_run", side_effect=RuntimeError),
         ):
             processed = interface.process_incoming_event(event, client=client)
 
@@ -497,8 +497,8 @@ class InterfaceStateTest(unittest.TestCase):
                 "_download_url",
                 return_value=str(Path(self.tmp.name) / "media" / "evt-album_evidence.pdf"),
             ),
-            mock.patch("core.diagnostics.Diagnostics.get_active_run", return_value=None),
-            mock.patch("core.diagnostics.Diagnostics.start_run", side_effect=RuntimeError),
+            mock.patch("diagnostics.store.Diagnostics.get_active_run", return_value=None),
+            mock.patch("diagnostics.store.Diagnostics.start_run", side_effect=RuntimeError),
         ):
             processed = interface.process_incoming_event(
                 {
@@ -610,7 +610,7 @@ class InterfaceStateTest(unittest.TestCase):
             mock.patch.object(interface, "InterfaceClient", return_value=fake),
             mock.patch.object(interface, "start_listener"),
             mock.patch(
-                "core.work_updates.replay_pending_call_updates",
+                "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
             ) as replay_calls,
         ):
@@ -693,7 +693,7 @@ class InterfaceStateTest(unittest.TestCase):
                 bookkeeping,
             ),
             mock.patch(
-                "core.work_updates.replay_pending_call_updates",
+                "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
             ),
         ):
@@ -712,7 +712,7 @@ class InterfaceStateTest(unittest.TestCase):
         )
 
     def test_lost_root_acceptance_response_replays_without_duplicate_turn(self):
-        from core.maintenance import MaintenanceCoordinator
+        from manager.runtime.maintenance import MaintenanceCoordinator
 
         interface.upsert_contact(
             "carbon",
@@ -757,18 +757,18 @@ class InterfaceStateTest(unittest.TestCase):
             ),
             mock.patch.object(interface, "submit_best_effort", return_value=True),
             mock.patch(
-                "core.work_updates.replay_pending_call_updates",
+                "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.get_active_run",
+                "diagnostics.store.Diagnostics.get_active_run",
                 return_value=None,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.start_run",
+                "diagnostics.store.Diagnostics.start_run",
                 side_effect=RuntimeError,
             ),
-            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
             mock.patch.object(
                 coordinator,
                 "enqueue_ingress_root",
@@ -793,18 +793,18 @@ class InterfaceStateTest(unittest.TestCase):
             ),
             mock.patch.object(interface, "submit_best_effort", return_value=True),
             mock.patch(
-                "core.work_updates.replay_pending_call_updates",
+                "interface.work_updates.replay_pending_call_updates",
                 return_value=0,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.get_active_run",
+                "diagnostics.store.Diagnostics.get_active_run",
                 return_value=None,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.start_run",
+                "diagnostics.store.Diagnostics.start_run",
                 side_effect=RuntimeError,
             ),
-            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
         ):
             self.assertEqual(interface.get_unread_events_durable(), {})
 
@@ -1098,15 +1098,15 @@ class InterfaceStateTest(unittest.TestCase):
         }
         with (
             mock.patch(
-                "core.work_updates.record_contact_call_message",
+                "interface.work_updates.record_contact_call_message",
                 return_value=False,
             ),
             mock.patch(
-                "core.work_updates.prepare_outbound_call",
+                "interface.work_updates.prepare_outbound_call",
                 return_value=reference,
             ) as prepare,
             mock.patch(
-                "core.work_updates.enqueue_outbound_call",
+                "interface.work_updates.enqueue_outbound_call",
                 return_value=True,
             ) as enqueue,
             mock.patch.object(
@@ -1144,11 +1144,11 @@ class InterfaceStateTest(unittest.TestCase):
     def test_accepted_silicon_text_appends_without_creating_second_card(self):
         with (
             mock.patch(
-                "core.work_updates.record_contact_call_message",
+                "interface.work_updates.record_contact_call_message",
                 return_value=True,
             ) as append,
             mock.patch(
-                "core.work_updates.prepare_outbound_call",
+                "interface.work_updates.prepare_outbound_call",
             ) as prepare,
             mock.patch.object(
                 interface,

@@ -8,7 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import glass, team_context
+from interface import config as glass
+
+from interface import team_context
 
 
 class FakeResponse:

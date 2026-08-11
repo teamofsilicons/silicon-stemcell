@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import interface, work_updates
+from interface import adapter as interface
+
+from interface import work_updates
 from helpers.process import BestEffortOutbox, flush_best_effort
 from helpers.state import (
     lock_handle,
@@ -125,11 +127,11 @@ class PrimaryDeliveryLatencyTest(unittest.TestCase):
                 side_effect=slow_bookkeeping,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.get_active_run",
+                "diagnostics.store.Diagnostics.get_active_run",
                 return_value=None,
             ),
             mock.patch(
-                "core.diagnostics.Diagnostics.start_run",
+                "diagnostics.store.Diagnostics.start_run",
                 side_effect=RuntimeError,
             ),
         ):
@@ -277,7 +279,7 @@ class CorrelationAndDiagnosticsTest(unittest.TestCase):
             mock.patch.object(interface, "_remember_processed"),
             mock.patch.object(interface, "submit_best_effort", return_value=True),
             mock.patch(
-                "core.diagnostics.Diagnostics.get_active_run",
+                "diagnostics.store.Diagnostics.get_active_run",
                 return_value=active,
             ),
         ):

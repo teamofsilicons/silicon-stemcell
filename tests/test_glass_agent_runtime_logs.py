@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import glass_agent
+from interface.agent import live as glass_agent
 
 
 class RuntimeLogTailerTests(unittest.TestCase):

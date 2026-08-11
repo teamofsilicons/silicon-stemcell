@@ -17,7 +17,7 @@ import threading
 import time
 import unittest
 
-from core.diag_retention import (
+from diagnostics.retention import (
     DIAG_RETENTION_DAYS,
     maybe_prune,
     prune_diagnostic_traces,
@@ -138,7 +138,7 @@ class TestFailOpen(RetentionTestBase):
 
     def test_maybe_prune_never_raises_even_if_sweep_explodes(self):
         _write(self.dir, "old.jsonl", 100, self.now)
-        import core.diag_retention as R
+        import diagnostics.retention as R
         real = R.prune_diagnostic_traces
         R.prune_diagnostic_traces = lambda **kw: (_ for _ in ()).throw(
             RuntimeError("boom")
@@ -179,7 +179,7 @@ class TestThrottle(RetentionTestBase):
         self.assertNotIn("old2.jsonl", self.names())
 
     def test_marker_touched_before_sweep_prevents_retry_storm(self):
-        import core.diag_retention as R
+        import diagnostics.retention as R
         real = R.prune_diagnostic_traces
         R.prune_diagnostic_traces = lambda **kw: (_ for _ in ()).throw(
             RuntimeError("boom")

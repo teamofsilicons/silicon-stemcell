@@ -15,10 +15,9 @@ import unittest
 from unittest import mock
 
 import main
-import manager
 from inference.claude.injector import ClaudeInjector
 from inference.codex.injector import CodexInjector
-from core.iwantto import injection
+from diagnostics.iwantto import injection
 
 
 class RegistryTest(unittest.TestCase):

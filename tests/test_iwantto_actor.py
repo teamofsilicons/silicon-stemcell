@@ -11,8 +11,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from core.iwantto import actor as actor_module
-from core.iwantto.actor import (
+from diagnostics.iwantto import actor as actor_module
+from diagnostics.iwantto.actor import (
     ADVISOR,
     Actor,
     ActorError,

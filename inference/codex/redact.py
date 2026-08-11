@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from core.progress import (
+from interface.progress import (
     contains_advertising_memory_reference,
     contains_private_manager_tool,
 )

@@ -14,11 +14,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from core.iwantto import routing as routing_module
-from core.iwantto.actor import MANAGER, Actor
-from core.iwantto.cli import CommandError, build_parser
-from core.iwantto.commands import remind as remind_module
-from core.iwantto.commands import work as work_module
+from diagnostics.iwantto import routing as routing_module
+from diagnostics.iwantto.actor import MANAGER, Actor
+from diagnostics.iwantto.cli import CommandError, build_parser
+from diagnostics.iwantto.commands import remind as remind_module
+from diagnostics.iwantto.commands import work as work_module
 
 
 def _run(argv, actor):
@@ -223,7 +223,7 @@ class WorkTest(unittest.TestCase):
         self.glass.stop()
         self.addCleanup(self.glass.start)
         return mock.patch(
-            "core.work_updates.execute_work_update",
+            "interface.work_updates.execute_work_update",
             return_value="Error: work_update failed: Contact has no Interface room.",
         )
 

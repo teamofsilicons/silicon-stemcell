@@ -14,8 +14,8 @@ import time
 import unittest
 from unittest import mock
 
-from core import advisor as advisor_module
-from core import heartbeat as heartbeat_module
+from manager import advisor as advisor_module
+from manager.advisor import heartbeat as heartbeat_module
 
 
 class AdvisorSessionTest(unittest.TestCase):
@@ -80,10 +80,10 @@ class AdvisorSessionTest(unittest.TestCase):
                 advisor_module, "_rotate_session"
             ) as rotate,
             mock.patch(
-                "core.iwantto.actor.issue_run_env",
+                "diagnostics.iwantto.actor.issue_run_env",
                 return_value=("advisor-token", {"SILICON_ACTOR_TOKEN": "advisor-token"}),
             ) as issue,
-            mock.patch("core.iwantto.actor.revoke_actor") as revoke,
+            mock.patch("diagnostics.iwantto.actor.revoke_actor") as revoke,
             mock.patch("manager.run_agent", return_value="Delegate it.") as run_agent,
         ):
             advice = advisor_module.ask("carbon-a", "should I do this myself?")
@@ -100,10 +100,10 @@ class AdvisorSessionTest(unittest.TestCase):
         with (
             mock.patch.object(advisor_module, "_rotate_session"),
             mock.patch(
-                "core.iwantto.actor.issue_run_env",
+                "diagnostics.iwantto.actor.issue_run_env",
                 return_value=("advisor-token", {"SILICON_ACTOR_TOKEN": "advisor-token"}),
             ),
-            mock.patch("core.iwantto.actor.revoke_actor"),
+            mock.patch("diagnostics.iwantto.actor.revoke_actor"),
             mock.patch("manager.run_agent", return_value="Advice.") as run_agent,
         ):
             advisor_module.ask("carbon-a", "what now?")
@@ -141,9 +141,9 @@ class AdvisorSessionTest(unittest.TestCase):
         with (
             mock.patch.object(advisor_module, "_rotate_session"),
             mock.patch(
-                "core.iwantto.actor.issue_run_env", return_value=("t", {})
+                "diagnostics.iwantto.actor.issue_run_env", return_value=("t", {})
             ),
-            mock.patch("core.iwantto.actor.revoke_actor"),
+            mock.patch("diagnostics.iwantto.actor.revoke_actor"),
             mock.patch("manager.run_agent", return_value=""),
         ):
             advice = advisor_module.ask("carbon-a", "what now?")
@@ -170,7 +170,7 @@ class AdvisorHeartbeatTest(unittest.TestCase):
         self.contacts = {"carbon-a": {"contact_type": "carbon"}}
 
     def test_a_never_run_advisor_waits_a_full_interval_before_its_first_beat(self):
-        with mock.patch("core.interface.get_contacts", return_value=self.contacts):
+        with mock.patch("interface.adapter.get_contacts", return_value=self.contacts):
             first = advisor_module.contacts_due_for_heartbeat()
             second = advisor_module.contacts_due_for_heartbeat()
 
@@ -187,7 +187,7 @@ class AdvisorHeartbeatTest(unittest.TestCase):
             ).update({"last_heartbeat_at": stale}),
         )
 
-        with mock.patch("core.interface.get_contacts", return_value=self.contacts):
+        with mock.patch("interface.adapter.get_contacts", return_value=self.contacts):
             due = advisor_module.contacts_due_for_heartbeat()
 
         self.assertEqual(due, ["carbon-a"])
@@ -242,7 +242,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
         )
 
     def test_a_new_contact_starts_its_clock_instead_of_beating_immediately(self):
-        with mock.patch("core.interface.get_contacts", return_value=self.contacts):
+        with mock.patch("interface.adapter.get_contacts", return_value=self.contacts):
             self.assertIsNone(heartbeat_module.check_manager_heartbeats())
             self.assertIsNone(heartbeat_module.check_manager_heartbeats())
 
@@ -257,7 +257,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
         )
 
         with (
-            mock.patch("core.interface.get_contacts", return_value=self.contacts),
+            mock.patch("interface.adapter.get_contacts", return_value=self.contacts),
             mock.patch.object(
                 heartbeat_module, "_active_work_section", return_value=""
             ),
@@ -285,7 +285,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
             )
         ]
         with mock.patch(
-            "core.iwantto.commands.work.active_works", return_value=work
+            "diagnostics.iwantto.commands.work.active_works", return_value=work
         ) as active:
             context = heartbeat_module.build_context("carbon-a")
 
@@ -295,7 +295,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
 
     def test_a_manager_with_no_work_is_told_so_plainly(self):
         with mock.patch(
-            "core.iwantto.commands.work.active_works", return_value=[]
+            "diagnostics.iwantto.commands.work.active_works", return_value=[]
         ):
             context = heartbeat_module.build_context("carbon-a")
 

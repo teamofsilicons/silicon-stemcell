@@ -1,6 +1,6 @@
 import unittest
 
-from core.progress import (
+from interface.progress import (
     EXECUTING,
     claude_progress_events,
     codex_progress_event,

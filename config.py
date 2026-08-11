@@ -8,14 +8,14 @@ flight, remembers the notice to surface once a tick lands, and exposes
 import threading
 import time
 
-from core.interface import get_unread_events_durable
-from core.cron import check_crons
-from core.advisor import run_heartbeats as check_advisor_heartbeats
-from core.heartbeat import check_manager_heartbeats
-from core.iwantto.commands.remind import reap_fired_reminders
-from core.messages import check_manager_messages_durable
+from interface.adapter import get_unread_events_durable
+from interface.cron import check_crons
+from manager.advisor import run_heartbeats as check_advisor_heartbeats
+from manager.advisor.heartbeat import check_manager_heartbeats
+from diagnostics.iwantto.commands.remind import reap_fired_reminders
+from interface.messages import check_manager_messages_durable
 from worker.handler import check_completed_workers_formatted, clean_old_archives
-from update import check_for_system_update
+from interface.release.updater import check_for_system_update
 
 # Native inbox and runtime-file notifications are the primary scheduler.  This
 # value remains as the recovery ceiling for platforms where a watcher cannot be
@@ -146,7 +146,7 @@ def _publish_own_advertising():
     if state.get("sha256") == digest:
         return None
 
-    from core.team_context import update_own_advertising_memory
+    from interface.team_context import update_own_advertising_memory
 
     result = update_own_advertising_memory(content, root=root)
     if isinstance(result, dict) and result.get("ok"):
@@ -161,8 +161,8 @@ def _run_team_context_tick():
     global _TEAM_CONTEXT_MAINTENANCE_ACTIVITY
 
     try:
-        from core.team_context import team_context_tick
-        from core.maintenance import heartbeat_scope
+        from interface.team_context import team_context_tick
+        from manager.runtime.maintenance import heartbeat_scope
 
         with _TEAM_CONTEXT_LOCK:
             result_epoch = _TEAM_CONTEXT_RESULT_EPOCH
@@ -198,7 +198,7 @@ def _run_team_context_tick():
         _TEAM_CONTEXT_MAINTENANCE_ACTIVITY = None
         if activity is not None:
             try:
-                from core.maintenance import release_activity
+                from manager.runtime.maintenance import release_activity
 
                 release_activity(activity)
             except Exception:
@@ -216,7 +216,7 @@ def check_team_context():
     global _TEAM_CONTEXT_OWN_SIGNATURE
 
     try:
-        from core.team_context import own_advertising_signature
+        from interface.team_context import own_advertising_signature
 
         own_signature = own_advertising_signature()
     except Exception:
@@ -231,7 +231,7 @@ def check_team_context():
         )
         if not _TEAM_CONTEXT_RUNNING and due:
             try:
-                from core.maintenance import acquire_descendant_activity
+                from manager.runtime.maintenance import acquire_descendant_activity
 
                 activity = acquire_descendant_activity(
                     "team_context_sync",
@@ -254,7 +254,7 @@ def check_team_context():
 
     if notice:
         try:
-            from core.interface import get_central_contact_id
+            from interface.adapter import get_central_contact_id
 
             contact_id = get_central_contact_id()
         except Exception:

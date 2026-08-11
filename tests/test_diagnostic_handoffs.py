@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import messages
-from core.diagnostics import Diagnostics
-from core.maintenance import MaintenanceCoordinator
+from interface import messages
+from diagnostics.store import Diagnostics
+from manager.runtime.maintenance import MaintenanceCoordinator
 
 
 class DiagnosticHandoffTests(unittest.TestCase):
@@ -99,7 +99,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "core.maintenance.COORDINATOR",
+            "manager.runtime.maintenance.COORDINATOR",
             coordinator,
         ):
             self.assertEqual(messages.check_manager_messages_durable(), {})
@@ -128,7 +128,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "core.maintenance.COORDINATOR",
+                "manager.runtime.maintenance.COORDINATOR",
                 coordinator,
             ),
             mock.patch.object(
@@ -146,7 +146,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         coordinator.complete_roots(first_turn)
 
         with mock.patch(
-            "core.maintenance.COORDINATOR",
+            "manager.runtime.maintenance.COORDINATOR",
             coordinator,
         ):
             self.assertEqual(messages.check_manager_messages_durable(), {})
@@ -266,7 +266,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         }
         with (
             mock.patch(
-                "core.interface.get_contact",
+                "interface.adapter.get_contact",
                 side_effect=lambda value: {
                     "contact_type": (
                         "silicon" if value == "silicon-b" else "carbon"
@@ -275,11 +275,11 @@ class DiagnosticHandoffTests(unittest.TestCase):
                 },
             ),
             mock.patch(
-                "core.work_updates.enqueue_outbound_call",
+                "interface.work_updates.enqueue_outbound_call",
                 return_value=True,
             ) as outbound,
             mock.patch(
-                "core.work_updates.enqueue_inbound_call",
+                "interface.work_updates.enqueue_inbound_call",
                 return_value={"call_id": "call-inbound"},
             ) as inbound,
         ):
@@ -390,10 +390,10 @@ class DiagnosticHandoffTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.maintenance.current_activity",
+                "manager.runtime.maintenance.current_activity",
                 return_value=object(),
             ),
-            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
             mock.patch("helpers.process.submit_best_effort") as submit,
         ):
             accepted = messages._queue_lineage_handoff(
@@ -424,10 +424,10 @@ class DiagnosticHandoffTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.maintenance.current_activity",
+                "manager.runtime.maintenance.current_activity",
                 return_value=object(),
             ),
-            mock.patch("core.maintenance.COORDINATOR", coordinator),
+            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
             mock.patch.object(
                 messages,
                 "_ensure_manager_work_calls",
@@ -466,11 +466,11 @@ class DiagnosticHandoffTests(unittest.TestCase):
         }
         with (
             mock.patch(
-                "core.maintenance.current_activity",
+                "manager.runtime.maintenance.current_activity",
                 return_value=object(),
             ),
             mock.patch(
-                "core.maintenance.COORDINATOR",
+                "manager.runtime.maintenance.COORDINATOR",
                 coordinator,
             ),
             mock.patch.object(
@@ -493,7 +493,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.maintenance.COORDINATOR",
+                "manager.runtime.maintenance.COORDINATOR",
                 coordinator,
             ),
             mock.patch.object(

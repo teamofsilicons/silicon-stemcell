@@ -8,7 +8,7 @@ that goes back to the same manager through the normal loop.
 """
 from __future__ import annotations
 
-from core.progress import (
+from interface.progress import (
     provider_not_authenticated_message,
     redact_diagnostic_text,
 )

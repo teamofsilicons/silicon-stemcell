@@ -10,7 +10,7 @@ import inference
 import inference.sessions
 import main
 import manager
-from core import activity_log
+from diagnostics import activity as activity_log
 from inference.claude import stream as claude_stream
 from inference.codex import provider as codex_provider
 from inference.codex.redact import redact_agent_message
@@ -23,7 +23,7 @@ class ManagerToolsDocTest(unittest.TestCase):
     """A manager's tools are `iwantto` commands now, not end-of-turn tool JSON."""
 
     def test_every_command_the_prompts_promise_exists_in_the_cli(self):
-        from core.iwantto.cli import build_parser
+        from diagnostics.iwantto.cli import build_parser
 
         text = "\n".join(
             (PROJECT_ROOT / "prompts" / name).read_text(encoding="utf-8")
@@ -54,7 +54,7 @@ class ManagerToolsDocTest(unittest.TestCase):
         file. if you notice any descripency – then update it in accordance to
         the iwantto cli reference." This is that check, mechanically.
         """
-        from core.iwantto.cli import build_parser
+        from diagnostics.iwantto.cli import build_parser
 
         reference = (
             PROJECT_ROOT / "prompts" / "IWANTTO_CLI_REFERENCE.md"
@@ -265,7 +265,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 mock.patch.object(codex_provider, "TracedAppServer",
                                   return_value=fake_client),
                 mock.patch.object(codex_provider, "INACTIVITY_TIMEOUT", 0.0),
-                mock.patch("core.interface.reply_contact") as reply_contact,
+                mock.patch("interface.adapter.reply_contact") as reply_contact,
             ):
                 provider = codex_provider.CodexProvider()
                 with self.assertRaises(inference.ProviderTimeoutError):
@@ -443,7 +443,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
         with (
             mock.patch(
-                "core.trust.inspect_trust_policy",
+                "interface.trust.inspect_trust_policy",
                 return_value=snapshot,
             ) as inspect,
             mock.patch.object(main, "send_progress"),
@@ -693,7 +693,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
                         "send_manager_message",
                     ) as send_manager_message,
                     mock.patch(
-                        "core.work_updates.enqueue_outbound_call",
+                        "interface.work_updates.enqueue_outbound_call",
                     ) as enqueue_outbound_call,
                     mock.patch.object(main, "send_progress"),
                 ):
@@ -773,7 +773,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.team_context.update_own_advertising_memory",
+                "interface.team_context.update_own_advertising_memory",
                 return_value=outcome,
             ) as update_memory,
             mock.patch.object(
@@ -809,7 +809,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
         with (
             mock.patch(
-                "core.team_context.update_own_advertising_memory",
+                "interface.team_context.update_own_advertising_memory",
                 return_value={
                     "ok": True,
                     "status": "uploaded",
@@ -833,7 +833,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
     def test_advertising_memory_failure_surfaces_draft_and_revision(self):
         with (
             mock.patch(
-                "core.team_context.update_own_advertising_memory",
+                "interface.team_context.update_own_advertising_memory",
                 return_value={
                     "ok": False,
                     "status": "conflict",
@@ -1170,7 +1170,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         )
         with (
             mock.patch(
-                "core.team_context.update_own_advertising_memory",
+                "interface.team_context.update_own_advertising_memory",
                 return_value={"ok": True, "status": "uploaded", "revision": 1},
             ),
             mock.patch.object(main, "send_progress"),

@@ -24,7 +24,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core import diagnostics as D  # noqa: E402
+from diagnostics import store as D  # noqa: E402
 
 
 class FakeClock:

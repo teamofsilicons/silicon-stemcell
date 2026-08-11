@@ -7,7 +7,9 @@ import time
 import unittest
 from pathlib import Path
 
-from core import backup, data_policy
+from interface import backup
+
+from interface.backup import policy as data_policy
 from helpers.paths import CODE_ROOT
 
 
@@ -363,7 +365,7 @@ class SnapshotGarbageCollectionTest(unittest.TestCase):
                 (
                     "import sys",
                     "from pathlib import Path",
-                    "from core import backup",
+                    "from interface import backup",
                     "print('ready', flush=True)",
                     "backup.plan_snapshot_gc(Path(sys.argv[1]))",
                     "print('done', flush=True)",

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import runtime_health
+from manager.runtime import health as runtime_health
 
 
 class RuntimeHealthTests(unittest.TestCase):
@@ -31,11 +31,11 @@ class RuntimeHealthTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_health, "HEALTH_FILE", health),
                 mock.patch(
-                    "core.work_updates.pending_call_update_retries",
+                    "interface.work_updates.pending_call_update_retries",
                     return_value=retry_summary,
                 ) as retry_health,
                 mock.patch(
-                    "core.messages.manager_queue_health",
+                    "interface.messages.manager_queue_health",
                     return_value={
                         "queued": 10,
                         "capacity": 1000,
@@ -91,11 +91,11 @@ class RuntimeHealthTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_health, "HEALTH_FILE", health),
                 mock.patch(
-                    "core.work_updates.pending_call_update_retries",
+                    "interface.work_updates.pending_call_update_retries",
                     side_effect=RuntimeError("TOP-SECRET TRANSCRIPT"),
                 ),
                 mock.patch(
-                    "core.messages.manager_queue_health",
+                    "interface.messages.manager_queue_health",
                     side_effect=RuntimeError("OTHER PRIVATE BODY"),
                 ),
             ):
@@ -113,11 +113,11 @@ class RuntimeHealthTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_health, "HEALTH_FILE", health),
                 mock.patch(
-                    "core.work_updates.pending_call_update_retries",
+                    "interface.work_updates.pending_call_update_retries",
                     return_value={},
                 ),
                 mock.patch(
-                    "core.messages.manager_queue_health",
+                    "interface.messages.manager_queue_health",
                     return_value={},
                 ),
             ):

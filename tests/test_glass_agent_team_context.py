@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import glass_agent
+from interface.agent import live as glass_agent
 
 
 class _FakeWebSocket:
@@ -95,10 +95,10 @@ class TeamContextReconcilerTests(unittest.TestCase):
     def test_trust_invalidation_marks_pending_revision_and_forces_refresh(self):
         reconciler = _RecordingReconciler()
         marked = []
-        module = types.ModuleType("core.trust")
+        module = types.ModuleType("interface.trust")
         module.mark_trust_policy_invalidated = lambda **kwargs: marked.append(kwargs)
 
-        with mock.patch.dict(sys.modules, {"core.trust": module}):
+        with mock.patch.dict(sys.modules, {"interface.trust": module}):
             glass_agent.handle_message(
                 _FakeWebSocket(),
                 {
@@ -158,11 +158,11 @@ class TeamContextReconcilerTests(unittest.TestCase):
             if len(calls) == 2:
                 finished.set()
 
-        module = types.ModuleType("core.team_context")
+        module = types.ModuleType("interface.team_context")
         module.reconcile_team_context = reconcile
         reconciler = glass_agent.TeamContextReconciler(Path("/tmp/silicon"))
         try:
-            with mock.patch.dict(sys.modules, {"core.team_context": module}):
+            with mock.patch.dict(sys.modules, {"interface.team_context": module}):
                 reconciler.request(reason="websocket-connect")
                 self.assertTrue(started.wait(timeout=1))
 
@@ -189,11 +189,11 @@ class TeamContextReconcilerTests(unittest.TestCase):
             started.set()
             release.wait(timeout=2)
 
-        module = types.ModuleType("core.team_context")
+        module = types.ModuleType("interface.team_context")
         module.reconcile_team_context = reconcile
         reconciler = glass_agent.TeamContextReconciler(Path("/tmp/silicon"))
         try:
-            with mock.patch.dict(sys.modules, {"core.team_context": module}):
+            with mock.patch.dict(sys.modules, {"interface.team_context": module}):
                 glass_agent.handle_message(
                     _FakeWebSocket(),
                     {"type": "team_context.changed", "kind": "advertising_memory"},
@@ -216,11 +216,11 @@ class TeamContextReconcilerTests(unittest.TestCase):
                 raise RuntimeError("temporary outage")
             second_call.set()
 
-        module = types.ModuleType("core.team_context")
+        module = types.ModuleType("interface.team_context")
         module.reconcile_team_context = reconcile
         reconciler = glass_agent.TeamContextReconciler(Path("/tmp/silicon"))
         try:
-            with mock.patch.dict(sys.modules, {"core.team_context": module}):
+            with mock.patch.dict(sys.modules, {"interface.team_context": module}):
                 with mock.patch("builtins.print"):
                     reconciler.request(force=True, reason="first")
                     deadline = time.monotonic() + 1

@@ -13,7 +13,7 @@ import os
 import unittest
 from unittest import mock
 
-from core.progress import (
+from interface.progress import (
     EXECUTING,
     claude_log_lines,
     codex_log_lines,

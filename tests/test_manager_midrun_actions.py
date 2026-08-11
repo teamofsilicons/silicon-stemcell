@@ -13,8 +13,8 @@ import unittest
 from unittest import mock
 
 import main
-from core.iwantto import actor as actor_module
-from core.iwantto import journal as journal_module
+from diagnostics.iwantto import actor as actor_module
+from diagnostics.iwantto import journal as journal_module
 
 
 def _context():
@@ -186,7 +186,7 @@ class LauncherTest(unittest.TestCase):
         import subprocess
         import sys
 
-        from core.iwantto import launcher
+        from diagnostics.iwantto import launcher
 
         with tempfile.TemporaryDirectory() as temp:
             bin_dir = os.path.join(temp, ".local", "bin")
@@ -212,7 +212,7 @@ class LauncherTest(unittest.TestCase):
 
     def test_the_launcher_directory_is_already_on_the_runtime_path(self):
         """Installing is enough; nothing has to edit PATH afterwards."""
-        from core.iwantto import launcher
+        from diagnostics.iwantto import launcher
 
         self.assertIn(launcher.LOCAL_BIN, os.environ["PATH"].split(os.pathsep))
 

@@ -158,7 +158,7 @@ def _glass_team_context_section():
     ``{load-ref!...}`` directives used by static Stemcell prompts.
     """
     try:
-        from core.team_context import (
+        from interface.team_context import (
             read_verified_team_advertising_memories,
             read_verified_team_markdown,
         )
@@ -244,7 +244,7 @@ def _mirror_team_of_silicons(content):
 def _get_contact_info(carbon_id):
     """Load contact info for a fixed Interface contact id."""
     try:
-        from core.interface import get_contact
+        from interface.adapter import get_contact
 
         return get_contact(carbon_id)
     except Exception:
@@ -254,7 +254,7 @@ def _get_contact_info(carbon_id):
 def _glass_profile_section():
     """Bounded Glass identity data that is not duplicated from TEAM.md."""
     try:
-        from core.interface import get_own_profile
+        from interface.adapter import get_own_profile
 
         profile = get_own_profile() or {}
     except Exception:
@@ -309,7 +309,7 @@ def _glass_trust_policy_section():
     """Render the latest validated Glass trust-policy projection."""
 
     try:
-        from core.trust import confirmed_trust_policy_snapshot
+        from interface.trust import confirmed_trust_policy_snapshot
 
         policy = confirmed_trust_policy_snapshot(root=PROJECT_ROOT)
     except Exception:
@@ -410,7 +410,7 @@ def get_manager_prompt(carbon_id):
         else "carbon"
     )
     try:
-        from core.trust import cached_trust_entry
+        from interface.trust import cached_trust_entry
 
         trust_entry = cached_trust_entry(
             contact_type,

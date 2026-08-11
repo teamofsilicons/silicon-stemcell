@@ -1,6 +1,6 @@
 import unittest
 
-import glass_agent
+from interface.agent import live as glass_agent
 
 
 class GlassAgentAuthenticationTests(unittest.TestCase):

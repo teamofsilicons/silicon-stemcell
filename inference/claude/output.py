@@ -1,7 +1,7 @@
 """Reading a detached Claude worker's output file back."""
 from __future__ import annotations
 
-from core.progress import (
+from interface.progress import (
     provider_authentication_failed,
     provider_not_authenticated_message,
 )

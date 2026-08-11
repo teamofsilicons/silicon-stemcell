@@ -19,7 +19,15 @@ class RuntimeDataRootTests(unittest.TestCase):
             release_root = (
                 data_root / ".silicon" / "releases" / "test-generation"
             )
-            for directory in ("core", "helpers", "inference", "prompts", "worker"):
+            for directory in (
+                "diagnostics",
+                "helpers",
+                "inference",
+                "interface",
+                "manager",
+                "prompts",
+                "worker",
+            ):
                 shutil.copytree(
                     CODE_ROOT / directory,
                     release_root / directory,
@@ -30,7 +38,6 @@ class RuntimeDataRootTests(unittest.TestCase):
                 "config.py",
                 "glass_agent.py",
                 "main.py",
-                "manager.py",
                 "silicon.info",
                 "update.py",
             ):
@@ -65,26 +72,21 @@ class RuntimeDataRootTests(unittest.TestCase):
                 sys.modules.setdefault("requests", requests)
 
                 from helpers.paths import CODE_ROOT, DATA_ROOT
-                from core import (
-                    activity_log,
-                    backup,
-                    diagnostics,
-                    glass,
-                    interface,
-                    messages,
-                    team_context,
-                    work_updates,
-                )
-                from core import cron
-                from core.cron import checkback
-                from core.maintenance import MaintenanceCoordinator
+                from diagnostics import activity as activity_log
+                from diagnostics import store as diagnostics
+                from interface import adapter as interface
+                from interface import backup, cron, messages, team_context
+                from interface import config as glass
+                from interface import work_updates
+                from interface.cron import checkback
+                from manager.runtime.maintenance import MaintenanceCoordinator
                 from prompts import DNA
-                import glass_agent
+                from interface.agent import live as glass_agent
                 import inference
                 from inference.codex import provider as codex_provider
                 import main
                 import manager
-                import update
+                from interface.release import updater as update
                 from worker import handler
 
                 data = DATA_ROOT

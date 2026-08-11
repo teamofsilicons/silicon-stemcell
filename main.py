@@ -55,7 +55,7 @@ from manager import (
     provider_failed,
     TIMEOUT_MSG,
 )
-from core.interface import (
+from interface.adapter import (
     complete_take_back,
     ensure_contact_for_target,
     get_contact,
@@ -75,16 +75,16 @@ from core.interface import (
     runtime_file_notifications_active,
     wait_for_runtime_activity,
 )
-from core.messages import MANAGER_MESSAGES_FILE, send_manager_message
-from core.iwantto import injection
-from core.iwantto import journal as iwantto_journal
-from core.cron import CRON_INVALIDATION_FILE, execute_cron_tool
-from core.maintenance import (
+from interface.messages import MANAGER_MESSAGES_FILE, send_manager_message
+from diagnostics.iwantto import injection
+from diagnostics.iwantto import journal as iwantto_journal
+from interface.cron import CRON_INVALIDATION_FILE, execute_cron_tool
+from manager.runtime.maintenance import (
     COORDINATOR as MAINTENANCE,
     RootAdmission,
     heartbeat_scope,
 )
-from core.runtime_health import start_runtime_health, stop_runtime_health
+from manager.runtime.health import start_runtime_health, stop_runtime_health
 from worker.handler import (
     ACTIVE_FILE,
     BROWSER_QUEUE_FILE,
@@ -97,16 +97,16 @@ from worker.handler import (
     read_archive,
     reconcile_maintenance_activities,
 )
-from core.cron.checkback import add_checkback
-from core.diagnostics import Diagnostics
-from core.progress import (
+from interface.cron.checkback import add_checkback
+from diagnostics.store import Diagnostics
+from interface.progress import (
     contains_advertising_memory_reference,
     contains_private_manager_tool,
     diagnostic_error_summary,
     progress_is_error,
     redact_diagnostic_text,
 )
-from core.work_updates import (
+from interface.work_updates import (
     WORK_UPDATES_FILE,
     begin_manager_activity,
     complete_inactive_calls,
@@ -119,7 +119,7 @@ from core.work_updates import (
     settle_manager_activity,
     touch_manager_call_activity,
 )
-from core.long_task_updates import (
+from interface.long_tasks import (
     LONG_TASK_STATE_FILE,
     accuracy_review_root_is_current,
     acknowledge_accuracy_review_dispatched,
@@ -184,7 +184,7 @@ def log(msg):
 def _bootstrap_team_context():
     """Best-effort team mirror before any manager can receive a startup turn."""
     try:
-        from core.team_context import reconcile_team_context
+        from interface.team_context import reconcile_team_context
 
         return reconcile_team_context(
             PROJECT_ROOT,
@@ -199,7 +199,7 @@ def _bootstrap_team_context():
 def _bootstrap_trust_policy():
     """Best-effort Glass trust sync before any manager can receive a turn."""
     try:
-        from core.trust import reconcile_trust_policy
+        from interface.trust import reconcile_trust_policy
 
         result = reconcile_trust_policy(
             PROJECT_ROOT,
@@ -627,7 +627,7 @@ def execute_single_tool(
         )
     if tool_name and tool_name != "do_nothing":
         try:
-            from core.activity_log import tool_call
+            from diagnostics.activity import tool_call
             tool_call(carbon_id, tool_name, tool_spec, result)
         except Exception:
             pass
@@ -767,7 +767,7 @@ def _tool_trust_inspect(tool_spec, carbon_id):
             "or silicon_id"
         )
     try:
-        from core.trust import inspect_trust_policy
+        from interface.trust import inspect_trust_policy
 
         policy = inspect_trust_policy(
             kind=(
@@ -799,7 +799,7 @@ def _tool_trust_set(tool_spec, carbon_id):
     # An empty/inherit level clears the override and falls back to the team default.
     level = None if raw_level in {None, "", "inherit", "team_default"} else str(raw_level)
     try:
-        from core.trust import set_contact_trust
+        from interface.trust import set_contact_trust
 
         initiating_contact = get_contact(carbon_id) or {}
         result = set_contact_trust(
@@ -866,7 +866,7 @@ def _tool_advertising_memory_update(tool_spec, carbon_id):
             "resolve_conflict must be a boolean"
         )
     try:
-        from core.team_context import update_own_advertising_memory
+        from interface.team_context import update_own_advertising_memory
 
         outcome = update_own_advertising_memory(
             content,
@@ -900,7 +900,7 @@ def _tool_advertising_memory_update(tool_spec, carbon_id):
 
 
 def _tool_cron(tool_spec, carbon_id):
-    """Run any cron/* tool; core.cron owns the per-action behaviour."""
+    """Run any cron/* tool; interface.cron owns the per-action behaviour."""
     try:
         return execute_cron_tool(tool_spec)
     except Exception as e:
@@ -1492,7 +1492,7 @@ def _instrumented_manager_call(
     actually did, which is the only evidence the loop gets that a manager acted
     at all — the actions no longer come back as tool JSON.
     """
-    from core.iwantto.actor import MANAGER, issue_run_env, revoke_actor
+    from diagnostics.iwantto.actor import MANAGER, issue_run_env, revoke_actor
 
     token, env = issue_run_env(MANAGER, carbon_id, carbon_id)
     started = time.monotonic()
@@ -2614,15 +2614,15 @@ def run_headed_browser():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "diag":
-        from core.diag_cli import main as diag_main
+        from diagnostics.cli import main as diag_main
 
         raise SystemExit(diag_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] in {"update", "update-check"}:
-        from update import main as update_main
+        from interface.release.updater import main as update_main
 
         raise SystemExit(update_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
-        from core.maintenance import main as maintenance_main
+        from manager.runtime.maintenance import main as maintenance_main
 
         raise SystemExit(maintenance_main(["--root", PROJECT_ROOT, *sys.argv[2:]]))
 
@@ -2630,7 +2630,7 @@ if __name__ == "__main__":
     # owned exclusively by the offline silicon-cli update flow; runtime boot
     # never fetches Git or mutates repository configuration.
     try:
-        from core.backup import ensure_manifest_file
+        from interface.backup import ensure_manifest_file
 
         archived = ensure_manifest_file(PROJECT_ROOT)
         if archived:
@@ -2644,7 +2644,7 @@ if __name__ == "__main__":
     # Install `iwantto` before any manager or worker can run. It is rewritten
     # every boot so it always points at the active source generation.
     try:
-        from core.iwantto.launcher import install as install_iwantto
+        from diagnostics.iwantto.launcher import install as install_iwantto
 
         log(f"[Silicon] iwantto installed at {install_iwantto()}")
     except Exception as e:
@@ -2654,7 +2654,7 @@ if __name__ == "__main__":
     # the environment before the brain CLIs or any browser subprocess run, so
     # nothing has to be stored locally on this box.
     try:
-        from core.glass import load_provider_keys_into_env
+        from interface.config import load_provider_keys_into_env
 
         loaded = load_provider_keys_into_env()
         if loaded:

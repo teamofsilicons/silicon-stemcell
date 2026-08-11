@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from core.progress import (
+from interface.progress import (
     provider_not_authenticated_message,
     redact_diagnostic_text,
 )

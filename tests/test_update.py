@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import update
+from interface.release import updater as update
 from helpers import state as state_store
 
 
@@ -663,7 +663,7 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
     """The agent reports release status but never mutates a running instance."""
 
     def _run(self, result, action="update"):
-        import glass_agent
+        from interface.agent import live as glass_agent
 
         command = {"command": action}
         with mock.patch.object(

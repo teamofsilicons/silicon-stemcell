@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import backup
+from interface import backup
 
 
 class BackupManifestTest(unittest.TestCase):

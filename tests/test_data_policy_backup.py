@@ -11,7 +11,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from core import backup, data_policy
+from interface import backup
+
+from interface.backup import policy as data_policy
 from helpers import state as state_store
 
 

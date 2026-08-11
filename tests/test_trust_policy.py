@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import core.interface as interface
-from core import trust
+import interface.adapter as interface
+from interface import trust
 
 
 class FakeResponse:
@@ -117,7 +117,7 @@ class TrustPolicyTests(unittest.TestCase):
                 return FakeResponse(body={"applied": True})
             raise AssertionError(path)
 
-        with mock.patch("core.trust.silicon_api_request", side_effect=request):
+        with mock.patch("interface.trust.silicon_api_request", side_effect=request):
             result = trust.reconcile_trust_policy(
                 self.root,
                 force=True,
@@ -154,7 +154,7 @@ class TrustPolicyTests(unittest.TestCase):
                 return FakeResponse(body={"applied": True})
             raise AssertionError(path)
 
-        with mock.patch("core.trust.silicon_api_request", side_effect=request):
+        with mock.patch("interface.trust.silicon_api_request", side_effect=request):
             result = trust.set_contact_trust(
                 "carbon",
                 "alice",
@@ -183,7 +183,7 @@ class TrustPolicyTests(unittest.TestCase):
             },
         )
         with mock.patch(
-            "core.trust.silicon_api_request",
+            "interface.trust.silicon_api_request",
             return_value=response,
         ):
             with self.assertRaises(trust.TrustSyncError):
@@ -230,7 +230,7 @@ class TrustPolicyTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "core.trust.silicon_api_request",
+            "interface.trust.silicon_api_request",
             return_value=FakeResponse(status_code=503),
         ):
             deferred = trust.reconcile_trust_policy(
@@ -268,7 +268,7 @@ class TrustPolicyTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "core.trust.reconcile_trust_policy",
+            "interface.trust.reconcile_trust_policy",
             return_value={"status": "deferred"},
         ):
             with self.assertRaises(trust.TrustSyncError):

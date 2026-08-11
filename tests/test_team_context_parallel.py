@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import team_context
+from interface import team_context
 
 
 def _digest(content: str) -> str:

@@ -9,10 +9,9 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import inference  # noqa: E402
-import manager  # noqa: E402
-from core import diagnostics  # noqa: E402
-from core.diagnostics import Diagnostics  # noqa: E402
-from core.progress import (  # noqa: E402
+from diagnostics import store as diagnostics  # noqa: E402
+from diagnostics.store import Diagnostics  # noqa: E402
+from interface.progress import (  # noqa: E402
     provider_authentication_failed,
     provider_not_authenticated_message,
 )

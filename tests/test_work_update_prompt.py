@@ -76,7 +76,7 @@ class WorkPromptTest(unittest.TestCase):
         self.assertIn("there is no way to delete a task", text)
 
     def test_every_documented_work_flag_is_accepted_by_the_cli(self):
-        from core.iwantto.cli import build_parser
+        from diagnostics.iwantto.cli import build_parser
 
         section = re.search(
             r"### iwantto work\n(.*?)(?=\n## )",

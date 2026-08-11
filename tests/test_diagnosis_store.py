@@ -10,11 +10,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-import manager
 from inference import telemetry
 from inference.claude import stream as claude_stream
-from core.iwantto import actor as actor_module
-from core.iwantto import journal
+from diagnostics.iwantto import actor as actor_module
+from diagnostics.iwantto import journal
 
 
 class _IsolatedJournal(unittest.TestCase):
@@ -139,14 +138,14 @@ class ManagerInvocationTest(_IsolatedJournal):
         )
 
     def test_every_advisor_turn_is_recorded(self):
-        from core import advisor
+        from manager import advisor
 
         with (
             mock.patch.object(advisor, "_rotate_session"),
             mock.patch.object(advisor, "ADVISOR_STATE_FILE",
                               os.path.join(self._temp.name, "advisors.json")),
-            mock.patch("core.iwantto.actor.issue_run_env", return_value=("t", {})),
-            mock.patch("core.iwantto.actor.revoke_actor"),
+            mock.patch("diagnostics.iwantto.actor.issue_run_env", return_value=("t", {})),
+            mock.patch("diagnostics.iwantto.actor.revoke_actor"),
             mock.patch("manager.run_agent", return_value="Delegate it."),
         ):
             advisor.ask("carbon-a", "should I?")
@@ -182,12 +181,12 @@ class MessagesSentTest(_IsolatedJournal):
         self.assertEqual(messages[0]["body"], "hey")
 
     def test_a_routed_manager_message_is_recorded(self):
-        from core import messages as messages_module
+        from interface import messages as messages_module
 
         with (
             mock.patch.object(messages_module, "_queue_lineage_handoff", return_value=False),
             mock.patch.object(messages_module, "_append_manager_queue_item"),
-            mock.patch("core.interface.notify_runtime_activity"),
+            mock.patch("interface.adapter.notify_runtime_activity"),
         ):
             messages_module.send_manager_message(
                 "carbon-a", "carbon-b", "can you help?", target_type="carbon"
@@ -201,12 +200,12 @@ class MessagesSentTest(_IsolatedJournal):
         self.assertEqual(messages[0]["body"], "can you help?")
 
     def test_a_worker_message_is_recorded_under_its_own_label(self):
-        from core import messages as messages_module
+        from interface import messages as messages_module
 
         with (
             mock.patch.object(messages_module, "_queue_lineage_handoff", return_value=False),
             mock.patch.object(messages_module, "_append_manager_queue_item"),
-            mock.patch("core.interface.notify_runtime_activity"),
+            mock.patch("interface.adapter.notify_runtime_activity"),
         ):
             messages_module.send_manager_message(
                 "researcher",
@@ -224,7 +223,7 @@ class FilesWrittenTest(_IsolatedJournal):
     only place a file write becomes visible to Silicon at all."""
 
     def _write_progress(self, path="/data/prompts/MEMORY.md", tool="Write"):
-        from core.progress import WRITING_FILE, progress_event
+        from interface.progress import WRITING_FILE, progress_event
 
         return progress_event(
             "claude",
@@ -252,7 +251,7 @@ class FilesWrittenTest(_IsolatedJournal):
         self.assertEqual(writes[0]["contact_id"], "carbon-a")
 
     def test_reads_and_completions_are_not_recorded_as_writes(self):
-        from core.progress import READING_FILE, WRITING_FILE, progress_event
+        from interface.progress import READING_FILE, WRITING_FILE, progress_event
 
         telemetry.record_file_write(
             progress_event("claude", READING_FILE, status="started",
@@ -379,7 +378,7 @@ class AdvertisingPublishTest(unittest.TestCase):
 
         self._write("I do market research.")
         with mock.patch(
-            "core.team_context.update_own_advertising_memory",
+            "interface.team_context.update_own_advertising_memory",
             return_value={"ok": True, "status": "uploaded", "revision": 1},
         ) as publish:
             first = config._publish_own_advertising()
@@ -395,7 +394,7 @@ class AdvertisingPublishTest(unittest.TestCase):
 
         self._write("v1")
         with mock.patch(
-            "core.team_context.update_own_advertising_memory",
+            "interface.team_context.update_own_advertising_memory",
             return_value={"ok": True, "status": "uploaded"},
         ) as publish:
             config._publish_own_advertising()
@@ -411,7 +410,7 @@ class AdvertisingPublishTest(unittest.TestCase):
 
         self._write("v1")
         with mock.patch(
-            "core.team_context.update_own_advertising_memory",
+            "interface.team_context.update_own_advertising_memory",
             return_value={"ok": False, "status": "pending"},
         ) as publish:
             config._publish_own_advertising()

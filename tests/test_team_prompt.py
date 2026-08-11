@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import team_context
+from interface import team_context
 from prompts import DNA
 
 
@@ -274,7 +274,7 @@ class TeamContextPromptTests(unittest.TestCase):
                 "name": "Grace",
             },
         }
-        with mock.patch("core.interface.get_own_profile", return_value=profile):
+        with mock.patch("interface.adapter.get_own_profile", return_value=profile):
             section = DNA._glass_profile_section()
 
         self.assertIn("Ada (silicon_id: silicon-1)", section)
@@ -313,7 +313,7 @@ class TeamContextPromptTests(unittest.TestCase):
             ],
         }
         with mock.patch(
-            "core.trust.confirmed_trust_policy_snapshot",
+            "interface.trust.confirmed_trust_policy_snapshot",
             return_value=snapshot,
         ):
             section = DNA._glass_trust_policy_section()
@@ -328,7 +328,7 @@ class TeamContextPromptTests(unittest.TestCase):
 
     def test_pending_trust_policy_keeps_last_confirmed_values_active(self):
         with mock.patch(
-            "core.trust.confirmed_trust_policy_snapshot",
+            "interface.trust.confirmed_trust_policy_snapshot",
             return_value={
                 "status": "refresh_pending",
                 "source_silicon_id": "self-si",
@@ -376,7 +376,7 @@ class TeamContextPromptTests(unittest.TestCase):
                     },
                 ),
                 mock.patch(
-                    "core.trust.cached_trust_entry",
+                    "interface.trust.cached_trust_entry",
                     return_value={
                         "kind": "silicon",
                         "id": "peer-si",

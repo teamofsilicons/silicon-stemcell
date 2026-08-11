@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 import main
-from core import long_task_updates, work_updates
+from interface import long_tasks as long_task_updates
+from interface import work_updates
 
 
 DONE = "Done. work_update accepted"
@@ -2917,7 +2918,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
         send_progress.assert_not_called()
 
     def test_dispatcher_retry_preserves_claimed_root_until_runner_ack(self):
-        from core.maintenance import MaintenanceCoordinator
+        from manager.runtime.maintenance import MaintenanceCoordinator
 
         prior = self.lifecycle()
         prior.task_id = "task-prior"
@@ -3005,7 +3006,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
     def test_tick_claims_accuracy_review_and_dispatcher_retries_exact_root(
         self,
     ):
-        from core.maintenance import MaintenanceCoordinator
+        from manager.runtime.maintenance import MaintenanceCoordinator
 
         lifecycle = self.lifecycle()
         self.accept_task(

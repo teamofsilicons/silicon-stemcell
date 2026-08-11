@@ -95,8 +95,8 @@ def _worker_process_env(contact_id, worker_id="", worker_type=""):
     """
     if not worker_id:
         return os.environ.copy()
-    from core.iwantto import journal
-    from core.iwantto.actor import WORKER, issue_run_env
+    from diagnostics.iwantto import journal
+    from diagnostics.iwantto.actor import WORKER, issue_run_env
 
     _token, env = issue_run_env(
         WORKER,
@@ -135,7 +135,7 @@ def _start_worker_feeder(worker_id, carbon_id, process, task, output_path):
     it exit. If the Stemcell dies first the pipe closes with it, the worker sees
     end-of-input, and it finishes on its own.
     """
-    from core.iwantto import journal, mailbox
+    from diagnostics.iwantto import journal, mailbox
     from inference import stream_json_user
 
     def write(text):
@@ -193,7 +193,7 @@ def _start_worker_feeder(worker_id, carbon_id, process, task, output_path):
 
 def _maintenance_reference():
     try:
-        from core.maintenance import current_activity
+        from manager.runtime.maintenance import current_activity
 
         activity = current_activity()
         return activity.reference() if activity is not None else {}
@@ -203,7 +203,7 @@ def _maintenance_reference():
 
 def _maintenance_activity(reference):
     try:
-        from core.maintenance import activity_from_reference
+        from manager.runtime.maintenance import activity_from_reference
 
         return activity_from_reference(reference)
     except Exception:
@@ -215,7 +215,7 @@ def _heartbeat_maintenance_activity(reference):
     if activity is None:
         return None
     try:
-        from core.maintenance import heartbeat_activity
+        from manager.runtime.maintenance import heartbeat_activity
 
         return activity if heartbeat_activity(activity) else None
     except Exception:
@@ -227,7 +227,7 @@ def _release_maintenance_activity(reference):
     if activity is None:
         return False
     try:
-        from core.maintenance import release_activity
+        from manager.runtime.maintenance import release_activity
 
         return release_activity(activity)
     except Exception:
@@ -237,7 +237,7 @@ def _release_maintenance_activity(reference):
 def reconcile_maintenance_activities():
     """Attach leases to legacy active/queued worker records before draining."""
     try:
-        from core.maintenance import COORDINATOR
+        from manager.runtime.maintenance import COORDINATOR
     except Exception:
         return 0
 
@@ -735,7 +735,7 @@ def _record_active_run(worker_id, provider, session_id, process, task, worker_ty
     diag_room_id = ""
     diag_message_ids = []
     try:
-        from core.diagnostics import Diagnostics
+        from diagnostics.store import Diagnostics
         parent_trace = Diagnostics.get_active_run(carbon_id)
         if parent_trace:
             diag_parent_run_id = parent_trace.run_id
@@ -894,7 +894,7 @@ def _process_browser_queue():
             next_job.get("maintenance_activity")
         )
         try:
-            from core.maintenance import (
+            from manager.runtime.maintenance import (
                 acquire_descendant_activity,
                 bind_activity,
                 public_status,
@@ -952,13 +952,13 @@ def _process_browser_queue():
                 scope.__exit__(None, None, None)
         if not ok and activity is not None:
             try:
-                from core.maintenance import release_activity
+                from manager.runtime.maintenance import release_activity
 
                 release_activity(activity)
             except Exception:
                 pass
     try:
-        from core.work_updates import record_worker_state
+        from interface.work_updates import record_worker_state
 
         record_worker_state(
             next_job.get("carbon_id", "unknown"),
@@ -1123,7 +1123,7 @@ def start_worker(worker_id, task, worker_type, carbon_id, incognito=False):
 
     worker_type = worker_type.lower()
     try:
-        from core.maintenance import (
+        from manager.runtime.maintenance import (
             acquire_descendant_activity,
             bind_activity,
             release_activity,
@@ -1215,7 +1215,7 @@ def message_worker(worker_id, task, carbon_id):
         return f"Error: Worker '{worker_id}' is already in the browser queue."
 
     try:
-        from core.maintenance import (
+        from manager.runtime.maintenance import (
             acquire_descendant_activity,
             bind_activity,
             release_activity,
@@ -1340,12 +1340,12 @@ def stop_worker(worker_id, carbon_id):
     if found_in_queue:
         _release_maintenance_activity(queued_activity)
         try:
-            from core.cron.checkback import remove_checkback
+            from interface.cron.checkback import remove_checkback
             remove_checkback(worker_id)
         except Exception:
             pass
         try:
-            from core.work_updates import record_worker_state
+            from interface.work_updates import record_worker_state
 
             record_worker_state(
                 carbon_id,
@@ -1382,12 +1382,12 @@ def stop_worker(worker_id, carbon_id):
     _release_maintenance_activity(worker_info.get("maintenance_activity") or {})
 
     try:
-        from core.cron.checkback import remove_checkback
+        from interface.cron.checkback import remove_checkback
         remove_checkback(worker_id)
     except Exception:
         pass
     try:
-        from core.work_updates import record_worker_state
+        from interface.work_updates import record_worker_state
 
         record_worker_state(
             carbon_id,
@@ -1508,8 +1508,8 @@ ARCHIVE_CLEANUP_INTERVAL_SECONDS = 60 * 60
 def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, output_path):
     """Create a child run linked back to every message that spawned the worker."""
     try:
-        from core.diagnostics import Diagnostics
-        from core.progress import DONE, usage_from_done_event
+        from diagnostics.store import Diagnostics
+        from interface.progress import DONE, usage_from_done_event
         parent_run_id = worker_info.get("diag_parent_run_id")
         if not parent_run_id:
             return
@@ -1614,7 +1614,7 @@ def check_completed_workers():
         result_text = _parse_worker_output(raw, provider)
         terminal_state = _worker_terminal_state(raw, provider)
         try:
-            from core.work_updates import record_worker_state
+            from interface.work_updates import record_worker_state
 
             record_worker_state(
                 carbon_id,
@@ -1644,7 +1644,7 @@ def check_completed_workers():
         continuation_queued = False
         if activity_reference:
             try:
-                from core.maintenance import COORDINATOR
+                from manager.runtime.maintenance import COORDINATOR
 
                 continuation_queued = COORDINATOR.enqueue_continuation(
                     carbon_id,
@@ -1663,7 +1663,7 @@ def check_completed_workers():
             _release_maintenance_activity(activity_reference)
 
         try:
-            from core.cron.checkback import remove_checkback
+            from interface.cron.checkback import remove_checkback
             remove_checkback(worker_id)
         except Exception:
             pass

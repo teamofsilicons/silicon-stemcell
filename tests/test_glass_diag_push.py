@@ -26,7 +26,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from core.glass_diag_push import (
+from diagnostics.push import (
     MAX_DELIVERY_ATTEMPTS,
     MAX_FRAME_BYTES,
     _frame_bytes,

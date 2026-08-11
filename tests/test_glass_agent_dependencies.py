@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import glass_agent
+from interface.agent import live as glass_agent
 
 
 class GlassAgentDependenciesTest(unittest.TestCase):

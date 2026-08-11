@@ -7,8 +7,8 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 
-from core.iwantto import injection
-from core.progress import (
+from diagnostics.iwantto import injection
+from interface.progress import (
     claude_log_lines,
     claude_progress_events,
     progress_display_line,

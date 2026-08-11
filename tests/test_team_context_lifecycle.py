@@ -74,7 +74,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
         finished = threading.Event()
 
         with mock.patch(
-            "core.team_context.team_context_tick",
+            "interface.team_context.team_context_tick",
             side_effect=lambda: (
                 finished.set()
                 or {
@@ -129,7 +129,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             return {"ok": True, "status": "current"}
 
         with mock.patch(
-            "core.team_context.team_context_tick",
+            "interface.team_context.team_context_tick",
             side_effect=slow_tick,
         ) as tick:
             before = time.monotonic()
@@ -159,11 +159,11 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.team_context.team_context_tick",
+                "interface.team_context.team_context_tick",
                 side_effect=conflict_tick,
             ),
             mock.patch(
-                "core.interface.get_central_contact_id",
+                "interface.adapter.get_central_contact_id",
                 return_value="central-carbon",
             ),
         ):
@@ -215,7 +215,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.team_context.team_context_tick",
+                "interface.team_context.team_context_tick",
                 side_effect=[invalid, healthy],
             ),
             mock.patch("builtins.print"),
@@ -251,7 +251,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             return "central-carbon"
 
         with mock.patch(
-            "core.interface.get_central_contact_id",
+            "interface.adapter.get_central_contact_id",
             side_effect=recover_before_contact_lookup_finishes,
         ):
             delivered = config.check_team_context()
@@ -277,7 +277,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.team_context.team_context_tick",
+                "interface.team_context.team_context_tick",
                 side_effect=stale_invalid_tick,
             ),
             mock.patch("builtins.print") as output,
@@ -311,7 +311,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "core.team_context.team_context_tick",
+                "interface.team_context.team_context_tick",
                 side_effect=[invalid, unavailable, invalid],
             ),
             mock.patch("builtins.print") as output,
@@ -336,7 +336,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             config._TEAM_CONTEXT_RUNNING = True
 
         with mock.patch(
-            "core.interface.get_central_contact_id",
+            "interface.adapter.get_central_contact_id",
             side_effect=["", "central-carbon"],
         ):
             self.assertIsNone(config.check_team_context())
