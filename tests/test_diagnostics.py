@@ -17,7 +17,6 @@ and never flaky on a loaded CI box.
 
 import os
 import sys
-import json
 import tempfile
 import threading
 import unittest

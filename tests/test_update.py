@@ -667,7 +667,7 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
     """The agent reports release status but never mutates a running instance."""
 
     def _run(self, result, action="update"):
-        from interface.agent import live as glass_agent
+        from interface.agent import commands as agent_commands
 
         command = {"command": action}
         with mock.patch.object(
@@ -675,7 +675,7 @@ class GlassAgentUpdateCommandTest(unittest.TestCase):
             "trigger_system_update_check",
             return_value=result,
         ) as check:
-            status, detail = glass_agent.execute_command(
+            status, detail = agent_commands.execute_command(
                 command, Path("/tmp/x"), "worker"
             )
         return status, detail, check, command

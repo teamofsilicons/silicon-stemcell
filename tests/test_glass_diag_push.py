@@ -31,7 +31,6 @@ from diagnostics.push import (
     MAX_FRAME_BYTES,
     _frame_bytes,
     _shrink_frame,
-    _row_to_frame,
     acknowledge,
     drain,
     recover_abandoned_traces,

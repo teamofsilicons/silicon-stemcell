@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from interface.agent import live as glass_agent
+from interface.agent import frames as agent_frames
+from interface.agent import tailer as agent_tailer
 
 
 class RuntimeLogTailerTests(unittest.TestCase):
@@ -10,7 +11,7 @@ class RuntimeLogTailerTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.log_path = Path(self.tempdir.name) / ".silicon.log"
         self.frames = []
-        self.tailer = glass_agent.RuntimeLogTailer(self.log_path)
+        self.tailer = agent_tailer.RuntimeLogTailer(self.log_path)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -91,7 +92,7 @@ class OutboundFrameBoundTests(unittest.TestCase):
 
     def test_small_frames_pass_through_untouched(self):
         frame = {"type": "ping", "ts": 1}
-        self.assertIs(glass_agent.bound_frame(frame), frame)
+        self.assertIs(agent_frames.bound_frame(frame), frame)
 
     def test_oversized_field_is_truncated_not_dropped(self):
         frame = {
@@ -101,11 +102,11 @@ class OutboundFrameBoundTests(unittest.TestCase):
             "status": "done",
             "message": "x" * 400_000,
         }
-        bounded = glass_agent.bound_frame(frame)
+        bounded = agent_frames.bound_frame(frame)
 
         self.assertIsNotNone(bounded)
         self.assertLessEqual(
-            glass_agent._frame_size(bounded), glass_agent.MAX_OUTBOUND_FRAME_BYTES
+            agent_frames._frame_size(bounded), agent_frames.MAX_OUTBOUND_FRAME_BYTES
         )
         # Routing/identity survives so the receiver can still act on it.
         self.assertEqual(bounded["id"], "cmd-1")
@@ -115,11 +116,11 @@ class OutboundFrameBoundTests(unittest.TestCase):
 
     def test_oversized_list_is_replaced_with_a_count_marker(self):
         frame = {"type": "status", "items": [{"blob": "y" * 500} for _ in range(1000)]}
-        bounded = glass_agent.bound_frame(frame)
+        bounded = agent_frames.bound_frame(frame)
 
         self.assertIsNotNone(bounded)
         self.assertLessEqual(
-            glass_agent._frame_size(bounded), glass_agent.MAX_OUTBOUND_FRAME_BYTES
+            agent_frames._frame_size(bounded), agent_frames.MAX_OUTBOUND_FRAME_BYTES
         )
         self.assertEqual(bounded["items"], [{"truncated_items": 1000}])
 
@@ -131,13 +132,13 @@ class OutboundFrameBoundTests(unittest.TestCase):
                 sent.append(data)
 
         ws = FakeWS()
-        self.assertTrue(glass_agent.send_json(ws, {"type": "ping", "ts": 1}))
+        self.assertTrue(agent_frames.send_json(ws, {"type": "ping", "ts": 1}))
         self.assertEqual(len(sent), 1)
 
         # A frame that is all protected keys cannot be shrunk -- it must be
         # reported, never handed to the socket.
         huge_protected = {"type": "x" * 400_000}
-        self.assertFalse(glass_agent.send_json(ws, huge_protected))
+        self.assertFalse(agent_frames.send_json(ws, huge_protected))
         self.assertEqual(len(sent), 1, "oversized frame must not reach the socket")
 
     def test_every_bounded_frame_fits_the_server_limit(self):
@@ -146,10 +147,10 @@ class OutboundFrameBoundTests(unittest.TestCase):
             {"type": "diag.rollup", "run_id": "r1", "events": [{"e": "q" * 300}] * 2000},
             {"type": "terminal", "session_id": "s1", "data": "t" * 250_000},
         ):
-            bounded = glass_agent.bound_frame(frame)
+            bounded = agent_frames.bound_frame(frame)
             self.assertIsNotNone(bounded, frame["type"])
             self.assertLessEqual(
-                glass_agent._frame_size(bounded),
-                glass_agent.MAX_OUTBOUND_FRAME_BYTES,
+                agent_frames._frame_size(bounded),
+                agent_frames.MAX_OUTBOUND_FRAME_BYTES,
                 frame["type"],
             )

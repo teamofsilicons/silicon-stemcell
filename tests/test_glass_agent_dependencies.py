@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from interface.agent import live as glass_agent
+from interface.agent import commands as agent_commands
+from interface.agent import dependencies as agent_dependencies
 
 
 class GlassAgentDependenciesTest(unittest.TestCase):
@@ -32,19 +33,19 @@ class GlassAgentDependenciesTest(unittest.TestCase):
 
             with (
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_installed_python_version",
                     side_effect=lambda name: {
                         "requests": "1.0.0",
                     }.get(name, ""),
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_latest_pypi_version",
                     side_effect=latest_pypi,
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_npm_global_versions",
                     return_value=(
                         {
@@ -55,27 +56,27 @@ class GlassAgentDependenciesTest(unittest.TestCase):
                     ),
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_version_from_command",
                     return_value="",
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_latest_npm_version",
                     side_effect=latest_npm,
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_resolve_command",
                     return_value="",
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_command_identity",
                     return_value="",
                 ),
                 mock.patch.object(
-                    glass_agent,
+                    agent_dependencies,
                     "_python_console_package_version",
                     side_effect=lambda root, command, package: {
                         "silicon-cli": "1.0.17",
@@ -83,7 +84,7 @@ class GlassAgentDependenciesTest(unittest.TestCase):
                     }.get(package, ""),
                 ),
             ):
-                report = glass_agent.dependency_report(root)
+                report = agent_dependencies.dependency_report(root)
 
         by_name = {package["name"]: package for package in report["packages"]}
         self.assertEqual(by_name["requests"]["status"], "outdated")
@@ -118,11 +119,11 @@ class GlassAgentDependenciesTest(unittest.TestCase):
         }
         command = {"command": "dependency_update"}
         with mock.patch.object(
-            glass_agent,
+            agent_dependencies,
             "dependency_report",
             return_value=report,
         ) as dependency_report:
-            status, detail = glass_agent.execute_command(
+            status, detail = agent_commands.execute_command(
                 command,
                 Path("/tmp/example"),
                 "silicon",

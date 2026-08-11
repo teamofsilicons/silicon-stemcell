@@ -81,7 +81,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from interface.cron import checkback
                 from manager.runtime.maintenance import MaintenanceCoordinator
                 from prompts import loader as DNA
-                from interface.agent import live as glass_agent
+                from interface.agent import config as agent_config
                 import inference
                 from inference.codex import provider as codex_provider
                 import main
@@ -123,7 +123,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                     "update_state": str(update.UPDATE_STATE_FILE),
                     "update_info": str(update.SILICON_INFO_FILE),
                     "restart_flag": str(main.RESTART_FLAG),
-                    "glass_agent_root": str(glass_agent.silicon_dir()),
+                    "glass_agent_root": str(agent_config.silicon_dir()),
                     "memory_prompt": DNA._read_prompt("MEMORY.md"),
                     "manager_prompt_path": DNA._prompt_path("MANAGER.md"),
                     "ownership_prompt": DNA._persistent_runtime_paths_section(),

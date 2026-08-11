@@ -8,6 +8,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from interface.agent import config as agent_config
+from interface.agent import live as agent_live
+from interface.agent import messages as agent_messages
+from interface.agent import reconcile as agent_reconcile
+from interface.agent import tailer as agent_tailer
+from interface.agent import terminal as agent_terminal
 from interface.agent import live as glass_agent
 
 
@@ -66,7 +72,7 @@ def _websockets_modules(connect):
 class TeamContextReconcilerTests(unittest.TestCase):
     def test_scheduling_failure_does_not_escape_websocket_handler(self):
         with mock.patch("builtins.print") as print_message:
-            glass_agent.handle_message(
+            agent_messages.handle_message(
                 _FakeWebSocket(),
                 {"type": "team_context.changed", "kind": "metadata"},
                 Path("/tmp/silicon"),
@@ -79,7 +85,7 @@ class TeamContextReconcilerTests(unittest.TestCase):
     def test_invalidation_uses_conditional_reconciliation(self):
         reconciler = _RecordingReconciler()
 
-        glass_agent.handle_message(
+        agent_messages.handle_message(
             _FakeWebSocket(),
             {"type": "team_context.changed", "kind": "advertising_memory"},
             Path("/tmp/silicon"),
@@ -99,7 +105,7 @@ class TeamContextReconcilerTests(unittest.TestCase):
         module.mark_trust_policy_invalidated = lambda **kwargs: marked.append(kwargs)
 
         with mock.patch.dict(sys.modules, {"interface.trust": module}):
-            glass_agent.handle_message(
+            agent_messages.handle_message(
                 _FakeWebSocket(),
                 {
                     "type": "trust.changed",
@@ -130,7 +136,7 @@ class TeamContextReconcilerTests(unittest.TestCase):
         team_reconciler = _RecordingReconciler()
         trust_reconciler = _RecordingReconciler()
 
-        glass_agent.handle_message(
+        agent_messages.handle_message(
             _FakeWebSocket(),
             {"type": "team_context.changed", "kind": "team_context"},
             Path("/tmp/silicon"),
@@ -160,7 +166,7 @@ class TeamContextReconcilerTests(unittest.TestCase):
 
         module = types.ModuleType("interface.team_context")
         module.reconcile_team_context = reconcile
-        reconciler = glass_agent.TeamContextReconciler(Path("/tmp/silicon"))
+        reconciler = agent_reconcile.TeamContextReconciler(Path("/tmp/silicon"))
         try:
             with mock.patch.dict(sys.modules, {"interface.team_context": module}):
                 reconciler.request(reason="websocket-connect")
@@ -191,10 +197,10 @@ class TeamContextReconcilerTests(unittest.TestCase):
 
         module = types.ModuleType("interface.team_context")
         module.reconcile_team_context = reconcile
-        reconciler = glass_agent.TeamContextReconciler(Path("/tmp/silicon"))
+        reconciler = agent_reconcile.TeamContextReconciler(Path("/tmp/silicon"))
         try:
             with mock.patch.dict(sys.modules, {"interface.team_context": module}):
-                glass_agent.handle_message(
+                agent_messages.handle_message(
                     _FakeWebSocket(),
                     {"type": "team_context.changed", "kind": "advertising_memory"},
                     Path("/tmp/silicon"),
@@ -218,7 +224,7 @@ class TeamContextReconcilerTests(unittest.TestCase):
 
         module = types.ModuleType("interface.team_context")
         module.reconcile_team_context = reconcile
-        reconciler = glass_agent.TeamContextReconciler(Path("/tmp/silicon"))
+        reconciler = agent_reconcile.TeamContextReconciler(Path("/tmp/silicon"))
         try:
             with mock.patch.dict(sys.modules, {"interface.team_context": module}):
                 with mock.patch("builtins.print"):
@@ -247,8 +253,8 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with mock.patch.object(glass_agent.time, "sleep") as sleep:
-                glass_agent.wait_for_retry(
+            with mock.patch.object(agent_config.time, "sleep") as sleep:
+                agent_config.wait_for_retry(
                     root,
                     [True],
                     delay=300,
@@ -271,13 +277,13 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
             )
             with (
                 mock.patch.object(
-                    glass_agent.time,
+                    agent_config.time,
                     "monotonic",
                     side_effect=[0, 0, 0, 1],
                 ),
-                mock.patch.object(glass_agent.time, "sleep") as sleep,
+                mock.patch.object(agent_config.time, "sleep") as sleep,
             ):
-                glass_agent.wait_for_retry(root, [True], delay=1)
+                agent_config.wait_for_retry(root, [True], delay=1)
 
         sleep.assert_called_once()
 
@@ -285,7 +291,7 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
         root = Path("/tmp/silicon")
         with (
             mock.patch.object(
-                glass_agent,
+                agent_config,
                 "load_config",
                 side_effect=[
                     {"api_key": "current-key"},
@@ -296,13 +302,13 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
                 ],
             ),
             mock.patch.object(
-                glass_agent.time,
+                agent_config.time,
                 "monotonic",
                 side_effect=[0, 0, 0, 0],
             ),
-            mock.patch.object(glass_agent.time, "sleep") as sleep,
+            mock.patch.object(agent_config.time, "sleep") as sleep,
         ):
-            glass_agent.wait_for_retry(
+            agent_config.wait_for_retry(
                 root,
                 [True],
                 delay=300,
@@ -324,11 +330,11 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
             return _ConnectContext(websocket)
 
         with mock.patch.dict(sys.modules, _websockets_modules(connect)), mock.patch.object(
-            glass_agent.time,
+            agent_config.time,
             "monotonic",
             side_effect=[0, 61],
         ), mock.patch.object(
-            glass_agent.time,
+            agent_config.time,
             "time",
             return_value=123,
         ), mock.patch.object(
@@ -339,13 +345,13 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
             glass_agent,
             "terminal_stop",
         ), mock.patch.object(
-            glass_agent.ChangeDrivenWorker,
+            agent_tailer.ChangeDrivenWorker,
             "start",
         ), mock.patch.object(
-            glass_agent.ChangeDrivenWorker,
+            agent_tailer.ChangeDrivenWorker,
             "stop",
         ):
-            glass_agent.run_live(
+            agent_live.run_live(
                 Path("/tmp/silicon"),
                 {
                     "server_url": "http://127.0.0.1:8000",
@@ -379,7 +385,7 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
 
         with mock.patch.dict(sys.modules, _websockets_modules(connect)):
             with self.assertRaisesRegex(RuntimeError, "unsafe Glass WebSocket URL"):
-                glass_agent.run_live(
+                agent_live.run_live(
                     Path("/tmp/silicon"),
                     {
                         "server_url": "http://glass.test",
@@ -401,7 +407,7 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
 
         for server_url, websocket_url in expected.items():
             with self.subTest(server_url=server_url):
-                self.assertEqual(glass_agent.ws_url(server_url), websocket_url)
+                self.assertEqual(agent_config.ws_url(server_url), websocket_url)
 
     def test_native_websocket_schemes_are_rejected_as_server_urls(self):
         for server_url in ("ws://localhost:8000", "wss://glass.test"):
@@ -410,7 +416,7 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
                     RuntimeError,
                     "unsafe Glass WebSocket URL",
                 ):
-                    glass_agent.ws_url(server_url)
+                    agent_config.ws_url(server_url)
 
     def test_lookalike_and_obscured_websocket_destinations_are_rejected(self):
         unsafe_urls = (
@@ -428,7 +434,7 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
                     RuntimeError,
                     "unsafe Glass WebSocket URL",
                 ):
-                    glass_agent.ws_url(server_url)
+                    agent_config.ws_url(server_url)
 
     def test_secure_ws_supplies_ssl_context(self):
         running = [False]
@@ -453,7 +459,7 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
             glass_agent,
             "terminal_stop",
         ):
-            glass_agent.run_live(
+            agent_live.run_live(
                 Path("/tmp/silicon"),
                 {"server_url": "https://glass.test", "api_key": "primary-key"},
                 running,
@@ -467,15 +473,15 @@ class GlassAgentLiveConnectionTests(unittest.TestCase):
 class SidecarPlatformParityTests(unittest.TestCase):
     def test_missing_pty_disables_only_interactive_terminal(self):
         websocket = _FakeWebSocket()
-        with mock.patch.object(glass_agent, "pty", None), mock.patch.object(
-            glass_agent.shutil,
+        with mock.patch.object(agent_terminal, "pty", None), mock.patch.object(
+            agent_terminal.shutil,
             "which",
             return_value="codex",
         ), mock.patch.object(
             glass_agent,
             "terminal_stop",
         ):
-            glass_agent.terminal_start(
+            agent_terminal.terminal_start(
                 websocket,
                 Path("/tmp/silicon"),
                 "codex",
@@ -496,30 +502,30 @@ class GlassAgentReconnectBackoffTests(unittest.TestCase):
         # second -- the signature of a rollup Glass cannot ingest.
         backoff, delays = 1, []
         for _ in range(7):
-            delay, backoff = glass_agent.reconnect_delay(
+            delay, backoff = agent_config.reconnect_delay(
                 backoff, rejected=False, session_seconds=0.4
             )
             delays.append(delay)
 
         self.assertEqual(delays, [2, 4, 8, 16, 30, 30, 30])
-        self.assertLessEqual(max(delays), glass_agent.MAX_BACKOFF)
+        self.assertLessEqual(max(delays), agent_config.MAX_BACKOFF)
 
     def test_connection_that_never_handshaked_escalates(self):
         self.assertEqual(
-            glass_agent.reconnect_delay(4, rejected=False, session_seconds=None),
+            agent_config.reconnect_delay(4, rejected=False, session_seconds=None),
             (8, 8),
         )
 
     def test_healthy_connection_breaking_retries_promptly(self):
-        delay, backoff = glass_agent.reconnect_delay(
+        delay, backoff = agent_config.reconnect_delay(
             16,
             rejected=False,
-            session_seconds=glass_agent.STABLE_CONNECTION_SECONDS + 1,
+            session_seconds=agent_config.STABLE_CONNECTION_SECONDS + 1,
         )
         self.assertEqual((delay, backoff), (1, 2))
 
     def test_authentication_rejection_waits_out_the_long_backoff(self):
         self.assertEqual(
-            glass_agent.reconnect_delay(8, rejected=True, session_seconds=0.1),
-            (glass_agent.AUTH_REJECTION_BACKOFF, 1),
+            agent_config.reconnect_delay(8, rejected=True, session_seconds=0.1),
+            (agent_config.AUTH_REJECTION_BACKOFF, 1),
         )
