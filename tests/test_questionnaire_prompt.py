@@ -1,7 +1,7 @@
 """The setup questions a manager answers before it does anything.
 
 The old QUESTIONNAIRE.md / FINAL_QUESTIONNAIRE.md pair was replaced by
-prompts/SETUP_QUESTIONS.py, which is a tree rather than prose so it can be
+prompts/setup/questions.py, which is a tree rather than prose so it can be
 walked in rounds. These tests hold the properties that make it usable: it is
 rendered into every manager prompt, it comes last, every file it can pull in
 exists, and it forbids acting during the thinking phase.
@@ -9,8 +9,8 @@ exists, and it forbids acting during the thinking phase.
 import unittest
 from unittest import mock
 
-from prompts import DNA
-from prompts import SETUP_QUESTIONS
+from prompts import loader as DNA
+from prompts.setup import questions as SETUP_QUESTIONS
 
 
 class SetupQuestionsPromptTest(unittest.TestCase):

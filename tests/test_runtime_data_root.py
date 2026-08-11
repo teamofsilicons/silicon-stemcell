@@ -80,7 +80,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from interface import work_updates
                 from interface.cron import checkback
                 from manager.runtime.maintenance import MaintenanceCoordinator
-                from prompts import DNA
+                from prompts import loader as DNA
                 from interface.agent import live as glass_agent
                 import inference
                 from inference.codex import provider as codex_provider
@@ -191,9 +191,10 @@ class RuntimeDataRootTests(unittest.TestCase):
                 str(release_root),
                 result["worker_ownership_prompt"],
             )
+            # The manager's own prompts live next to the manager's code now.
             self.assertTrue(
                 Path(result["manager_prompt_path"]).is_relative_to(
-                    release_root / "prompts"
+                    release_root / "manager" / "prompts"
                 )
             )
             self.assertIn("prompts/MEMORY.md", result["snapshot_paths"])

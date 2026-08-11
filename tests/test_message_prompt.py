@@ -2,7 +2,7 @@ import hashlib
 import unittest
 from unittest import mock
 
-from prompts import DNA
+from prompts import loader as DNA
 
 
 class MessagePromptTest(unittest.TestCase):

@@ -10,6 +10,7 @@ import inference
 import inference.sessions
 import main
 import manager
+from prompts import loader as DNA
 from diagnostics import activity as activity_log
 from inference.claude import stream as claude_stream
 from inference.codex import provider as codex_provider
@@ -26,7 +27,7 @@ class ManagerToolsDocTest(unittest.TestCase):
         from diagnostics.iwantto.cli import build_parser
 
         text = "\n".join(
-            (PROJECT_ROOT / "prompts" / name).read_text(encoding="utf-8")
+            Path(DNA._prompt_path(name)).read_text(encoding="utf-8")
             for name in ("MANAGER_TOOLS.md", "IWANTTO_CLI_REFERENCE.md")
         )
         # Only backticked command spans; prose like "the iwantto cli" is not a
@@ -56,8 +57,8 @@ class ManagerToolsDocTest(unittest.TestCase):
         """
         from diagnostics.iwantto.cli import build_parser
 
-        reference = (
-            PROJECT_ROOT / "prompts" / "IWANTTO_CLI_REFERENCE.md"
+        reference = Path(
+            DNA._prompt_path("IWANTTO_CLI_REFERENCE.md")
         ).read_text(encoding="utf-8")
         subparsers = next(
             action
@@ -85,9 +86,7 @@ class ManagerToolsDocTest(unittest.TestCase):
         self.assertEqual(sorted(set(gaps)), [])
 
     def test_manager_tools_prompt_carries_no_tool_json(self):
-        text = (PROJECT_ROOT / "prompts" / "MANAGER_TOOLS.md").read_text(
-            encoding="utf-8"
-        )
+        text = Path(DNA._prompt_path("MANAGER_TOOLS.md")).read_text(encoding="utf-8")
         self.assertNotIn('"tools"', text)
         self.assertIn("iwantto", text)
 
@@ -1051,7 +1050,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 "run_turn",
                 return_value=inference.TurnResult(output, output, []),
             ),
-            mock.patch("prompts.DNA.get_manager_prompt", return_value="sp"),
+            mock.patch("prompts.loader.get_manager_prompt", return_value="sp"),
             mock.patch("builtins.print") as printed,
         ):
             result = manager.manager_code("update it", "carbon-private")

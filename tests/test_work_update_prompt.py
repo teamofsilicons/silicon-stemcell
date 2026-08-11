@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from prompts import DNA
+from prompts import loader as DNA
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

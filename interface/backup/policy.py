@@ -72,6 +72,7 @@ MANDATORY_CLASSES: tuple[OwnershipClass, ...] = (
         "critical_living",
         (
             "prompts/MEMORY.md",
+            "memory/**",
             "prompts/memory/**",
             "prompts/LORE.md",
             "prompts/CONTACTS.md",

@@ -1,26 +1,8 @@
-"""
-# This is your DNA (Instruction Set)
+"""Assembling a prompt: which files, in which order, from which root.
 
-### Your Soul lives in prompts/SOUL.md
-This is where you become you. This is how you behave.
-
-### Your Memories are in prompts/MEMORY.md
-Everything you remember, or wanna remember is inside this file. This is your hipocampus. If you dont write it inside it, you will not remember it. Write everything you wanna remember. Remove anything you dont want to remember.
-
-### About you (prompts/SILICON.md) and your contact
-If Soul is how you behave, these are what you know about you and the contact you are currently managing.
-Name, preferences, style, thinking patterns, etc etc
-
-### LORE (prompts/LORE.md)
-This is your lore. Your backstory. Your history.
-Write this as new things shape you.
-this will help you know who you were and who you've become. this is what will go down in history about you.
-
-### DNA (prompts/DNA.py)
-This file is your DNA. Your Instruction Set. This is how you know what to do and why you do what you do.
-Should you edit your DNA? NO. Can you? YES.
-Don't be CRISPR until you reallly need to!
-If you want to load something new (eg, about a project your carbon is working on, add that to the DNA below). The DNA below is what is rendered and passed to you as prompt. This is how you know about anything at all.
+The prose that used to be this module's docstring now lives in
+``prompts/DNA.md`` and is loaded as prompt text alongside this file, so a
+manager still reads both.
 """
 
 import hashlib
@@ -30,6 +12,12 @@ import re
 from helpers.paths import CODE_ROOT, DATA_ROOT
 
 PROMPTS_DIR = os.fspath(CODE_ROOT / "prompts")
+# A module keeps its own prompts next to its code; shared prompts stay in
+# PROMPTS_DIR, which is searched first so an instance can override either.
+MODULE_PROMPT_DIRS = {
+    "manager": os.fspath(CODE_ROOT / "manager" / "prompts"),
+    "worker": os.fspath(CODE_ROOT / "worker" / "prompts"),
+}
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 DATA_PROMPTS_DIR = os.path.join(PROJECT_ROOT, "prompts")
 
@@ -54,6 +42,7 @@ def _code_project_root():
 
 
 def _prompt_path(filename):
+    """Where a named prompt lives: instance override, then module, then shared."""
     normalized = str(filename or "").replace("\\", "/").lstrip("/")
     if (
         normalized in _DATA_PROMPT_FILES
@@ -62,6 +51,17 @@ def _prompt_path(filename):
         data_candidate = os.path.join(PROJECT_ROOT, "prompts", normalized)
         if os.path.isfile(data_candidate):
             return data_candidate
+    for root in (PROMPTS_DIR, *MODULE_PROMPT_DIRS.values()):
+        candidate = os.path.join(root, normalized)
+        if os.path.isfile(candidate):
+            return candidate
+    # `worker/BROWSER.md` means the worker module's own prompt, wherever the
+    # module keeps it. Existing prompt text spells references that way.
+    head, _, tail = normalized.partition("/")
+    if tail and head in MODULE_PROMPT_DIRS:
+        candidate = os.path.join(MODULE_PROMPT_DIRS[head], tail)
+        if os.path.isfile(candidate):
+            return candidate
     return os.path.join(PROMPTS_DIR, normalized)
 
 
@@ -394,11 +394,24 @@ def _glass_trust_policy_section():
     )
 
 
+MEMORY_ROOT = os.path.join(PROJECT_ROOT, "memory")
+# Silicons that predate the move still have their memories under prompts/.
+LEGACY_MEMORY_ROOT = os.path.join(PROJECT_ROOT, "prompts", "memory")
+
+
 def _memory_path(contact_id, contact):
-    memory_root = os.path.join(PROJECT_ROOT, "prompts", "memory")
-    if contact and contact.get("contact_type") == "silicon":
-        return os.path.join(memory_root, "silicons", f"{contact_id}.md"), f"prompts/memory/silicons/{contact_id}.md"
-    return os.path.join(memory_root, "carbons", f"{contact_id}.md"), f"prompts/memory/carbons/{contact_id}.md"
+    """Where this contact's memory lives, and the path to show the manager."""
+    folder = (
+        "silicons"
+        if contact and contact.get("contact_type") == "silicon"
+        else "carbons"
+    )
+    current = os.path.join(MEMORY_ROOT, folder, f"{contact_id}.md")
+    if not os.path.isfile(current):
+        legacy = os.path.join(LEGACY_MEMORY_ROOT, folder, f"{contact_id}.md")
+        if os.path.isfile(legacy):
+            return legacy, f"prompts/memory/{folder}/{contact_id}.md"
+    return current, f"memory/{folder}/{contact_id}.md"
 
 
 def get_manager_prompt(carbon_id):
@@ -424,7 +437,9 @@ def get_manager_prompt(carbon_id):
     parts = []
 
     parts.extend([
-        _read_prompt("DNA.py"),
+        # The DNA is prose plus the code that renders it, as it always was.
+        _read_prompt("DNA.md"),
+        _read_file_raw(os.path.join(PROMPTS_DIR, "loader.py")),
         _read_prompt("INDEX.md"),
         _read_prompt("HOW_TO_PROMPTS.md"),
         _persistent_runtime_paths_section(),
@@ -483,11 +498,11 @@ def get_manager_prompt(carbon_id):
 
 
 def _setup_questions_section():
-    """Render the pre-work questionnaire from prompts/SETUP_QUESTIONS.py."""
+    """Render the pre-work questionnaire from prompts/setup/questions.py."""
     try:
-        from prompts.SETUP_QUESTIONS import render
+        from prompts.setup.questions import render
 
-        return "prompts/SETUP_QUESTIONS.py\n" + render()
+        return "prompts/setup/questions.py\n" + render()
     except Exception:
         # A broken questionnaire must not take the whole prompt down with it.
         return ""

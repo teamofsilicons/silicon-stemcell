@@ -16,7 +16,7 @@ from inference import (
     parse_manager_output,
     provider_failed,
 )
-from prompts.DNA import get_manager_prompt
+from prompts.loader import get_manager_prompt
 
 INJECTED_PREFIX = (
     "[NEW MESSAGE from your carbon]\n\n"

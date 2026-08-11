@@ -46,6 +46,7 @@ MANIFEST_NAME = ".backupsilicon"
 MANIFEST_ARCHIVE_PREFIX = ".backupsilicon.archive"
 LEGACY_DEFAULT_MANIFEST = (
     "prompts/MEMORY.md",
+    "memory/**",
     "prompts/memory/**",
     "prompts/LORE.md",
     "prompts/CONTACTS.md",

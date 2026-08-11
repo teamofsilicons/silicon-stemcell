@@ -28,7 +28,7 @@ from inference import (
     get_provider,
     json_events,
 )
-from prompts.DNA import get_worker_prompt
+from prompts.loader import get_worker_prompt
 
 IS_WINDOWS = platform.system() == "Windows"
 

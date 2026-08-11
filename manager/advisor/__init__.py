@@ -68,7 +68,7 @@ def _state_for(contact_id: str) -> dict:
 
 def build_prompt(contact_id: str) -> str:
     """INDEX.md, then IWANTTO_CLI_REFERENCE.md, then ADVISOR.md."""
-    from prompts.DNA import _read_prompt
+    from prompts.loader import _read_prompt
 
     parts = [_read_prompt(name) for name in ADVISOR_PROMPT_FILES]
     parts.append(
