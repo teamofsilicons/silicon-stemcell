@@ -282,16 +282,16 @@ def load_config(root: Path) -> dict:
     # Share the runtime's exact-root, no-symlink loader so the sidecar cannot
     # inherit another Silicon's credentials and legacy 0644 files are hardened
     # to owner-only permissions before use.
-    from interface.config import load_glass_config
+    from interface.config import load_config
 
     try:
-        config, _path = load_glass_config(root)
+        config, _path = load_config(root)
     except FileNotFoundError:
         return {}
     return config
 
 
-def glass_api_key(config: dict) -> str:
+def api_key_from_config(config: dict) -> str:
     """Return either supported spelling of the per-Silicon credential."""
     return str(config.get("api_key") or config.get("silicon_api_key") or "").strip()
 
@@ -325,12 +325,12 @@ def ws_url(server_url: str) -> str:
     Reject URL features that could obscure the authenticated destination.
     """
 
-    from interface.config import GlassConfigurationError, validate_authenticated_origin
+    from interface.config import InterfaceConfigError, validate_authenticated_origin
 
     try:
         validated = validate_authenticated_origin(server_url)
         parsed = urlsplit(validated)
-    except (GlassConfigurationError, TypeError, ValueError) as exc:
+    except (InterfaceConfigError, TypeError, ValueError) as exc:
         raise RuntimeError(
             "Refusing to send a Silicon API key to an unsafe Glass WebSocket URL."
         ) from exc
@@ -394,7 +394,7 @@ def wait_for_retry(
     while running[0] and time.monotonic() < deadline:
         try:
             current_config = load_config(root)
-            current_key = glass_api_key(current_config)
+            current_key = api_key_from_config(current_config)
             current_server_url = str(current_config.get("server_url") or "")
         except (OSError, ValueError, TypeError):
             current_key = ""
@@ -1719,7 +1719,7 @@ def run_live(
 
     name = silicon_name(root)
     url = ws_url(config["server_url"])
-    key = glass_api_key(config)
+    key = api_key_from_config(config)
     if not key:
         raise RuntimeError("Glass API key is unavailable.")
     print(f"[glass-agent] connecting to {config['server_url'].rstrip('/')}/ws/glass/agent/", flush=True)
@@ -1919,7 +1919,7 @@ def main() -> None:
     if not config:
         print("[glass-agent] No .glass.json found. Exiting.", flush=True)
         sys.exit(1)
-    if not config.get("server_url") or not glass_api_key(config):
+    if not config.get("server_url") or not api_key_from_config(config):
         print("[glass-agent] Missing server_url or api_key in .glass.json. Exiting.", flush=True)
         sys.exit(1)
     pid_file = root / ".glass_agent.pid"
@@ -1940,7 +1940,7 @@ def main() -> None:
     try:
         while running[0]:
             config = load_config(root)
-            key = glass_api_key(config)
+            key = api_key_from_config(config)
             if not config.get("server_url") or not key:
                 print("[glass-agent] credentials unavailable; checking again in 300s", flush=True)
                 wait_for_retry(

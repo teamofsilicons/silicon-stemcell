@@ -302,7 +302,7 @@ class DataPolicyTest(unittest.TestCase):
     def test_maintenance_queue_and_leases_are_mandatory_task_delivery_state(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            state = root / "core" / "interface_state"
+            state = root / "interface" / "state"
             state.mkdir(parents=True)
             (state / "maintenance.json").write_text(
                 json.dumps(
@@ -324,14 +324,14 @@ class DataPolicyTest(unittest.TestCase):
             }
 
             self.assertEqual(
-                protected["core/interface_state/maintenance.json"],
+                protected["interface/state/maintenance.json"],
                 ("task_delivery",),
             )
 
     def test_atomic_state_write_temporaries_are_not_protected(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            state = root / "core" / "interface_state"
+            state = root / "interface" / "state"
             state.mkdir(parents=True)
             (state / "maintenance.json").write_text("{}", encoding="utf-8")
             atomic_temporary = state / ".maintenance.json.26.133064281805504.tmp"
@@ -349,14 +349,14 @@ class DataPolicyTest(unittest.TestCase):
                 ).resolve(root)
             }
 
-            self.assertIn("core/interface_state/maintenance.json", protected)
-            self.assertIn("core/interface_state/operator-notes.tmp", protected)
+            self.assertIn("interface/state/maintenance.json", protected)
+            self.assertIn("interface/state/operator-notes.tmp", protected)
             self.assertNotIn(
-                "core/interface_state/.maintenance.json.26.133064281805504.tmp",
+                "interface/state/.maintenance.json.26.133064281805504.tmp",
                 protected,
             )
             self.assertNotIn(
-                "core/interface_state/.maintenance.json.jl_0y4vb.tmp",
+                "interface/state/.maintenance.json.jl_0y4vb.tmp",
                 protected,
             )
 
@@ -426,7 +426,7 @@ class LocalSnapshotTest(unittest.TestCase):
     def test_snapshot_uses_maintenance_writer_lock(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            state = root / "core" / "interface_state"
+            state = root / "interface" / "state"
             state.mkdir(parents=True)
             maintenance = state / "maintenance.json"
             maintenance.write_text('{"phase":"draining"}', encoding="utf-8")

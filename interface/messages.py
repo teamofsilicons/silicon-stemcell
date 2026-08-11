@@ -12,11 +12,11 @@ import threading
 import time
 import uuid
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, write_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
-MANAGER_MESSAGES_FILE = os.path.join(PROJECT_ROOT, "core", "interface_state", "manager_queue.json")
+MANAGER_MESSAGES_FILE = os.path.join(os.fspath(STATE_DIR), "manager_queue.json")
 _MANAGER_MESSAGES_LOCK = threading.RLock()
 _MANAGER_DELIVERY_LOCK = threading.Lock()
 MANAGER_QUEUE_MAX_ITEMS = 1_000

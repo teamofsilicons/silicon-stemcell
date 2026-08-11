@@ -9,17 +9,17 @@ from zoneinfo import ZoneInfo
 
 from interface.cron.checkback import get_checkback_jobs
 from interface.adapter import InterfaceClient, InterfaceError, ensure_contact_for_target
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, update_json, write_json
 
 PROJECT_ROOT = DATA_ROOT
-CHECKBACK_HISTORY_FILE = PROJECT_ROOT / "core" / "cron" / "history.json"
-CRON_STATE_FILE = PROJECT_ROOT / "core" / "interface_state" / "crons.json"
+CHECKBACK_HISTORY_FILE = PROJECT_ROOT / "interface" / "cron" / "history.json"
+CRON_STATE_FILE = STATE_DIR / "crons.json"
 CRON_CACHE_FILE = (
-    PROJECT_ROOT / "core" / "interface_state" / "glass_crons_cache.json"
+    STATE_DIR / "glass_crons_cache.json"
 )
 CRON_INVALIDATION_FILE = (
-    PROJECT_ROOT / "core" / "interface_state" / "glass_crons_invalidated.json"
+    STATE_DIR / "glass_crons_invalidated.json"
 )
 CRON_CACHE_FALLBACK_SECONDS = 5 * 60
 

@@ -32,7 +32,7 @@ try:  # Windows
 except ImportError:  # pragma: no cover - Unix/macOS
     msvcrt = None
 from interface.backup import policy as data_policy
-from interface.config import load_glass_config, silicon_api_request
+from interface.config import load_config, silicon_api_request
 from helpers.paths import DATA_ROOT
 from helpers.state import (
     atomic_write_bytes,
@@ -49,7 +49,7 @@ LEGACY_DEFAULT_MANIFEST = (
     "prompts/memory/**",
     "prompts/LORE.md",
     "prompts/CONTACTS.md",
-    "core/interface_state/contacts.json",
+    "interface/state/contacts.json",
     "logs/**",
 )
 DEFAULT_MANIFEST: tuple[str, ...] = ()
@@ -70,7 +70,7 @@ IN_PLACE_RESTORE_JOURNAL = Path(".silicon") / "restore-in-place.json"
 IN_PLACE_RESTORE_LATEST = Path(".silicon") / "last-restored-snapshot.json"
 RELEASE_SEQUENCE_FLOOR = ".silicon/release-sequence-floor.json"
 RELEASE_SEQUENCE_FLOOR_LOCK = ".silicon/release-sequence-floor.lock"
-MAINTENANCE_STATE = "core/interface_state/maintenance.json"
+MAINTENANCE_STATE = "interface/state/maintenance.json"
 MAX_RELEASE_SEQUENCE_FLOOR_BYTES = 4096
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_RELEASE_VERSION_RE = re.compile(

@@ -199,16 +199,16 @@ class RuntimeDataRootTests(unittest.TestCase):
             self.assertTrue(
                 (
                     data_root
-                    / "core"
-                    / "interface_state"
+                    / "interface"
+                    / "state"
                     / "manager_queue.json"
                 ).is_file()
             )
             self.assertTrue(
-                (data_root / "core" / "cron" / "checkbacks.json").is_file()
+                (data_root / "interface" / "cron" / "checkbacks.json").is_file()
             )
             self.assertTrue(
-                (data_root / "core" / "interface_state" / "maintenance.json").is_file()
+                (data_root / "interface" / "state" / "maintenance.json").is_file()
             )
             self.assertTrue((data_root / "sessions" / "carbon-a.txt").is_file())
             self.assertTrue(

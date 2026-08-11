@@ -41,7 +41,7 @@ import logging
 import os
 import time
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import STATE_DIR
 
 log = logging.getLogger("silicon.diag.retention")
 
@@ -53,7 +53,7 @@ PRUNE_THROTTLE_HOURS: float = 6.0
 
 # Matches core/diagnostics.py's default storage location.
 DEFAULT_DIAG_DIR = os.fspath(
-    DATA_ROOT / "core" / "interface_state" / "diagnostics"
+    STATE_DIR / "diagnostics"
 )
 
 _MARKER_NAME = ".last_prune"

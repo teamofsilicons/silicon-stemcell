@@ -22,12 +22,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 ADVISOR_STATE_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "advisors.json"
+    os.fspath(STATE_DIR), "advisors.json"
 )
 
 # A gap this long means the manager has moved on to something else; the advice

@@ -176,7 +176,7 @@ class TeamContextTransitionTests(unittest.TestCase):
         self.assertEqual(own_path.read_text(encoding="utf-8"), "Unsynced own draft")
 
         state = json.loads(
-            (self.root / "core" / "interface_state" / "team_context.json").read_text(
+            (self.root / "interface" / "state" / "team_context.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -230,7 +230,7 @@ class TeamContextTransitionTests(unittest.TestCase):
         )
 
         state = json.loads(
-            (self.root / "core" / "interface_state" / "team_context.json").read_text(
+            (self.root / "interface" / "state" / "team_context.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -259,7 +259,7 @@ class TeamContextTransitionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "unavailable")
         self.assertFalse(former_own_path.exists())
-        archive_root = self.root / "core" / "interface_state" / "team_context_drafts"
+        archive_root = self.root / "interface" / "state" / "team_context_drafts"
         self.assertTrue(
             any(
                 path.is_file() and path.read_text(encoding="utf-8") == draft
@@ -306,14 +306,14 @@ class TeamContextTransitionTests(unittest.TestCase):
             former_own_remote,
         )
 
-        archive_root = self.root / "core" / "interface_state" / "team_context_drafts"
+        archive_root = self.root / "interface" / "state" / "team_context_drafts"
         archived_files = [path for path in archive_root.rglob("*") if path.is_file()]
         self.assertTrue(
             any(path.read_text(encoding="utf-8") == draft for path in archived_files),
             "The former principal's unsynced draft must have a private archive copy.",
         )
         raw_state = (
-            self.root / "core" / "interface_state" / "team_context.json"
+            self.root / "interface" / "state" / "team_context.json"
         ).read_text(encoding="utf-8")
         self.assertNotIn(draft, raw_state)
 
@@ -352,13 +352,13 @@ class TeamContextTransitionTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(former_own_path.read_text(), former_own_remote)
-        archive_root = self.root / "core" / "interface_state" / "team_context_drafts"
+        archive_root = self.root / "interface" / "state" / "team_context_drafts"
         archived_files = [path for path in archive_root.rglob("*.md") if path.is_file()]
         self.assertTrue(
             any(path.read_text(encoding="utf-8") == invalid_draft for path in archived_files)
         )
         raw_state = (
-            self.root / "core" / "interface_state" / "team_context.json"
+            self.root / "interface" / "state" / "team_context.json"
         ).read_text(encoding="utf-8")
         self.assertNotIn(invalid_draft, raw_state)
         state = json.loads(raw_state)
@@ -379,8 +379,8 @@ class TeamContextTransitionTests(unittest.TestCase):
         former_own_path.write_text(invalid_draft, encoding="utf-8")
         archive_link = (
             self.root
-            / "core"
-            / "interface_state"
+            / "interface"
+            / "state"
             / "team_context_drafts"
             / "self-si"
         )
@@ -481,7 +481,7 @@ class TeamContextTransitionTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertFalse(stale_path.exists())
-        archive_root = self.root / "core" / "interface_state" / "team_context_drafts"
+        archive_root = self.root / "interface" / "state" / "team_context_drafts"
         self.assertTrue(
             any(
                 path.is_file()
@@ -498,8 +498,8 @@ class TeamContextTransitionTests(unittest.TestCase):
         stale_path.write_text(stale_content, encoding="utf-8")
         archive_link = (
             self.root
-            / "core"
-            / "interface_state"
+            / "interface"
+            / "state"
             / "team_context_drafts"
             / "unscoped"
         )
@@ -713,8 +713,8 @@ class TeamContextTransitionTests(unittest.TestCase):
         self.assertTrue(
             (
                 self.root
-                / "core"
-                / "interface_state"
+                / "interface"
+                / "state"
                 / "team_context.blocked"
             ).exists()
         )
@@ -801,7 +801,7 @@ class TeamContextTransitionTests(unittest.TestCase):
         self.assertEqual(result["status"], "state_error")
         self.assertTrue((self.root / "prompts" / "TEAM.md").exists())
         self.assertTrue(
-            (self.root / "core" / "interface_state" / "team_context.blocked").exists()
+            (self.root / "interface" / "state" / "team_context.blocked").exists()
         )
         self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
 
@@ -818,7 +818,7 @@ class TeamContextTransitionTests(unittest.TestCase):
 
         self.assertEqual(retry["status"], "unavailable")
         self.assertTrue(
-            (self.root / "core" / "interface_state" / "team_context.blocked").exists()
+            (self.root / "interface" / "state" / "team_context.blocked").exists()
         )
         self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
 

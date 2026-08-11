@@ -18,7 +18,7 @@ from interface.backup._common import (
     gzip,
     json,
     os,
-    load_glass_config,
+    load_config,
     silicon_api_request,
     stat,
     tarfile,
@@ -213,7 +213,7 @@ def run_backup(
         logger("backup: protected-data policy matched no files")
         return False
 
-    config, _config_path = load_glass_config(root)
+    config, _config_path = load_config(root)
     if not str(config.get("api_key") or config.get("silicon_api_key") or "").strip():
         archive.close()
         raise ValueError(".glass.json does not contain an api_key")

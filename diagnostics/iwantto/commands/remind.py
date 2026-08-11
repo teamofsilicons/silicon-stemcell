@@ -18,12 +18,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from diagnostics.iwantto.routing import RoutingError, resolve_target
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 REMINDERS_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "iwantto_reminders.json"
+    os.fspath(STATE_DIR), "iwantto_reminders.json"
 )
 
 RELATIVE_RE = re.compile(r"^(\d+)([mhd])$")

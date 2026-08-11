@@ -56,7 +56,7 @@ VERSION = 2
 # (memo Section 5.2). Overridable via env or configure() for tests / relocation.
 DEFAULT_DIAG_DIR = os.fspath(
     resolve_data_relative(
-        os.environ.get("SILICON_DIAG_DIR", "core/interface_state/diagnostics")
+        os.environ.get("SILICON_DIAG_DIR", "interface/state/diagnostics")
     )
 )
 

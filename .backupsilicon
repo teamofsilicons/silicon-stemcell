@@ -2,6 +2,6 @@ prompts/MEMORY.md
 prompts/memory/**
 prompts/LORE.md
 prompts/CONTACTS.md
-core/interface_state/contacts.json
+interface/state/contacts.json
 logs/**
 diagnosis/**

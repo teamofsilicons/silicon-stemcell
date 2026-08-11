@@ -15,12 +15,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 HEARTBEAT_STATE_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "heartbeats.json"
+    os.fspath(STATE_DIR), "heartbeats.json"
 )
 
 INTERVAL_SECONDS = 13 * 60

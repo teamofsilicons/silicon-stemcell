@@ -164,7 +164,7 @@ class MaintenanceCoordinator:
         )
         self.state_file = Path(
             state_file
-            or self.root / "core" / "interface_state" / "maintenance.json"
+            or self.root / "interface" / "state" / "maintenance.json"
         )
         self._clock = clock or time.time
 

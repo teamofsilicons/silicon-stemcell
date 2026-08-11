@@ -26,7 +26,7 @@ class TeamContextPromptTests(unittest.TestCase):
         )
         team_file = root / "prompts" / "TEAM.md"
         team_file.write_bytes(content)
-        state_dir = root / "core" / "interface_state"
+        state_dir = root / "interface" / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         credential_fingerprint = hashlib.sha256(
             b"team-context-credential\0scs_live_test"

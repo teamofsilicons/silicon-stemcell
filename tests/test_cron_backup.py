@@ -215,7 +215,7 @@ class BackupManifestTest(unittest.TestCase):
             )
 
             with mock.patch.object(glass.requests, "request") as request, \
-                 self.assertRaises(glass.GlassConfigurationError):
+                 self.assertRaises(glass.InterfaceConfigError):
                 backup.run_backup(root, note="test", logger=lambda _msg: None)
 
         request.assert_not_called()

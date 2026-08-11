@@ -16,12 +16,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 MESSAGES_DIR = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "messages"
+    os.fspath(STATE_DIR), "messages"
 )
 
 OUT = "out"

@@ -19,13 +19,13 @@ import json
 import os
 import time
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 DIAGNOSIS_DIR = os.path.join(PROJECT_ROOT, "diagnosis")
 RUNS_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "iwantto_runs.json"
+    os.fspath(STATE_DIR), "iwantto_runs.json"
 )
 
 # Long-form arguments (a full message body, a work description) belong in the

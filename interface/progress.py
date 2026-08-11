@@ -31,8 +31,11 @@ _COMMAND_OUTPUT_MARKER = "[command output omitted]"
 _ADVERTISING_PATH_RE = re.compile(
     r"(?i)(?:^|[^A-Za-z0-9._-])prompts[/\\]+advertising(?:[/\\]|$)"
 )
+# Both spellings of the state directory: an upgraded instance still has the
+# legacy copy on disk, and a draft leaking through either path is the same leak.
 _DRAFT_ARCHIVE_PATH_RE = re.compile(
-    r"(?i)(?:^|[^A-Za-z0-9._-])core[/\\]+interface_state[/\\]+"
+    r"(?i)(?:^|[^A-Za-z0-9._-])"
+    r"(?:core[/\\]+interface_state|interface[/\\]+state)[/\\]+"
     r"team_context_drafts(?:[/\\]|$)"
 )
 _PATH_TOKEN_RE = re.compile(

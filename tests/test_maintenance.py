@@ -474,8 +474,8 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
         )
         expected = (
             data_root.resolve()
-            / "core"
-            / "interface_state"
+            / "interface"
+            / "state"
             / "maintenance.json"
         )
         self.assertEqual(Path(completed.stdout.strip()), expected)
@@ -786,7 +786,7 @@ class InterruptedDrainUnwindTests(unittest.TestCase):
 
     def test_a_completed_update_still_reports_updated(self):
         mid = self._drain()
-        state_path = self.root / "core" / "interface_state" / "maintenance.json"
+        state_path = self.root / "interface" / "state" / "maintenance.json"
         data = json.loads(state_path.read_text())
         data["safe_to_stop"] = True
         state_path.write_text(json.dumps(data))

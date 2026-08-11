@@ -16,7 +16,7 @@ from interface.config import silicon_api_request
 from helpers.paths import DATA_ROOT
 from helpers.state import file_lock, read_json, write_json
 
-STATE_FILE = "core/interface_state/trust_policy.json"
+STATE_FILE = "interface/state/trust_policy.json"
 VALID_LEVELS = ("very_low", "low", "ok", "high", "very_high", "ultimate")
 VALID_KINDS = ("carbon", "silicon")
 VALID_SOURCES = ("central_carbon", "silicon_override", "team_base", "default")

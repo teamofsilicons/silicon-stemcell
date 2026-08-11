@@ -21,11 +21,11 @@ class GlassAgentAuthenticationTests(unittest.TestCase):
 
     def test_configured_key_spellings_are_trimmed_consistently(self):
         self.assertEqual(
-            glass_agent.glass_api_key({"api_key": "  primary-key \n"}),
+            glass_agent.api_key_from_config({"api_key": "  primary-key \n"}),
             "primary-key",
         )
         self.assertEqual(
-            glass_agent.glass_api_key(
+            glass_agent.api_key_from_config(
                 {"api_key": "", "silicon_api_key": "\tlegacy-key  "}
             ),
             "legacy-key",

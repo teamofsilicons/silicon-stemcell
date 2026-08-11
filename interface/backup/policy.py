@@ -84,7 +84,7 @@ MANDATORY_CLASSES: tuple[OwnershipClass, ...] = (
     OwnershipClass(
         "task_delivery",
         (
-            "core/interface_state/**",
+            "interface/state/**",
             "core/cron/checkbacks.json",
             "core/cron/history.json",
             ".silicon-interface/**",
@@ -114,6 +114,7 @@ MANDATORY_CLASSES: tuple[OwnershipClass, ...] = (
     OwnershipClass(
         "credentials",
         (
+            ".interface.json",
             ".glass.json",
             ".env",
             ".env.*",
@@ -141,6 +142,7 @@ _FORBIDDEN_PREFIXES = (
 )
 _KNOWN_SECRET_NAMES = frozenset(
     {
+        ".interface.json",
         ".glass.json",
         ".env",
         "id_rsa",

@@ -11,6 +11,7 @@ __pycache__/
 *.pyd
 
 # Interface runtime state (contains local trust, rooms, media, watermarks)
+interface/state/
 core/interface_state/
 
 # Glass-generated team context and advertising memories (runtime artifacts)
@@ -24,10 +25,10 @@ worker/outputs/_active_workers.json
 worker/outputs/_archive_meta.json
 worker/outputs/_browser_queue.json
 worker/outputs/_worker_registry.json
-core/cron/checkbacks.json
-core/cron/*.json.lock
+interface/cron/checkbacks.json
+interface/cron/*.json.lock
 worker/outputs/*.json.lock
-core/cron/history.json
+interface/cron/history.json
 
 # Session files (generated at runtime)
 sessions/
@@ -35,6 +36,7 @@ sessions/
 # Runtime state
 .silicon/
 .glass.json
+.interface.json
 .env
 .restart_pending
 .silicon.pid

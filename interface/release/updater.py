@@ -20,19 +20,29 @@ from typing import Any
 
 import requests
 
-from interface.config import GlassConfigurationError, validate_authenticated_origin
-from helpers.paths import CODE_ROOT, DATA_ROOT
+from interface.config import (
+    CONFIG_FILE,
+    LEGACY_CONFIG_FILE,
+    InterfaceConfigError,
+    validate_authenticated_origin,
+)
+from helpers.paths import CODE_ROOT, DATA_ROOT, STATE_DIR
 from helpers.state import atomic_write_bytes, file_lock
 
 PROJECT_ROOT = DATA_ROOT
 DOTENV_FILE = PROJECT_ROOT / ".env"
 ENV_PY_FILE = PROJECT_ROOT / "env.py"
-GLASS_CONFIG_FILE = PROJECT_ROOT / ".glass.json"
+INTERFACE_CONFIG_FILE = PROJECT_ROOT / CONFIG_FILE
+# ponytail: mirrored while the external silicon CLI still reads .glass.json.
+LEGACY_INTERFACE_CONFIG_FILE = PROJECT_ROOT / LEGACY_CONFIG_FILE
 SILICON_CONFIG_FILE = PROJECT_ROOT / "silicon.json"
 SILICON_INFO_FILE = CODE_ROOT / "silicon.info"
-UPDATE_STATE_FILE = PROJECT_ROOT / "core" / "interface_state" / "system_update.json"
+UPDATE_STATE_FILE = STATE_DIR / "system_update.json"
 
 DEFAULT_GLASS_SERVER_URL = "https://glass.teamofsilicons.com"
+# New name first; the old one is still what an upgraded instance has on disk.
+AUTH_KEY_ENV_NAMES = ("INTERFACE_API_KEY", "GLASS_API_KEY")
+SERVER_URL_ENV_NAMES = ("INTERFACE_SERVER_URL", "GLASS_SERVER_URL")
 DEFAULT_STEMCELL_REPO = "teamofsilicons/silicon-stemcell"
 UPDATE_CHECK_INTERVAL_SECONDS = 60 * 60
 AUTH_KEY_PATH = "/api/v1/silicon-version/auth-key"
@@ -260,22 +270,28 @@ def _canonical_glass_defaults() -> dict[str, str]:
 def _persist_auth_key(auth_key: str) -> None:
     if not auth_key:
         return
-    # `.glass.json` is the canonical source for messaging, backup, remote
-    # browser, and provider-key traffic. Update it first once Glass has proven
-    # the candidate active. The ignored pending dotenv entry remains a crash
-    # journal until legacy duplicate locations have been scrubbed.
-    _replace_json_auth_key(
-        GLASS_CONFIG_FILE,
-        auth_key,
-        create=True,
-        defaults=_canonical_glass_defaults(),
-    )
+    # The Interface config is the canonical source for messaging, backup,
+    # remote browser, and provider-key traffic. Update it first once the server
+    # has proven the candidate active. The ignored pending dotenv entry remains
+    # a crash journal until legacy duplicate locations have been scrubbed.
+    #
+    # Both filenames are written: this Silicon reads the new one, and the
+    # external `silicon` CLI still reads the old one.
+    for path in (INTERFACE_CONFIG_FILE, LEGACY_INTERFACE_CONFIG_FILE):
+        _replace_json_auth_key(
+            path,
+            auth_key,
+            create=True,
+            defaults=_canonical_glass_defaults(),
+        )
     _remove_json_auth_keys(SILICON_CONFIG_FILE, nested=True)
     _remove_key_value(DOTENV_FILE, "SILICON_UPDATE_AUTH_KEY")
-    _remove_key_value(DOTENV_FILE, "GLASS_API_KEY")
+    for name in AUTH_KEY_ENV_NAMES:
+        _remove_key_value(DOTENV_FILE, name)
     if ENV_PY_FILE.exists():
         _remove_key_value(ENV_PY_FILE, "SILICON_UPDATE_AUTH_KEY")
-        _upsert_key_value(ENV_PY_FILE, "GLASS_API_KEY", "", python_string=True)
+        for name in AUTH_KEY_ENV_NAMES:
+            _upsert_key_value(ENV_PY_FILE, name, "", python_string=True)
 
 
 def _pending_auth_key() -> str:
@@ -291,18 +307,31 @@ def _clear_pending_auth_key() -> None:
 
 
 def _glass_config() -> dict[str, Any]:
-    return _read_json(GLASS_CONFIG_FILE, {})
+    """The Interface config, preferring the current name over the legacy one."""
+    config = _read_json(INTERFACE_CONFIG_FILE, {})
+    if config:
+        return config
+    return _read_json(LEGACY_INTERFACE_CONFIG_FILE, {})
 
 
 def _silicon_config() -> dict[str, Any]:
     return _read_json(SILICON_CONFIG_FILE, {})
 
 
+def _first(source, *names: str) -> str:
+    """The first non-empty value among ``names``, in the order given."""
+    for name in names:
+        value = str(source.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _configured_auth_pair() -> tuple[str, str]:
     """Return an origin/key pair from one credential authority.
 
-    Once `.glass.json` contains a key it is canonical for both values; stale
-    legacy environment entries must never redirect that canonical credential.
+    Once the Interface config contains a key it is canonical for both values;
+    stale legacy environment entries must never redirect that credential.
     """
 
     dotenv = _read_dotenv()
@@ -326,43 +355,35 @@ def _configured_auth_pair() -> tuple[str, str]:
         server = (
             nested_glass.get("server_url")
             or glass.get("server_url")
-            or dotenv.get("GLASS_SERVER_URL")
+            or _first(dotenv, *SERVER_URL_ENV_NAMES)
             or DEFAULT_GLASS_SERVER_URL
         )
         return str(server).rstrip("/"), nested_key
 
-    dotenv_key = str(
-        dotenv.get("SILICON_UPDATE_AUTH_KEY")
-        or dotenv.get("GLASS_API_KEY")
-        or ""
-    ).strip()
+    dotenv_key = _first(dotenv, "SILICON_UPDATE_AUTH_KEY", *AUTH_KEY_ENV_NAMES)
     if dotenv_key:
-        server = dotenv.get("GLASS_SERVER_URL") or DEFAULT_GLASS_SERVER_URL
+        server = _first(dotenv, *SERVER_URL_ENV_NAMES) or DEFAULT_GLASS_SERVER_URL
         return str(server).rstrip("/"), dotenv_key
 
-    env_py_key = str(
-        env_py.get("SILICON_UPDATE_AUTH_KEY")
-        or env_py.get("GLASS_API_KEY")
-        or ""
-    ).strip()
+    env_py_key = _first(env_py, "SILICON_UPDATE_AUTH_KEY", *AUTH_KEY_ENV_NAMES)
     if env_py_key:
-        server = dotenv.get("GLASS_SERVER_URL") or DEFAULT_GLASS_SERVER_URL
+        server = _first(dotenv, *SERVER_URL_ENV_NAMES) or DEFAULT_GLASS_SERVER_URL
         return str(server).rstrip("/"), env_py_key
 
-    environment_key = str(
-        os.environ.get("SILICON_UPDATE_AUTH_KEY")
-        or os.environ.get("GLASS_API_KEY")
-        or ""
-    ).strip()
+    environment_key = _first(
+        os.environ, "SILICON_UPDATE_AUTH_KEY", *AUTH_KEY_ENV_NAMES
+    )
     if environment_key:
-        server = os.environ.get("GLASS_SERVER_URL") or DEFAULT_GLASS_SERVER_URL
+        server = (
+            _first(os.environ, *SERVER_URL_ENV_NAMES) or DEFAULT_GLASS_SERVER_URL
+        )
         return str(server).rstrip("/"), environment_key
 
     server = (
         glass.get("server_url")
         or nested_glass.get("server_url")
-        or dotenv.get("GLASS_SERVER_URL")
-        or os.environ.get("GLASS_SERVER_URL")
+        or _first(dotenv, *SERVER_URL_ENV_NAMES)
+        or _first(os.environ, *SERVER_URL_ENV_NAMES)
         or DEFAULT_GLASS_SERVER_URL
     )
     return str(server).rstrip("/"), ""
@@ -377,7 +398,7 @@ def _authenticated_server_url() -> str:
 
     try:
         return validate_authenticated_origin(_server_url())
-    except GlassConfigurationError as exc:
+    except InterfaceConfigError as exc:
         raise UpdateAuthenticationError(
             "Refusing to send a Silicon API key to a non-HTTPS, non-loopback Glass URL."
         ) from exc

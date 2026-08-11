@@ -62,9 +62,9 @@ class TrustPolicyTests(unittest.TestCase):
         self.old_contacts = interface.CONTACTS_FILE
         self.old_backup = interface.CONTACTS_BACKUP_FILE
         trust.DATA_ROOT = self.root
-        interface.CONTACTS_FILE = self.root / "core/interface_state/contacts.json"
+        interface.CONTACTS_FILE = self.root / "interface/state/contacts.json"
         interface.CONTACTS_BACKUP_FILE = (
-            self.root / "core/interface_state/contacts_backup.json"
+            self.root / "interface/state/contacts_backup.json"
         )
 
     def tearDown(self):

@@ -70,6 +70,18 @@ def validated_data_root(
 
 DATA_ROOT = validated_data_root()
 
+# Durable Interface state: contacts, trust, watermarks, queues, diagnostics.
+# The legacy name is still read on first boot after an upgrade, and the copy is
+# one-way: `core/interface_state` is left exactly where it was.
+STATE_DIRNAME = "interface/state"
+LEGACY_STATE_DIRNAME = "core/interface_state"
+STATE_DIR = DATA_ROOT / "interface" / "state"
+LEGACY_STATE_DIR = DATA_ROOT / "core" / "interface_state"
+
+from helpers.migrate import copy_tree_once  # noqa: E402  (needs DATA_ROOT)
+
+copy_tree_once(LEGACY_STATE_DIR, STATE_DIR)
+
 
 def resolve_data_relative(value: str | os.PathLike[str]) -> Path:
     """Resolve a configured data path, making relative values instance-local."""

@@ -31,8 +31,9 @@ from urllib.parse import quote
 
 from interface.config import (
     CONFIG_FILE,
+    LEGACY_CONFIG_FILE,
     authenticated_server_url,
-    load_glass_config,
+    load_config,
     silicon_api_request,
 )
 from helpers.paths import DATA_ROOT
@@ -46,10 +47,10 @@ from helpers.state import (
 PROJECT_ROOT = DATA_ROOT
 TEAM_CONTEXT_PATH = "prompts/TEAM.md"
 ADVERTISING_DIRECTORY = "prompts/advertising"
-STATE_PATH = "core/interface_state/team_context.json"
-LOCK_PATH = "core/interface_state/team_context.lock"
-DRAFT_ARCHIVE_DIRECTORY = "core/interface_state/team_context_drafts"
-VISIBILITY_BLOCK_PATH = "core/interface_state/team_context.blocked"
+STATE_PATH = "interface/state/team_context.json"
+LOCK_PATH = "interface/state/team_context.lock"
+DRAFT_ARCHIVE_DIRECTORY = "interface/state/team_context_drafts"
+VISIBILITY_BLOCK_PATH = "interface/state/team_context.blocked"
 
 MAX_ADVERTISING_MEMORY_LINES = 100
 MAX_ADVERTISING_MEMORY_BYTES = 64 * 1024
@@ -516,13 +517,13 @@ def _validated_credential_fingerprint(
 
 
 def _load_config_snapshot(root: Path) -> tuple[dict[str, Any], str]:
-    config, config_path = load_glass_config(root)
+    config, config_path = load_config(root)
     if (
-        config_path.name != CONFIG_FILE
+        config_path.name not in {CONFIG_FILE, LEGACY_CONFIG_FILE}
         or config_path.parent.resolve() != root.resolve()
     ):
         raise TeamContextError(
-            "This Silicon does not have its own .glass.json configuration."
+            f"This Silicon does not have its own {CONFIG_FILE} configuration."
         )
     if not isinstance(config, dict):
         raise TeamContextError("Glass configuration must be a JSON object.")
@@ -1144,7 +1145,7 @@ def _upload_own(
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Bind verification and mutation to one credential snapshot. If
-    # .glass.json rotates between these two requests, the PUT still uses the
+    # the Interface config rotates between these two requests, the PUT still uses the
     # exact key whose identity was just verified.
     if config is None:
         config, server_origin = _load_config_snapshot(root)

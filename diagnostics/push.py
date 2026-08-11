@@ -53,7 +53,7 @@ log = logging.getLogger("silicon.glass_diag_push")
 # tracer writes. See resolve_db_path() for the important cwd/env caveat.
 DEFAULT_DIAG_DIR = os.fspath(
     resolve_data_relative(
-        os.environ.get("SILICON_DIAG_DIR", "core/interface_state/diagnostics")
+        os.environ.get("SILICON_DIAG_DIR", "interface/state/diagnostics")
     )
 )
 ABANDONED_TRACE_GRACE_MS = 30_000

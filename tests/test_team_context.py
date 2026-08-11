@@ -111,9 +111,9 @@ class GlassTransportTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertIsNone(glass.find_glass_config(child))
+            self.assertIsNone(glass.find_config(child))
             with self.assertRaises(FileNotFoundError):
-                glass.load_glass_config(child)
+                glass.load_config(child)
 
     @unittest.skipIf(os.name == "nt", "POSIX permission mode")
     def test_loading_config_hardens_permissions_to_owner_only(self):
@@ -129,7 +129,7 @@ class GlassTransportTests(unittest.TestCase):
             )
             config_path.chmod(0o644)
 
-            loaded, actual_path = glass.load_glass_config(root)
+            loaded, actual_path = glass.load_config(root)
 
             self.assertEqual(loaded["api_key"], "local-key")
             self.assertEqual(actual_path, config_path.resolve())
@@ -150,8 +150,8 @@ class GlassTransportTests(unittest.TestCase):
             )
             (root / ".glass.json").symlink_to(outside)
 
-            with self.assertRaises(glass.GlassConfigurationError):
-                glass.load_glass_config(root)
+            with self.assertRaises(glass.InterfaceConfigError):
+                glass.load_config(root)
 
     def test_authenticated_request_uses_silicon_header_and_preserves_304(self):
         response = FakeResponse(304, headers={"ETag": '"context-v1"'})
@@ -186,7 +186,7 @@ class GlassTransportTests(unittest.TestCase):
         self.assertFalse(kwargs["allow_redirects"])
 
     def test_authenticated_request_rejects_non_loopback_http(self):
-        with self.assertRaises(glass.GlassConfigurationError):
+        with self.assertRaises(glass.InterfaceConfigError):
             glass.silicon_api_request(
                 "GET",
                 "/api/v1/silicons/me",
@@ -353,7 +353,7 @@ class TeamContextSyncTests(unittest.TestCase):
             peer_content,
         )
         raw_state = (
-            self.root / "core" / "interface_state" / "team_context.json"
+            self.root / "interface" / "state" / "team_context.json"
         ).read_text(encoding="utf-8")
         self.assertNotIn(own_content, raw_state)
         self.assertNotIn(peer_content, raw_state)
@@ -418,7 +418,7 @@ class TeamContextSyncTests(unittest.TestCase):
         request.assert_not_called()
 
     def test_lock_symlink_is_never_followed_or_modified(self):
-        state_dir = self.root / "core" / "interface_state"
+        state_dir = self.root / "interface" / "state"
         state_dir.mkdir(parents=True)
         victim = self.root / "victim.txt"
         victim.write_text("must remain unchanged", encoding="utf-8")
@@ -538,8 +538,8 @@ class TeamContextSyncTests(unittest.TestCase):
         state = json.loads(
             (
                 self.root
-                / "core"
-                / "interface_state"
+                / "interface"
+                / "state"
                 / "team_context.json"
             ).read_text(encoding="utf-8")
         )
@@ -597,7 +597,7 @@ class TeamContextSyncTests(unittest.TestCase):
         self.assertTrue(
             (self.root / "prompts" / "advertising" / "old-peer.md").exists()
         )
-        state_path = self.root / "core" / "interface_state" / "team_context.json"
+        state_path = self.root / "interface" / "state" / "team_context.json"
         state = json.loads(state_path.read_text())
         self.assertIn("old-peer", state["managed_peer_ids"])
         self.assertIn("old-peer", state["peers"])
@@ -714,12 +714,12 @@ class TeamContextSyncTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "PUT" for call in api.calls))
         state = json.loads(
             (
-                self.root / "core" / "interface_state" / "team_context.json"
+                self.root / "interface" / "state" / "team_context.json"
             ).read_text()
         )
         self.assertEqual(state["identity"]["silicon_id"], "different-self")
         self.assertFalse(own_path.exists())
-        archive_root = self.root / "core" / "interface_state" / "team_context_drafts"
+        archive_root = self.root / "interface" / "state" / "team_context_drafts"
         self.assertTrue(
             any(
                 path.is_file()
@@ -878,7 +878,7 @@ class TeamContextSyncTests(unittest.TestCase):
         self.assertEqual(result["status"], "unauthorized")
         self.assertTrue(result["local_saved"])
         self.assertEqual(own_path.read_text(), "Owner status")
-        archive_root = self.root / "core" / "interface_state" / "team_context_drafts"
+        archive_root = self.root / "interface" / "state" / "team_context_drafts"
         self.assertTrue(
             any(
                 path.is_file()
@@ -887,7 +887,7 @@ class TeamContextSyncTests(unittest.TestCase):
             )
         )
         raw_state = (
-            self.root / "core" / "interface_state" / "team_context.json"
+            self.root / "interface" / "state" / "team_context.json"
         ).read_text(encoding="utf-8")
         self.assertNotIn(rejected_draft, raw_state)
 
@@ -1107,7 +1107,7 @@ class TeamContextSyncTests(unittest.TestCase):
 
     def test_state_file_is_valid_json_and_atomic_temps_are_cleaned(self):
         self._initial_sync()
-        state_dir = self.root / "core" / "interface_state"
+        state_dir = self.root / "interface" / "state"
         state = json.loads((state_dir / "team_context.json").read_text())
 
         self.assertEqual(state["version"], 1)
@@ -1118,7 +1118,7 @@ class TeamContextSyncTests(unittest.TestCase):
 
     def test_malformed_schedule_is_repaired_and_sync_continues(self):
         self._initial_sync()
-        state_path = self.root / "core" / "interface_state" / "team_context.json"
+        state_path = self.root / "interface" / "state" / "team_context.json"
         state = json.loads(state_path.read_text())
         state["schedule"]["next_reconcile_at"] = "broken"
         state["schedule"]["failure_count"] = "also-broken"
@@ -1186,8 +1186,8 @@ class TeamContextSyncTests(unittest.TestCase):
         self.assertTrue(result["local_saved"])
         archive = (
             self.root
-            / "core"
-            / "interface_state"
+            / "interface"
+            / "state"
             / "team_context_drafts"
             / "unverified"
             / f"{digest(content)}.md"
@@ -1196,8 +1196,8 @@ class TeamContextSyncTests(unittest.TestCase):
         state = json.loads(
             (
                 self.root
-                / "core"
-                / "interface_state"
+                / "interface"
+                / "state"
                 / "team_context.json"
             ).read_text(encoding="utf-8")
         )

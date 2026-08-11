@@ -14,12 +14,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 WORK_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "iwantto_work.json"
+    os.fspath(STATE_DIR), "iwantto_work.json"
 )
 
 NOT_STARTED = "yet_to_start"

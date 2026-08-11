@@ -9,6 +9,8 @@ two managers ask them the same question twice. Workers address their manager as
 from __future__ import annotations
 
 import os
+
+from helpers.paths import STATE_DIR
 from datetime import datetime, timezone
 
 from diagnostics.iwantto import mailbox, message_log
@@ -369,7 +371,6 @@ def cmd_transcribe(args, actor) -> str:
 
 def cmd_request_lords(args, actor) -> str:
     """Send a feature request to the lords at Team of Silicons."""
-    from helpers.paths import DATA_ROOT
     from helpers.state import update_json
 
     title = str(args.title or "").strip()
@@ -391,7 +392,7 @@ def cmd_request_lords(args, actor) -> str:
         # Never lose a request because the endpoint was unreachable. Keep it
         # durably so it can be re-sent, and say plainly that it has not landed.
         path = os.path.join(
-            os.fspath(DATA_ROOT), "core", "interface_state", "lord_requests.json"
+            os.fspath(STATE_DIR), "lord_requests.json"
         )
 
         def update(state):

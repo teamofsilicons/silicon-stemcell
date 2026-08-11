@@ -1,8 +1,12 @@
-"""Glass configuration helpers.
+"""Interface credentials: where they live and how they are read.
 
-Messaging, media, crons, take-back, and remote browser events now move through
-Silicon Interface. This module intentionally keeps only Glass config loading
-for sidecar and backup code that needs direct Glass HTTP access.
+Messaging, media, crons, take-back, and remote browser events move through
+Silicon Interface. This module keeps only config loading, for the sidecar and
+backup code that needs direct HTTP access.
+
+The file is ``.interface.json``. ``.glass.json`` is still read when the new
+name is absent, because the external `silicon` CLI writes the old name during
+`silicon pull` and `silicon update`.
 """
 from __future__ import annotations
 
@@ -18,12 +22,15 @@ import requests
 
 from helpers.paths import DATA_ROOT
 
-CONFIG_FILE = ".glass.json"
+CONFIG_FILE = ".interface.json"
+# ponytail: dual name until silicon-cli writes .interface.json; drop the legacy
+# read and the mirrored write in interface/release/updater.py at that point.
+LEGACY_CONFIG_FILE = ".glass.json"
 PROJECT_ROOT = DATA_ROOT
 
 
-class GlassConfigurationError(RuntimeError):
-    """Glass credentials or origin are missing or unsafe."""
+class InterfaceConfigError(RuntimeError):
+    """Interface credentials or origin are missing or unsafe."""
 
 
 def validate_authenticated_origin(server: str) -> str:
@@ -46,30 +53,33 @@ def validate_authenticated_origin(server: str) -> str:
         or parsed.fragment
         or not (secure or local_development)
     ):
-        raise GlassConfigurationError(
-            "Refusing to send a Silicon API key to an unsafe Glass URL."
+        raise InterfaceConfigError(
+            "Refusing to send a Silicon API key to an unsafe Interface URL."
         )
     return value
 
 
-def find_glass_config(start: str | Path | None = None) -> Path | None:
+def find_config(start: str | Path | None = None) -> Path | None:
     """Return only the credentials owned by the requested Silicon root."""
     current = Path(start or PROJECT_ROOT).resolve()
-    path = current / CONFIG_FILE
-    return path if path.exists() or path.is_symlink() else None
+    for name in (CONFIG_FILE, LEGACY_CONFIG_FILE):
+        path = current / name
+        if path.exists() or path.is_symlink():
+            return path
+    return None
 
 
-def _read_local_glass_config(path: Path) -> dict:
+def _read_local_config(path: Path) -> dict:
     """Read a regular config without following a credential-file symlink."""
     try:
         before = os.stat(path, follow_symlinks=False)
     except OSError as exc:
-        raise GlassConfigurationError(
-            f"{CONFIG_FILE} must be a local regular file."
+        raise InterfaceConfigError(
+            f"{path.name} must be a local regular file."
         ) from exc
     if not stat.S_ISREG(before.st_mode):
-        raise GlassConfigurationError(
-            f"{CONFIG_FILE} must be a local regular file."
+        raise InterfaceConfigError(
+            f"{path.name} must be a local regular file."
         )
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -77,8 +87,8 @@ def _read_local_glass_config(path: Path) -> dict:
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
-        raise GlassConfigurationError(
-            f"{CONFIG_FILE} must be a local regular file."
+        raise InterfaceConfigError(
+            f"{path.name} must be a local regular file."
         ) from exc
     try:
         metadata = os.fstat(descriptor)
@@ -86,8 +96,8 @@ def _read_local_glass_config(path: Path) -> dict:
             not stat.S_ISREG(metadata.st_mode)
             or not os.path.samestat(before, metadata)
         ):
-            raise GlassConfigurationError(
-                f"{CONFIG_FILE} changed while it was being opened."
+            raise InterfaceConfigError(
+                f"{path.name} changed while it was being opened."
             )
         if os.name != "nt":
             os.fchmod(descriptor, 0o600)
@@ -95,8 +105,8 @@ def _read_local_glass_config(path: Path) -> dict:
             descriptor = -1
             config = json.load(handle)
             if not isinstance(config, dict):
-                raise GlassConfigurationError(
-                    f"{CONFIG_FILE} must contain a JSON object."
+                raise InterfaceConfigError(
+                    f"{path.name} must contain a JSON object."
                 )
             return config
     finally:
@@ -104,11 +114,13 @@ def _read_local_glass_config(path: Path) -> dict:
             os.close(descriptor)
 
 
-def load_glass_config(start: str | Path | None = None) -> tuple[dict, Path]:
-    path = find_glass_config(start)
+def load_config(start: str | Path | None = None) -> tuple[dict, Path]:
+    path = find_config(start)
     if path is None:
-        raise FileNotFoundError("No .glass.json found in this Silicon root.")
-    return _read_local_glass_config(path), path
+        raise FileNotFoundError(
+            f"No {CONFIG_FILE} found in this Silicon root."
+        )
+    return _read_local_config(path), path
 
 
 def server_and_key(
@@ -116,9 +128,9 @@ def server_and_key(
     *,
     start: str | Path | None = None,
 ) -> tuple[str, str]:
-    """The Glass base URL and this silicon's API key, from .glass.json."""
+    """The Interface base URL and this Silicon's API key."""
     if config is None:
-        config, _ = load_glass_config(start)
+        config, _ = load_config(start)
     server = (config.get("server_url") or "").rstrip("/")
     key = str(config.get("api_key") or config.get("silicon_api_key") or "").strip()
     return str(server), key
@@ -129,7 +141,7 @@ def authenticated_server_url(
     *,
     start: str | Path | None = None,
 ) -> str:
-    """Return a credential-safe Glass base URL.
+    """Return a credential-safe Interface base URL.
 
     Permanent Silicon keys may be sent only over HTTPS, except to a loopback
     HTTP server used for local development. Embedded credentials, query strings,
@@ -168,11 +180,11 @@ def silicon_api_request(
         raise ValueError("Glass API path must not contain an origin or fragment.")
 
     if config is None:
-        config, _ = load_glass_config(start)
+        config, _ = load_config(start)
     server, key = server_and_key(config)
     if not server or not key:
-        raise GlassConfigurationError(
-            "Glass server_url/api_key not configured in .glass.json"
+        raise InterfaceConfigError(
+            f"server_url/api_key not configured in {CONFIG_FILE}"
         )
     server = authenticated_server_url(config)
 
@@ -241,7 +253,7 @@ def load_provider_keys_into_env(config: dict | None = None) -> dict[str, str]:
     """
     try:
         if config is None:
-            config, _ = load_glass_config()
+            config, _ = load_config()
         resp = silicon_api_request(
             "GET",
             "/api/v1/silicons/me/provider-keys",

@@ -27,11 +27,11 @@ import requests
 
 from helpers.process import submit_best_effort
 from helpers.watch import PathChangeWaiter, PathSetChangeWaiter
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR as _STATE_DIR
 from helpers.state import file_lock, read_json, update_json, write_json
 
 PROJECT_ROOT = DATA_ROOT
-STATE_DIR = PROJECT_ROOT / "core" / "interface_state"
+STATE_DIR = _STATE_DIR
 CONTACTS_FILE = STATE_DIR / "contacts.json"
 CONTACTS_BACKUP_FILE = STATE_DIR / "contacts_backup.json"
 MEDIA_DIR = STATE_DIR / "media"
@@ -1668,9 +1668,9 @@ def _download_media_with_info(
         return "", dict(info)
     if url.startswith("/"):
         try:
-            from interface.config import load_glass_config
+            from interface.config import load_config
 
-            config, _ = load_glass_config(PROJECT_ROOT)
+            config, _ = load_config(PROJECT_ROOT)
             server_url = str(config.get("server_url") or "").rstrip("/")
             if server_url:
                 url = server_url + url

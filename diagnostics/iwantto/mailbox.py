@@ -16,12 +16,12 @@ from __future__ import annotations
 import os
 import time
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 MAILBOX_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "iwantto_mailbox.json"
+    os.fspath(STATE_DIR), "iwantto_mailbox.json"
 )
 
 MAX_PER_BOX = 50

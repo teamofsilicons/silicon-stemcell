@@ -35,14 +35,16 @@ class SystemUpdateTest(unittest.TestCase):
         self.old_paths = {
             "DOTENV_FILE": update.DOTENV_FILE,
             "ENV_PY_FILE": update.ENV_PY_FILE,
-            "GLASS_CONFIG_FILE": update.GLASS_CONFIG_FILE,
+            "INTERFACE_CONFIG_FILE": update.INTERFACE_CONFIG_FILE,
+            "LEGACY_INTERFACE_CONFIG_FILE": update.LEGACY_INTERFACE_CONFIG_FILE,
             "SILICON_CONFIG_FILE": update.SILICON_CONFIG_FILE,
             "SILICON_INFO_FILE": update.SILICON_INFO_FILE,
             "UPDATE_STATE_FILE": update.UPDATE_STATE_FILE,
         }
         update.DOTENV_FILE = self.root / ".env"
         update.ENV_PY_FILE = self.root / "env.py"
-        update.GLASS_CONFIG_FILE = self.root / ".glass.json"
+        update.INTERFACE_CONFIG_FILE = self.root / ".interface.json"
+        update.LEGACY_INTERFACE_CONFIG_FILE = self.root / ".glass.json"
         update.SILICON_CONFIG_FILE = self.root / "silicon.json"
         update.SILICON_INFO_FILE = self.root / "silicon.info"
         update.UPDATE_STATE_FILE = self.root / "state" / "system_update.json"
@@ -50,8 +52,10 @@ class SystemUpdateTest(unittest.TestCase):
             key: os.environ.get(key)
             for key in (
                 "GLASS_SERVER_URL",
+                "INTERFACE_SERVER_URL",
                 "SILICON_UPDATE_AUTH_KEY",
                 "GLASS_API_KEY",
+                "INTERFACE_API_KEY",
                 "SILICON_STEMCELL_REPO",
             )
         }
@@ -282,7 +286,7 @@ class SystemUpdateTest(unittest.TestCase):
             "GLASS_SERVER_URL=https://glass.example\nGLASS_API_KEY=scs_live_existing\n",
             encoding="utf-8",
         )
-        update.GLASS_CONFIG_FILE.write_text(
+        update.INTERFACE_CONFIG_FILE.write_text(
             '{"server_url":"https://glass.example","api_key":"scs_live_existing"}\n',
             encoding="utf-8",
         )
@@ -325,7 +329,7 @@ class SystemUpdateTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(update.DOTENV_FILE.stat().st_mode), 0o600)
         self.assertEqual(list(update.DOTENV_FILE.parent.glob(".*.tmp")), [])
         self.assertEqual(
-            json.loads(update.GLASS_CONFIG_FILE.read_text(encoding="utf-8"))["api_key"],
+            json.loads(update.INTERFACE_CONFIG_FILE.read_text(encoding="utf-8"))["api_key"],
             replacement,
         )
         self.assertNotIn(
@@ -336,11 +340,11 @@ class SystemUpdateTest(unittest.TestCase):
         )
         self.assertEqual(
             update.ENV_PY_FILE.read_text(encoding="utf-8"),
-            'GLASS_API_KEY = ""\n',
+            'GLASS_API_KEY = ""\nINTERFACE_API_KEY = ""\n',
         )
         for path in (
             update.DOTENV_FILE,
-            update.GLASS_CONFIG_FILE,
+            update.INTERFACE_CONFIG_FILE,
             update.SILICON_CONFIG_FILE,
             update.ENV_PY_FILE,
         ):
@@ -379,7 +383,7 @@ class SystemUpdateTest(unittest.TestCase):
         self.assertNotIn("GLASS_API_KEY=", dotenv)
         self.assertNotIn(update.PENDING_AUTH_KEY_NAME, dotenv)
         canonical = json.loads(
-            update.GLASS_CONFIG_FILE.read_text(encoding="utf-8")
+            update.INTERFACE_CONFIG_FILE.read_text(encoding="utf-8")
         )
         self.assertEqual(canonical["api_key"], replacement)
         self.assertEqual(canonical["server_url"], "https://glass.example")
@@ -501,7 +505,7 @@ class SystemUpdateTest(unittest.TestCase):
             f"{update.PENDING_AUTH_KEY_NAME}={replacement}\n",
             encoding="utf-8",
         )
-        update.GLASS_CONFIG_FILE.write_text(
+        update.INTERFACE_CONFIG_FILE.write_text(
             '{"server_url":"https://glass.example","api_key":"scs_live_existing"}\n',
             encoding="utf-8",
         )
@@ -514,7 +518,7 @@ class SystemUpdateTest(unittest.TestCase):
             update._recover_pending_auth_key("scs_live_existing")
 
         self.assertEqual(
-            json.loads(update.GLASS_CONFIG_FILE.read_text(encoding="utf-8"))["api_key"],
+            json.loads(update.INTERFACE_CONFIG_FILE.read_text(encoding="utf-8"))["api_key"],
             replacement,
         )
         self.assertIn(update.PENDING_AUTH_KEY_NAME, update.DOTENV_FILE.read_text(encoding="utf-8"))
@@ -562,7 +566,7 @@ class SystemUpdateTest(unittest.TestCase):
             f"{update.PENDING_AUTH_KEY_NAME}={replacement}\n",
             encoding="utf-8",
         )
-        update.GLASS_CONFIG_FILE.write_text(
+        update.INTERFACE_CONFIG_FILE.write_text(
             json.dumps(
                 {
                     "server_url": "https://glass.example",
@@ -585,7 +589,7 @@ class SystemUpdateTest(unittest.TestCase):
         )
 
     def test_canonical_glass_file_wins_over_stale_inherited_environment(self):
-        update.GLASS_CONFIG_FILE.write_text(
+        update.INTERFACE_CONFIG_FILE.write_text(
             '{"server_url":"https://glass.example","api_key":"scs_live_rotated"}\n',
             encoding="utf-8",
         )

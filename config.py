@@ -112,7 +112,7 @@ def _team_context_notice(result):
 
 
 ADVERTISING_FILE = "prompts/ADVERTISING.md"
-ADVERTISING_PUBLISH_STATE = "core/interface_state/advertising_publish.json"
+ADVERTISING_PUBLISH_STATE = "interface/state/advertising_publish.json"
 
 
 def _publish_own_advertising():

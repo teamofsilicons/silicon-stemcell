@@ -18,12 +18,12 @@ import secrets
 import time
 from dataclasses import dataclass
 
-from helpers.paths import DATA_ROOT
+from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 ACTORS_FILE = os.path.join(
-    PROJECT_ROOT, "core", "interface_state", "actors.json"
+    os.fspath(STATE_DIR), "actors.json"
 )
 
 TOKEN_ENV = "SILICON_ACTOR_TOKEN"

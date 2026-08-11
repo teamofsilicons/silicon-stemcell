@@ -251,8 +251,8 @@ class ParallelPeerSyncTests(unittest.TestCase):
             state = json.loads(
                 (
                     root
-                    / "core"
-                    / "interface_state"
+                    / "interface"
+                    / "state"
                     / "team_context.json"
                 ).read_text(encoding="utf-8")
             )
