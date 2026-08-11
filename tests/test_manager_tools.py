@@ -784,7 +784,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "interface.team_context.update_own_advertising_memory",
+                "interface.team.publish.update_own_advertising_memory",
                 return_value=outcome,
             ) as update_memory,
             mock.patch.object(
@@ -820,7 +820,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         }
         with (
             mock.patch(
-                "interface.team_context.update_own_advertising_memory",
+                "interface.team.publish.update_own_advertising_memory",
                 return_value={
                     "ok": True,
                     "status": "uploaded",
@@ -844,7 +844,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
     def test_advertising_memory_failure_surfaces_draft_and_revision(self):
         with (
             mock.patch(
-                "interface.team_context.update_own_advertising_memory",
+                "interface.team.publish.update_own_advertising_memory",
                 return_value={
                     "ok": False,
                     "status": "conflict",
@@ -1181,7 +1181,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
         )
         with (
             mock.patch(
-                "interface.team_context.update_own_advertising_memory",
+                "interface.team.publish.update_own_advertising_memory",
                 return_value={"ok": True, "status": "uploaded", "revision": 1},
             ),
             mock.patch.object(i_outbound, "send_progress"),

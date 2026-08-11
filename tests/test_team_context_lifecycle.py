@@ -76,7 +76,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
         finished = threading.Event()
 
         with mock.patch(
-            "interface.team_context.team_context_tick",
+            "interface.team.team_context_tick",
             side_effect=lambda: (
                 finished.set()
                 or {
@@ -131,7 +131,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
             return {"ok": True, "status": "current"}
 
         with mock.patch(
-            "interface.team_context.team_context_tick",
+            "interface.team.team_context_tick",
             side_effect=slow_tick,
         ) as tick:
             before = time.monotonic()
@@ -161,7 +161,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "interface.team_context.team_context_tick",
+                "interface.team.team_context_tick",
                 side_effect=conflict_tick,
             ),
             mock.patch(
@@ -217,7 +217,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "interface.team_context.team_context_tick",
+                "interface.team.team_context_tick",
                 side_effect=[invalid, healthy],
             ),
             mock.patch("builtins.print"),
@@ -279,7 +279,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "interface.team_context.team_context_tick",
+                "interface.team.team_context_tick",
                 side_effect=stale_invalid_tick,
             ),
             mock.patch("builtins.print") as output,
@@ -313,7 +313,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
 
         with (
             mock.patch(
-                "interface.team_context.team_context_tick",
+                "interface.team.team_context_tick",
                 side_effect=[invalid, unavailable, invalid],
             ),
             mock.patch("builtins.print") as output,

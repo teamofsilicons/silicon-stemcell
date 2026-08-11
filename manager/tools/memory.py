@@ -20,9 +20,9 @@ def _tool_advertising_memory_update(tool_spec, carbon_id):
             "resolve_conflict must be a boolean"
         )
     try:
-        from interface.team_context import update_own_advertising_memory
+        from interface.team import publish as team_publish
 
-        outcome = update_own_advertising_memory(
+        outcome = team_publish.update_own_advertising_memory(
             content,
             root=PROJECT_ROOT,
             resolve_conflict=resolve_conflict,

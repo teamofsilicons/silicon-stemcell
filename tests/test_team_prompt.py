@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from interface import team_context
+from interface.team import constants as t_constants
+from interface.team import paths as t_paths
 from prompts import loader as DNA
 
 
@@ -92,13 +93,13 @@ class TeamContextPromptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "prompts").mkdir()
-            team_context.ensure_team_context_layout(root)
+            t_paths.ensure_team_context_layout(root)
 
             team_file = root / "prompts" / "TEAM.md"
             self.assertTrue(team_file.is_file())
             self.assertEqual(
                 team_file.read_text(encoding="utf-8"),
-                team_context.TEAM_PLACEHOLDER_MARKDOWN,
+                t_constants.TEAM_PLACEHOLDER_MARKDOWN,
             )
             self.assertTrue((root / "prompts" / "advertising").is_dir())
 

@@ -9,7 +9,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from interface import team_context
+from interface.team import constants as t_constants
+from interface.team import context as t_context
+from interface.team import errors as t_errors
+from interface.team import http as t_http
+from interface.team import identity as t_identity
+from interface.team import own_sync as t_own_sync
+from interface.team import peers as t_peers
+from interface.team import reconcile as t_reconcile
+from interface.team import service as t_service
+from interface.team import state as t_state
 
 
 def _digest(content: str) -> str:
@@ -55,7 +64,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
                 "silicon_id": "self-si",
                 "team_slug": "alpha",
                 "server_origin": "https://glass.example",
-                "credential_fingerprint": team_context._credential_fingerprint(
+                "credential_fingerprint": t_http._credential_fingerprint(
                     {
                         "server_url": "https://glass.example",
                         "api_key": "scs_live_test",
@@ -65,7 +74,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
             }
             peer_contents = {
                 f"peer-{index:02d}": f"Peer memory {index}"
-                for index in range(team_context.MAX_PARALLEL_PEER_SYNCS + 2)
+                for index in range(t_constants.MAX_PARALLEL_PEER_SYNCS + 2)
             }
             manifest = {
                 "self-si": _manifest_entry("self-si", "", 0),
@@ -79,7 +88,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
                 {
                     "team_id": "team-alpha",
                     "team_slug": "alpha",
-                    "path": team_context.TEAM_CONTEXT_PATH,
+                    "path": t_constants.TEAM_CONTEXT_PATH,
                     "revision": _digest(markdown),
                     "sync_revision": _digest("sync-1"),
                     "markdown": markdown,
@@ -98,7 +107,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
                 with guard:
                     active += 1
                     maximum_active = max(maximum_active, active)
-                    if active == team_context.MAX_PARALLEL_PEER_SYNCS:
+                    if active == t_constants.MAX_PARALLEL_PEER_SYNCS:
                         release_first_batch.set()
                 try:
                     if not release_first_batch.wait(timeout=2):
@@ -106,7 +115,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
                     # Make completion order differ from manifest order.
                     index = int(entry["silicon_id"].rsplit("-", 1)[1])
                     time.sleep(
-                        max(0, team_context.MAX_PARALLEL_PEER_SYNCS - index) * 0.005
+                        max(0, t_constants.MAX_PARALLEL_PEER_SYNCS - index) * 0.005
                     )
                     return {
                         **entry,
@@ -118,22 +127,22 @@ class ParallelPeerSyncTests(unittest.TestCase):
 
             with (
                 mock.patch.object(
-                    team_context,
+                    t_identity,
                     "_fetch_identity",
                     return_value=identity,
                 ),
                 mock.patch.object(
-                    team_context,
+                    t_context,
                     "_get_context_response",
                     return_value=response,
                 ),
                 mock.patch.object(
-                    team_context,
+                    t_peers,
                     "_fetch_peer",
                     side_effect=fetch_peer,
                 ),
                 mock.patch.object(
-                    team_context,
+                    t_own_sync,
                     "_sync_own",
                     return_value={
                         "ok": True,
@@ -143,8 +152,8 @@ class ParallelPeerSyncTests(unittest.TestCase):
                     },
                 ),
             ):
-                state = team_context._default_state()
-                result = team_context._reconcile_locked(
+                state = t_state._default_state()
+                result = t_reconcile._reconcile_locked(
                     root,
                     state,
                     force=True,
@@ -152,15 +161,15 @@ class ParallelPeerSyncTests(unittest.TestCase):
                 )
 
             expected_ids = sorted(peer_contents)
-            self.assertEqual(maximum_active, team_context.MAX_PARALLEL_PEER_SYNCS)
-            self.assertLessEqual(maximum_active, team_context.MAX_PARALLEL_PEER_SYNCS)
+            self.assertEqual(maximum_active, t_constants.MAX_PARALLEL_PEER_SYNCS)
+            self.assertLessEqual(maximum_active, t_constants.MAX_PARALLEL_PEER_SYNCS)
             self.assertEqual(list(state["peers"]), expected_ids)
             self.assertEqual(state["managed_peer_ids"], expected_ids)
             self.assertEqual(result["peer_files_changed"], len(expected_ids))
             for silicon_id, expected_content in peer_contents.items():
                 self.assertEqual(
                     (
-                        root / team_context.ADVERTISING_DIRECTORY / f"{silicon_id}.md"
+                        root / t_constants.ADVERTISING_DIRECTORY / f"{silicon_id}.md"
                     ).read_text(encoding="utf-8"),
                     expected_content,
                 )
@@ -182,7 +191,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
                 "silicon_id": "self-si",
                 "team_slug": "alpha",
                 "server_origin": "https://glass.example",
-                "credential_fingerprint": team_context._credential_fingerprint(
+                "credential_fingerprint": t_http._credential_fingerprint(
                     {
                         "server_url": "https://glass.example",
                         "api_key": "scs_live_test",
@@ -200,7 +209,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
                 {
                     "team_id": "team-alpha",
                     "team_slug": "alpha",
-                    "path": team_context.TEAM_CONTEXT_PATH,
+                    "path": t_constants.TEAM_CONTEXT_PATH,
                     "revision": _digest(markdown),
                     "sync_revision": _digest("sync-auth-failure"),
                     "markdown": markdown,
@@ -211,7 +220,7 @@ class ParallelPeerSyncTests(unittest.TestCase):
             def sync_peer(sync_root, _identity, entry, _old_record, *, config=None):
                 del sync_root, _identity, _old_record, config
                 if entry["silicon_id"] == "peer-b":
-                    raise team_context.TeamContextError(
+                    raise t_errors.TeamContextError(
                         "access revoked",
                         status_code=403,
                     )
@@ -223,28 +232,28 @@ class ParallelPeerSyncTests(unittest.TestCase):
 
             with (
                 mock.patch.object(
-                    team_context,
+                    t_identity,
                     "_fetch_identity",
                     return_value=identity,
                 ),
                 mock.patch.object(
-                    team_context,
+                    t_context,
                     "_get_context_response",
                     return_value=response,
                 ),
                 mock.patch.object(
-                    team_context,
+                    t_peers,
                     "_sync_peer",
                     side_effect=sync_peer,
                 ),
             ):
-                result = team_context.reconcile_team_context(root, force=True)
+                result = t_service.reconcile_team_context(root, force=True)
 
             self.assertEqual(result["status"], "unauthorized")
             self.assertFalse(
                 (
                     root
-                    / team_context.ADVERTISING_DIRECTORY
+                    / t_constants.ADVERTISING_DIRECTORY
                     / "peer-a.md"
                 ).exists()
             )

@@ -10,7 +10,13 @@ from unittest import mock
 
 from interface import config as glass
 
-from interface import team_context
+from interface.team import constants as t_constants
+from interface.team import http as t_http
+from interface.team import memory as t_memory
+from interface.team import own_sync as t_own_sync
+from interface.team import publish as t_publish
+from interface.team import reads as t_reads
+from interface.team import service as t_service
 
 
 class FakeResponse:
@@ -280,8 +286,8 @@ class TeamContextSyncTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _run(self, api, *, force=True):
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.reconcile_team_context(
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_service.reconcile_team_context(
                 self.root,
                 force=force,
                 reason="test",
@@ -317,21 +323,21 @@ class TeamContextSyncTests(unittest.TestCase):
 
     def test_prefetch_layout_exists_but_placeholder_is_not_verified(self):
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=OSError("Glass is offline"),
         ):
-            result = team_context.reconcile_team_context(self.root, force=True)
+            result = t_service.reconcile_team_context(self.root, force=True)
 
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(
             (self.root / "prompts" / "TEAM.md").read_text(encoding="utf-8"),
-            team_context.TEAM_PLACEHOLDER_MARKDOWN,
+            t_constants.TEAM_PLACEHOLDER_MARKDOWN,
         )
         self.assertTrue(
             (self.root / "prompts" / "advertising").is_dir()
         )
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
 
     def test_initial_sync_writes_team_and_memories_without_content_in_state(self):
         markdown, own_content, peer_content = self._initial_sync()
@@ -362,7 +368,7 @@ class TeamContextSyncTests(unittest.TestCase):
     def test_team_reader_fails_closed_immediately_when_configured_origin_changes(self):
         markdown, _own_content, _peer_content = self._initial_sync()
         self.assertEqual(
-            team_context.read_verified_team_markdown(self.root),
+            t_reads.read_verified_team_markdown(self.root),
             markdown,
         )
         (self.root / ".glass.json").write_text(
@@ -375,12 +381,12 @@ class TeamContextSyncTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
 
     def test_team_reader_fails_closed_immediately_when_silicon_key_changes(self):
         markdown, _own_content, _peer_content = self._initial_sync()
         self.assertEqual(
-            team_context.read_verified_team_markdown(self.root),
+            t_reads.read_verified_team_markdown(self.root),
             markdown,
         )
         (self.root / ".glass.json").write_text(
@@ -393,26 +399,26 @@ class TeamContextSyncTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
         api = QueuedAPI(
             identity("different-self", "beta"),
             FakeResponse(status_code=503),
         )
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.team_context_tick(self.root)
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_service.team_context_tick(self.root)
         api.assert_drained()
 
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(
             (self.root / "prompts" / "TEAM.md").read_text(encoding="utf-8"),
-            team_context.TEAM_PLACEHOLDER_MARKDOWN,
+            t_constants.TEAM_PLACEHOLDER_MARKDOWN,
         )
 
     def test_team_sync_never_inherits_parent_silicon_credentials(self):
         child = self.root / "nested-silicon"
         (child / "prompts").mkdir(parents=True)
-        with mock.patch.object(team_context, "silicon_api_request") as request:
-            result = team_context.reconcile_team_context(child, force=True)
+        with mock.patch.object(t_http, "silicon_api_request") as request:
+            result = t_service.reconcile_team_context(child, force=True)
 
         self.assertEqual(result["status"], "unavailable")
         request.assert_not_called()
@@ -428,7 +434,7 @@ class TeamContextSyncTests(unittest.TestCase):
         except OSError:
             self.skipTest("symlinks are unavailable")
 
-        result = team_context.reconcile_team_context(self.root, force=True)
+        result = t_service.reconcile_team_context(self.root, force=True)
 
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(victim.read_text(), "must remain unchanged")
@@ -532,7 +538,7 @@ class TeamContextSyncTests(unittest.TestCase):
         self.assertEqual(result["error_count"], 1)
         self.assertFalse(peer_path.exists())
         self.assertEqual(
-            team_context.read_verified_team_markdown(self.root),
+            t_reads.read_verified_team_markdown(self.root),
             markdown,
         )
         state = json.loads(
@@ -588,9 +594,9 @@ class TeamContextSyncTests(unittest.TestCase):
                 raise PermissionError("temporarily locked")
             return original_unlink(path, *args, **kwargs)
 
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
             with mock.patch.object(Path, "unlink", new=fail_old_peer):
-                result = team_context.reconcile_team_context(self.root, force=False)
+                result = t_service.reconcile_team_context(self.root, force=False)
         api.assert_drained()
 
         self.assertFalse(result["ok"])
@@ -656,8 +662,8 @@ class TeamContextSyncTests(unittest.TestCase):
                 headers={"ETag": '"self-v2"'},
             )
         )
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.team_context_tick(self.root)
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_service.team_context_tick(self.root)
         api.assert_drained()
 
         self.assertTrue(result["ok"])
@@ -679,8 +685,8 @@ class TeamContextSyncTests(unittest.TestCase):
                 headers={"ETag": '"self-v2"'},
             ),
         )
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.team_context_tick(self.root)
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_service.team_context_tick(self.root)
         api.assert_drained()
 
         self.assertFalse(result["ok"])
@@ -691,11 +697,11 @@ class TeamContextSyncTests(unittest.TestCase):
 
         no_retry_api = QueuedAPI()
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=no_retry_api,
         ):
-            no_retry = team_context.team_context_tick(self.root)
+            no_retry = t_service.team_context_tick(self.root)
         no_retry_api.assert_drained()
         self.assertEqual(no_retry["status"], "conflict")
         self.assertEqual(no_retry["actual_revision"], 2)
@@ -705,8 +711,8 @@ class TeamContextSyncTests(unittest.TestCase):
         own_path = self.root / "prompts" / "advertising" / "self-si.md"
         own_path.write_text("Must not cross identities", encoding="utf-8")
         api = QueuedAPI(identity("different-self", "beta"))
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.team_context_tick(self.root)
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_service.team_context_tick(self.root)
         api.assert_drained()
 
         self.assertFalse(result["ok"])
@@ -736,8 +742,8 @@ class TeamContextSyncTests(unittest.TestCase):
         own_path.unlink()
         own_path.symlink_to(secret)
         api = QueuedAPI()
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.team_context_tick(self.root)
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_service.team_context_tick(self.root)
         api.assert_drained()
 
         self.assertFalse(result["ok"])
@@ -769,7 +775,7 @@ class TeamContextSyncTests(unittest.TestCase):
         }
 
         with mock.patch.object(
-            team_context,
+            t_own_sync,
             "_sync_own",
             return_value=own_result,
         ):
@@ -794,11 +800,11 @@ class TeamContextSyncTests(unittest.TestCase):
 
             api = QueuedAPI()
             with mock.patch.object(
-                team_context,
+                t_http,
                 "silicon_api_request",
                 side_effect=api,
             ):
-                result = team_context.team_context_tick(self.root)
+                result = t_service.team_context_tick(self.root)
             api.assert_drained()
 
             self.assertFalse(result["ok"])
@@ -820,8 +826,8 @@ class TeamContextSyncTests(unittest.TestCase):
                 headers={"ETag": '"self-v2"'},
             ),
         )
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.update_own_advertising_memory(
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_publish.update_own_advertising_memory(
                 "Manager-authored",
                 self.root,
             )
@@ -836,7 +842,7 @@ class TeamContextSyncTests(unittest.TestCase):
         self.assertEqual(api.calls[2][2]["json_body"]["expected_revision"], 1)
 
     def test_direct_update_rejects_non_boolean_conflict_resolution(self):
-        result = team_context.update_own_advertising_memory(
+        result = t_publish.update_own_advertising_memory(
             "Valid content",
             self.root,
             resolve_conflict="false",
@@ -848,8 +854,8 @@ class TeamContextSyncTests(unittest.TestCase):
     def test_explicit_update_preserves_draft_when_glass_is_unreachable(self):
         self._initial_sync()
         api = QueuedAPI(OSError("offline"))
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.update_own_advertising_memory(
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_publish.update_own_advertising_memory(
                 "Offline draft",
                 self.root,
             )
@@ -868,8 +874,8 @@ class TeamContextSyncTests(unittest.TestCase):
         own_path = self.root / "prompts" / "advertising" / "self-si.md"
         rejected_draft = "Keep this edit even though Glass revoked the key"
         api = QueuedAPI(FakeResponse(status_code=401))
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.update_own_advertising_memory(
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_publish.update_own_advertising_memory(
                 rejected_draft,
                 self.root,
             )
@@ -902,8 +908,8 @@ class TeamContextSyncTests(unittest.TestCase):
                 headers={"ETag": '"self-v2"'},
             ),
         )
-        with mock.patch.object(team_context, "silicon_api_request", side_effect=api):
-            result = team_context.update_own_advertising_memory(
+        with mock.patch.object(t_http, "silicon_api_request", side_effect=api):
+            result = t_publish.update_own_advertising_memory(
                 "Intentional local choice",
                 self.root,
             )
@@ -930,21 +936,21 @@ class TeamContextSyncTests(unittest.TestCase):
             ),
         )
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=conflict_api,
         ):
-            first = team_context.team_context_tick(self.root)
+            first = t_service.team_context_tick(self.root)
         conflict_api.assert_drained()
         self.assertEqual(first["status"], "conflict")
 
         ordinary_api = QueuedAPI(identity())
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=ordinary_api,
         ):
-            ordinary = team_context.update_own_advertising_memory(
+            ordinary = t_publish.update_own_advertising_memory(
                 "Chosen local",
                 self.root,
             )
@@ -968,11 +974,11 @@ class TeamContextSyncTests(unittest.TestCase):
             ),
         )
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=resolution_api,
         ):
-            resolved = team_context.update_own_advertising_memory(
+            resolved = t_publish.update_own_advertising_memory(
                 "Chosen local",
                 self.root,
                 resolve_conflict=True,
@@ -1008,7 +1014,7 @@ class TeamContextSyncTests(unittest.TestCase):
 
     def test_oversized_context_keeps_last_known_good_team_file(self):
         markdown, _own, _peer = self._initial_sync()
-        oversized = "x" * (team_context.MAX_TEAM_CONTEXT_BYTES + 1)
+        oversized = "x" * (t_constants.MAX_TEAM_CONTEXT_BYTES + 1)
         api = QueuedAPI(
             identity(),
             FakeResponse(
@@ -1031,7 +1037,7 @@ class TeamContextSyncTests(unittest.TestCase):
             markdown,
         )
         self.assertEqual(
-            team_context.read_verified_team_markdown(self.root),
+            t_reads.read_verified_team_markdown(self.root),
             markdown,
         )
 
@@ -1093,12 +1099,12 @@ class TeamContextSyncTests(unittest.TestCase):
     def test_advertising_validation_is_exact_and_never_writes_invalid_content(self):
         exactly_100 = "\n".join(f"line {index}" for index in range(100))
         self.assertEqual(
-            team_context.validate_advertising_memory(exactly_100),
+            t_memory.validate_advertising_memory(exactly_100),
             exactly_100,
         )
         invalid = "\n".join(f"line {index}" for index in range(101))
-        with mock.patch.object(team_context, "silicon_api_request") as request:
-            result = team_context.update_own_advertising_memory(invalid, self.root)
+        with mock.patch.object(t_http, "silicon_api_request") as request:
+            result = t_publish.update_own_advertising_memory(invalid, self.root)
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "invalid")
@@ -1129,11 +1135,11 @@ class TeamContextSyncTests(unittest.TestCase):
         )
 
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=api,
         ):
-            result = team_context.team_context_tick(self.root)
+            result = t_service.team_context_tick(self.root)
         api.assert_drained()
 
         self.assertTrue(result["ok"])
@@ -1149,11 +1155,11 @@ class TeamContextSyncTests(unittest.TestCase):
         team_path = self.root / "prompts" / "TEAM.md"
 
         self.assertEqual(
-            team_context.read_verified_team_markdown(self.root),
+            t_reads.read_verified_team_markdown(self.root),
             markdown,
         )
         team_path.write_text("tampered", encoding="utf-8")
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
 
     def test_verified_team_reader_rejects_symlink_and_size_limit(self):
         markdown, _own, _peer = self._initial_sync()
@@ -1162,11 +1168,11 @@ class TeamContextSyncTests(unittest.TestCase):
         team_path.replace(real_path)
         team_path.symlink_to(real_path)
 
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
         team_path.unlink()
         real_path.replace(team_path)
         self.assertEqual(
-            team_context.read_verified_team_markdown(
+            t_reads.read_verified_team_markdown(
                 self.root,
                 max_bytes=len(markdown.encode("utf-8")) - 1,
             ),
@@ -1177,7 +1183,7 @@ class TeamContextSyncTests(unittest.TestCase):
         (self.root / ".glass.json").unlink()
         content = "Valuable explicit draft before provisioning"
 
-        result = team_context.update_own_advertising_memory(
+        result = t_publish.update_own_advertising_memory(
             content,
             self.root,
         )

@@ -5,7 +5,10 @@ is dropped rather than queued, because reconciling twice against the same
 revision achieves nothing. What a tick found is reported back to the manager
 once — as a notice, not as a repeated warning.
 """
+
 from __future__ import annotations
+
+from interface import team
 
 import threading
 import time
@@ -131,9 +134,9 @@ def _publish_own_advertising():
     if state.get("sha256") == digest:
         return None
 
-    from interface.team_context import update_own_advertising_memory
+    from interface.team import publish as team_publish
 
-    result = update_own_advertising_memory(content, root=root)
+    result = team_publish.update_own_advertising_memory(content, root=root)
     if isinstance(result, dict) and result.get("ok"):
         write_json(state_path, {"version": 1, "sha256": digest})
     return result
@@ -146,7 +149,6 @@ def _run_team_context_tick():
     global _TEAM_CONTEXT_MAINTENANCE_ACTIVITY
 
     try:
-        from interface.team_context import team_context_tick
         from manager.runtime.maintenance import heartbeat_scope
 
         with _TEAM_CONTEXT_LOCK:
@@ -155,10 +157,10 @@ def _run_team_context_tick():
         if activity is not None:
             with heartbeat_scope([activity]):
                 published = _publish_own_advertising()
-                result = team_context_tick()
+                result = team.team_context_tick()
         else:
             published = _publish_own_advertising()
-            result = team_context_tick()
+            result = team.team_context_tick()
         # A failed publish is what the Silicon needs to hear about; a healthy
         # tick afterwards must not mask it.
         notice = _team_context_notice(published) or _team_context_notice(result)

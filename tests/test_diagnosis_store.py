@@ -375,7 +375,7 @@ class AdvertisingPublishTest(unittest.TestCase):
 
         self._write("I do market research.")
         with mock.patch(
-            "interface.team_context.update_own_advertising_memory",
+            "interface.team.publish.update_own_advertising_memory",
             return_value={"ok": True, "status": "uploaded", "revision": 1},
         ) as publish:
             first = config._publish_own_advertising()
@@ -391,7 +391,7 @@ class AdvertisingPublishTest(unittest.TestCase):
 
         self._write("v1")
         with mock.patch(
-            "interface.team_context.update_own_advertising_memory",
+            "interface.team.publish.update_own_advertising_memory",
             return_value={"ok": True, "status": "uploaded"},
         ) as publish:
             config._publish_own_advertising()
@@ -407,7 +407,7 @@ class AdvertisingPublishTest(unittest.TestCase):
 
         self._write("v1")
         with mock.patch(
-            "interface.team_context.update_own_advertising_memory",
+            "interface.team.publish.update_own_advertising_memory",
             return_value={"ok": False, "status": "pending"},
         ) as publish:
             config._publish_own_advertising()

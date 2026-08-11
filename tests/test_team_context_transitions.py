@@ -7,7 +7,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from interface import team_context
+from interface.team import constants as t_constants
+from interface.team import http as t_http
+from interface.team import paths as t_paths
+from interface.team import reads as t_reads
+from interface.team import service as t_service
+from interface.team import state as t_state
 
 
 class FakeResponse:
@@ -114,11 +119,11 @@ class TeamContextTransitionTests(unittest.TestCase):
 
     def _run(self, api, *, force=True):
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=api,
         ):
-            result = team_context.reconcile_team_context(
+            result = t_service.reconcile_team_context(
                 self.root,
                 force=force,
                 reason="transition-test",
@@ -165,10 +170,10 @@ class TeamContextTransitionTests(unittest.TestCase):
         result = self._run(QueuedAPI(*responses))
 
         self.assertFalse(result["ok"])
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
         self.assertEqual(
             (self.root / "prompts" / "TEAM.md").read_text(encoding="utf-8"),
-            team_context.TEAM_PLACEHOLDER_MARKDOWN,
+            t_constants.TEAM_PLACEHOLDER_MARKDOWN,
         )
         self.assertFalse(
             (self.root / "prompts" / "advertising" / "peer-si.md").exists()
@@ -198,8 +203,8 @@ class TeamContextTransitionTests(unittest.TestCase):
         denied = self._run(QueuedAPI(FakeResponse(status_code=401)))
         self.assertEqual(denied["status"], "unauthorized")
 
-        with mock.patch.object(team_context, "silicon_api_request") as request:
-            deferred = team_context.team_context_tick(self.root)
+        with mock.patch.object(t_http, "silicon_api_request") as request:
+            deferred = t_service.team_context_tick(self.root)
 
         self.assertEqual(deferred["status"], "deferred")
         request.assert_not_called()
@@ -216,10 +221,10 @@ class TeamContextTransitionTests(unittest.TestCase):
         result = self._run(api, force=False)
 
         self.assertFalse(result["ok"])
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
         self.assertEqual(
             (self.root / "prompts" / "TEAM.md").read_text(encoding="utf-8"),
-            team_context.TEAM_PLACEHOLDER_MARKDOWN,
+            t_constants.TEAM_PLACEHOLDER_MARKDOWN,
         )
         self.assertFalse(
             (self.root / "prompts" / "advertising" / "peer-si.md").exists()
@@ -580,11 +585,11 @@ class TeamContextTransitionTests(unittest.TestCase):
             raise AssertionError(f"Unexpected Glass B request: {method} {path}")
 
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=glass_b_api,
         ):
-            team_context.team_context_tick(self.root)
+            t_service.team_context_tick(self.root)
 
         context_calls = [call for call in calls if call[1].endswith("/silicon-context")]
         self.assertEqual(
@@ -639,17 +644,17 @@ class TeamContextTransitionTests(unittest.TestCase):
 
         with (
             mock.patch.object(
-                team_context,
+                t_http,
                 "silicon_api_request",
                 side_effect=api,
             ),
             mock.patch.object(
-                team_context,
+                t_state,
                 "_save_state",
                 side_effect=OSError("state volume is read-only"),
             ),
         ):
-            result = team_context.reconcile_team_context(
+            result = t_service.reconcile_team_context(
                 self.root,
                 force=False,
                 reason="state-save-failure",
@@ -663,7 +668,7 @@ class TeamContextTransitionTests(unittest.TestCase):
             markdown,
         )
         self.assertEqual(
-            team_context.read_verified_team_markdown(self.root),
+            t_reads.read_verified_team_markdown(self.root),
             markdown,
         )
 
@@ -683,22 +688,22 @@ class TeamContextTransitionTests(unittest.TestCase):
         )
         with (
             mock.patch.object(
-                team_context,
+                t_http,
                 "silicon_api_request",
                 side_effect=api,
             ),
             mock.patch.object(
-                team_context,
+                t_state,
                 "_save_state",
                 side_effect=OSError("state volume is read-only"),
             ),
             mock.patch.object(
-                team_context,
+                t_paths,
                 "_write_team_placeholder",
                 side_effect=PermissionError("TEAM.md is temporarily locked"),
             ),
         ):
-            result = team_context.reconcile_team_context(
+            result = t_service.reconcile_team_context(
                 self.root,
                 force=False,
                 reason="peer-prune-state-save-failure",
@@ -718,7 +723,7 @@ class TeamContextTransitionTests(unittest.TestCase):
                 / "team_context.blocked"
             ).exists()
         )
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
         self.assertEqual(
             (self.root / "prompts" / "TEAM.md").read_text(encoding="utf-8"),
             replacement,
@@ -751,17 +756,17 @@ class TeamContextTransitionTests(unittest.TestCase):
 
         with (
             mock.patch.object(
-                team_context,
+                t_http,
                 "silicon_api_request",
                 side_effect=api,
             ),
             mock.patch.object(
-                team_context,
+                t_state,
                 "_save_state",
                 side_effect=OSError("state volume is read-only"),
             ),
         ):
-            result = team_context.reconcile_team_context(
+            result = t_service.reconcile_team_context(
                 self.root,
                 force=False,
                 reason="new-peer-state-save-failure",
@@ -777,22 +782,22 @@ class TeamContextTransitionTests(unittest.TestCase):
         self._initial_sync()
         with (
             mock.patch.object(
-                team_context,
+                t_http,
                 "silicon_api_request",
                 return_value=FakeResponse(status_code=401),
             ),
             mock.patch.object(
-                team_context,
+                t_state,
                 "_save_state",
                 side_effect=OSError("state volume is read-only"),
             ),
             mock.patch.object(
-                team_context,
+                t_paths,
                 "_write_team_placeholder",
                 side_effect=PermissionError("TEAM.md is locked"),
             ),
         ):
-            result = team_context.reconcile_team_context(
+            result = t_service.reconcile_team_context(
                 self.root,
                 force=True,
                 reason="authorization-loss",
@@ -803,14 +808,14 @@ class TeamContextTransitionTests(unittest.TestCase):
         self.assertTrue(
             (self.root / "interface" / "state" / "team_context.blocked").exists()
         )
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
 
         with mock.patch.object(
-            team_context,
+            t_http,
             "silicon_api_request",
             side_effect=OSError("Glass is temporarily unreachable"),
         ):
-            retry = team_context.reconcile_team_context(
+            retry = t_service.reconcile_team_context(
                 self.root,
                 force=True,
                 reason="temporary-failure-after-revocation",
@@ -820,7 +825,7 @@ class TeamContextTransitionTests(unittest.TestCase):
         self.assertTrue(
             (self.root / "interface" / "state" / "team_context.blocked").exists()
         )
-        self.assertEqual(team_context.read_verified_team_markdown(self.root), "")
+        self.assertEqual(t_reads.read_verified_team_markdown(self.root), "")
 
 
 if __name__ == "__main__":
