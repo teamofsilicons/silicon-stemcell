@@ -19,7 +19,7 @@ class RuntimeDataRootTests(unittest.TestCase):
             release_root = (
                 data_root / ".silicon" / "releases" / "test-generation"
             )
-            for directory in ("core", "helpers", "prompts", "worker"):
+            for directory in ("core", "helpers", "inference", "prompts", "worker"):
                 shutil.copytree(
                     CODE_ROOT / directory,
                     release_root / directory,
@@ -80,6 +80,8 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from core.maintenance import MaintenanceCoordinator
                 from prompts import DNA
                 import glass_agent
+                import inference
+                from inference.codex import provider as codex_provider
                 import main
                 import manager
                 import update
@@ -109,10 +111,10 @@ class RuntimeDataRootTests(unittest.TestCase):
                     "cron_state": str(cron.CRON_STATE_FILE),
                     "diagnostics": str(diagnostics.DEFAULT_DIAG_DIR),
                     "work_updates": str(work_updates.WORK_UPDATES_FILE),
-                    "manager_sessions": str(Path(manager.SESSIONS_DIR)),
-                    "manager_config": str(Path(manager.SILICON_CONFIG_FILE)),
+                    "manager_sessions": str(Path(inference.SESSIONS_DIR)),
+                    "manager_config": str(Path(inference.config.SILICON_CONFIG_FILE)),
                     "worker_outputs": str(Path(handler.OUTPUTS_DIR)),
-                    "worker_code": str(Path(handler.CODEX_APP_WORKER)),
+                    "worker_code": str(Path(codex_provider.APP_WORKER)),
                     "worker_workspace": str(Path(handler.WORKSPACE_ROOT)),
                     "backup_default": str(backup._instance_root()),
                     "update_state": str(update.UPDATE_STATE_FILE),

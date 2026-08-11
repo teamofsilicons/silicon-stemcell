@@ -16,6 +16,8 @@ from unittest import mock
 
 import main
 import manager
+from inference.claude.injector import ClaudeInjector
+from inference.codex.injector import CodexInjector
 from core.iwantto import injection
 
 
@@ -83,7 +85,7 @@ class ClaudeInjectorTest(unittest.TestCase):
     def _injector(self):
         proc = mock.Mock()
         proc.stdin = self._Stdin()
-        return manager._ClaudeInjector(proc, "manager:carbon-a"), proc
+        return ClaudeInjector(proc, "manager:carbon-a"), proc
 
     def test_a_message_is_written_as_one_stream_json_user_line(self):
         injector, proc = self._injector()
@@ -138,7 +140,7 @@ class CodexInjectorTest(unittest.TestCase):
         """`request` drains the shared queue; an injector must never call it."""
         client = mock.Mock()
         client.send.return_value = 7
-        injector = manager._CodexInjector(
+        injector = CodexInjector(
             client, "thread-1", "turn-1", "manager:carbon-a"
         )
 
@@ -152,13 +154,13 @@ class CodexInjectorTest(unittest.TestCase):
         self.assertEqual(params["input"], [{"type": "text", "text": "a new message"}])
 
     def test_a_turn_without_an_id_cannot_be_steered(self):
-        injector = manager._CodexInjector(mock.Mock(), "thread-1", "", "tag")
+        injector = CodexInjector(mock.Mock(), "thread-1", "", "tag")
 
         self.assertFalse(injector.submit("x"))
 
     def test_closing_stops_acceptance(self):
         client = mock.Mock()
-        injector = manager._CodexInjector(client, "thread-1", "turn-1", "tag")
+        injector = CodexInjector(client, "thread-1", "turn-1", "tag")
         injector.close()
 
         self.assertFalse(injector.submit("x"))

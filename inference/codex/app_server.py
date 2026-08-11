@@ -229,3 +229,50 @@ class CodexAppServer:
 
     # Compatibility for existing manager call sites.
     _process_exit_message = process_exit_message
+
+
+class TracedAppServer(CodexAppServer):
+    """An app-server that keeps a redacted transcript of what crossed it.
+
+    The trace is durable and leaves this process, so every line goes through
+    :func:`~inference.codex.redact.redact_agent_message` on its way to disk.
+    """
+
+    def __init__(
+        self,
+        tag: str,
+        cwd: str,
+        *,
+        command: str = "codex",
+        timeout: float = 180,
+        stream_log_path: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        self.tag = tag
+        self.stream_log_path = stream_log_path
+        self._private_stream_item_ids: set[str] = set()
+        super().__init__(cwd, command=command, timeout=timeout, env=env)
+
+    def _handle_stdout_line(self, line: str) -> None:
+        self._write_stream_log(line)
+
+    def _handle_stderr_line(self, line: str) -> None:
+        self._write_stream_log(
+            json.dumps({"type": "codex.stderr", "message": line})
+        )
+
+    def _write_stream_log(self, line: str) -> None:
+        if not self.stream_log_path or not line:
+            return
+        try:
+            from inference.codex.redact import redact_agent_message
+
+            private_item_ids = getattr(self, "_private_stream_item_ids", None)
+            if private_item_ids is None:
+                private_item_ids = set()
+                self._private_stream_item_ids = private_item_ids
+            line = redact_agent_message(line, private_item_ids)
+            with open(self.stream_log_path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass

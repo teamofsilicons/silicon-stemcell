@@ -8,108 +8,102 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import inference  # noqa: E402
 import manager  # noqa: E402
 from core import diagnostics  # noqa: E402
 from core.diagnostics import Diagnostics  # noqa: E402
+from core.progress import (  # noqa: E402
+    provider_authentication_failed,
+    provider_not_authenticated_message,
+)
+from inference import telemetry  # noqa: E402
+from inference.claude import provider as claude_provider  # noqa: E402
+from inference.claude.stream import StreamResult  # noqa: E402
+from inference.codex import provider as codex_provider  # noqa: E402
 
 
 class ManagerFailureDiagnosticsTests(unittest.TestCase):
     def test_provider_authentication_messages_name_the_provider(self):
-        self.assertTrue(manager.provider_authentication_failed(
+        self.assertTrue(provider_authentication_failed(
             "authentication_failed: Not logged in"
         ))
         self.assertEqual(
-            manager.provider_not_authenticated_message("claude"),
+            provider_not_authenticated_message("claude"),
             "Claude not authenticated.",
         )
         self.assertEqual(
-            manager.provider_not_authenticated_message("codex"),
+            provider_not_authenticated_message("codex"),
             "Codex not authenticated.",
         )
 
     def test_claude_session_recovery_reports_authentication_failure(self):
-        missing = (
-            "",
-            None,
-            1,
-            [],
-            "[provider stderr omitted]",
-            "error_during_execution",
-            "No conversation found with session ID old-session",
+        missing = StreamResult(
+            returncode=1,
+            stderr="[provider stderr omitted]",
+            error_subtype="error_during_execution",
+            error_message="No conversation found with session ID old-session",
         )
-        authentication_failed = (
-            "",
-            None,
-            1,
-            [],
-            "[provider authentication failed]",
-            "authentication_failed",
-            "authentication failed",
+        authentication_failed = StreamResult(
+            returncode=1,
+            stderr="[provider authentication failed]",
+            error_subtype="authentication_failed",
+            error_message="authentication failed",
         )
+        provider = claude_provider.ClaudeProvider()
         with (
+            mock.patch.object(provider, "session_id", return_value="old-session"),
+            mock.patch.object(provider, "new_session", return_value="new-session"),
             mock.patch.object(
-                manager,
-                "_get_session_id",
-                return_value="old-session",
+                claude_provider, "prompt_file", return_value="/tmp/prompt"
             ),
             mock.patch.object(
-                manager,
-                "_write_prompt_file",
-                return_value="/tmp/prompt",
-            ),
-            mock.patch.object(
-                manager,
-                "new_session",
-                return_value="new-session",
-            ),
-            mock.patch.object(
-                manager,
-                "_run_streaming",
-                side_effect=[missing, authentication_failed],
+                provider, "_stream", side_effect=[missing, authentication_failed]
             ),
         ):
-            output, _rate_limit, _tools = manager.claude_code(
-                "hello",
-                "carbon-a",
-            )
+            output, _rate_limit, _tools = provider.run_turn(
+                inference.TurnRequest(
+                    text="hello", contact_id="carbon-a", system_prompt="sp"
+                )
+            ).as_tuple()
 
-        parsed = manager.parse_manager_output(output)
+        parsed = inference.parse_manager_output(output)
         self.assertEqual(
             parsed["tools"][0]["message"],
             "Claude not authenticated.",
         )
-        self.assertTrue(manager._manager_provider_failed(output, None))
+        self.assertTrue(inference.provider_failed(output, None))
 
     def test_codex_authentication_failure_names_codex(self):
         with mock.patch.object(
-            manager,
-            "_CodexAppServer",
+            codex_provider,
+            "TracedAppServer",
             side_effect=RuntimeError("Not logged in"),
         ):
-            output, _rate_limit, _tools = manager.codex_app_server(
-                "hello",
-                "carbon-a",
-            )
+            output, _rate_limit, _tools = codex_provider.CodexProvider().run_turn(
+                inference.TurnRequest(
+                    text="hello", contact_id="carbon-a", system_prompt="sp"
+                )
+            ).as_tuple()
 
-        parsed = manager.parse_manager_output(output)
+        parsed = inference.parse_manager_output(output)
         self.assertEqual(
             parsed["tools"][0]["message"],
             "Codex not authenticated.",
         )
-        self.assertTrue(manager._manager_provider_failed(output, None))
+        self.assertTrue(inference.provider_failed(output, None))
 
     def test_expired_oauth_text_is_a_provider_failure(self):
-        self.assertTrue(manager._manager_provider_failed(
+        self.assertTrue(inference.provider_failed(
             "Failed to authenticate: OAuth session expired and could not be refreshed",
             None,
         ))
 
     def test_structured_manager_error_still_triggers_provider_fallback(self):
-        output = manager._safe_manager_error_tools(
+        output = inference.error_tools(
             RuntimeError("provider process exited")
         )
 
-        self.assertTrue(manager._manager_provider_failed(output, None))
+        self.assertTrue(inference.provider_failed(output, None))
 
     def test_provider_is_error_marks_span_and_run_error(self):
         with tempfile.TemporaryDirectory(prefix="diag-provider-config-") as data_root:
@@ -133,7 +127,7 @@ class ManagerFailureDiagnosticsTests(unittest.TestCase):
                     base_dir=tempfile.mkdtemp(prefix="diag-provider-error-"),
                 )
                 with trace.span("provider_call") as span:
-                    manager._attach_usage_to_span(span, {
+                    telemetry.attach_usage(span, {
                         "kind": "done",
                         "status": "success",
                         "is_error": True,

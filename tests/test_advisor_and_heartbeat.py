@@ -114,14 +114,17 @@ class AdvisorSessionTest(unittest.TestCase):
         )
 
     def test_run_agent_passes_the_environment_to_the_provider(self):
+        import inference
         import manager
 
         env = {"SILICON_ACTOR_TOKEN": "advisor-token"}
         with (
-            mock.patch.object(manager, "get_brain_order", return_value=["claude"]),
+            mock.patch.object(manager.INFERENCE, "_order", ["claude"]),
             mock.patch.object(
-                manager, "claude_code", return_value=("advice", None, [])
-            ) as claude_code,
+                inference.get_provider("claude"),
+                "run_turn",
+                return_value=inference.TurnResult("advice"),
+            ) as run_turn,
         ):
             manager.run_agent(
                 "q",
@@ -132,7 +135,7 @@ class AdvisorSessionTest(unittest.TestCase):
                 env=env,
             )
 
-        self.assertEqual(claude_code.call_args.kwargs["env"], env)
+        self.assertEqual(run_turn.call_args.args[0].env, env)
 
     def test_a_provider_failure_is_reported_rather_than_faked(self):
         with (

@@ -6,9 +6,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import inference
+import inference.sessions
 import main
 import manager
 from core import activity_log
+from inference.claude import stream as claude_stream
+from inference.codex import provider as codex_provider
+from inference.codex.redact import redact_agent_message
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -256,28 +261,19 @@ class ManagerToolExecutionTest(unittest.TestCase):
             thread_file.write_text("thread-a", encoding="utf-8")
             fake_client = FakeClient()
             with (
-                mock.patch.object(manager, "SESSIONS_DIR", temp),
-                mock.patch.object(
-                    manager,
-                    "_CodexAppServer",
-                    return_value=fake_client,
-                ),
-                mock.patch.object(
-                    manager,
-                    "get_manager_prompt",
-                    return_value="system prompt",
-                ),
-                mock.patch.object(
-                    manager,
-                    "MANAGER_INACTIVITY_TIMEOUT",
-                    0.0,
-                ),
-                mock.patch(
-                    "core.interface.reply_contact",
-                ) as reply_contact,
+                mock.patch.object(inference.sessions, "SESSIONS_DIR", temp),
+                mock.patch.object(codex_provider, "TracedAppServer",
+                                  return_value=fake_client),
+                mock.patch.object(codex_provider, "INACTIVITY_TIMEOUT", 0.0),
+                mock.patch("core.interface.reply_contact") as reply_contact,
             ):
-                with self.assertRaises(manager.ManagerTimeoutError):
-                    manager.codex_app_server("hello", "carbon-a")
+                provider = codex_provider.CodexProvider()
+                with self.assertRaises(inference.ProviderTimeoutError):
+                    provider.run_turn(inference.TurnRequest(
+                        text="hello",
+                        contact_id="carbon-a",
+                        system_prompt="system prompt",
+                    ))
 
             reply_contact.assert_not_called()
             self.assertFalse(thread_file.exists())
@@ -918,7 +914,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
 
     def test_codex_stream_redacts_advertising_file_output_by_item_id(self):
         private_items = set()
-        started = manager._redact_codex_agent_message(
+        started = redact_agent_message(
             json.dumps(
                 {
                     "method": "item/started",
@@ -933,7 +929,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             ),
             private_items,
         )
-        delta = manager._redact_codex_agent_message(
+        delta = redact_agent_message(
             json.dumps(
                 {
                     "method": "item/commandExecution/outputDelta",
@@ -952,7 +948,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
 
     def test_codex_stream_redacts_all_shell_commands_and_output(self):
         private_items = set()
-        started = manager._redact_codex_agent_message(
+        started = redact_agent_message(
             json.dumps(
                 {
                     "method": "item/started",
@@ -967,7 +963,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             ),
             private_items,
         )
-        delta = manager._redact_codex_agent_message(
+        delta = redact_agent_message(
             json.dumps(
                 {
                     "method": "item/commandExecution/outputDelta",
@@ -1049,12 +1045,13 @@ class ManagerToolExecutionTest(unittest.TestCase):
         })
 
         with (
-            mock.patch.object(manager, "get_brain_order", return_value=["claude"]),
+            mock.patch.object(manager.INFERENCE, "_order", ["claude"]),
             mock.patch.object(
-                manager,
-                "claude_code",
-                return_value=(output, output, []),
+                inference.get_provider("claude"),
+                "run_turn",
+                return_value=inference.TurnResult(output, output, []),
             ),
+            mock.patch("prompts.DNA.get_manager_prompt", return_value="sp"),
             mock.patch("builtins.print") as printed,
         ):
             result = manager.manager_code("update it", "carbon-private")
@@ -1094,16 +1091,17 @@ class ManagerToolExecutionTest(unittest.TestCase):
                 return 1
 
         with (
-            mock.patch.object(manager.subprocess, "Popen", return_value=Process()),
+            mock.patch.object(claude_stream.subprocess, "Popen", return_value=Process()),
             mock.patch("builtins.print") as printed,
         ):
-            result = manager._run_streaming(
+            result = claude_stream.run_streaming(
                 ["provider"],
                 "",
                 "manager:private",
+                cwd=None,
             )
 
-        self.assertEqual(result[4], "[provider stderr omitted]")
+        self.assertEqual(result.stderr, "[provider stderr omitted]")
         rendered = " ".join(
             str(arg)
             for call in printed.call_args_list
@@ -1117,7 +1115,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
             '"content":"PRIVATE_EXCEPTION_ECHO"}]}'
         )
 
-        rendered = manager._safe_manager_error_tools(RuntimeError(secret))
+        rendered = inference.error_tools(RuntimeError(secret))
 
         self.assertNotIn("PRIVATE_EXCEPTION_ECHO", rendered)
         self.assertIn("provider call failed", rendered)

@@ -11,6 +11,8 @@ import unittest
 from unittest import mock
 
 import manager
+from inference import telemetry
+from inference.claude import stream as claude_stream
 from core.iwantto import actor as actor_module
 from core.iwantto import journal
 
@@ -89,7 +91,7 @@ class ManagerInvocationTest(_IsolatedJournal):
             ),
             mock.patch.object(
                 main,
-                "_manager_provider_failed",
+                "provider_failed",
                 return_value=True,
             ),
         ):
@@ -119,7 +121,7 @@ class ManagerInvocationTest(_IsolatedJournal):
         )
         with mock.patch.object(
             main,
-            "_manager_provider_failed",
+            "provider_failed",
             return_value=True,
         ):
             result = main._suppress_undirected_brain_failure(
@@ -240,7 +242,7 @@ class FilesWrittenTest(_IsolatedJournal):
             actor_module.CONTACT_ENV: "carbon-a",
         }
 
-        manager._record_file_write(self._write_progress(), env, "manager:carbon-a")
+        telemetry.record_file_write(self._write_progress(), env, "manager:carbon-a")
 
         writes = self.events(journal.FILE_WRITE)
         self.assertEqual(len(writes), 1)
@@ -252,13 +254,13 @@ class FilesWrittenTest(_IsolatedJournal):
     def test_reads_and_completions_are_not_recorded_as_writes(self):
         from core.progress import READING_FILE, WRITING_FILE, progress_event
 
-        manager._record_file_write(
+        telemetry.record_file_write(
             progress_event("claude", READING_FILE, status="started",
                            tool_name="Read", path="/data/prompts/MEMORY.md"),
             {}, "tag",
         )
         # The completion event for a write must not double-count it.
-        manager._record_file_write(
+        telemetry.record_file_write(
             progress_event("claude", WRITING_FILE, status="completed",
                            tool_name="Write", path="/data/prompts/MEMORY.md"),
             {}, "tag",
@@ -267,7 +269,7 @@ class FilesWrittenTest(_IsolatedJournal):
         self.assertEqual(self.events(journal.FILE_WRITE), [])
 
     def test_the_streaming_loop_captures_writes_as_they_happen(self):
-        """End to end through _run_streaming, not just the helper."""
+        """End to end through the streaming loop, not just the helper."""
         import json as json_module
 
         events = [
@@ -303,10 +305,12 @@ class FilesWrittenTest(_IsolatedJournal):
             actor_module.CONTACT_ENV: "carbon-a",
         }
         with (
-            mock.patch.object(manager.subprocess, "Popen", return_value=Process()),
+            mock.patch.object(claude_stream.subprocess, "Popen", return_value=Process()),
             mock.patch("builtins.print"),
         ):
-            manager._run_streaming(["provider"], "", "advisor:carbon-a", env=env)
+            claude_stream.run_streaming(
+                ["provider"], "", "advisor:carbon-a", cwd=None, env=env
+            )
 
         writes = self.events(journal.FILE_WRITE)
         self.assertEqual(len(writes), 1)

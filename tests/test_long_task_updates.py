@@ -2118,7 +2118,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 return_value=("not tool json", None, []),
             ),
             mock.patch.object(main, "parse_manager_output", return_value=None),
-            mock.patch.object(main, "_is_rate_limit", return_value=False),
+            mock.patch.object(main, "is_rate_limit", return_value=False),
             mock.patch.object(main, "begin_manager_activity", return_value="group-a"),
             mock.patch.object(main, "settle_manager_activity"),
             mock.patch.object(

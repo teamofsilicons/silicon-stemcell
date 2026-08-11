@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import manager
-from core.codex_app_server import CodexAppServer
+from inference.codex.app_server import CodexAppServer, TracedAppServer
+from inference.codex.provider import CodexProvider
 from worker.codex_app_worker import CodexAppServer as WorkerCodexAppServer
 
 
@@ -21,14 +21,14 @@ class FakeClient:
 
 class TestCodexContextCapture(unittest.TestCase):
     def test_manager_and_worker_share_one_app_server_transport(self):
-        self.assertTrue(issubclass(manager._CodexAppServer, CodexAppServer))
+        self.assertTrue(issubclass(TracedAppServer, CodexAppServer))
         self.assertTrue(issubclass(WorkerCodexAppServer, CodexAppServer))
 
     def test_raw_stream_log_omits_all_fragmented_agent_message_text(self):
         secret = "team-visible advertising payload"
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "stream.jsonl"
-            client = object.__new__(manager._CodexAppServer)
+            client = object.__new__(TracedAppServer)
             client.stream_log_path = str(path)
             client._write_stream_log(
                 json.dumps(
@@ -77,7 +77,7 @@ class TestCodexContextCapture(unittest.TestCase):
         secret = "ADVERTISING_PAYLOAD_SHOULD_NOT_BE_DURABLE"
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "stream.jsonl"
-            client = object.__new__(manager._CodexAppServer)
+            client = object.__new__(TracedAppServer)
             client.stream_log_path = str(path)
             client._write_stream_log(
                 json.dumps(
@@ -100,7 +100,7 @@ class TestCodexContextCapture(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "stream.jsonl"
-            client = object.__new__(manager._CodexAppServer)
+            client = object.__new__(TracedAppServer)
             client.stream_log_path = str(path)
             client._write_stream_log(
                 json.dumps({
@@ -115,17 +115,20 @@ class TestCodexContextCapture(unittest.TestCase):
         self.assertNotIn("PRIVATE_ERROR_ECHO", logged)
         self.assertIn('"redacted":true', logged)
 
-    @patch.object(manager, "_write_codex_thread_id")
-    @patch.object(manager, "_read_codex_thread_id", return_value="")
-    def test_new_thread_returns_model_context(self, _read, write):
+    def test_new_thread_returns_model_context(self):
+        provider = CodexProvider()
         client = FakeClient({"result": {
             "thread": {"id": "thread-new"},
             "model": "gpt-5.6-sol",
             "modelProvider": "openai",
         }})
-        thread_id, context = manager._codex_start_or_resume_thread(
-            client, "carbon-1", "system prompt"
-        )
+        with (
+            patch.object(provider.sessions, "read", return_value=""),
+            patch.object(provider.sessions, "write") as write,
+        ):
+            thread_id, context = provider.start_or_resume_thread(
+                client, "carbon-1", "system prompt"
+            )
         self.assertEqual(thread_id, "thread-new")
         self.assertEqual(context, {
             "model": "gpt-5.6-sol", "model_provider": "openai",
@@ -133,16 +136,17 @@ class TestCodexContextCapture(unittest.TestCase):
         self.assertEqual(client.calls[0][0], "thread/start")
         write.assert_called_once_with("carbon-1", "thread-new")
 
-    @patch.object(manager, "_read_codex_thread_id", return_value="thread-old")
-    def test_resumed_thread_returns_model_context(self, _read):
+    def test_resumed_thread_returns_model_context(self):
+        provider = CodexProvider()
         client = FakeClient({"result": {
             "thread": {"id": "thread-old"},
             "model": "gpt-5.6-terra",
             "modelProvider": "openai",
         }})
-        thread_id, context = manager._codex_start_or_resume_thread(
-            client, "carbon-1", "system prompt"
-        )
+        with patch.object(provider.sessions, "read", return_value="thread-old"):
+            thread_id, context = provider.start_or_resume_thread(
+                client, "carbon-1", "system prompt"
+            )
         self.assertEqual(thread_id, "thread-old")
         self.assertEqual(context["model"], "gpt-5.6-terra")
         self.assertEqual(client.calls[0][0], "thread/resume")

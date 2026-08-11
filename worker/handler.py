@@ -9,30 +9,25 @@ import ast
 import json
 import os
 import platform
-import shutil
 import signal
 import subprocess
 import threading
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
 
 from helpers.paths import CODE_ROOT, DATA_ROOT
-from core.progress import (
-    provider_authentication_failed,
-    provider_not_authenticated_message,
-)
 from helpers.state import file_lock, read_json, update_json, write_json
+from inference import (
+    STDIN_STREAM,
+    STDIN_TASK,
+    WorkerLaunchSpec,
+    get_provider,
+    json_events,
+)
 from prompts.DNA import get_worker_prompt
 
 IS_WINDOWS = platform.system() == "Windows"
-
-CLAUDE_CMD = "claude"
-if IS_WINDOWS:
-    _claude_path = shutil.which("claude") or shutil.which("claude.cmd")
-    if _claude_path:
-        CLAUDE_CMD = _claude_path
 
 CODE_WORKER_DIR = os.fspath(CODE_ROOT / "worker")
 PROJECT_ROOT = os.fspath(DATA_ROOT)
@@ -40,7 +35,6 @@ WORKSPACE_ROOT = os.fspath(CODE_ROOT)
 WORKER_DIR = os.path.join(PROJECT_ROOT, "worker")
 OUTPUTS_DIR = os.path.join(WORKER_DIR, "outputs")
 SILICON_CONFIG_FILE = os.path.join(PROJECT_ROOT, "silicon.json")
-CODEX_APP_WORKER = os.path.join(CODE_WORKER_DIR, "codex_app_worker.py")
 
 ACTIVE_FILE = os.path.join(OUTPUTS_DIR, "_active_workers.json")
 BROWSER_QUEUE_FILE = os.path.join(OUTPUTS_DIR, "_browser_queue.json")
@@ -142,11 +136,11 @@ def _start_worker_feeder(worker_id, carbon_id, process, task, output_path):
     end-of-input, and it finishes on its own.
     """
     from core.iwantto import journal, mailbox
-    from manager import _stream_json_user
+    from inference import stream_json_user
 
     def write(text):
         try:
-            process.stdin.write(_stream_json_user(text))
+            process.stdin.write(stream_json_user(text))
             process.stdin.flush()
             return True
         except (BrokenPipeError, OSError, ValueError):
@@ -528,8 +522,9 @@ def _get_worker_provider_order(worker_type):
     return providers or WORKER_PROVIDER_FALLBACKS.get(worker_type, ["claude"])[:]
 
 
-def _is_codex_provider(provider):
-    return _normalize_provider(provider) == "codex"
+def _worker_provider(provider):
+    """The provider object for a worker record, defaulting to Claude."""
+    return get_provider(_normalize_provider(provider) or "claude")
 
 
 def _archive_active_output(worker_id, worker_info, carbon_id):
@@ -684,46 +679,18 @@ def _read_text_file(path):
         return ""
 
 
-def _extract_json_events(raw):
-    events = []
-    if not raw.strip():
-        return events
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            events.append(json.loads(line))
-        except (json.JSONDecodeError, ValueError):
-            continue
-    return events
-
-
-def _extract_codex_session_id_from_raw(raw):
-    for event in _extract_json_events(raw):
-        if event.get("type") == "thread.started" and event.get("thread_id"):
-            return event["thread_id"]
-        if event.get("method") == "thread/started":
-            thread_id = event.get("params", {}).get("thread", {}).get("id")
-            if thread_id:
-                return thread_id
-        thread_id = event.get("result", {}).get("thread", {}).get("id")
-        if thread_id:
-            return thread_id
-    return ""
-
-
-def _sync_codex_session_id(worker_id, worker_info=None):
+def _sync_session_id(worker_id, worker_info=None):
+    """Remember a session id the provider only revealed in its own output."""
     if worker_info is None:
         worker_info = _load_active().get(worker_id)
-    if not worker_info or not _is_codex_provider(worker_info.get("provider")):
+    if not worker_info:
         return ""
 
     if worker_info.get("session_id"):
         return worker_info["session_id"]
 
     raw = _read_text_file(worker_info.get("output_path"))
-    session_id = _extract_codex_session_id_from_raw(raw)
+    session_id = _worker_provider(worker_info.get("provider")).session_id_from_output(raw)
     if not session_id:
         return ""
 
@@ -737,11 +704,12 @@ def _sync_codex_session_id(worker_id, worker_info=None):
     return session_id
 
 
-def _wait_for_codex_session_id(worker_id, process, output_path, timeout_seconds=20.0):
+def _wait_for_session_id(provider, process, output_path, timeout_seconds=20.0):
+    """Block until the provider names its session, or explain why it never did."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         raw = _read_text_file(output_path)
-        session_id = _extract_codex_session_id_from_raw(raw)
+        session_id = provider.session_id_from_output(raw)
         if session_id:
             return session_id, ""
 
@@ -759,7 +727,7 @@ def _wait_for_codex_session_id(worker_id, process, output_path, timeout_seconds=
 
         time.sleep(0.1)
 
-    return "", "Timed out waiting for Codex session id"
+    return "", f"Timed out waiting for {provider.name} session id"
 
 
 def _record_active_run(worker_id, provider, session_id, process, task, worker_type, carbon_id, output_path, incognito, run_id):
@@ -807,179 +775,106 @@ def _record_active_run(worker_id, provider, session_id, process, task, worker_ty
     )
 
 
-def _launch_claude_worker_process(worker_id, task, worker_type, carbon_id, incognito=False, resume=False, session_id=""):
-    worker_record = _get_worker_record(worker_id)
-    if not worker_record:
-        return False, f"Error: Worker '{worker_id}' is not registered."
-
-    if not session_id:
-        session_id = worker_record.get("session_id") or str(uuid.uuid4())
-
-    run_id = _utc_timestamp_slug()
-    output_path = _run_output_path(worker_id, run_id)
-    system_prompt, err = get_worker_prompt(worker_type)
-    if err:
-        return False, err
-
-    prompt_flag = "--append-system-prompt" if worker_type == "terminal" else "--system-prompt"
-    cmd = [
-        CLAUDE_CMD, "-p",
-        "--resume" if resume else "--session-id", session_id,
-        prompt_flag, system_prompt,
-        "--dangerously-skip-permissions",
-        "--output-format=stream-json",
-        "--verbose",
-    ]
-    if worker_type == "browser":
-        cmd.extend(["--model", BROWSER_WORKER_MODEL])
-    streaming = _worker_streaming_enabled()
-    if streaming:
-        # The task arrives on stdin so the pipe stays open for messages the
-        # manager sends while the worker is still working.
-        cmd.append("--input-format=stream-json")
+def _browser_session_env(env, worker_type, worker_id, incognito):
+    """Point a browser worker at the right session and profile."""
+    if worker_type != "browser":
+        return env
+    if incognito:
+        # Ephemeral: fresh session, no shared profile/cookies.
+        env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}"
+        env.pop("SILICON_BROWSER_PROFILE", None)
     else:
-        cmd.append(task)
-
-    env = _worker_process_env(carbon_id, worker_id, worker_type)
-    if worker_type == "browser":
-        if incognito:
-            # Ephemeral: fresh session, no shared profile/cookies.
-            env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}"
-            env.pop("SILICON_BROWSER_PROFILE", None)
-        else:
-            # Shared browser: same live session AND the persistent profile, so
-            # logins saved by `share`/`close` are loaded back. silicon-browser
-            # reads both env vars as defaults for --session/--profile.
-            env["SILICON_BROWSER_SESSION"] = SILICON_BROWSER_PROFILE
-            env["SILICON_BROWSER_PROFILE"] = SILICON_BROWSER_PROFILE
-
-    output_file = open(output_path, "w", encoding="utf-8")
-    try:
-        process = subprocess.Popen(
-            cmd,
-            **_get_popen_kwargs(
-                env,
-                output_file,
-                stdin=subprocess.PIPE if streaming else None,
-            ),
-        )
-    except Exception as e:
-        output_file.close()
-        return False, f"Claude launch failed: {e}"
-    finally:
-        output_file.close()
-
-    if streaming:
-        _start_worker_feeder(worker_id, carbon_id, process, task, output_path)
-
-    _record_active_run(worker_id, "claude", session_id, process, task, worker_type, carbon_id, output_path, incognito, run_id)
-    mode = "incognito" if incognito else "profiled"
-    return True, f"Done. Worker '{worker_id}' ({worker_type}, {mode}, claude) started (pid: {process.pid}, run: {run_id})"
-
-
-def _write_codex_worker_prompt_file(worker_id, worker_type):
-    system_prompt, err = get_worker_prompt(worker_type)
-    if err:
-        return "", err
-
-    os.makedirs(OUTPUTS_DIR, exist_ok=True)
-    prompt_path = os.path.join(OUTPUTS_DIR, f"_{worker_id}_codex_prompt.md")
-    with open(prompt_path, "w", encoding="utf-8") as f:
-        f.write(system_prompt)
-    return prompt_path, ""
-
-
-def _launch_codex_worker_process(worker_id, task, worker_type, carbon_id, incognito=False, resume=False, session_id=""):
-    worker_record = _get_worker_record(worker_id)
-    if not worker_record:
-        return False, f"Error: Worker '{worker_id}' is not registered."
-
-    run_id = _utc_timestamp_slug()
-    output_path = _run_output_path(worker_id, run_id)
-    prompt_path, err = _write_codex_worker_prompt_file(worker_id, worker_type)
-    if err:
-        return False, err
-
-    if resume:
-        if not session_id:
-            session_id = worker_record.get("session_id", "")
-        if not session_id:
-            return False, f"Error: Worker '{worker_id}' has no saved codex session id to resume."
-
-    cmd = [
-        sys.executable,
-        CODEX_APP_WORKER,
-        "--cwd", WORKSPACE_ROOT,
-        "--system-prompt-file", prompt_path,
-    ]
-    if session_id:
-        cmd.extend(["--thread-id", session_id])
-
-    env = _worker_process_env(carbon_id, worker_id, worker_type)
-    if worker_type == "browser":
-        if incognito:
-            # Ephemeral: fresh session, no shared profile/cookies.
-            env["SILICON_BROWSER_SESSION"] = f"incognito-{worker_id}"
-            env.pop("SILICON_BROWSER_PROFILE", None)
-        else:
-            # Shared browser: same live session AND the persistent profile, so
-            # logins saved by `share`/`close` are loaded back. silicon-browser
-            # reads both env vars as defaults for --session/--profile.
-            env["SILICON_BROWSER_SESSION"] = SILICON_BROWSER_PROFILE
-            env["SILICON_BROWSER_PROFILE"] = SILICON_BROWSER_PROFILE
-
-    output_file = open(output_path, "w", encoding="utf-8")
-    try:
-        popen_kwargs = _get_popen_kwargs(env, output_file)
-        popen_kwargs["stdin"] = subprocess.PIPE
-        process = subprocess.Popen(cmd, **popen_kwargs)
-        try:
-            process.stdin.write(task)
-            process.stdin.close()
-        except BrokenPipeError:
-            pass
-    except Exception as e:
-        output_file.close()
-        return False, f"Codex launch failed: {e}"
-    finally:
-        output_file.close()
-
-    if not resume:
-        captured_session_id, detail = _wait_for_codex_session_id(worker_id, process, output_path)
-        if not captured_session_id:
-            _terminate_process(process)
-            return False, f"Codex launch failed: {detail}"
-        session_id = captured_session_id
-
-    _record_active_run(worker_id, "codex", session_id, process, task, worker_type, carbon_id, output_path, incognito, run_id)
-    mode = "incognito" if incognito else "profiled"
-    mode_part = f", {mode}" if worker_type == "browser" else ""
-    return True, f"Done. Worker '{worker_id}' ({worker_type}{mode_part}, codex) started (pid: {process.pid}, run: {run_id})"
+        # Shared browser: same live session AND the persistent profile, so
+        # logins saved by `share`/`close` are loaded back. silicon-browser
+        # reads both env vars as defaults for --session/--profile.
+        env["SILICON_BROWSER_SESSION"] = SILICON_BROWSER_PROFILE
+        env["SILICON_BROWSER_PROFILE"] = SILICON_BROWSER_PROFILE
+    return env
 
 
 def _launch_worker_process(worker_id, task, worker_type, carbon_id, incognito=False, resume=False, provider=None, session_id=""):
-    provider = _normalize_provider(provider or "claude")
+    """Start a detached worker on one provider.
 
-    if provider == "codex":
-        return _launch_codex_worker_process(
-            worker_id,
-            task,
-            worker_type,
-            carbon_id,
-            incognito=incognito,
-            resume=resume,
-            session_id=session_id,
-        )
+    The provider builds its own command and knows how to read its own output;
+    everything here — the registry, the environment, the output file — is the
+    same whichever one answers.
+    """
+    engine = _worker_provider(provider or "claude")
 
-    return _launch_claude_worker_process(
-        worker_id,
-        task,
-        worker_type,
-        carbon_id,
-        incognito=incognito,
-        resume=resume,
+    worker_record = _get_worker_record(worker_id)
+    if not worker_record:
+        return False, f"Error: Worker '{worker_id}' is not registered."
+
+    system_prompt, err = get_worker_prompt(worker_type)
+    if err:
+        return False, err
+
+    if not session_id:
+        session_id = worker_record.get("session_id", "")
+    if engine.mints_own_session_id:
+        if resume and not session_id:
+            return False, (
+                f"Error: Worker '{worker_id}' has no saved {engine.name} "
+                "session id to resume."
+            )
+    elif not session_id:
+        session_id = str(uuid.uuid4())
+
+    run_id = _utc_timestamp_slug()
+    output_path = _run_output_path(worker_id, run_id)
+    os.makedirs(OUTPUTS_DIR, exist_ok=True)
+
+    command = engine.worker_command(WorkerLaunchSpec(
+        worker_id=worker_id,
+        worker_type=worker_type,
+        task=task,
+        system_prompt=system_prompt,
         session_id=session_id,
+        resume=resume,
+        streaming=_worker_streaming_enabled(),
+        cwd=WORKSPACE_ROOT,
+        scratch_dir=OUTPUTS_DIR,
+        model=BROWSER_WORKER_MODEL if worker_type == "browser" else "",
+    ))
+
+    env = _browser_session_env(
+        _worker_process_env(carbon_id, worker_id, worker_type),
+        worker_type,
+        worker_id,
+        incognito,
     )
+
+    output_file = open(output_path, "w", encoding="utf-8")
+    try:
+        popen_kwargs = _get_popen_kwargs(env, output_file, stdin=command.popen_stdin())
+        process = subprocess.Popen(command.argv, **popen_kwargs)
+        if command.stdin == STDIN_TASK:
+            try:
+                process.stdin.write(task)
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+    except Exception as e:
+        output_file.close()
+        return False, f"{engine.name.capitalize()} launch failed: {e}"
+    finally:
+        output_file.close()
+
+    if command.stdin == STDIN_STREAM:
+        _start_worker_feeder(worker_id, carbon_id, process, task, output_path)
+
+    if command.captures_session_id:
+        captured, detail = _wait_for_session_id(engine, process, output_path)
+        if not captured:
+            _terminate_process(process)
+            return False, f"{engine.name.capitalize()} launch failed: {detail}"
+        session_id = captured
+
+    _record_active_run(worker_id, engine.name, session_id, process, task, worker_type, carbon_id, output_path, incognito, run_id)
+    # Profile vs incognito only means anything for a browser.
+    mode = ("incognito" if incognito else "profiled") if worker_type == "browser" else ""
+    descriptor = ", ".join(part for part in (worker_type, mode, engine.name) if part)
+    return True, f"Done. Worker '{worker_id}' ({descriptor}) started (pid: {process.pid}, run: {run_id})"
 
 
 def _process_browser_queue():
@@ -1408,8 +1303,7 @@ def get_worker_status(worker_id, carbon_id):
         return f"Worker '{worker_id}' is idle. No archived runs yet."
 
     worker_info = active[worker_id]
-    if _is_codex_provider(worker_info.get("provider")):
-        _sync_codex_session_id(worker_id, worker_info)
+    if _sync_session_id(worker_id, worker_info):
         worker_info = _load_active().get(worker_id, worker_info)
 
     output_path = worker_info.get("output_path")
@@ -1471,8 +1365,7 @@ def stop_worker(worker_id, carbon_id):
             return f"Error: Worker '{worker_id}' does not belong to you."
 
         worker_info = active[worker_id]
-        if _is_codex_provider(worker_info.get("provider")):
-            _sync_codex_session_id(worker_id, worker_info)
+        if _sync_session_id(worker_id, worker_info):
             worker_info = _load_active().get(worker_id, worker_info)
 
     try:
@@ -1587,45 +1480,13 @@ def read_archive(archive_id, carbon_id):
 def _has_completion_event(output_path, provider):
     if not output_path or not os.path.exists(output_path):
         return False
-
     raw = _read_text_file(output_path)
-    events = _extract_json_events(raw)
-    if _is_codex_provider(provider):
-        return any(
-            event.get("type") == "turn.completed" or event.get("method") == "turn/completed"
-            for event in events
-        )
-    return any(event.get("type") == "result" for event in events)
+    return _worker_provider(provider).has_completion_event(raw)
 
 
 def _worker_terminal_state(raw, provider):
     """Return the real terminal state without publishing raw worker output."""
-    events = _extract_json_events(raw)
-    if _is_codex_provider(provider):
-        if any(event.get("type") == "silicon.codex_app_error" for event in events):
-            return "failed"
-        completed = [
-            event
-            for event in events
-            if event.get("type") == "turn.completed"
-            or event.get("method") == "turn/completed"
-        ]
-        if not completed:
-            return "failed"
-        terminal = completed[-1]
-        turn = (terminal.get("params") or {}).get("turn") or {}
-        status = str(turn.get("status") or terminal.get("status") or "").lower()
-        return "completed" if status in {"", "completed", "success"} else "failed"
-
-    completed = [event for event in events if event.get("type") == "result"]
-    if not completed:
-        return "failed"
-    terminal = completed[-1]
-    status = str(terminal.get("subtype") or "").lower()
-    failed = bool(terminal.get("is_error")) or any(
-        marker in status for marker in ("error", "failed", "timeout", "cancel")
-    )
-    return "failed" if failed else "completed"
+    return _worker_provider(provider).terminal_state(raw)
 
 
 def _worker_completion_context(completion):
@@ -1648,10 +1509,7 @@ def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, outp
     """Create a child run linked back to every message that spawned the worker."""
     try:
         from core.diagnostics import Diagnostics
-        from core.progress import (
-            DONE, claude_progress_events, codex_progress_event,
-            usage_from_done_event,
-        )
+        from core.progress import DONE, usage_from_done_event
         parent_run_id = worker_info.get("diag_parent_run_id")
         if not parent_run_id:
             return
@@ -1664,7 +1522,7 @@ def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, outp
             meta={"worker_id": worker_id},
         )
         raw = _read_text_file(output_path)
-        events = _extract_json_events(raw)
+        events = json_events(raw)
         state = {}
         done_events = []
         with child_trace.span("worker.execution") as worker_span:
@@ -1678,13 +1536,9 @@ def _record_worker_diagnostics(worker_id, worker_info, carbon_id, provider, outp
             with child_trace.span("provider_call") as provider_span:
                 provider_span.set_meta(provider=provider, worker_id=worker_id)
                 sequence = 0
+                engine = _worker_provider(provider)
                 for event in events:
-                    if _is_codex_provider(provider):
-                        out = codex_progress_event(event, state)
-                        normalized = [out] if out else []
-                    else:
-                        normalized = claude_progress_events(event, state)
-                    for item in normalized:
+                    for item in engine.progress_events(event, state):
                         sequence += 1
                         child_trace.event(
                             "worker.progress",
@@ -1735,8 +1589,7 @@ def check_completed_workers():
         provider = worker_info.get("provider", "claude")
         output_path = worker_info.get("output_path")
 
-        if _is_codex_provider(provider):
-            _sync_codex_session_id(worker_id, worker_info)
+        if _sync_session_id(worker_id, worker_info):
             worker_info = _load_active().get(worker_id, worker_info)
             output_path = worker_info.get("output_path")
 
@@ -1892,178 +1745,6 @@ def clean_old_archives(archive_for_seconds, *, force=False):
 
 # --- Output parsing ---
 
-def _worker_provider_auth_message(events, provider):
-    for event in events:
-        values = []
-        if event.get("error") or event.get("is_error"):
-            values.extend([
-                event.get("error"),
-                event.get("errors"),
-            ])
-        if event.get("type") == "silicon.codex_app_error":
-            values.append(event.get("message"))
-        if event.get("method") == "error":
-            params = event.get("params") or {}
-            nested_error = params.get("error")
-            values.extend([
-                params.get("message"),
-                (
-                    nested_error.get("message")
-                    if isinstance(nested_error, dict)
-                    else nested_error
-                ),
-            ])
-        if provider_authentication_failed(*values):
-            return provider_not_authenticated_message(provider)
-    return ""
-
-
-def _parse_claude_output(raw):
-    if not raw.strip():
-        return "No output yet."
-
-    events = _extract_json_events(raw)
-    if not events:
-        return "No parseable output yet."
-
-    auth_message = _worker_provider_auth_message(events, "claude")
-    if auth_message:
-        return auth_message
-
-    result_event = None
-    for event in events:
-        if event.get("type") == "result":
-            result_event = event
-
-    if result_event and result_event.get("result"):
-        return result_event["result"]
-
-    texts = []
-    seen = set()
-    for event in events:
-        if event.get("type") == "assistant" and event.get("message", {}).get("content"):
-            for block in event["message"]["content"]:
-                if block.get("type") == "text":
-                    txt = block.get("text", "").strip()
-                    if txt and txt not in seen:
-                        seen.add(txt)
-                        texts.append(txt)
-
-    if texts:
-        return texts[-1]
-    return "Worker running, no text output yet."
-
-
-def _parse_codex_output(raw):
-    if not raw.strip():
-        return "No output yet."
-
-    events = _extract_json_events(raw)
-    if not events:
-        return "No parseable output yet."
-
-    auth_message = _worker_provider_auth_message(events, "codex")
-    if auth_message:
-        return auth_message
-
-    texts = []
-    streamed_text = ""
-    tool_lines = []
-    reasoning_lines = []
-    error_lines = []
-    token_summary = ""
-
-    for event in events:
-        if event.get("type") == "silicon.codex_app_error":
-            message = event.get("message", "").strip()
-            if message:
-                error_lines.append(message)
-
-        if event.get("type") == "item.completed":
-            item = event.get("item", {})
-            if item.get("type") == "agent_message":
-                text = item.get("text", "").strip()
-                if text:
-                    texts.append(text)
-            continue
-
-        method = event.get("method", "")
-        params = event.get("params", {})
-
-        if method == "item/agentMessage/delta":
-            streamed_text += params.get("delta", "")
-
-        elif method == "item/completed":
-            item = params.get("item", {})
-            item_type = item.get("type", "")
-            if item_type == "agentMessage":
-                text = item.get("text", "").strip()
-                if text:
-                    texts.append(text)
-            elif item_type == "commandExecution":
-                command = item.get("command") or item.get("cmd") or ""
-                status = item.get("status") or item.get("exitCode") or "completed"
-                if isinstance(command, list):
-                    command = " ".join(str(part) for part in command)
-                if command:
-                    tool_lines.append(f"Command {status}: {command}")
-            elif item_type == "mcpToolCall":
-                name = item.get("name") or item.get("toolName") or "mcp tool"
-                status = item.get("status") or "completed"
-                tool_lines.append(f"Tool {status}: {name}")
-            elif item_type == "fileChange":
-                path = item.get("path") or item.get("filePath") or "file change"
-                status = item.get("status") or "completed"
-                tool_lines.append(f"File {status}: {path}")
-
-        elif method == "item/reasoning/summaryTextDelta":
-            delta = params.get("delta", "").strip()
-            if delta:
-                reasoning_lines.append(delta)
-
-        elif method == "thread/tokenUsage/updated":
-            usage = params.get("tokenUsage", {}).get("total", {})
-            total = usage.get("totalTokens")
-            inp = usage.get("inputTokens")
-            out = usage.get("outputTokens")
-            if total is not None:
-                token_summary = f"Token usage: total={total}, input={inp}, output={out}"
-
-        elif method == "error":
-            message = params.get("message") or params.get("error", {}).get("message", "")
-            if message:
-                error_lines.append(message.strip())
-
-    if texts:
-        result = texts[-1]
-    elif streamed_text.strip():
-        result = streamed_text.strip()
-    elif error_lines:
-        result = "Codex worker error: " + error_lines[-1]
-    elif any(
-        event.get("type") == "turn.completed" or event.get("method") == "turn/completed"
-        for event in events
-    ):
-        result = "Worker completed with no text output."
-    else:
-        result = "Worker running, no text output yet."
-
-    details = []
-    if tool_lines:
-        details.append("Activity:\n" + "\n".join(tool_lines[-8:]))
-    if reasoning_lines and not texts:
-        details.append("Reasoning:\n" + " ".join(reasoning_lines[-6:]))
-    if token_summary:
-        details.append(token_summary)
-    if error_lines and not result.startswith("Codex worker error:"):
-        details.append("Errors:\n" + "\n".join(error_lines[-3:]))
-
-    if details:
-        return result + "\n\n" + "\n\n".join(details)
-    return result
-
-
 def _parse_worker_output(raw, provider="claude"):
-    if _is_codex_provider(provider):
-        return _parse_codex_output(raw)
-    return _parse_claude_output(raw)
+    """The provider's own reading of what a worker produced."""
+    return _worker_provider(provider).parse_output(raw)

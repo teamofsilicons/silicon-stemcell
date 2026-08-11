@@ -2,7 +2,7 @@
 
 Runs one task to completion against ``codex app-server`` and prints the result
 for ``worker.handler`` to collect.  Transport lives in
-``core.codex_app_server``; this module only adds the worker presentation.
+``inference.codex.app_server``; this module only adds the worker presentation.
 """
 import argparse
 import json
@@ -11,7 +11,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.codex_app_server import CodexAppServer as _SharedCodexAppServer
+from inference.codex.app_server import CodexAppServer as _SharedCodexAppServer
 from core.progress import codex_progress_event
 
 

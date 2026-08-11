@@ -51,8 +51,8 @@ from manager import (
     manager_code,
     parse_manager_output,
     new_session,
-    _is_rate_limit,
-    _manager_provider_failed,
+    is_rate_limit,
+    provider_failed,
     TIMEOUT_MSG,
 )
 from core.interface import (
@@ -1466,7 +1466,7 @@ def _is_terminal_brain_failure(output):
 def _suppress_undirected_brain_failure(result, carbon_id, visible_activity):
     """Keep an internal brain outage out of a Carbon's inbox."""
     output, rate_limit, executed_tools = result
-    if visible_activity or not _manager_provider_failed(output, rate_limit):
+    if visible_activity or not provider_failed(output, rate_limit):
         return result
     log(
         f"[Silicon] brain unavailable on an undirected root for {carbon_id}; "
@@ -1937,7 +1937,7 @@ def run_all_managers(context_by_carbon):
                     f"{_manager_output_for_log(output, tools_data)}"
                 )
                 if tools_data is None:
-                    if output and _is_rate_limit(output):
+                    if output and is_rate_limit(output):
                         if carbon_id in accuracy_review_ids:
                             raise RuntimeError(
                                 "internal task accuracy review was rate-limited"
