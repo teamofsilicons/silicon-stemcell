@@ -18,6 +18,8 @@ import manager.tracing as m_manager_tracing
 import manager.turn as m_manager_turn
 from interface import long_tasks as long_task_updates
 from interface import work_updates
+from interface.work import cache as w_cache
+from interface.work import constants as w_constants
 
 
 DONE = "Done. work_update accepted"
@@ -2037,17 +2039,17 @@ class LongTaskLifecycleTest(unittest.TestCase):
         send_progress.assert_not_called()
 
     def test_restart_backfills_persisted_active_estimated_task(self):
-        old_work_updates_file = work_updates.WORK_UPDATES_FILE
-        work_updates.WORK_UPDATES_FILE = (
+        old_work_updates_file = w_constants.WORK_UPDATES_FILE
+        w_constants.WORK_UPDATES_FILE = (
             Path(self.temp.name) / "work_updates.json"
         )
         self.addCleanup(
             setattr,
-            work_updates,
+            w_constants,
             "WORK_UPDATES_FILE",
             old_work_updates_file,
         )
-        work_updates._remember_task(
+        w_cache._remember_task(
             "carbon-backfill",
             {
                 "task_id": "persisted-task",
@@ -2164,7 +2166,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
         }
         client = mock.Mock()
         client.work_task_show.return_value = {"data": snapshot}
-        with mock.patch.object(work_updates, "_remember_task") as remember:
+        with mock.patch.object(w_cache, "_remember_task") as remember:
             result = work_updates.refresh_task_snapshot(
                 "carbon-a",
                 "task-a",

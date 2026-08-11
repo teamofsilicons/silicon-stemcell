@@ -1,3 +1,10 @@
+from interface import state as i_state
+from interface import contacts as i_contacts
+from interface.work import constants as w_constants
+from interface.work import delivery as w_delivery
+from interface.work import journal as w_journal
+from interface.work import retry as w_retry
+from interface.work import store as w_store
 import json
 import math
 import tempfile
@@ -373,12 +380,12 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.old_work_state = work_updates.WORK_UPDATES_FILE
+        self.old_work_state = w_constants.WORK_UPDATES_FILE
         self.old_contacts = interface.constants.CONTACTS_FILE
         self.old_backup = interface.constants.CONTACTS_BACKUP_FILE
         self.old_legacy = interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE
-        work_updates.WORK_UPDATES_FILE = root / "work_updates.json"
-        work_updates._CALL_RETRY_INFLIGHT.clear()
+        w_constants.WORK_UPDATES_FILE = root / "work_updates.json"
+        w_retry._CALL_RETRY_INFLIGHT.clear()
         interface.constants.CONTACTS_FILE = root / "contacts.json"
         interface.constants.CONTACTS_BACKUP_FILE = root / "contacts-backup.json"
         interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy-contacts.json"
@@ -397,12 +404,12 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             },
         }
         self.contact_patch = mock.patch.object(
-            work_updates,
+            i_state,
             "get_contact",
             side_effect=lambda contact_id: deepcopy(self.contacts.get(contact_id)),
         )
         self.profile_patch = mock.patch.object(
-            work_updates,
+            i_contacts,
             "get_own_profile",
             return_value={"name": "Silicon"},
         )
@@ -412,8 +419,8 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
     def tearDown(self):
         self.profile_patch.stop()
         self.contact_patch.stop()
-        work_updates.WORK_UPDATES_FILE = self.old_work_state
-        work_updates._CALL_RETRY_INFLIGHT.clear()
+        w_constants.WORK_UPDATES_FILE = self.old_work_state
+        w_retry._CALL_RETRY_INFLIGHT.clear()
         interface.constants.CONTACTS_FILE = self.old_contacts
         interface.constants.CONTACTS_BACKUP_FILE = self.old_backup
         interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
@@ -433,9 +440,9 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
 
     def test_retry_replay_does_not_rewrite_unchanged_journal(self):
-        work_updates._write_state(work_updates._default_state())
+        w_store._write_state(w_store._default_state())
 
-        with mock.patch.object(work_updates, "_write_state") as write:
+        with mock.patch.object(w_store, "_write_state") as write:
             scheduled = work_updates.replay_pending_call_updates(now=1_000.0)
 
         self.assertEqual(scheduled, 0)
@@ -767,7 +774,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         ]
         self.assertEqual(patched_ids, [first["invocation_id"], first["invocation_id"]])
 
-        with mock.patch.object(work_updates, "get_contact", return_value=None):
+        with mock.patch.object(i_state, "get_contact", return_value=None):
             self.assertEqual(
                 work_updates.record_worker_started(
                     "carbon-a",
@@ -883,7 +890,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(outbound_event["state"], "completed")
         self.assertEqual(inbound_event["state"], "completed")
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
         self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
         next_call = work_updates.prepare_outbound_call(
@@ -916,14 +923,14 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=client,
         )
         previous_activity = (
-            time.time() - work_updates.PENDING_CALL_TTL_SECONDS + 60
+            time.time() - w_constants.PENDING_CALL_TTL_SECONDS + 60
         )
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             for contact in state["contacts"].values():
                 for correlation in contact["pending_calls"].values():
                     correlation["updated_at"] = previous_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         followup = work_updates.record_outbound_call(
             "carbon-a",
@@ -944,7 +951,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             [row["body"] for row in outbound_event["transcript"]],
             ["Initial question.", "One more detail."],
         )
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertGreater(
             state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"][
                 "updated_at"
@@ -992,17 +999,17 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=client,
         )
         last_activity = time.time()
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             for contact in state["contacts"].values():
                 for correlation in contact["pending_calls"].values():
                     correlation["updated_at"] = last_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         self.assertEqual(
             work_updates.complete_inactive_calls(
                 now=last_activity
-                + work_updates.CALL_IDLE_TIMEOUT_SECONDS
+                + w_constants.CALL_IDLE_TIMEOUT_SECONDS
                 - 0.001,
                 client=client,
             ),
@@ -1014,7 +1021,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(
             work_updates.complete_inactive_calls(
-                now=last_activity + work_updates.CALL_IDLE_TIMEOUT_SECONDS,
+                now=last_activity + w_constants.CALL_IDLE_TIMEOUT_SECONDS,
                 client=client,
             ),
             1,
@@ -1029,7 +1036,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             [row["body"] for row in outbound_event["transcript"]],
             ["Please confirm."],
         )
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
         self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
 
@@ -1063,12 +1070,12 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=client,
         )
         old_activity = time.time() - 9.0
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             for contact in state["contacts"].values():
                 for correlation in contact["pending_calls"].values():
                     correlation["updated_at"] = old_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         followup = work_updates.record_outbound_call(
             "carbon-a",
@@ -1079,21 +1086,21 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=client,
         )
         self.assertTrue(followup["continuation"])
-        state = work_updates._read_state()
+        state = w_store._read_state()
         refreshed = state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"][
             "updated_at"
         ]
         self.assertGreater(refreshed, old_activity)
         self.assertEqual(
             work_updates.complete_inactive_calls(
-                now=refreshed + work_updates.CALL_IDLE_TIMEOUT_SECONDS - 0.001,
+                now=refreshed + w_constants.CALL_IDLE_TIMEOUT_SECONDS - 0.001,
                 client=client,
             ),
             0,
         )
         self.assertEqual(
             work_updates.complete_inactive_calls(
-                now=refreshed + work_updates.CALL_IDLE_TIMEOUT_SECONDS,
+                now=refreshed + w_constants.CALL_IDLE_TIMEOUT_SECONDS,
                 client=client,
             ),
             1,
@@ -1125,12 +1132,12 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
         old_activity = time.time() - 9.0
         refreshed_at = old_activity + 8.0
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             for contact in state["contacts"].values():
                 for correlation in contact["pending_calls"].values():
                     correlation["updated_at"] = old_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         self.assertTrue(
             work_updates.touch_manager_call_activity(
@@ -1138,7 +1145,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 now=refreshed_at,
             )
         )
-        state = work_updates._read_state()
+        state = w_store._read_state()
         for owner, peer in (
             ("carbon-a", "carbon-b"),
             ("carbon-b", "carbon-a"),
@@ -1150,7 +1157,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertEqual(
             work_updates.complete_inactive_calls(
                 now=refreshed_at
-                + work_updates.CALL_IDLE_TIMEOUT_SECONDS
+                + w_constants.CALL_IDLE_TIMEOUT_SECONDS
                 - 0.001,
                 client=client,
             ),
@@ -1168,18 +1175,18 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=client,
         )
         last_activity = time.time()
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             state["contacts"]["carbon-a"]["pending_calls"].clear()
             cached = state["contacts"]["carbon-a"]["standalone_calls"][
                 outbound["call_id"]
             ]
             cached["_cached_at"] = last_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         self.assertEqual(
             work_updates.complete_inactive_calls(
-                now=last_activity + work_updates.CALL_IDLE_TIMEOUT_SECONDS,
+                now=last_activity + w_constants.CALL_IDLE_TIMEOUT_SECONDS,
                 client=client,
             ),
             1,
@@ -1210,16 +1217,16 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             outbound=outbound,
             client=client,
         )
-        last_activity = time.time() - work_updates.CALL_IDLE_TIMEOUT_SECONDS
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        last_activity = time.time() - w_constants.CALL_IDLE_TIMEOUT_SECONDS
+        with w_store._state_guard():
+            state = w_store._read_state()
             for contact in state["contacts"].values():
                 for correlation in contact["pending_calls"].values():
                     correlation["updated_at"] = last_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         with mock.patch.object(
-            work_updates,
+            w_delivery,
             "submit_best_effort",
             return_value=False,
         ):
@@ -1232,7 +1239,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 0,
             )
 
-        state = work_updates._read_state()
+        state = w_store._read_state()
         pending_patches = [
             entry
             for entry in state["call_retry_journal"].values()
@@ -1300,15 +1307,15 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertTrue(prepared_before_timeout["continuation"])
         self.assertEqual(prepared_before_timeout["call_id"], inbound["call_id"])
 
-        last_activity = time.time() - work_updates.CALL_IDLE_TIMEOUT_SECONDS
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        last_activity = time.time() - w_constants.CALL_IDLE_TIMEOUT_SECONDS
+        with w_store._state_guard():
+            state = w_store._read_state()
             for contact in state["contacts"].values():
                 for correlation in contact["pending_calls"].values():
                     correlation["updated_at"] = last_activity
-            work_updates._write_state(state)
+            w_store._write_state(state)
         with mock.patch.object(
-            work_updates,
+            w_delivery,
             "submit_best_effort",
             return_value=False,
         ):
@@ -1359,7 +1366,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 client=client,
             )
         )
-        state = work_updates._read_state()
+        state = w_store._read_state()
         correlation = state["contacts"]["carbon-a"]["pending_calls"]["carbon-b"]
         self.assertEqual(correlation["outbound_call_id"], reference["call_id"])
         self.assertTrue(flush_best_effort())
@@ -1406,7 +1413,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
         self.assertTrue(flush_best_effort())
         self.assertFalse(
-            work_updates._read_state()["contacts"]["carbon-b"][
+            w_store._read_state()["contacts"]["carbon-b"][
                 "pending_calls"
             ]
         )
@@ -1424,7 +1431,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertEqual(len(client.requests), request_count)
         self.assertTrue(continuation["continuation"])
         self.assertEqual(continuation["call_id"], inbound["call_id"])
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
         self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
 
@@ -1436,7 +1443,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             "work_event_id": "event-outbound",
         }
         with mock.patch.object(
-            work_updates,
+            w_delivery,
             "submit_best_effort",
             return_value=False,
         ):
@@ -1452,7 +1459,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
 
         self.assertTrue(inbound["call_id"])
         self.assertTrue(inbound["work_event_id"])
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertEqual(len(state["call_retry_journal"]), 1)
         retry = next(iter(state["call_retry_journal"].values()))
         self.assertEqual(retry["direction"], "inbound")
@@ -1490,9 +1497,9 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             }
         )
         self._create_task(client, "carbon-a", "unrelated-active-task")
-        state = work_updates._read_state()
+        state = w_store._read_state()
         state["contacts"]["carbon-a"]["standalone_calls"] = {}
-        work_updates._write_state(state)
+        w_store._write_state(state)
 
         runtime.execute(
             {
@@ -1524,7 +1531,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
 
         self.assertTrue(reference["call_id"])
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertTrue(state["contacts"]["carbon-a"]["pending_calls"])
         self.assertEqual(len(state["call_retry_journal"]), 1)
         retry = next(iter(state["call_retry_journal"].values()))
@@ -1548,11 +1555,11 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
     def test_transient_retry_budget_covers_about_twenty_four_hours(self):
         nominal_delays = [
             min(
-                work_updates.CALL_RETRY_BASE_DELAY_SECONDS
+                w_constants.CALL_RETRY_BASE_DELAY_SECONDS
                 * (2 ** min(attempt - 1, 12)),
-                work_updates.CALL_RETRY_MAX_DELAY_SECONDS,
+                w_constants.CALL_RETRY_MAX_DELAY_SECONDS,
             )
-            for attempt in range(1, work_updates.CALL_RETRY_MAX_ATTEMPTS)
+            for attempt in range(1, w_constants.CALL_RETRY_MAX_ATTEMPTS)
         ]
         nominal_horizon = sum(nominal_delays)
 
@@ -1569,7 +1576,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             message="Please confirm.",
             client=client,
         )
-        retry_id = work_updates._journal_call_patch(
+        retry_id = w_journal._journal_call_patch(
             reference,
             {"body": "Authentication recovered."},
             mutation_id="auth-recovery",
@@ -1590,7 +1597,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
 
         client.work_standalone_call_patch = rotate_then_patch
         self.assertFalse(
-            work_updates._deliver_call_retry(retry_id, client=client)
+            w_delivery._deliver_call_retry(retry_id, client=client)
         )
         health = work_updates.pending_call_update_retries()
         self.assertEqual(health["pending"], 1)
@@ -1624,7 +1631,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             client=InvalidCreateClient(),
         )
 
-        state = work_updates._read_state()
+        state = w_store._read_state()
         entry = next(iter(state["call_retry_journal"].values()))
         self.assertEqual(entry["status"], "dead_letter")
         self.assertEqual(entry["attempts"], 1)
@@ -1652,7 +1659,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 client=SensitiveFailureClient(),
             )
 
-        state = work_updates._read_state()
+        state = w_store._read_state()
         entry = next(iter(state["call_retry_journal"].values()))
         self.assertEqual(entry["last_error"], "InterfaceError")
         rendered_logs = " ".join(
@@ -1673,17 +1680,17 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             "call_id": "call-second",
         }
         with mock.patch.object(
-            work_updates,
+            w_constants,
             "CALL_RETRY_MAX_ENTRIES",
             1,
         ):
-            work_updates._journal_call_patch(
+            w_journal._journal_call_patch(
                 first,
                 {"body": "first"},
                 mutation_id="first",
             )
-            with self.assertRaises(work_updates.WorkUpdateError):
-                work_updates._journal_call_patch(
+            with self.assertRaises(w_constants.WorkUpdateError):
+                w_journal._journal_call_patch(
                     second,
                     {"body": "second"},
                     mutation_id="second",
@@ -1692,7 +1699,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         health = work_updates.pending_call_update_retries()
         self.assertEqual(health["total"], 1)
         self.assertEqual(health["overflow_count"], 1)
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertEqual(
             {
                 entry["reference"]["call_id"]
@@ -1711,17 +1718,17 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             "call_id": "call-second",
         }
         with mock.patch.object(
-            work_updates,
+            w_constants,
             "CALL_RETRY_MAX_ENTRIES",
             1,
         ):
-            first_id = work_updates._journal_call_patch(
+            first_id = w_journal._journal_call_patch(
                 first,
                 {"body": "private first body"},
                 mutation_id="first",
             )
-            with work_updates._state_guard():
-                state = work_updates._read_state()
+            with w_store._state_guard():
+                state = w_store._read_state()
                 state["call_retry_journal"][first_id].update(
                     {
                         "attempts": 3,
@@ -1729,15 +1736,15 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                         "next_attempt_at": time.time() + 300,
                     }
                 )
-                work_updates._write_state(state)
+                w_store._write_state(state)
 
-            work_updates._journal_call_patch(
+            w_journal._journal_call_patch(
                 second,
                 {"body": "second"},
                 mutation_id="second",
             )
 
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertEqual(
             {
                 entry["reference"]["call_id"]
@@ -1757,7 +1764,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
 
     def test_expired_dead_letter_archival_is_body_free(self):
         secret = "PRIVATE CALL BODY"
-        retry_id = work_updates._journal_call_patch(
+        retry_id = w_journal._journal_call_patch(
             {
                 "owner_contact_id": "carbon-a",
                 "call_id": "call-private",
@@ -1765,23 +1772,23 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             {"body": secret},
             mutation_id="private",
         )
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             entry = state["call_retry_journal"][retry_id]
             entry["status"] = "dead_letter"
-            entry["attempts"] = work_updates.CALL_RETRY_MAX_ATTEMPTS
+            entry["attempts"] = w_constants.CALL_RETRY_MAX_ATTEMPTS
             entry["last_error"] = "InterfaceError:http_422"
             entry["dead_lettered_at"] = (
                 time.time()
-                - work_updates.CALL_RETRY_DEAD_LETTER_RETENTION_SECONDS
+                - w_constants.CALL_RETRY_DEAD_LETTER_RETENTION_SECONDS
                 - 1
             )
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         health = work_updates.pending_call_update_retries()
         self.assertEqual(health["total"], 0)
         self.assertEqual(health["archived_dead_letter"], 1)
-        persisted = work_updates.WORK_UPDATES_FILE.read_text(
+        persisted = w_constants.WORK_UPDATES_FILE.read_text(
             encoding="utf-8"
         )
         self.assertNotIn(secret, persisted)
@@ -1853,7 +1860,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             },
             client=ExplodingClient(),
         )
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertEqual(len(state["call_retry_journal"]), 1)
         self.assertEqual(
             state["contacts"]["carbon-b"]["pending_calls"]["carbon-a"][
@@ -1911,7 +1918,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.assertTrue(continuation["continuation"])
         self.assertTrue(queued["queued_for_delivery"])
         journal = sorted(
-            work_updates._read_state()["call_retry_journal"].values(),
+            w_store._read_state()["call_retry_journal"].values(),
             key=lambda entry: entry["sequence"],
         )
         self.assertEqual(
@@ -1947,7 +1954,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             ["Initial question.", "Additional context."],
         )
         self.assertFalse(
-            work_updates._read_state()["contacts"]["carbon-a"]["pending_calls"]
+            w_store._read_state()["contacts"]["carbon-a"]["pending_calls"]
         )
 
     def test_call_journal_preserves_update_added_during_create(self):
@@ -1973,7 +1980,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
 
         client.work_standalone_call_create = racing_create
         with mock.patch.object(
-            work_updates,
+            w_delivery,
             "_schedule_next_call_lane",
             return_value=False,
         ):
@@ -1986,7 +1993,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 client=client,
             )
 
-        journal = work_updates._read_state()["call_retry_journal"]
+        journal = w_store._read_state()["call_retry_journal"]
         self.assertEqual(len(journal), 1)
         self.assertEqual(
             next(iter(journal.values()))["payload"]["state"],
@@ -2015,14 +2022,14 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             message="Please confirm.",
             client=ExplodingClient(),
         )
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             entry = next(iter(state["call_retry_journal"].values()))
             entry["next_attempt_at"] = 0.0
             entry["lease_owner"] = "old-process"
             entry["lease_token"] = "old-token"
             entry["lease_expires_at"] = 1_090.0
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         client = FakeWorkClient()
         self.assertEqual(
@@ -2122,7 +2129,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             message="Initial question.",
             client=client,
         )
-        retry_id = work_updates._journal_call_patch(
+        retry_id = w_journal._journal_call_patch(
             reference,
             {"body": "A malformed optional update."},
             mutation_id="malformed-update",
@@ -2132,7 +2139,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             side_effect=ValueError("invalid optional patch")
         )
         self.assertFalse(
-            work_updates._deliver_call_retry(retry_id, client=client)
+            w_delivery._deliver_call_retry(retry_id, client=client)
         )
         client.work_standalone_call_patch = original_patch
         self.assertEqual(
@@ -2165,7 +2172,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             "work_event_id": "event-outbound",
         }
         with mock.patch.object(
-            work_updates,
+            w_delivery,
             "_schedule_call_retry",
             return_value=True,
         ):
@@ -2189,7 +2196,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             )
 
         self.assertEqual(first, second)
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertEqual(len(state["call_retry_journal"]), 1)
         receipt = state["call_retry_dedupe"]["incoming-event-1"]
         self.assertNotIn(
@@ -2219,7 +2226,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             message="Hello.",
         )
         with mock.patch.object(
-            work_updates,
+            w_delivery,
             "_schedule_call_retry",
             return_value=True,
         ) as schedule:
@@ -2243,7 +2250,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
                 )
             )
 
-        state = work_updates._read_state()
+        state = w_store._read_state()
         journal = list(state["call_retry_journal"].values())
         self.assertEqual(len(journal), 1)
         self.assertEqual(journal[0]["operation"], "create")
@@ -2277,12 +2284,12 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             message="Unrelated question.",
             client=client,
         )
-        with work_updates._state_guard():
-            state = work_updates._read_state()
+        with w_store._state_guard():
+            state = w_store._read_state()
             pending = state["contacts"]["silicon-b"]["pending_calls"]
             pending["silicon-b"]["updated_at"] = time.time() - 2.0
             pending["silicon-c"]["updated_at"] = time.time() - 1.0
-            work_updates._write_state(state)
+            w_store._write_state(state)
 
         self.assertTrue(
             work_updates.record_contact_call_message(
@@ -2310,7 +2317,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             [row["body"] for row in unrelated_event["transcript"]],
             ["Unrelated question."],
         )
-        pending = work_updates._read_state()["contacts"]["silicon-b"][
+        pending = w_store._read_state()["contacts"]["silicon-b"][
             "pending_calls"
         ]
         self.assertNotIn("silicon-b", pending)
@@ -2347,7 +2354,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
         self.assertTrue(flush_best_effort())
         self.assertFalse(
-            work_updates._read_state()["contacts"]["silicon-b"]["pending_calls"]
+            w_store._read_state()["contacts"]["silicon-b"]["pending_calls"]
         )
         create_count = len(client.payloads("work_standalone_call_create"))
         patch_count = len(client.payloads("work_standalone_call_patch"))
@@ -2384,7 +2391,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             patch_count,
         )
         self.assertFalse(
-            work_updates._read_state()["contacts"]["silicon-b"]["pending_calls"]
+            w_store._read_state()["contacts"]["silicon-b"]["pending_calls"]
         )
         event = client._event_by("", "call_id", reference["call_id"])
         self.assertEqual(
@@ -2439,7 +2446,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(outbound_event["state"], "completed")
         self.assertEqual(inbound_event["state"], "completed")
-        state = work_updates._read_state()
+        state = w_store._read_state()
         self.assertFalse(state["contacts"]["carbon-a"]["pending_calls"])
         self.assertFalse(state["contacts"]["carbon-b"]["pending_calls"])
 

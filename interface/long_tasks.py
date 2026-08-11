@@ -2844,10 +2844,10 @@ def _persisted_active_estimated_task_snapshots(
 ) -> list[tuple[str, dict[str, Any]]]:
     """Read legacy active task cache entries that predate lifecycle journals."""
     try:
-        from interface import work_updates as work_updates_module
+        from interface.work import store as work_store
 
-        with work_updates_module._state_guard():
-            state = work_updates_module._read_state()
+        with work_store._state_guard():
+            state = work_store._read_state()
     except Exception:
         return []
     contacts = state.get("contacts")

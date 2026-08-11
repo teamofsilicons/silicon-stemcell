@@ -8,7 +8,8 @@ from unittest import mock
 
 import interface
 
-from interface import work_updates
+from interface.work import constants as w_constants
+from interface.work import store as w_store
 from helpers.process import BestEffortOutbox, flush_best_effort
 from helpers.state import (
     lock_handle,
@@ -248,9 +249,9 @@ class CorrelationAndDiagnosticsTest(unittest.TestCase):
                 }
             },
         }
-        work_updates._prune_state(
+        w_store._prune_state(
             state,
-            now=10_000 + work_updates.PENDING_CALL_TTL_SECONDS - 1,
+            now=10_000 + w_constants.PENDING_CALL_TTL_SECONDS - 1,
         )
         self.assertNotIn(
             "old",
