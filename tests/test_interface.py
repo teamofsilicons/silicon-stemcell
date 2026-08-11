@@ -14,6 +14,7 @@ import interface.client
 import interface.contacts
 import interface.events
 import interface.inbox
+import interface.inbox_file
 import interface.ingest
 import interface.outbound
 import interface.remote_browser
@@ -37,8 +38,8 @@ class InterfaceStateTest(unittest.TestCase):
         interface.constants.INBOX_CONSUMER_FILE = root / "interface_inbox_consumer.json"
         interface.constants.DEFAULT_INBOX_FILE = root / "inbox.jsonl"
         interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy" / "contacts.json"
-        with interface.inbox._inbox_scan_lock:
-            interface.inbox._inbox_scan_state.clear()
+        with interface.inbox_file._inbox_scan_lock:
+            interface.inbox_file._inbox_scan_state.clear()
         with interface.inbox._activity_condition:
             interface.inbox._activity_pending = 0
         with interface.inbox._inbox_retry_lock:
@@ -57,8 +58,8 @@ class InterfaceStateTest(unittest.TestCase):
         interface.constants.INBOX_CONSUMER_FILE = self.old_inbox_consumer
         interface.constants.DEFAULT_INBOX_FILE = self.old_default_inbox
         interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
-        with interface.inbox._inbox_scan_lock:
-            interface.inbox._inbox_scan_state.clear()
+        with interface.inbox_file._inbox_scan_lock:
+            interface.inbox_file._inbox_scan_state.clear()
         with interface.inbox._activity_condition:
             interface.inbox._activity_pending = 0
         with interface.inbox._inbox_retry_lock:
@@ -649,8 +650,8 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual([r.frame["event"]["event_id"] for r in records], ["evt-1", "evt-2"])
         interface.inbox._commit_inbox_record(records[0])
 
-        with interface.inbox._inbox_scan_lock:
-            interface.inbox._inbox_scan_state.clear()
+        with interface.inbox_file._inbox_scan_lock:
+            interface.inbox_file._inbox_scan_state.clear()
         replay = interface.inbox._read_new_inbox_records(interface.constants.DEFAULT_INBOX_FILE)
 
         self.assertEqual([r.frame["event"]["event_id"] for r in replay], ["evt-2"])
