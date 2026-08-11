@@ -316,6 +316,10 @@ class TeamContextLifecycleTest(unittest.TestCase):
                 "interface.team.team_context_tick",
                 side_effect=[invalid, unavailable, invalid],
             ),
+            # This case is about deduplicating tick notices. Left unmocked, the
+            # publish runs against whatever advertising state the box has and
+            # can add a second notice of its own.
+            mock.patch.object(config, "_publish_own_advertising", return_value=None),
             mock.patch("builtins.print") as output,
         ):
             config._run_team_context_tick()
