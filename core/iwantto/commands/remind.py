@@ -18,8 +18,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from core.iwantto.routing import RoutingError, resolve_target
-from core.runtime_paths import DATA_ROOT
-from core.state_store import read_json, update_json
+from helpers.paths import DATA_ROOT
+from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 REMINDERS_FILE = os.path.join(

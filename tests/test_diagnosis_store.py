@@ -362,7 +362,7 @@ class AdvertisingPublishTest(unittest.TestCase):
         self.addCleanup(self._temp.cleanup)
         self.root = self._temp.name
         os.makedirs(os.path.join(self.root, "prompts"))
-        patcher = mock.patch("core.runtime_paths.DATA_ROOT", self.root)
+        patcher = mock.patch("helpers.paths.DATA_ROOT", self.root)
         patcher.start()
         self.addCleanup(patcher.stop)
 

@@ -19,7 +19,7 @@ class RuntimeDataRootTests(unittest.TestCase):
             release_root = (
                 data_root / ".silicon" / "releases" / "test-generation"
             )
-            for directory in ("core", "prompts", "worker"):
+            for directory in ("core", "helpers", "prompts", "worker"):
                 shutil.copytree(
                     CODE_ROOT / directory,
                     release_root / directory,
@@ -64,7 +64,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 requests.post = lambda *args, **kwargs: None
                 sys.modules.setdefault("requests", requests)
 
-                from core.runtime_paths import CODE_ROOT, DATA_ROOT
+                from helpers.paths import CODE_ROOT, DATA_ROOT
                 from core import (
                     activity_log,
                     backup,
@@ -213,7 +213,7 @@ class RuntimeDataRootTests(unittest.TestCase):
             self.assertTrue(any((data_root / "logs").glob("*.txt")))
 
     def test_rejects_relative_or_release_store_data_root(self):
-        from core.runtime_paths import RuntimePathError, validated_data_root
+        from helpers.paths import RuntimePathError, validated_data_root
 
         with self.assertRaisesRegex(RuntimePathError, "absolute"):
             validated_data_root("relative-instance")

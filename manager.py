@@ -18,7 +18,7 @@ from contextlib import ExitStack, nullcontext
 
 from prompts.DNA import get_manager_prompt
 from core.codex_app_server import CodexAppServer as _SharedCodexAppServer
-from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from helpers.paths import CODE_ROOT, DATA_ROOT
 from core.iwantto import injection
 from core.progress import (
     DONE,

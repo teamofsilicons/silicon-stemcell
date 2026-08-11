@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from core.runtime_paths import DATA_ROOT
+from helpers.paths import DATA_ROOT
 
 CONFIG_FILE = ".glass.json"
 PROJECT_ROOT = DATA_ROOT

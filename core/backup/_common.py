@@ -33,8 +33,8 @@ except ImportError:  # pragma: no cover - Unix/macOS
     msvcrt = None
 from core import data_policy
 from core.glass import load_glass_config, silicon_api_request
-from core.runtime_paths import DATA_ROOT
-from core.state_store import (
+from helpers.paths import DATA_ROOT
+from helpers.state import (
     atomic_write_bytes,
     chmod_open_file,
     file_lock as state_file_lock,

@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 CODE_ROOT = os.path.dirname(os.path.abspath(__file__))
 if CODE_ROOT not in sys.path:
     sys.path.insert(0, CODE_ROOT)
-from core.runtime_paths import DATA_ROOT
+from helpers.paths import DATA_ROOT
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 LOCAL_BIN = os.path.join(PROJECT_ROOT, ".local", "bin")
@@ -2361,7 +2361,7 @@ def _maintenance_runtime_tick(dispatcher, *, attest=True):
             and status["active_count"] == 0
             and dispatcher.wait_for_idle(timeout=0)
         ):
-            from core.background import flush_best_effort
+            from helpers.process import flush_best_effort
 
             flushed = flush_best_effort(timeout=0.25)
             MAINTENANCE.acknowledge_runtime_quiescent(

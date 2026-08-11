@@ -394,7 +394,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
                 return_value=object(),
             ),
             mock.patch("core.maintenance.COORDINATOR", coordinator),
-            mock.patch("core.background.submit_best_effort") as submit,
+            mock.patch("helpers.process.submit_best_effort") as submit,
         ):
             accepted = messages._queue_lineage_handoff(
                 "silicon-b",

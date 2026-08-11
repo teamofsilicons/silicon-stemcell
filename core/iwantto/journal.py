@@ -19,8 +19,8 @@ import json
 import os
 import time
 
-from core.runtime_paths import DATA_ROOT
-from core.state_store import file_lock, read_json, update_json
+from helpers.paths import DATA_ROOT
+from helpers.state import file_lock, read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 DIAGNOSIS_DIR = os.path.join(PROJECT_ROOT, "diagnosis")

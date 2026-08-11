@@ -7,8 +7,8 @@ import threading
 import time
 from collections.abc import Callable
 
-from core.runtime_paths import CODE_ROOT, DATA_ROOT
-from core.state_store import file_lock, read_json, write_json
+from helpers.paths import CODE_ROOT, DATA_ROOT
+from helpers.state import file_lock, read_json, write_json
 
 HEALTH_FILE = DATA_ROOT / ".silicon" / "runtime-health.json"
 HEARTBEAT_SECONDS = 1.0

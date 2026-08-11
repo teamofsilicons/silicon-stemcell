@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from core import backup, data_policy
-from core.runtime_paths import CODE_ROOT
+from helpers.paths import CODE_ROOT
 
 
 class SnapshotGarbageCollectionTest(unittest.TestCase):

@@ -45,7 +45,7 @@ import traceback
 import uuid
 
 from core.diag_retention import maybe_prune
-from core.runtime_paths import CODE_ROOT, DATA_ROOT, resolve_data_relative
+from helpers.paths import CODE_ROOT, DATA_ROOT, resolve_data_relative
 
 log = logging.getLogger("silicon.diagnostics")
 

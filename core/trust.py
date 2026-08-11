@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from core.glass import silicon_api_request
-from core.runtime_paths import DATA_ROOT
-from core.state_store import file_lock, read_json, write_json
+from helpers.paths import DATA_ROOT
+from helpers.state import file_lock, read_json, write_json
 
 STATE_FILE = "core/interface_state/trust_policy.json"
 VALID_LEVELS = ("very_low", "low", "ok", "high", "very_high", "ultimate")

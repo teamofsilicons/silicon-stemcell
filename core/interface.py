@@ -25,10 +25,10 @@ from typing import Any
 
 import requests
 
-from core.background import submit_best_effort
-from core.path_watch import PathChangeWaiter, PathSetChangeWaiter
-from core.runtime_paths import DATA_ROOT
-from core.state_store import file_lock, read_json, update_json, write_json
+from helpers.process import submit_best_effort
+from helpers.watch import PathChangeWaiter, PathSetChangeWaiter
+from helpers.paths import DATA_ROOT
+from helpers.state import file_lock, read_json, update_json, write_json
 
 PROJECT_ROOT = DATA_ROOT
 STATE_DIR = PROJECT_ROOT / "core" / "interface_state"

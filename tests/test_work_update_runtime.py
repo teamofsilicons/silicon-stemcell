@@ -9,7 +9,7 @@ from unittest import mock
 
 import core.interface as interface
 import core.work_updates as work_updates
-from core.background import flush_best_effort
+from helpers.process import flush_best_effort
 
 
 NOW = "2026-07-23T06:00:00Z"

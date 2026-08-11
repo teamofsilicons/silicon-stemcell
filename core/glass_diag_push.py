@@ -45,7 +45,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from core.runtime_paths import resolve_data_relative
+from helpers.paths import resolve_data_relative
 
 log = logging.getLogger("silicon.glass_diag_push")
 

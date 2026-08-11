@@ -11,7 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from core import backup, data_policy, state_store
+from core import backup, data_policy
+from helpers import state as state_store
 
 
 def write_release_floor(

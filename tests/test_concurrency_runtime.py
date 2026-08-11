@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from core import interface, work_updates
-from core.background import BestEffortOutbox, flush_best_effort
-from core.state_store import (
+from helpers.process import BestEffortOutbox, flush_best_effort
+from helpers.state import (
     lock_handle,
     read_json,
     unlock_handle,

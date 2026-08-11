@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from core import path_watch
+from helpers import watch as path_watch
 
 
 class PathChangeWaiterTest(unittest.TestCase):

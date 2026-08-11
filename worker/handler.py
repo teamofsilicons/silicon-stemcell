@@ -18,12 +18,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from helpers.paths import CODE_ROOT, DATA_ROOT
 from core.progress import (
     provider_authentication_failed,
     provider_not_authenticated_message,
 )
-from core.state_store import file_lock, read_json, update_json, write_json
+from helpers.state import file_lock, read_json, update_json, write_json
 from prompts.DNA import get_worker_prompt
 
 IS_WINDOWS = platform.system() == "Windows"

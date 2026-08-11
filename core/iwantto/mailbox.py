@@ -16,8 +16,8 @@ from __future__ import annotations
 import os
 import time
 
-from core.runtime_paths import DATA_ROOT
-from core.state_store import update_json
+from helpers.paths import DATA_ROOT
+from helpers.state import update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 MAILBOX_FILE = os.path.join(

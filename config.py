@@ -129,8 +129,8 @@ def _publish_own_advertising():
     import hashlib
     import os
 
-    from core.runtime_paths import DATA_ROOT
-    from core.state_store import read_json, write_json
+    from helpers.paths import DATA_ROOT
+    from helpers.state import read_json, write_json
 
     root = os.fspath(DATA_ROOT)
     path = os.path.join(root, ADVERTISING_FILE)

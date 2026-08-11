@@ -14,7 +14,7 @@ import datetime
 import json
 from pathlib import Path
 
-from core.runtime_paths import DATA_ROOT
+from helpers.paths import DATA_ROOT
 
 PROJECT_ROOT = DATA_ROOT
 LOGS_DIR = PROJECT_ROOT / "logs"

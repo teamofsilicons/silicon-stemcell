@@ -177,7 +177,7 @@ class RunEnvironmentTest(unittest.TestCase):
         for index in range(actor_module.MAX_ACTORS + 20):
             register_actor(MANAGER, f"carbon-{index}", f"carbon-{index}")
 
-        from core.state_store import read_json
+        from helpers.state import read_json
 
         state = read_json(actor_module.ACTORS_FILE, {"actors": {}})
         self.assertLessEqual(len(state["actors"]), actor_module.MAX_ACTORS)

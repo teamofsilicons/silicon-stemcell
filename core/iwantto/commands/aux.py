@@ -5,7 +5,7 @@ import json
 import os
 import time
 
-from core.runtime_paths import DATA_ROOT
+from helpers.paths import DATA_ROOT
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 # The Stemcell owns process lifecycle. A command running in a child process

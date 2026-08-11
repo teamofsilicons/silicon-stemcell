@@ -19,7 +19,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
-from core.background import submit_best_effort
+from helpers.process import submit_best_effort
 from core.interface import (
     InterfaceClient,
     InterfaceError,
@@ -28,7 +28,7 @@ from core.interface import (
     get_contact,
     get_own_profile,
 )
-from core.state_store import file_lock, read_json, write_json
+from helpers.state import file_lock, read_json, write_json
 
 
 WORK_UPDATES_FILE = STATE_DIR / "work_updates.json"

@@ -41,7 +41,7 @@ import logging
 import os
 import time
 
-from core.runtime_paths import DATA_ROOT
+from helpers.paths import DATA_ROOT
 
 log = logging.getLogger("silicon.diag.retention")
 

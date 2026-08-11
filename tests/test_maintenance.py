@@ -567,7 +567,7 @@ class DispatcherMaintenanceTests(unittest.TestCase):
                 "maintenance_inbox_quiescent",
                 return_value=False,
             ), mock.patch(
-                "core.background.flush_best_effort",
+                "helpers.process.flush_best_effort",
                 return_value=True,
             ):
                 main._maintenance_runtime_tick(dispatcher)
@@ -594,7 +594,7 @@ class DispatcherMaintenanceTests(unittest.TestCase):
                 "maintenance_inbox_quiescent",
                 return_value=True,
             ), mock.patch(
-                "core.background.flush_best_effort",
+                "helpers.process.flush_best_effort",
                 return_value=True,
             ):
                 main._maintenance_runtime_tick(dispatcher)

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 import update
-from core import state_store
+from helpers import state as state_store
 
 
 class FakeResponse:

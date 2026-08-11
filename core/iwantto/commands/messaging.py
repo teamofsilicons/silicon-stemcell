@@ -369,8 +369,8 @@ def cmd_transcribe(args, actor) -> str:
 
 def cmd_request_lords(args, actor) -> str:
     """Send a feature request to the lords at Team of Silicons."""
-    from core.runtime_paths import DATA_ROOT
-    from core.state_store import update_json
+    from helpers.paths import DATA_ROOT
+    from helpers.state import update_json
 
     title = str(args.title or "").strip()
     description = str(args.description or "").strip()

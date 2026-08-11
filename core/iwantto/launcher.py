@@ -13,7 +13,7 @@ import os
 import stat
 import sys
 
-from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from helpers.paths import CODE_ROOT, DATA_ROOT
 
 LOCAL_BIN = os.path.join(os.fspath(DATA_ROOT), ".local", "bin")
 LAUNCHER_PATH = os.path.join(LOCAL_BIN, "iwantto")

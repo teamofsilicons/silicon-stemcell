@@ -26,8 +26,8 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
-from core.path_watch import PathSetChangeWaiter
-from core.runtime_paths import CODE_ROOT, DATA_ROOT
+from helpers.watch import PathSetChangeWaiter
+from helpers.paths import CODE_ROOT, DATA_ROOT
 
 try:
     import pty

@@ -12,8 +12,8 @@ import threading
 import time
 import uuid
 
-from core.runtime_paths import DATA_ROOT
-from core.state_store import file_lock, read_json, write_json
+from helpers.paths import DATA_ROOT
+from helpers.state import file_lock, read_json, write_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 MANAGER_MESSAGES_FILE = os.path.join(PROJECT_ROOT, "core", "interface_state", "manager_queue.json")
