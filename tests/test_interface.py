@@ -648,6 +648,97 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertEqual([r.frame["event"]["event_id"] for r in replay], ["evt-2"])
 
+    def test_committed_cursor_survives_verified_path_and_inode_change(self):
+        frames = [
+            {"type": "event", "event": {"event_id": "evt-1"}},
+            {"type": "event", "event": {"event_id": "evt-2"}},
+        ]
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames)
+        original = interface.DEFAULT_INBOX_FILE
+        original.write_text(payload, encoding="utf-8")
+        records = interface._read_new_inbox_records(original)
+        interface._commit_inbox_record(records[0])
+
+        replacement = original.with_name("host-inbox.jsonl")
+        replacement.write_text(payload, encoding="utf-8")
+        self.assertNotEqual(
+            interface._inbox_file_id(original.stat()),
+            interface._inbox_file_id(replacement.stat()),
+        )
+        with interface._inbox_scan_lock:
+            interface._inbox_scan_state.clear()
+
+        replay = interface._read_new_inbox_records(replacement)
+
+        self.assertEqual(
+            [record.frame["event"]["event_id"] for record in replay],
+            ["evt-2"],
+        )
+        consumer = json.loads(
+            interface.INBOX_CONSUMER_FILE.read_text(encoding="utf-8")
+        )
+        self.assertEqual(consumer["path"], str(replacement.resolve()))
+        self.assertEqual(
+            consumer["file_id"],
+            interface._inbox_file_id(replacement.stat()),
+        )
+
+    def test_changed_inbox_fails_content_anchor_and_replays_from_start(self):
+        frames = [
+            {"type": "event", "event": {"event_id": "evt-1"}},
+            {"type": "event", "event": {"event_id": "evt-2"}},
+        ]
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames)
+        original = interface.DEFAULT_INBOX_FILE
+        original.write_text(payload, encoding="utf-8")
+        records = interface._read_new_inbox_records(original)
+        interface._commit_inbox_record(records[0])
+
+        replacement = original.with_name("unrelated-inbox.jsonl")
+        changed = payload.replace("evt-1", "evt-X", 1)
+        replacement.write_text(changed, encoding="utf-8")
+        with interface._inbox_scan_lock:
+            interface._inbox_scan_state.clear()
+
+        replay = interface._read_new_inbox_records(replacement)
+
+        self.assertEqual(
+            [record.frame["event"]["event_id"] for record in replay],
+            ["evt-X", "evt-2"],
+        )
+
+    def test_maintenance_quiescence_accepts_only_restart_safe_frames(self):
+        frame = {
+            "type": "event",
+            "room_id": "room-a",
+            "event": {"type": "m.text", "event_id": "evt-safe"},
+        }
+        interface.DEFAULT_INBOX_FILE.write_text(
+            json.dumps(frame) + "\n",
+            encoding="utf-8",
+        )
+        durable = interface._read_new_inbox_records(
+            interface.DEFAULT_INBOX_FILE
+        )[0]
+        interface._event_queue.put(durable)
+
+        with mock.patch.object(interface, "_listener_thread", None):
+            self.assertTrue(interface.maintenance_inbox_quiescent())
+
+            self.assertIs(interface._event_queue.get_nowait(), durable)
+            interface._event_queue.put(interface.InboxRecord(frame))
+            self.assertFalse(interface.maintenance_inbox_quiescent())
+
+            self.assertIsInstance(
+                interface._event_queue.get_nowait(),
+                interface.InboxRecord,
+            )
+            interface._inbox_retry_records.append(durable)
+            self.assertTrue(interface.maintenance_inbox_quiescent())
+
+            interface.DEFAULT_INBOX_FILE.unlink()
+            self.assertFalse(interface.maintenance_inbox_quiescent())
+
     def test_call_journal_failure_replays_before_inbox_cursor_advances(self):
         interface.upsert_contact(
             "silicon",

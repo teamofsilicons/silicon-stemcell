@@ -29,20 +29,19 @@ starts it.
 
 - Python 3.9+
 - A Glass team setup token
-- Docker for the default isolated runtime
+- Node.js 22+, npm, Git, Silicon Browser, Silicon Extend, and an authenticated
+  Claude Code or Codex CLI on the host
 
-The default Docker runtime includes Node.js 22, Silicon Interface CLI, Silicon
-Browser, Claude Code, Codex, Python, and Git. On supported Linux hosts,
-`silicon pull` can install and configure Docker when it is missing.
+The default host-local runtime shares this toolchain across the machine, so
+normal Silicon updates do not pull images or wait on container recreation.
+`silicon pull` checks these prerequisites before committing any installation.
 
-To opt into the host-local runtime instead:
+The old Docker backend remains an explicit compatibility option for existing
+fleets:
 
 ```bash
-SILICON_RUNTIME=local silicon pull
+SILICON_RUNTIME=docker silicon pull
 ```
-
-Host-local installs require Node.js 22+, npm, Silicon Browser, and at least one
-authenticated manager backend (Claude Code or Codex) on the host.
 
 ## Day-to-day commands
 

@@ -197,13 +197,17 @@ class DispatcherDurabilityTest(unittest.TestCase):
         self.assertEqual(dispatcher._pending.get("carbon-a", []), [])
         self.assertEqual(len(dispatcher._injected["carbon-a"]), 1)
 
-    def test_a_refused_offer_falls_back_to_the_normal_queue(self):
+    def test_a_refused_offer_returns_to_the_durable_queue(self):
         dispatcher = self._dispatcher()
+        admission = self._admission()
 
-        with injection.accepting(injection.MANAGER, "carbon-a", lambda _t: False):
-            dispatcher._schedule_admissions([self._admission()])
+        with injection.accepting(
+            injection.MANAGER, "carbon-a", lambda _t: False
+        ), mock.patch.object(main.MAINTENANCE, "defer_roots") as defer:
+            dispatcher._schedule_admissions([admission])
 
-        self.assertEqual(len(dispatcher._pending["carbon-a"]), 1)
+        defer.assert_called_once_with([admission])
+        self.assertEqual(dispatcher._pending.get("carbon-a", []), [])
         self.assertEqual(dispatcher._injected.get("carbon-a", []), [])
 
     def test_an_idle_contact_is_never_injected_into(self):

@@ -2130,24 +2130,44 @@ class ManagerDispatcher:
         self._running = set()
         self._threads = set()
         self._closed = False
-        self._slots = threading.BoundedSemaphore(max(1, int(max_active_contacts)))
+        self._max_active_contacts = max(1, int(max_active_contacts))
+        # One count per durable manager-root lease owned by this dispatcher.
+        # Keeping this bounded prevents hundreds of threads from pre-claiming
+        # roots while they wait for a much smaller execution semaphore.
+        self._claimed_roots = 0
 
     def submit(self, context_by_carbon):
         """Durably enqueue roots and start only those admitted before the fence."""
-        admissions = []
+        started = []
         transferred_accuracy_reviews = []
         for carbon_id, context in (context_by_carbon or {}).items():
             if not context:
                 continue
-            result = MAINTENANCE.enqueue_root(carbon_id, str(context))
+            with self._condition:
+                if self._closed:
+                    raise RuntimeError("manager dispatcher is closed")
+                result = MAINTENANCE.enqueue_root(
+                    carbon_id,
+                    str(context),
+                    admit=self._claimed_roots < self._max_active_contacts,
+                )
+                if result.admission is not None:
+                    admitted, overflow = self._schedule_admissions_locked(
+                        [result.admission]
+                    )
+                    started.extend(admitted)
+                    if overflow:
+                        # The condition lock makes this unreachable for normal
+                        # submissions, but preserve the durable root if a
+                        # future caller changes admission behavior.
+                        MAINTENANCE.defer_roots(overflow)
             accuracy_review_id, _ = extract_accuracy_review_root(str(context))
             if accuracy_review_id:
                 transferred_accuracy_reviews.append(
                     (str(carbon_id), accuracy_review_id)
                 )
-            if result.admission is not None:
-                admissions.append(result.admission)
-        self._schedule_admissions(admissions)
+        for thread in started:
+            thread.start()
         # Keep a queued long-task head and its lease intact until
         # run_all_managers crosses the lifecycle fence.  Maintenance owns the
         # admission retry, but acknowledging here would also erase the only
@@ -2194,117 +2214,157 @@ class ManagerDispatcher:
         with self._condition:
             return self._injected.pop(carbon_id, [])
 
+    def _schedule_admissions_locked(self, admissions):
+        """Assign already-claimed roots while holding ``_condition``."""
+        started = []
+        overflow = []
+        if self._closed:
+            raise RuntimeError("manager dispatcher is closed")
+        for admission in admissions:
+            if not isinstance(admission, RootAdmission):
+                continue
+            if self._claimed_roots >= self._max_active_contacts:
+                overflow.append(admission)
+                continue
+            carbon_id = admission.contact_id
+            # A contact that is mid-turn can take the message now instead
+            # of waiting for the whole run to finish.
+            if carbon_id in self._running:
+                self._claimed_roots += 1
+                if self._inject_into_live_run(admission):
+                    continue
+                self._claimed_roots -= 1
+                overflow.append(admission)
+                continue
+            self._claimed_roots += 1
+            self._pending.setdefault(carbon_id, []).append(admission)
+            self._running.add(carbon_id)
+            thread = threading.Thread(
+                target=self._run_contact,
+                args=(carbon_id,),
+                name=f"manager-dispatch-{carbon_id}",
+                daemon=True,
+            )
+            self._threads.add(thread)
+            started.append(thread)
+        self._condition.notify_all()
+        return started, overflow
+
     def _schedule_admissions(self, admissions):
         started = []
+        overflow = []
         with self._condition:
-            if self._closed:
-                raise RuntimeError("manager dispatcher is closed")
-            for admission in admissions:
-                if not isinstance(admission, RootAdmission):
-                    continue
-                carbon_id = admission.contact_id
-                # A contact that is mid-turn can take the message now instead
-                # of waiting for the whole run to finish.
-                if carbon_id in self._running and self._inject_into_live_run(
-                    admission
-                ):
-                    continue
-                self._pending.setdefault(carbon_id, []).append(admission)
-                if carbon_id in self._running:
-                    continue
-                self._running.add(carbon_id)
-                thread = threading.Thread(
-                    target=self._run_contact,
-                    args=(carbon_id,),
-                    name=f"manager-dispatch-{carbon_id}",
-                    daemon=True,
-                )
-                self._threads.add(thread)
-                started.append(thread)
-            self._condition.notify_all()
+            started, overflow = self._schedule_admissions_locked(admissions)
+        if overflow:
+            MAINTENANCE.defer_roots(overflow)
         for thread in started:
             thread.start()
 
     def replay_maintenance_queue(self, *, limit=100):
-        """Claim durable roots after a cancelled/completed maintenance window."""
-        admissions = MAINTENANCE.claim_pending_roots(limit=limit)
-        if admissions:
-            self._schedule_admissions(admissions)
+        """Fill free execution slots from the durable root queue."""
+        with self._condition:
+            capacity = self._max_active_contacts - self._claimed_roots
+            if self._closed or capacity <= 0:
+                return 0
+            admissions = MAINTENANCE.claim_pending_roots(
+                limit=min(max(1, int(limit)), capacity),
+                exclude_contact_ids=tuple(self._running),
+                unique_contacts=True,
+            )
+            started, overflow = self._schedule_admissions_locked(admissions)
+        if overflow:
+            MAINTENANCE.defer_roots(overflow)
+        for thread in started:
+            thread.start()
         return len(admissions)
+
+    def _release_claimed_roots(self, count):
+        with self._condition:
+            self._claimed_roots = max(0, self._claimed_roots - max(0, int(count)))
+            self._condition.notify_all()
 
     def _run_contact(self, carbon_id):
         released = False
         try:
-            with self._slots:
-                while True:
-                    with self._condition:
-                        admissions = self._pending.pop(carbon_id, [])
-                        if not admissions:
-                            stranded = self._injected.pop(carbon_id, [])
-                            if stranded:
-                                # Their run finished before this thread exited.
-                                MAINTENANCE.complete_roots(stranded)
-                            self._running.discard(carbon_id)
-                            self._threads.discard(threading.current_thread())
-                            released = True
-                            self._condition.notify_all()
-                            return
-                    batches = []
-                    normal_batch = []
-                    for admission in admissions:
-                        review_id, _ = extract_accuracy_review_root(
-                            admission.context
-                        )
-                        if review_id:
-                            if normal_batch:
-                                batches.append(normal_batch)
-                                normal_batch = []
-                            batches.append([admission])
-                        else:
-                            normal_batch.append(admission)
-                    if normal_batch:
-                        batches.append(normal_batch)
+            while True:
+                with self._condition:
+                    admissions = self._pending.pop(carbon_id, [])
+                    if not admissions:
+                        stranded = self._injected.pop(carbon_id, [])
+                        self._running.discard(carbon_id)
+                        self._threads.discard(threading.current_thread())
+                        released = True
+                        self._condition.notify_all()
+                if not admissions:
+                    if stranded:
+                        # Their run finished before this thread exited.
+                        MAINTENANCE.complete_roots(stranded)
+                        self._release_claimed_roots(len(stranded))
+                    self.replay_maintenance_queue()
+                    return
+                batches = []
+                normal_batch = []
+                for admission in admissions:
+                    review_id, _ = extract_accuracy_review_root(
+                        admission.context
+                    )
+                    if review_id:
+                        if normal_batch:
+                            batches.append(normal_batch)
+                            normal_batch = []
+                        batches.append([admission])
+                    else:
+                        normal_batch.append(admission)
+                if normal_batch:
+                    batches.append(normal_batch)
 
-                    for batch in batches:
-                        try:
-                            # Internal accuracy reviews stay isolated from
-                            # user roots; every admission remains leased until
-                            # its own manager turn actually returns.
-                            with heartbeat_scope(
-                                [item.activity for item in batch],
-                                coordinator=MAINTENANCE,
-                            ):
-                                self._runner({
-                                    carbon_id: "\n\n".join(
-                                        item.context for item in batch
-                                    )
-                                })
-                            for item in batch:
-                                review_id, _ = extract_accuracy_review_root(
-                                    item.context
+                for batch in batches:
+                    settled = None
+                    coordinator_released = False
+                    try:
+                        # Internal accuracy reviews stay isolated from user
+                        # roots; every admission remains leased until its own
+                        # manager turn actually returns.
+                        with heartbeat_scope(
+                            [item.activity for item in batch],
+                            coordinator=MAINTENANCE,
+                        ):
+                            self._runner({
+                                carbon_id: "\n\n".join(
+                                    item.context for item in batch
                                 )
-                                if review_id:
-                                    complete_accuracy_review_root(
-                                        carbon_id,
-                                        review_id,
-                                    )
-                            # Anything injected while that runner was going
-                            # was handled by it, so it completes with it.
-                            MAINTENANCE.complete_roots(
-                                batch + self._take_injected(carbon_id)
+                            })
+                        for item in batch:
+                            review_id, _ = extract_accuracy_review_root(
+                                item.context
                             )
-                            log(
-                                "[Silicon] Manager loop complete for "
-                                f"{carbon_id}."
-                            )
-                        except Exception as exc:
-                            MAINTENANCE.retry_roots(
-                                batch + self._take_injected(carbon_id)
-                            )
-                            log(
-                                "[Silicon] Manager dispatcher error for "
-                                f"{carbon_id}: {exc}"
-                            )
+                            if review_id:
+                                complete_accuracy_review_root(
+                                    carbon_id,
+                                    review_id,
+                                )
+                        # Anything injected while that runner was going was
+                        # handled by it, so it completes with it.
+                        settled = batch + self._take_injected(carbon_id)
+                        MAINTENANCE.complete_roots(settled)
+                        coordinator_released = True
+                        log(
+                            "[Silicon] Manager loop complete for "
+                            f"{carbon_id}."
+                        )
+                    except Exception as exc:
+                        if settled is None:
+                            settled = batch + self._take_injected(carbon_id)
+                        MAINTENANCE.retry_roots(settled)
+                        coordinator_released = True
+                        log(
+                            "[Silicon] Manager dispatcher error for "
+                            f"{carbon_id}: {exc}"
+                        )
+                    finally:
+                        if coordinator_released:
+                            self._release_claimed_roots(len(settled or ()))
+                    self.replay_maintenance_queue()
         finally:
             if not released:
                 with self._condition:
@@ -2369,12 +2429,9 @@ def _maintenance_runtime_tick(dispatcher, *, attest=True):
             and status["active_count"] == 0
             and dispatcher.wait_for_idle(timeout=0)
         ):
-            from core.background import flush_best_effort
-
-            flushed = flush_best_effort(timeout=0.25)
             MAINTENANCE.acknowledge_runtime_quiescent(
                 epoch=status["epoch"],
-                outbox_flushed=flushed and maintenance_inbox_quiescent(),
+                durable_inputs_secured=maintenance_inbox_quiescent(),
                 pid=os.getpid(),
             )
     except Exception as exc:

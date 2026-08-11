@@ -504,8 +504,19 @@ class MaintenanceCoordinator:
         self._transaction(mutate)
         return self.public_status()
 
-    def enqueue_root(self, contact_id: str, context: str) -> RootEnqueueResult:
-        """Durably queue a manager root and atomically admit it when available."""
+    def enqueue_root(
+        self,
+        contact_id: str,
+        context: str,
+        *,
+        admit: bool = True,
+    ) -> RootEnqueueResult:
+        """Durably queue a root, admitting it only when runtime capacity exists.
+
+        ``admit=False`` is used by the runtime dispatcher after all of its
+        execution slots have been assigned.  The accepted root remains
+        durable and unleased until a later capacity-bounded replay claims it.
+        """
         result: RootEnqueueResult | None = None
 
         def mutate(state: dict[str, Any], now: float) -> None:
@@ -526,7 +537,7 @@ class MaintenanceCoordinator:
                 "not_before": 0.0,
             }
             state["root_queue"].append(item)
-            if phase == "available":
+            if phase == "available" and admit:
                 admission = self._claim_root_item(state, item, now)
                 result = RootEnqueueResult(
                     admission=admission,
@@ -536,11 +547,16 @@ class MaintenanceCoordinator:
                 )
                 return
 
-            self._ensure_notice(state, str(contact_id), phase, now)
+            if phase != "available":
+                self._ensure_notice(state, str(contact_id), phase, now)
             result = RootEnqueueResult(
                 admission=None,
-                queued_for_maintenance=True,
-                maintenance_id=str(state.get("maintenance_id") or ""),
+                queued_for_maintenance=phase != "available",
+                maintenance_id=(
+                    str(state.get("maintenance_id") or "")
+                    if phase != "available"
+                    else ""
+                ),
                 public_state=phase,
             )
 
@@ -691,8 +707,15 @@ class MaintenanceCoordinator:
             activity=activity,
         )
 
-    def claim_pending_roots(self, *, limit: int = 100) -> list[RootAdmission]:
+    def claim_pending_roots(
+        self,
+        *,
+        limit: int = 100,
+        exclude_contact_ids: Sequence[str] = (),
+        unique_contacts: bool = False,
+    ) -> list[RootAdmission]:
         admissions: list[RootAdmission] = []
+        excluded_contacts = {str(value) for value in exclude_contact_ids}
 
         def mutate(state: dict[str, Any], now: float) -> None:
             phase = str(state.get("phase") or "available")
@@ -703,6 +726,9 @@ class MaintenanceCoordinator:
                     break
                 if not isinstance(item, dict) or item.get("status") != "pending":
                     continue
+                contact_id = str(item.get("contact_id") or "")
+                if contact_id in excluded_contacts:
+                    continue
                 if _number(item.get("not_before")) > now:
                     continue
                 if phase == "draining" and not (
@@ -712,6 +738,8 @@ class MaintenanceCoordinator:
                 ):
                     continue
                 admissions.append(self._claim_root_item(state, item, now))
+                if unique_contacts:
+                    excluded_contacts.add(contact_id)
 
         self._transaction(mutate)
         return admissions
@@ -1002,6 +1030,32 @@ class MaintenanceCoordinator:
 
         self._transaction(mutate)
 
+    def defer_roots(self, admissions: Sequence[RootAdmission]) -> None:
+        """Return capacity-only claims to the durable queue without a penalty."""
+        keys = {
+            item.queue_id: (item.claim_token, item.activity.lease_id)
+            for item in admissions
+        }
+
+        def mutate(state: dict[str, Any], _now: float) -> None:
+            for item in state["root_queue"]:
+                if not isinstance(item, dict):
+                    continue
+                key = keys.get(str(item.get("queue_id") or ""))
+                if (
+                    key is None
+                    or item.get("claim_token") != key[0]
+                    or item.get("lease_id") != key[1]
+                ):
+                    continue
+                state["leases"].pop(key[1], None)
+                item["status"] = "pending"
+                item["claim_token"] = ""
+                item["claim_until"] = 0.0
+                item["lease_id"] = ""
+
+        self._transaction(mutate)
+
     def _ensure_notice(
         self,
         state: dict[str, Any],
@@ -1088,10 +1142,23 @@ class MaintenanceCoordinator:
         self,
         *,
         epoch: int,
-        outbox_flushed: bool,
+        durable_inputs_secured: bool | None = None,
+        outbox_flushed: bool | None = None,
         pid: int | None = None,
     ) -> bool:
+        """Attest that no unsafe execution or volatile accepted input remains.
+
+        Ancillary best-effort delivery is intentionally not part of this
+        contract. ``outbox_flushed`` remains as a compatibility alias for
+        callers from an older generation; its value now means that accepted
+        input is restart-safe, not that optional network side effects drained.
+        """
         acknowledged = False
+        inputs_secured = (
+            bool(durable_inputs_secured)
+            if durable_inputs_secured is not None
+            else bool(outbox_flushed)
+        )
 
         def mutate(state: dict[str, Any], now: float) -> None:
             nonlocal acknowledged
@@ -1105,7 +1172,7 @@ class MaintenanceCoordinator:
                     and item.get("continuation")
                     for item in state["root_queue"]
                 )
-                or not outbox_flushed
+                or not inputs_secured
             ):
                 state["safe_to_stop"] = False
                 return

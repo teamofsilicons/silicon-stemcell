@@ -6,7 +6,7 @@ on:
       - ".github/workflows/validate-release.yml"
       - "requirements.lock"
       - "requirements.txt"
-      - "scripts/verify_release_runtime.py"
+      - "scripts/verify_release.py"
       - "silicon.info"
   push:
     branches: [main]
@@ -15,7 +15,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 concurrency:
   group: silicon-release-validation-${{ github.ref }}
@@ -33,16 +32,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install the runtime-contract validator CLI
-        run: |
-          python -m pip install --disable-pip-version-check "silicon-cli==1.0.53"
+      - name: Verify source release metadata
+        run: python scripts/verify_release.py
 
-      - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Verify release metadata and runtime image
-        run: python scripts/verify_release_runtime.py
+      - name: Compile Python sources
+        run: python -m compileall -q .

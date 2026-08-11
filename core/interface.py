@@ -73,6 +73,7 @@ DAEMON_DEEP_HEALTH_SECONDS = 5 * 60
 DAEMON_DEEP_HEALTH_JITTER_SECONDS = 60
 ROOM_SYNC_FALLBACK_SECONDS = 15 * 60
 INBOX_READ_CHUNK_BYTES = 4 * 1024 * 1024
+INBOX_CURSOR_ANCHOR_BYTES = 64 * 1024
 RPC_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
@@ -84,6 +85,8 @@ class InboxRecord:
     path: str = ""
     file_id: str = ""
     end_offset: int = 0
+    anchor_start: int = 0
+    anchor_sha256: str = ""
 
 
 class InterfaceError(RuntimeError):
@@ -2044,24 +2047,100 @@ def _load_inbox_consumer() -> dict[str, Any]:
         offset = max(0, int(state.get("offset") or 0))
     except (TypeError, ValueError):
         offset = 0
+    try:
+        anchor_start = max(0, int(state.get("anchor_start") or 0))
+    except (TypeError, ValueError):
+        anchor_start = 0
+    anchor_sha256 = str(state.get("anchor_sha256") or "").lower()
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", anchor_sha256)
+        or anchor_start >= offset
+        or offset - anchor_start > INBOX_CURSOR_ANCHOR_BYTES
+    ):
+        anchor_start = 0
+        anchor_sha256 = ""
     return {
         "version": 1,
         "path": str(state.get("path") or ""),
         "file_id": str(state.get("file_id") or ""),
         "offset": offset,
+        "anchor_start": anchor_start,
+        "anchor_sha256": anchor_sha256,
     }
 
 
-def _save_inbox_consumer(path: str, file_id: str, offset: int) -> None:
+def _save_inbox_consumer(
+    path: str,
+    file_id: str,
+    offset: int,
+    *,
+    anchor_start: int = 0,
+    anchor_sha256: str = "",
+) -> None:
+    offset = max(0, int(offset))
+    anchor_start = max(0, int(anchor_start))
+    anchor_sha256 = str(anchor_sha256 or "").lower()
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", anchor_sha256)
+        or anchor_start >= offset
+        or offset - anchor_start > INBOX_CURSOR_ANCHOR_BYTES
+    ):
+        anchor_start = 0
+        anchor_sha256 = ""
     write_json(
         INBOX_CONSUMER_FILE,
         {
             "version": 1,
             "path": path,
             "file_id": file_id,
-            "offset": max(0, int(offset)),
+            "offset": offset,
+            "anchor_start": anchor_start,
+            "anchor_sha256": anchor_sha256,
             "updated_at": _utc_iso(),
         },
+    )
+
+
+def _inbox_cursor_continues_file(
+    cursor: dict[str, Any],
+    path: Path,
+    *,
+    resolved: str,
+    file_id: str,
+    size: int,
+) -> bool:
+    """Verify that a replaced or remounted inbox has the committed prefix.
+
+    Docker and host-local runtimes see the same inbox through different paths,
+    and a transactional restore gives an identical file a new inode.  The
+    content anchor lets those safe identity changes preserve the durable
+    offset, while an unrelated, truncated, or modified file still starts at
+    byte zero.
+    """
+
+    offset = int(cursor.get("offset") or 0)
+    if offset > size:
+        return False
+    if cursor.get("path") == resolved and cursor.get("file_id") == file_id:
+        return True
+    anchor_start = int(cursor.get("anchor_start") or 0)
+    anchor_sha256 = str(cursor.get("anchor_sha256") or "")
+    if (
+        not anchor_sha256
+        or anchor_start < 0
+        or anchor_start >= offset
+        or offset - anchor_start > INBOX_CURSOR_ANCHOR_BYTES
+    ):
+        return False
+    try:
+        with path.open("rb") as inbox:
+            inbox.seek(anchor_start)
+            anchor = inbox.read(offset - anchor_start)
+    except OSError:
+        return False
+    return (
+        len(anchor) == offset - anchor_start
+        and hashlib.sha256(anchor).hexdigest() == anchor_sha256
     )
 
 
@@ -2087,12 +2166,25 @@ def _read_new_inbox_records(path: Path, *, max_records: int = 500) -> list[Inbox
             or scan.get("file_id") != file_id
             or int(scan.get("offset") or 0) > stat_result.st_size
         ):
-            if (
-                cursor.get("path") == resolved
-                and cursor.get("file_id") == file_id
-                and int(cursor.get("offset") or 0) <= stat_result.st_size
+            if _inbox_cursor_continues_file(
+                cursor,
+                path,
+                resolved=resolved,
+                file_id=file_id,
+                size=stat_result.st_size,
             ):
                 offset = int(cursor.get("offset") or 0)
+                if (
+                    cursor.get("path") != resolved
+                    or cursor.get("file_id") != file_id
+                ):
+                    _save_inbox_consumer(
+                        resolved,
+                        file_id,
+                        offset,
+                        anchor_start=int(cursor.get("anchor_start") or 0),
+                        anchor_sha256=str(cursor.get("anchor_sha256") or ""),
+                    )
             else:
                 # Rotation, truncation, or first use: scan the replacement from
                 # its beginning. Processed event IDs make snapshot replay safe.
@@ -2130,6 +2222,13 @@ def _read_new_inbox_records(path: Path, *, max_records: int = 500) -> list[Inbox
                         path=resolved,
                         file_id=file_id,
                         end_offset=end,
+                        anchor_start=max(
+                            start,
+                            end - INBOX_CURSOR_ANCHOR_BYTES,
+                        ),
+                        anchor_sha256=hashlib.sha256(
+                            line[-INBOX_CURSOR_ANCHOR_BYTES:]
+                        ).hexdigest(),
                     )
                 )
             scan["offset"] = inbox.tell()
@@ -2149,7 +2248,13 @@ def _commit_inbox_record(record: InboxRecord) -> None:
             and int(cursor.get("offset") or 0) >= record.end_offset
         ):
             return
-        _save_inbox_consumer(record.path, record.file_id, record.end_offset)
+        _save_inbox_consumer(
+            record.path,
+            record.file_id,
+            record.end_offset,
+            anchor_start=record.anchor_start,
+            anchor_sha256=record.anchor_sha256,
+        )
 
 
 def _queue_inbox_records(records: list[InboxRecord]) -> None:
@@ -2387,14 +2492,46 @@ def stop_runtime_file_watch() -> None:
 
 
 def maintenance_inbox_quiescent() -> bool:
-    """True after every locally claimed durable frame has been committed."""
+    """True when every accepted in-memory frame can replay after restart.
+
+    The Interface daemon owns the append-only inbox.  A frame does not need to
+    be interpreted before a runtime update; it only needs an uncommitted,
+    verifiable source position so the replacement process can read it again.
+    Volatile test/legacy frames without that source identity still block the
+    stop boundary.
+    """
     with _listener_lock:
         listener_running = bool(
             _listener_thread and _listener_thread.is_alive()
         )
     with _inbox_retry_lock:
-        retry_empty = not _inbox_retry_records
-    return not listener_running and retry_empty and _event_queue.empty()
+        retry_records = tuple(_inbox_retry_records)
+    with _event_queue.mutex:
+        queued_records = tuple(_event_queue.queue)
+    return (
+        not listener_running
+        and all(_inbox_record_restart_safe(item) for item in retry_records)
+        and all(_inbox_record_restart_safe(item) for item in queued_records)
+    )
+
+
+def _inbox_record_restart_safe(record: object) -> bool:
+    """Return whether an uncommitted record remains in the durable CLI inbox."""
+    if (
+        not isinstance(record, InboxRecord)
+        or not record.path
+        or not record.file_id
+        or record.end_offset <= 0
+    ):
+        return False
+    try:
+        stat_result = Path(record.path).stat()
+    except OSError:
+        return False
+    return (
+        _inbox_file_id(stat_result) == record.file_id
+        and stat_result.st_size >= record.end_offset
+    )
 
 
 def _drain_listener_events(max_events: int = 500) -> list[InboxRecord]:

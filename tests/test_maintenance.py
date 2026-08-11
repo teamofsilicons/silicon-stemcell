@@ -483,6 +483,58 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
 
 
 class DispatcherMaintenanceTests(unittest.TestCase):
+    def test_dispatcher_leases_only_available_execution_capacity(self):
+        import main
+
+        with tempfile.TemporaryDirectory() as temp:
+            coordinator = MaintenanceCoordinator(
+                temp,
+                state_file=Path(temp) / "maintenance.json",
+            )
+            started = threading.Condition()
+            running = set()
+            finish = threading.Event()
+
+            def runner(payload):
+                contact_id = next(iter(payload))
+                with started:
+                    running.add(contact_id)
+                    started.notify_all()
+                self.assertTrue(finish.wait(5))
+
+            dispatcher = main.ManagerDispatcher(
+                runner=runner,
+                max_active_contacts=2,
+            )
+            try:
+                with mock.patch.object(main, "MAINTENANCE", coordinator):
+                    dispatcher.submit(
+                        {f"carbon-{index}": f"root-{index}" for index in range(8)}
+                    )
+                    with started:
+                        self.assertTrue(
+                            started.wait_for(lambda: len(running) == 2, timeout=5)
+                        )
+                    status = coordinator.public_status()
+                    self.assertEqual(status["active_by_kind"], {"manager_root": 2})
+                    self.assertEqual(status["queued_message_count"], 6)
+
+                    drain = coordinator.request_drain()
+                    finish.set()
+                    self.assertTrue(dispatcher.wait_for_idle(5))
+                    status = coordinator.public_status()
+                    self.assertEqual(status["active_count"], 0)
+                    self.assertEqual(status["queued_message_count"], 6)
+                    self.assertTrue(
+                        coordinator.acknowledge_runtime_quiescent(
+                            epoch=drain["epoch"],
+                            durable_inputs_secured=True,
+                        )
+                    )
+            finally:
+                finish.set()
+                dispatcher.shutdown(wait=True)
+
     def test_active_dispatch_finishes_and_later_message_waits(self):
         import main
 
@@ -533,7 +585,7 @@ class DispatcherMaintenanceTests(unittest.TestCase):
                 )
             dispatcher.shutdown(wait=True)
 
-    def test_runtime_ack_waits_for_inbox_claims_and_volatile_outbox(self):
+    def test_runtime_ack_ignores_ancillary_outbox_but_requires_safe_inbox(self):
         import main
 
         with tempfile.TemporaryDirectory() as temp:
@@ -568,10 +620,11 @@ class DispatcherMaintenanceTests(unittest.TestCase):
                 return_value=False,
             ), mock.patch(
                 "core.background.flush_best_effort",
-                return_value=True,
-            ):
+                side_effect=AssertionError("ancillary outbox must not gate stop"),
+            ) as flush:
                 main._maintenance_runtime_tick(dispatcher)
             self.assertFalse(coordinator.public_status()["safe_to_stop"])
+            flush.assert_not_called()
 
             with mock.patch.object(
                 main,
@@ -595,10 +648,11 @@ class DispatcherMaintenanceTests(unittest.TestCase):
                 return_value=True,
             ), mock.patch(
                 "core.background.flush_best_effort",
-                return_value=True,
-            ):
+                side_effect=AssertionError("ancillary outbox must not gate stop"),
+            ) as flush:
                 main._maintenance_runtime_tick(dispatcher)
             self.assertTrue(coordinator.public_status()["safe_to_stop"])
+            flush.assert_not_called()
 
 
 class RuntimeGatingTests(unittest.TestCase):

@@ -66,10 +66,10 @@ python3 -m pip install --upgrade silicon-cli
 silicon pull
 ```
 
-The default Docker runtime supplies Node.js 22, Silicon Interface CLI v2,
-Silicon Browser, Claude Code, Codex, Python, and Git. `silicon pull` hydrates,
-configures, registers, and starts every Silicon returned by the Glass team
-setup token.
+The default host-local runtime uses Node.js 22, Silicon Interface CLI v2,
+Silicon Browser, Claude Code or Codex, Python, and Git installed on the server.
+`silicon pull` verifies that shared toolchain, then hydrates, configures,
+registers, and starts every Silicon returned by the Glass team setup token.
 
 For Stemcell source development without the managed runtime:
 
@@ -216,9 +216,10 @@ prereleases, timestamps, or Glass release records.
 
 Each published stable tag is immutable. Protect the `v*` tag namespace, never
 force-push or reuse a version, and create the tag only after the matching
-`silicon.info` version, runtime-contract hash, and immutable runtime-image digest
-are committed. Publish packages first, build and probe the runtime image second,
-then run `python scripts/verify_release_runtime.py`; create the Git tag last.
+`silicon.info` version is committed. Publish and test packages first, then run
+`python scripts/verify_release.py` and create the Git tag last. The compatibility
+image fields remain frozen for legacy Docker installs, but the normal
+host-local release no longer pulls or probes that image.
 
 The running Stemcell never mutates its source or Git configuration. Apply a
 release through the machine-level CLI:
