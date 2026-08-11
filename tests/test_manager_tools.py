@@ -22,6 +22,7 @@ import manager.tools.registry as m_manager_tools_registry
 import manager.tracing as m_manager_tracing
 import manager.turn as m_manager_turn
 import manager
+from interface.long_tasks import registry as lt_registry
 from prompts import loader as DNA
 from diagnostics import activity as activity_log
 from inference.claude import stream as claude_stream
@@ -234,6 +235,12 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
 
 
 class ManagerToolExecutionTest(unittest.TestCase):
+    def setUp(self):
+        # A lifecycle left registered by another test changes which branch a
+        # tool takes. Start every case with an empty registry.
+        lt_registry.reset_long_task_registry_for_tests()
+        self.addCleanup(lt_registry.reset_long_task_registry_for_tests)
+
     def test_codex_inactivity_timeout_resets_thread_without_sending_reply(self):
         class FakeProcess:
             @staticmethod

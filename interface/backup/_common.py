@@ -6,6 +6,7 @@ memory use is bounded independently of data size.  The legacy Glass endpoint
 still receives a disk-spooled ``backup.tar.gz`` multipart file and the public
 ``run_backup``/``build_archive`` APIs remain compatible.
 """
+# ruff: noqa: F401  (this module is the backup package's shared import surface)
 from __future__ import annotations
 import gzip
 import hashlib

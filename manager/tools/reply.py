@@ -1,5 +1,5 @@
 """The reply tool: what a Carbon actually reads."""
-from interface import long_tasks as long_tasks_module
+from interface.long_tasks import registry as lt_registry
 from interface import outbound
 from manager.tools.base import register
 from manager import activity as activity_module
@@ -10,7 +10,7 @@ def _tool_reply(tool_spec, carbon_id):
     """Send the manager's reply. Unless work continues, this closes the task."""
     message = tool_spec.get("message", "")
     work_continues = bool(tool_spec.get("work_continues", False))
-    lifecycle = long_tasks_module.current_long_task(carbon_id)
+    lifecycle = lt_registry.current_long_task(carbon_id)
     if lifecycle is not None and not work_continues:
         status = lifecycle.deliver_final_reply(
             message,

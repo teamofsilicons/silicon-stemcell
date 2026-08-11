@@ -1,5 +1,5 @@
 """Spawning, messaging and checking back on workers."""
-from interface import long_tasks as long_tasks_module
+from interface.long_tasks import registry as lt_registry
 import worker as worker_module
 from manager.tools.base import register
 from manager.tools.helpers import _parse_worker_tool
@@ -30,7 +30,7 @@ def _worker_new(tool_spec, carbon_id, worker_type, worker_id):
     if not task:
         return f"Tool 'worker/new' ({worker_id}): Error: task is required"
 
-    lifecycle = long_tasks_module.current_long_task(carbon_id)
+    lifecycle = lt_registry.current_long_task(carbon_id)
     lifecycle_task_id = ""
     pending_work_invocation = {}
     if lifecycle is not None:

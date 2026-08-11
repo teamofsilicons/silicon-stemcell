@@ -1,5 +1,5 @@
 """Messaging another manager, Carbon or Silicon."""
-from interface import long_tasks as long_tasks_module
+from interface.long_tasks import registry as lt_registry
 from manager.tools.base import register
 from manager.tools.helpers import _call_preparation_failure_status
 from manager.tools.helpers import _message_failure_status
@@ -30,7 +30,7 @@ def _tool_message_manager(tool_spec, carbon_id):
     else:
         return "Tool 'message_manager': Error: carbon_id or silicon_id is required"
 
-    lifecycle = long_tasks_module.current_long_task(carbon_id)
+    lifecycle = lt_registry.current_long_task(carbon_id)
     call_task_id = (
         lifecycle.resolve_task_id(str(tool_spec.get("task_id") or ""))
         if lifecycle is not None

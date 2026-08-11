@@ -3,6 +3,7 @@
 One turn per contact, serialized per contact and independent across them. A
 long task for one Carbon must never hold up another's message.
 """
+from interface.long_tasks import registry as lt_registry
 from interface import long_tasks as long_tasks_module
 from interface import outbound
 from interface import work_updates
@@ -237,7 +238,7 @@ def run_all_managers(context_by_carbon):
                                 )
 
                         if carbon_id in accuracy_review_ids:
-                            lifecycle = long_tasks_module.current_long_task(carbon_id)
+                            lifecycle = lt_registry.current_long_task(carbon_id)
                         else:
                             lifecycle = begin_long_task_run(
                                 carbon_id,
