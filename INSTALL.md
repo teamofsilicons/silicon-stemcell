@@ -70,6 +70,7 @@ updater needs the running process to perform the task-safe drain. Upgrade the
 machine-level CLI independently with
 `python3 -m pip install --upgrade silicon-cli` or `silicon script update`.
 
-Glass credentials pulled into an instance are stored in `.glass.json`. Silicon
-Interface and Glass provide contact transport, media, STT/TTS, crons,
-take-back, remote-browser events, backups, and control.
+Glass credentials pulled into an instance are stored in `.interface.json`; the
+`.glass.json` written by older CLI versions is still read, and both files are
+kept in step. Silicon Interface and Glass provide contact transport, media,
+STT/TTS, crons, take-back, remote-browser events, backups, and control.
