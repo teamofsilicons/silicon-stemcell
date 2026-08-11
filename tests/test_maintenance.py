@@ -58,7 +58,7 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
     def test_status_read_does_not_rewrite_unchanged_state(self):
         self.coordinator.request_drain(deadline_seconds=60)
 
-        with mock.patch("manager.runtime.maintenance.write_json") as write:
+        with mock.patch("manager.runtime.maintenance.store.write_json") as write:
             status = self.coordinator.public_status()
 
         self.assertEqual(status["phase"], "draining")
