@@ -111,6 +111,78 @@ class ManagerFailureDiagnosticsTests(unittest.TestCase):
 
         self.assertTrue(manager._manager_provider_failed(output, None))
 
+    def test_provider_failure_after_iwantto_action_does_not_run_fallback(self):
+        failed = manager._safe_manager_error_tools(
+            RuntimeError("provider transport exited after command completion")
+        )
+        with (
+            mock.patch.object(
+                manager,
+                "get_brain_order",
+                return_value=["codex", "claude"],
+            ),
+            mock.patch.object(
+                manager,
+                "codex_app_server",
+                return_value=(failed, None, []),
+            ),
+            mock.patch.object(manager, "claude_code") as claude,
+            mock.patch.object(
+                manager,
+                "_manager_run_has_acted",
+                return_value=True,
+            ),
+        ):
+            output, rate_limit, executed = manager.manager_code(
+                "hello",
+                "carbon-a",
+                env={"SILICON_ACTOR_TOKEN": "turn-token"},
+            )
+
+        self.assertEqual(
+            manager.parse_manager_output(output),
+            {"tools": [{"tool": "do_nothing"}]},
+        )
+        self.assertIsNone(rate_limit)
+        self.assertEqual(executed, [])
+        claude.assert_not_called()
+
+    def test_provider_failure_without_iwantto_action_still_runs_fallback(self):
+        failed = manager._safe_manager_error_tools(
+            RuntimeError("provider failed before acting")
+        )
+        fallback = '{"tools": [{"tool": "reply", "message": "Recovered"}]}'
+        with (
+            mock.patch.object(
+                manager,
+                "get_brain_order",
+                return_value=["codex", "claude"],
+            ),
+            mock.patch.object(
+                manager,
+                "codex_app_server",
+                return_value=(failed, None, []),
+            ),
+            mock.patch.object(
+                manager,
+                "claude_code",
+                return_value=(fallback, None, []),
+            ) as claude,
+            mock.patch.object(
+                manager,
+                "_manager_run_has_acted",
+                return_value=False,
+            ),
+        ):
+            output, _rate_limit, _executed = manager.manager_code(
+                "hello",
+                "carbon-a",
+                env={"SILICON_ACTOR_TOKEN": "turn-token"},
+            )
+
+        self.assertEqual(output, fallback)
+        claude.assert_called_once()
+
     def test_provider_is_error_marks_span_and_run_error(self):
         with tempfile.TemporaryDirectory(prefix="diag-provider-config-") as data_root:
             with open(

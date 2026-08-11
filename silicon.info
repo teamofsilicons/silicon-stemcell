@@ -1,5 +1,5 @@
 {
-    "version": "3.0.10",
+    "version": "3.0.11",
     "project": "Silicon",
     "website": "https://teamofsilicons.com/",
     "runtime_image": "ghcr.io/teamofsilicons/silicon-runtime@sha256:e714178933072e1f83353ea2e878347a4cad439bb24433a6f2f5cad86eaa107a",

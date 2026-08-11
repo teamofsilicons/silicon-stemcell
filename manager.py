@@ -1239,6 +1239,15 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None, e
         output, rate_limit, _executed_tools = result
         if not _manager_provider_failed(output, rate_limit):
             return result
+        # Providers act through ``iwantto`` while they are running.  If the
+        # provider performed a durable action and then its transport failed,
+        # starting the fallback provider can repeat that action (most visibly,
+        # sending a second reply).  The per-run journal is the authoritative
+        # record here: once this turn acted, settle it without exposing the
+        # trailing provider error or replaying the request through another
+        # brain.
+        if _manager_run_has_acted(env):
+            return '{"tools": [{"tool": "do_nothing"}]}', None, _executed_tools
         safe_failure = (
             redact_diagnostic_text(output or rate_limit, limit=200)
             or "provider failed"
@@ -1250,6 +1259,21 @@ def manager_code(text, carbon_id, on_tools=None, on_progress=None, trace=None, e
             print(f"  [manager:{carbon_id}] all configured brains failed: {' | '.join(errors)}", flush=True)
         return last
     return '{"tools": [{"tool": "do_nothing"}]}', None, []
+
+
+def _manager_run_has_acted(env):
+    """Return whether this provider already completed an ``iwantto`` action."""
+    if not isinstance(env, dict):
+        return False
+    try:
+        from core.iwantto import journal
+        from core.iwantto.actor import TOKEN_ENV
+
+        summary = journal.run_summary(env.get(TOKEN_ENV, ""))
+        return bool(summary.get("acted") or summary.get("did_nothing"))
+    except Exception:
+        # The journal is a safety signal, never a new provider failure mode.
+        return False
 
 
 def run_agent(
