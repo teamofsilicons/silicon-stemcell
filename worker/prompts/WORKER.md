@@ -20,7 +20,7 @@ Use your *_WTOOLS.md to store:
 1. Special Tools you have created along with instructions of how to use it
 2. Information you have learnt while doing your job that could be helpful to other workers
 3. Skills you have learnt, and any specific style of doing things.
-(if you write long skills use prompts/worker/skills/ and to load it inside any .md file, write it like {load-ref!prompts/worker/skills/*.md})
+(if you write long skills use worker/prompts/skills/ and to load it inside any .md file, write it like {load-ref!worker/prompts/skills/*.md})
 
 If you are working on a tool for yourself, or if you have just learnt how to use a tool, you need to write it down in your docs.
 

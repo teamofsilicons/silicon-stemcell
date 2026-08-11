@@ -47,9 +47,9 @@ QUESTIONS = [
     }},
 
     {"Is this task big enough to require updates? (>5min time to complete)": {
-        "yes": INCLUDE("prompts/GIVE_UPDATES.md"),
+        "yes": INCLUDE("manager/prompts/GIVE_UPDATES.md"),
         "no": NO_MORE_QUESTIONS,
-        "to be decided": INCLUDE("prompts/GIVE_UPDATES.md"),
+        "to be decided": INCLUDE("manager/prompts/GIVE_UPDATES.md"),
         "not a message from my carbon": INCLUDE("prompts/NONCARBON_COMMS.md"),
     }},
 
@@ -64,7 +64,7 @@ QUESTIONS = [
     {"Do you already have all the information you need?": {
         "yes": NO_MORE_QUESTIONS,
         "no, i need to ask my carbon": NO_MORE_QUESTIONS,
-        "i dont know, i will check my files": INCLUDE("prompts/BE_PROACTIVE.md"),
+        "i dont know, i will check my files": INCLUDE("manager/prompts/BE_PROACTIVE.md"),
     }},
 
     {"Is this a heartbeat?": {

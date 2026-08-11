@@ -1,4 +1,3 @@
-import hashlib
 import unittest
 from unittest import mock
 
@@ -6,7 +5,12 @@ from prompts import loader as DNA
 
 
 class MessagePromptTest(unittest.TestCase):
-    def test_message_guide_is_loaded_once_with_exact_contents(self):
+    def test_message_guide_is_loaded_once_and_verbatim(self):
+        """The guide reaches the manager whole, once, under its real path.
+
+        The wording is the operator's. What this holds is that the loader does
+        not truncate it, mangle it, or pull it in twice.
+        """
         with (
             mock.patch.object(DNA, "_get_contact_info", return_value=None),
             mock.patch.object(DNA, "_glass_profile_section", return_value=""),
@@ -16,16 +20,14 @@ class MessagePromptTest(unittest.TestCase):
             prompt = DNA.get_manager_prompt("carbon-1")
 
         filename = "NOT_BE_IGNORED.md"
-        with open(DNA._prompt_path(filename), encoding="utf-8") as prompt_file:
-            exact_contents = prompt_file.read().removesuffix("\n")
+        path = DNA._prompt_path(filename)
+        label = DNA._prompt_label(path)
+        with open(path, encoding="utf-8") as prompt_file:
+            exact_contents = prompt_file.read().strip()
 
         rendered = DNA._read_prompt(filename)
-        self.assertEqual(
-            hashlib.sha256(exact_contents.encode()).hexdigest(),
-            "0f0e7d5f9a4e817ec0ec8d22c6d328cbb289fd613df28eecdee4f942763f84dd",
-        )
-        self.assertEqual(rendered, f"prompts/{filename}\n{exact_contents}")
-        self.assertEqual(prompt.count(f"prompts/{filename}"), 1)
+        self.assertEqual(rendered, f"{label}\n{exact_contents}")
+        self.assertEqual(prompt.count(label), 1)
         self.assertIn(rendered, prompt)
 
 

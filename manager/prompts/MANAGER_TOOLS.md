@@ -15,13 +15,13 @@ All the routing is automatically figured out.
 
 You have access to three kinds of workers:
 1. Browser Worker
-{load-ref!prompts/worker/BROWSER_ADVERTISING.md}
+{load-ref!worker/prompts/BROWSER_ADVERTISING.md}
 
 2. Terminal Worker
-{load-ref!prompts/worker/TERMINAL_ADVERTISING.md}
+{load-ref!worker/prompts/TERMINAL_ADVERTISING.md}
 
 1. WRITER Worker
-{load-ref!prompts/worker/WRITER_ADVERTISING.md}
+{load-ref!worker/prompts/WRITER_ADVERTISING.md}
 
 Start a new worker using:
 `iwantto delegate --worker {browser/terminal/writer} --id set-a-worker-id --task "..." --checkback-in {N}m`
@@ -73,9 +73,9 @@ To update your memory, edit the files inside:
 
 ```text
 prompts/MEMORY.md
-prompts/memory/core/{detail}.md
-prompts/memory/carbons/{carbon_id}.md
-prompts/memory/silicons/{silicon_id}.md
+memory/core/{detail}.md
+memory/carbons/{carbon_id}.md
+memory/silicons/{silicon_id}.md
 ```
 
 Create this file for every new user during their first conversation.

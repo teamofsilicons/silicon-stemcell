@@ -51,6 +51,13 @@ def _prompt_path(filename):
         data_candidate = os.path.join(PROJECT_ROOT, "prompts", normalized)
         if os.path.isfile(data_candidate):
             return data_candidate
+    # A prompt may be named by its real repository path, which is how the
+    # loader labels it and therefore how a manager will refer to it back.
+    if ".." not in normalized.split("/"):
+        for root in (PROJECT_ROOT, _code_project_root()):
+            candidate = os.path.join(root, normalized)
+            if os.path.isfile(candidate):
+                return candidate
     for root in (PROMPTS_DIR, *MODULE_PROMPT_DIRS.values()):
         candidate = os.path.join(root, normalized)
         if os.path.isfile(candidate):
@@ -114,13 +121,24 @@ def _resolve_load_refs(text, _stack=()):
     return re.sub(r'\{load-ref!([^}]+)\}', replacer, text)
 
 
+def _prompt_label(path):
+    """The path as a manager would type it: relative to the repository root."""
+    for root in (PROJECT_ROOT, _code_project_root()):
+        try:
+            if os.path.commonpath((os.path.realpath(root), os.path.realpath(path))) == os.path.realpath(root):
+                return os.path.relpath(path, root).replace(os.sep, "/")
+        except (OSError, ValueError):
+            continue
+    return os.path.basename(path)
+
+
 def _read_prompt(filename):
     path = _prompt_path(filename)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             content = f.read().strip()
         content = _resolve_load_refs(content)
-        return f"prompts/{filename}\n{content}"
+        return f"{_prompt_label(path)}\n{content}"
     return ""
 
 

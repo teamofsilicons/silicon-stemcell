@@ -65,10 +65,8 @@ class SetupQuestionsPromptTest(unittest.TestCase):
     def test_every_included_file_exists(self):
         for filename in SETUP_QUESTIONS.included_files():
             with self.subTest(filename=filename):
-                self.assertTrue(
-                    DNA._prompt_path(filename.removeprefix("prompts/")),
-                )
-                self.assertNotEqual(DNA._read_prompt(filename.removeprefix("prompts/")), "")
+                # Included files are named by their real repository path.
+                self.assertNotEqual(DNA._read_prompt(filename), "")
 
 
 if __name__ == "__main__":
