@@ -21,7 +21,7 @@ import tempfile
 import threading
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from diagnostics import store as D  # noqa: E402
 

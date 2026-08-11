@@ -296,6 +296,10 @@ memory/                  # carbons/, silicons/, core/
 logs/                    # one file per agent, kept forever
 ```
 
+Tests live with the code they cover — `interface/tests/`, `manager/tests/`,
+`inference/tests/`, and so on. `pytest` from the repository root runs all of
+them; `pytest interface` runs one package's.
+
 Adding an inference provider is a folder under `inference/` and one line in
 `inference/registry.py`. Nothing outside that package names a provider.
 

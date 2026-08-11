@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+# Tests live with the code they cover: helpers/tests, inference/tests,
+# interface/tests, manager/tests, worker/tests, diagnostics/tests, prompts/tests.
+testpaths = [
+    "helpers",
+    "inference",
+    "interface",
+    "manager",
+    "worker",
+    "diagnostics",
+    "prompts",
+]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100

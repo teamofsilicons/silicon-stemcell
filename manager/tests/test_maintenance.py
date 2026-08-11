@@ -467,7 +467,7 @@ class MaintenanceCoordinatorTests(unittest.TestCase):
         )
         completed = subprocess.run(
             [sys.executable, "-c", script],
-            cwd=str(Path(__file__).resolve().parents[1]),
+            cwd=str(Path(__file__).resolve().parents[2]),
             env=env,
             text=True,
             capture_output=True,

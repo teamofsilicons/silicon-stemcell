@@ -15,7 +15,7 @@ from unittest import mock
 from prompts import loader as DNA
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CLI_REFERENCE_PATH = PROJECT_ROOT / "prompts" / "IWANTTO_CLI_REFERENCE.md"
 
 

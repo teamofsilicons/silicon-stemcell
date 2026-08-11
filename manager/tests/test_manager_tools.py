@@ -30,7 +30,7 @@ from inference.codex import provider as codex_provider
 from inference.codex.redact import redact_agent_message
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ManagerToolsDocTest(unittest.TestCase):
