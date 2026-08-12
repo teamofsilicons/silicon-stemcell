@@ -228,7 +228,7 @@ def stop_worker(worker_id, carbon_id):
         except Exception:
             pass
         try:
-            from interface.work_updates import record_worker_state
+            from interface.work import record_worker_state
 
             record_worker_state(
                 carbon_id,
@@ -270,7 +270,7 @@ def stop_worker(worker_id, carbon_id):
     except Exception:
         pass
     try:
-        from interface.work_updates import record_worker_state
+        from interface.work import record_worker_state
 
         record_worker_state(
             carbon_id,

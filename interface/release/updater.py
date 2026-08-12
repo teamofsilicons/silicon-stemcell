@@ -40,9 +40,14 @@ SILICON_INFO_FILE = CODE_ROOT / "silicon.info"
 UPDATE_STATE_FILE = STATE_DIR / "system_update.json"
 
 DEFAULT_GLASS_SERVER_URL = "https://glass.teamofsilicons.com"
-# New name first; the old one is still what an upgraded instance has on disk.
-AUTH_KEY_ENV_NAMES = ("INTERFACE_API_KEY", "GLASS_API_KEY")
-SERVER_URL_ENV_NAMES = ("INTERFACE_SERVER_URL", "GLASS_SERVER_URL")
+AUTH_KEY_ENV_NAME = "INTERFACE_API_KEY"
+SERVER_URL_ENV_NAME = "INTERFACE_SERVER_URL"
+# Read on an instance that has not been through this version yet, and scrubbed
+# from env.py when a key rotates. Never written.
+LEGACY_AUTH_KEY_ENV_NAMES = ("GLASS_API_KEY",)
+LEGACY_SERVER_URL_ENV_NAMES = ("GLASS_SERVER_URL",)
+AUTH_KEY_ENV_NAMES = (AUTH_KEY_ENV_NAME, *LEGACY_AUTH_KEY_ENV_NAMES)
+SERVER_URL_ENV_NAMES = (SERVER_URL_ENV_NAME, *LEGACY_SERVER_URL_ENV_NAMES)
 DEFAULT_STEMCELL_REPO = "teamofsilicons/silicon-stemcell"
 UPDATE_CHECK_INTERVAL_SECONDS = 60 * 60
 AUTH_KEY_PATH = "/api/v1/silicon-version/auth-key"
@@ -290,8 +295,11 @@ def _persist_auth_key(auth_key: str) -> None:
         _remove_key_value(DOTENV_FILE, name)
     if ENV_PY_FILE.exists():
         _remove_key_value(ENV_PY_FILE, "SILICON_UPDATE_AUTH_KEY")
-        for name in AUTH_KEY_ENV_NAMES:
-            _upsert_key_value(ENV_PY_FILE, name, "", python_string=True)
+        # The current name is blanked so the slot stays visible; the old one is
+        # taken out, not left behind as an empty reminder of itself.
+        _upsert_key_value(ENV_PY_FILE, AUTH_KEY_ENV_NAME, "", python_string=True)
+        for name in LEGACY_AUTH_KEY_ENV_NAMES:
+            _remove_key_value(ENV_PY_FILE, name)
 
 
 def _pending_auth_key() -> str:

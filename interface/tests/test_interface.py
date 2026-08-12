@@ -31,13 +31,11 @@ class InterfaceStateTest(unittest.TestCase):
         self.old_media = interface.constants.MEDIA_DIR
         self.old_inbox_consumer = interface.constants.INBOX_CONSUMER_FILE
         self.old_default_inbox = interface.constants.DEFAULT_INBOX_FILE
-        self.old_legacy = interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE
         interface.constants.CONTACTS_FILE = root / "contacts.json"
         interface.constants.CONTACTS_BACKUP_FILE = root / "contacts_backup.json"
         interface.constants.MEDIA_DIR = root / "media"
         interface.constants.INBOX_CONSUMER_FILE = root / "interface_inbox_consumer.json"
         interface.constants.DEFAULT_INBOX_FILE = root / "inbox.jsonl"
-        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy" / "contacts.json"
         with interface.inbox_file._inbox_scan_lock:
             interface.inbox_file._inbox_scan_state.clear()
         with interface.inbox._activity_condition:
@@ -57,7 +55,6 @@ class InterfaceStateTest(unittest.TestCase):
         interface.constants.MEDIA_DIR = self.old_media
         interface.constants.INBOX_CONSUMER_FILE = self.old_inbox_consumer
         interface.constants.DEFAULT_INBOX_FILE = self.old_default_inbox
-        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
         with interface.inbox_file._inbox_scan_lock:
             interface.inbox_file._inbox_scan_state.clear()
         with interface.inbox._activity_condition:
@@ -81,19 +78,6 @@ class InterfaceStateTest(unittest.TestCase):
         self.assertEqual(state["rooms"]["room-a"], "carbon-a")
         self.assertEqual(state["rooms"]["room-b"], "carbon-b")
         self.assertEqual(state["contacts"]["carbon-a"]["carbon_id"], "carbon-a")
-
-    def test_legacy_contacts_import_discards_local_trust_authority(self):
-        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE.parent.mkdir(parents=True)
-        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE.write_text(
-            '{"contacts":{"old-carbon":{"carbon_id":"old-carbon","contact_type":"carbon","trust_level":"high","is_central_carbon":true,"name":"Old Carbon"}}}',
-            encoding="utf-8",
-        )
-
-        state = interface.get_contacts()
-
-        self.assertEqual(state["contacts"]["old-carbon"]["trust_level"], "very_low")
-        self.assertFalse(state["contacts"]["old-carbon"]["is_central_carbon"])
-        self.assertEqual(state["contacts"]["old-carbon"]["display_name"], "Old Carbon")
 
     def test_silicon_contact_uses_silicon_id_key(self):
         contact, is_new = interface.upsert_contact("silicon", "si-remote", room_id="room-si")
@@ -618,7 +602,7 @@ class InterfaceStateTest(unittest.TestCase):
             mock.patch.object(interface.client, "InterfaceClient", return_value=fake),
             mock.patch.object(interface.inbox, "start_listener"),
             mock.patch(
-                "interface.work_updates.replay_pending_call_updates",
+                "interface.work.replay_pending_call_updates",
                 return_value=0,
             ) as replay_calls,
         ):
@@ -701,7 +685,7 @@ class InterfaceStateTest(unittest.TestCase):
                 bookkeeping,
             ),
             mock.patch(
-                "interface.work_updates.replay_pending_call_updates",
+                "interface.work.replay_pending_call_updates",
                 return_value=0,
             ),
         ):
@@ -765,7 +749,7 @@ class InterfaceStateTest(unittest.TestCase):
             ),
             mock.patch("helpers.process.submit_best_effort", return_value=True),
             mock.patch(
-                "interface.work_updates.replay_pending_call_updates",
+                "interface.work.replay_pending_call_updates",
                 return_value=0,
             ),
             mock.patch(
@@ -801,7 +785,7 @@ class InterfaceStateTest(unittest.TestCase):
             ),
             mock.patch("helpers.process.submit_best_effort", return_value=True),
             mock.patch(
-                "interface.work_updates.replay_pending_call_updates",
+                "interface.work.replay_pending_call_updates",
                 return_value=0,
             ),
             mock.patch(
@@ -925,7 +909,11 @@ class InterfaceStateTest(unittest.TestCase):
                 record = interface.inbox._event_queue.get(timeout=1)
             finally:
                 stop.set()
-                thread.join(1)
+                # Join authoritatively. A listener that outlives this test goes
+                # on to hit the real Interface CLI once the client patch lifts,
+                # and prints into whichever test is running then.
+                thread.join(10)
+                self.assertFalse(thread.is_alive(), "listener thread leaked")
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(record.frame["type"], "test-notification")
@@ -1106,15 +1094,15 @@ class InterfaceStateTest(unittest.TestCase):
         }
         with (
             mock.patch(
-                "interface.work_updates.record_contact_call_message",
+                "interface.work.record_contact_call_message",
                 return_value=False,
             ),
             mock.patch(
-                "interface.work_updates.prepare_outbound_call",
+                "interface.work.prepare_outbound_call",
                 return_value=reference,
             ) as prepare,
             mock.patch(
-                "interface.work_updates.enqueue_outbound_call",
+                "interface.work.enqueue_outbound_call",
                 return_value=True,
             ) as enqueue,
             mock.patch.object(
@@ -1152,11 +1140,11 @@ class InterfaceStateTest(unittest.TestCase):
     def test_accepted_silicon_text_appends_without_creating_second_card(self):
         with (
             mock.patch(
-                "interface.work_updates.record_contact_call_message",
+                "interface.work.record_contact_call_message",
                 return_value=True,
             ) as append,
             mock.patch(
-                "interface.work_updates.prepare_outbound_call",
+                "interface.work.prepare_outbound_call",
             ) as prepare,
             mock.patch.object(
                 interface.outbound,

@@ -17,7 +17,6 @@ MEDIA_DIR = STATE_DIR / "media"
 INBOX_CONSUMER_FILE = STATE_DIR / "interface_inbox_consumer.json"
 REMOTE_BROWSER_STATE_FILE = STATE_DIR / "remote_browser.json"
 DEFAULT_INBOX_FILE = PROJECT_ROOT / ".silicon-interface" / "inbox.jsonl"
-LEGACY_TELEGRAM_CONTACTS_FILE = PROJECT_ROOT / "core" / "telegram" / "contacts.json"
 
 VALID_TRUST_LEVELS = ["very_low", "low", "ok", "high", "very_high", "ultimate"]
 USER_VISIBLE_EVENT_TYPES = {"m.text", "m.image", "m.file", "m.album", "m.voice", "m.tts"}

@@ -31,7 +31,7 @@ class RuntimeHealthTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_health, "HEALTH_FILE", health),
                 mock.patch(
-                    "interface.work_updates.pending_call_update_retries",
+                    "interface.work.pending_call_update_retries",
                     return_value=retry_summary,
                 ) as retry_health,
                 mock.patch(
@@ -91,7 +91,7 @@ class RuntimeHealthTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_health, "HEALTH_FILE", health),
                 mock.patch(
-                    "interface.work_updates.pending_call_update_retries",
+                    "interface.work.pending_call_update_retries",
                     side_effect=RuntimeError("TOP-SECRET TRANSCRIPT"),
                 ),
                 mock.patch(
@@ -113,7 +113,7 @@ class RuntimeHealthTests(unittest.TestCase):
             with (
                 mock.patch.object(runtime_health, "HEALTH_FILE", health),
                 mock.patch(
-                    "interface.work_updates.pending_call_update_retries",
+                    "interface.work.pending_call_update_retries",
                     return_value={},
                 ),
                 mock.patch(

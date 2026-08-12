@@ -203,7 +203,7 @@ def check_team_context():
     global _TEAM_CONTEXT_OWN_SIGNATURE
 
     try:
-        from interface.team_context import own_advertising_signature
+        from interface.team import own_advertising_signature
 
         own_signature = own_advertising_signature()
     except Exception:

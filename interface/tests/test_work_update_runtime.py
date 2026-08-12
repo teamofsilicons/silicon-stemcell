@@ -23,7 +23,7 @@ import interface.ingest
 import interface.outbound
 import interface.remote_browser
 import interface.state
-import interface.work_updates as work_updates
+from interface import work as work_updates
 from helpers.process import flush_best_effort
 
 
@@ -383,12 +383,10 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         self.old_work_state = w_constants.WORK_UPDATES_FILE
         self.old_contacts = interface.constants.CONTACTS_FILE
         self.old_backup = interface.constants.CONTACTS_BACKUP_FILE
-        self.old_legacy = interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE
         w_constants.WORK_UPDATES_FILE = root / "work_updates.json"
         w_retry._CALL_RETRY_INFLIGHT.clear()
         interface.constants.CONTACTS_FILE = root / "contacts.json"
         interface.constants.CONTACTS_BACKUP_FILE = root / "contacts-backup.json"
-        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = root / "legacy-contacts.json"
         self.contacts = {
             "carbon-a": {
                 "contact_type": "carbon",
@@ -423,7 +421,6 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         w_retry._CALL_RETRY_INFLIGHT.clear()
         interface.constants.CONTACTS_FILE = self.old_contacts
         interface.constants.CONTACTS_BACKUP_FILE = self.old_backup
-        interface.constants.LEGACY_TELEGRAM_CONTACTS_FILE = self.old_legacy
         self.tmp.cleanup()
 
     def _create_task(self, client, contact_id="carbon-a", task_id="task-fitness"):

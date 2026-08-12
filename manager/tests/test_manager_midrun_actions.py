@@ -14,7 +14,7 @@ from unittest import mock
 
 import main
 from interface import outbound as i_outbound
-from interface import work_updates as i_work_updates
+from interface import work as i_work_updates
 import manager.tracing as m_manager_tracing
 import manager.turn as m_manager_turn
 from diagnostics.iwantto import actor as actor_module

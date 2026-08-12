@@ -317,7 +317,7 @@ def _record_incoming_call_bookkeeping(
     ):
         return
     try:
-        from interface.work_updates import (
+        from interface.work import (
             enqueue_inbound_call,
             record_contact_call_message,
         )

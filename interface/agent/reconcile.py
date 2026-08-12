@@ -67,7 +67,7 @@ class TeamContextReconciler:
             try:
                 # Dynamic import keeps the sidecar alive across partial updates
                 # and makes a missing/transient sync dependency fail open.
-                from interface.team_context import reconcile_team_context
+                from interface.team import reconcile_team_context
                 from manager.runtime.maintenance import (
                     MaintenanceCoordinator,
                     heartbeat_scope,

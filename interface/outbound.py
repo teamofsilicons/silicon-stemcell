@@ -145,7 +145,7 @@ def _record_sent_call_message(
     if not event_id or not message:
         return
     try:
-        from interface.work_updates import (
+        from interface.work import (
             enqueue_outbound_call,
             prepare_outbound_call,
             record_contact_call_message,
@@ -205,7 +205,7 @@ def reply_contact(
     room_id = contact["room_id"]
     if not progress_group_id:
         try:
-            from interface.work_updates import current_manager_activity_group
+            from interface.work import current_manager_activity_group
 
             progress_group_id = current_manager_activity_group(contact_id)
         except Exception:
@@ -349,7 +349,7 @@ def send_progress(
     if not contact or not contact.get("room_id"):
         return
     try:
-        from interface.work_updates import (
+        from interface.work import (
             activity_frame_identity,
             canonical_activity_state,
             current_manager_activity_group,

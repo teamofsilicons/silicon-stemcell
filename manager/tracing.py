@@ -5,7 +5,7 @@ through all of it: an internal root produces no visible activity, and a
 provider failure nobody asked for is suppressed rather than shown.
 """
 from interface import outbound
-from interface import work_updates
+from interface import work as work_updates
 from manager.tools.registry import execute_single_tool
 from manager import activity as activity_module
 import re
@@ -22,7 +22,7 @@ from interface.progress import (
     progress_is_error,
     redact_diagnostic_text,
 )
-from interface.work_updates import (
+from interface.work import (
     settle_manager_activity,
 
 )

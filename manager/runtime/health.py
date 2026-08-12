@@ -50,7 +50,7 @@ def _phase(provider: Callable[[], str] | None) -> str:
 def _call_retry_health() -> dict:
     """Return a fixed, body-free call-delivery health projection."""
     try:
-        from interface.work_updates import pending_call_update_retries
+        from interface.work import pending_call_update_retries
 
         source = pending_call_update_retries(persist_prune=False)
     except Exception:

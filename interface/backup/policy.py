@@ -108,7 +108,6 @@ MANDATORY_CLASSES: tuple[OwnershipClass, ...] = (
         "artifacts",
         (
             "logs/**",
-            "worker/outputs/**",
         ),
         description="Work evidence, diagnostics, and deliverables.",
     ),

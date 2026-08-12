@@ -27,7 +27,9 @@ class MessagePromptTest(unittest.TestCase):
 
         rendered = DNA._read_prompt(filename)
         self.assertEqual(rendered, f"{label}\n{exact_contents}")
-        self.assertEqual(prompt.count(label), 1)
+        # Count the rendered block, not the label: INDEX.md names this file by
+        # path too, so the label alone is not unique.
+        self.assertEqual(prompt.count(rendered), 1)
         self.assertIn(rendered, prompt)
 
 

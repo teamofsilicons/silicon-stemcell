@@ -65,8 +65,10 @@ class AdvisorSessionTest(unittest.TestCase):
 
         from prompts import loader
 
+        # INDEX.md lists the other prompts by path, so the label alone appears
+        # more than once. The rendered block is what has to be in order.
         positions = [
-            prompt.index(loader._prompt_label(loader._prompt_path(name)))
+            prompt.index(loader._read_prompt(name))
             for name in advisor_module.ADVISOR_PROMPT_FILES
         ]
         self.assertEqual(positions, sorted(positions))

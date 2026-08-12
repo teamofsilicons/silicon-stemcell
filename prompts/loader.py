@@ -176,7 +176,7 @@ def _glass_team_context_section():
     ``{load-ref!...}`` directives used by static Stemcell prompts.
     """
     try:
-        from interface.team_context import (
+        from interface.team import (
             read_verified_team_advertising_memories,
             read_verified_team_markdown,
         )

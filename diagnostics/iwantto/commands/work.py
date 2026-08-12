@@ -66,7 +66,7 @@ def _glass(actor, action: str, task_id: str, data: dict, **spec) -> str:
     communicated when it had not. Callers that have already written local state
     roll it back before this propagates.
     """
-    from interface.work_updates import execute_work_update
+    from interface.work import execute_work_update
 
     payload = {"action": action, "task_id": task_id, "data": data}
     payload.update(spec)

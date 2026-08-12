@@ -74,9 +74,10 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from diagnostics import activity as activity_log
                 from diagnostics import store as diagnostics
                 import interface
-                from interface import backup, cron, messages, team_context
+                from interface import backup, cron, messages
+                from interface import team as team_context
                 from interface import config as glass
-                from interface import work_updates
+                from interface import work as work_updates
                 from interface.cron import checkback
                 from manager.runtime.maintenance import MaintenanceCoordinator
                 from prompts import loader as DNA

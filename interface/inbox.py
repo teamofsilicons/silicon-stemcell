@@ -428,7 +428,7 @@ def _reconcile_durable_frame(frame: dict[str, Any], client: client_module.Interf
 def get_unread_events(*, durable_handoff: bool = False) -> dict[str, str]:
     """Consume committed CLI v2 inbox records into manager contexts."""
     try:
-        from interface.work_updates import replay_pending_call_updates
+        from interface.work import replay_pending_call_updates
 
         replay_pending_call_updates()
     except Exception as exc:

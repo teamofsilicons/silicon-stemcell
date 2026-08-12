@@ -275,11 +275,11 @@ class DiagnosticHandoffTests(unittest.TestCase):
                 },
             ),
             mock.patch(
-                "interface.work_updates.enqueue_outbound_call",
+                "interface.work.enqueue_outbound_call",
                 return_value=True,
             ) as outbound,
             mock.patch(
-                "interface.work_updates.enqueue_inbound_call",
+                "interface.work.enqueue_inbound_call",
                 return_value={"call_id": "call-inbound"},
             ) as inbound,
         ):

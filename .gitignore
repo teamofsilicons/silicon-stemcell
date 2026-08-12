@@ -19,11 +19,10 @@ prompts/TEAM.md
 prompts/TEAM_OF_SILICONS.md
 prompts/advertising/
 
-# Worker outputs (generated at runtime; now under logs/ and interface/state/)
+# Worker outputs (pre-3.1 layout; now logs/worker/ and interface/state/workers/)
 worker/outputs/
 interface/cron/checkbacks.json
 interface/cron/*.json.lock
-worker/outputs/*.json.lock
 interface/cron/history.json
 
 # Session files (generated at runtime)

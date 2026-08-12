@@ -11,7 +11,7 @@ import inference.sessions
 import manager.activity as m_manager_activity
 import manager.tools.memory as m_manager_tools_memory
 from interface import outbound as i_outbound
-from interface import work_updates as i_work_updates
+from interface import work as i_work_updates
 import manager.tools.browser as m_manager_tools_browser
 import manager.tools.messaging as m_manager_tools_messaging
 import manager.tools.work as m_manager_tools_work
@@ -711,7 +711,7 @@ class ManagerToolExecutionTest(unittest.TestCase):
                         "send_manager_message",
                     ) as send_manager_message,
                     mock.patch(
-                        "interface.work_updates.enqueue_outbound_call",
+                        "interface.work.enqueue_outbound_call",
                     ) as enqueue_outbound_call,
                     mock.patch.object(i_outbound, "send_progress"),
                 ):

@@ -58,7 +58,7 @@ from interface.long_tasks import (
     recover_long_task_lifecycles,
 )
 from interface.messages import MANAGER_MESSAGES_FILE
-from interface.work_updates import (
+from interface.work import (
     WORK_UPDATES_FILE,
     complete_inactive_calls,
     next_inactive_call_deadline,
@@ -127,7 +127,7 @@ def _local_version() -> str:
 def _bootstrap_team_context():
     """Best-effort team mirror before any manager can receive a startup turn."""
     try:
-        from interface.team_context import reconcile_team_context
+        from interface.team import reconcile_team_context
 
         return reconcile_team_context(
             PROJECT_ROOT,

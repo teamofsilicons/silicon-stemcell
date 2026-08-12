@@ -169,7 +169,7 @@ def check_completed_workers():
         result_text = _parse_worker_output(raw, provider)
         terminal_state = _worker_terminal_state(raw, provider)
         try:
-            from interface.work_updates import record_worker_state
+            from interface.work import record_worker_state
 
             record_worker_state(
                 carbon_id,

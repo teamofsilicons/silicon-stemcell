@@ -1,3 +1,2 @@
 INTERFACE_API_KEY = ""
-GLASS_API_KEY = ""
 BROWSER_PROFILE = "silicon"

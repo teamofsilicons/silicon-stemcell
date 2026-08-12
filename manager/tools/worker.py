@@ -15,7 +15,7 @@ from worker import (
 )
 from interface.cron.checkback import add_checkback
 from diagnostics.store import Diagnostics
-from interface.work_updates import (
+from interface.work import (
     record_worker_started,
 )
 

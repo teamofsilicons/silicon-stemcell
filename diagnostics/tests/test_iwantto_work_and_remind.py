@@ -223,7 +223,7 @@ class WorkTest(unittest.TestCase):
         self.glass.stop()
         self.addCleanup(self.glass.start)
         return mock.patch(
-            "interface.work_updates.execute_work_update",
+            "interface.work.execute_work_update",
             return_value="Error: work_update failed: Contact has no Interface room.",
         )
 

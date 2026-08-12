@@ -6,7 +6,7 @@ from the registry so a tool can use them without importing the thing that
 imports every tool.
 """
 from interface import outbound
-from interface.work_updates import current_manager_activity_group
+from interface.work import current_manager_activity_group
 
 from diagnostics.store import Diagnostics
 

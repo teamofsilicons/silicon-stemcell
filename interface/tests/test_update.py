@@ -338,9 +338,11 @@ class SystemUpdateTest(unittest.TestCase):
                 update.SILICON_CONFIG_FILE.read_text(encoding="utf-8")
             )["glass"],
         )
+        # The rotated key is blanked under its current name; the legacy name is
+        # removed outright rather than left behind as an empty slot.
         self.assertEqual(
             update.ENV_PY_FILE.read_text(encoding="utf-8"),
-            'GLASS_API_KEY = ""\nINTERFACE_API_KEY = ""\n',
+            'INTERFACE_API_KEY = ""\n',
         )
         for path in (
             update.DOTENV_FILE,

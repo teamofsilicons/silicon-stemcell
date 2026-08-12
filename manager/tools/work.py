@@ -1,7 +1,7 @@
 """The work_update tool: the durable card a Carbon watches."""
 from interface.long_tasks import registry as lt_registry
 from manager.tools.base import register
-from interface.work_updates import (
+from interface.work import (
     execute_work_update,
 )
 

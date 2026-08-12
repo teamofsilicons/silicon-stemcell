@@ -6,7 +6,7 @@ long task for one Carbon must never hold up another's message.
 from interface.long_tasks import registry as lt_registry
 from interface import long_tasks as long_tasks_module
 from interface import outbound
-from interface import work_updates
+from interface import work as work_updates
 from manager import activity as activity_module
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
@@ -38,7 +38,7 @@ from diagnostics.store import Diagnostics
 from interface.progress import (
     redact_diagnostic_text,
 )
-from interface.work_updates import (
+from interface.work import (
     begin_manager_activity,
     set_active_task_timer,
 

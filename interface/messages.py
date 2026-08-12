@@ -173,7 +173,7 @@ def _ensure_manager_work_calls(contact_id, item):
         return {}
 
     from interface import get_contact
-    from interface.work_updates import enqueue_inbound_call, enqueue_outbound_call
+    from interface.work import enqueue_inbound_call, enqueue_outbound_call
 
     queue_id = str(item.get("queue_id") or "")
     if not queue_id:

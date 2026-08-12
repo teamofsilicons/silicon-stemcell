@@ -170,7 +170,7 @@ def _process_browser_queue():
             except Exception:
                 pass
     try:
-        from interface.work_updates import record_worker_state
+        from interface.work import record_worker_state
 
         record_worker_state(
             next_job.get("carbon_id", "unknown"),

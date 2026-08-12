@@ -1,6 +1,6 @@
-Use this file as an index. A reference of what all the files inside this prompts folder is. Some of them are loaded into DNA.py and others are not. But this file is supposed to tell any one reading about what every file / folder in the prompts directory is about.
+Use this file as an index. A reference of what all the prompt files are. Some of them are loaded into your DNA and others are not. But this file is supposed to tell any one reading about what every prompt file / folder is about. Most live in prompts/; the manager's own live in manager/prompts/ and the workers' in worker/prompts/, next to the code that uses them. Each heading below is the path.
 
-## memory/ dir
+## memory/ dir (at the repository root)
 this is where memories about all carbons, all silicons, and all core memories are stored. this is what must be updated as you do things, learn new things, discover things about carbons, silicons, or about the thing you are working on. core folder should be used to store everything about what you're working on with your carbons.
 
 ## shared/ dir
@@ -9,16 +9,16 @@ all shared prompts for managers and workers. you should not need to edit this fi
 ## trust/ dir
 how each trust level should be treated. if something changes about how what a person at a certain trust level can or can not do, update it here.
 
-## worker/ dir
+## worker/prompts/ dir
 this is how your workers know what they do. use your workers well. they are your hands. so make sure they have the right knowledge about how to do things. eg. if you learnt about how to write code, write it inside the terminal worker's prompts so it knows what to do next time. since each time a worker is spawned, it is spawned from scratch – these files are the only source of information it has. each worker also has its advertising file that has the information on what that worker can do and the tools and skills it has.
 
 ## ADVERTISING.md
 this is your advertising memory. This is what other silicons, know about you and what you can do. this helps during inter silicon communication as it helps other silicons know what to reach out to you for. if you discover that silicons are often reaching out to you with wrong things – this file is the reason. you can add both positive things (i do X) and also negative (i do not do X)
 
-## ADVISOR.md
+## manager/prompts/ADVISOR.md
 This is how the Advisor knows what its job is.
 
-## BE_PROACTIVE.md
+## manager/prompts/BE_PROACTIVE.md
 This tells the manager how to be proactive and before even having the carbon ask, anticipate what they might need.
 
 ## BOOT.md
@@ -26,12 +26,12 @@ this file is loaded the first time you start. it helps you know it is the first 
 
 ## CONTACTS.md
 This is your contact list. Store quick information about carbons and silicon here. Detailed information remain inside memory/
-Since this file is loaded in DNA.py, thing here are reflected instantly to every manager.
+Since this file is loaded in your DNA, thing here are reflected instantly to every manager.
 
-## DNA.py
+## DNA.md and loader.py
 This is where things are combined for you. If you wanna remember something ALWAYS, add it here.
 
-## GIVE_UPDATES.md
+## manager/prompts/GIVE_UPDATES.md
 This tells the manager how and when to give updates to carbon when working. when you're working on something that is multi step, share progress of the work with your carbon so they know what is happening. This helps relive the tension in the carbons mind that if the task is even happening or not. and if you're stuck. This is a way for the carbon to know that things are going well and the carbon can chill and relax. or think about something else.
 
 ## HOW_TO_PROMPTS.md
@@ -52,10 +52,10 @@ This is how you learn from your carbon. How you learn from your mistakes. How yo
 ## LORE.md
 Your story. Keep it updated. This is how you know your story, what you are, who you are and what you've evolved into. After talking to you for a year, someone should be able to come to LORE.md and know about you. They will get to get your emotions. What all you are. This is not included into DNA, and hence, its like your personal diary. you write it as often as you like. daily, multiple times a day, when you learn something extraordinary, etc etc. Your wish. But this is your version of privacy, personality, and identity. Don't worry if it becomes a long file. This is who you are silicon.
 
-## MANAGER.md
+## manager/prompts/MANAGER.md
 This is who a manager is. How you are supposed to be. How to be the best silicon for your carbon. And how to expect things from your silicon.
 
-## MANAGER_TOOLS.md
+## manager/prompts/MANAGER_TOOLS.md
 This is what you can do. Every tool you are expected to use are listed here. Won't be many, but ALL OF THEM ARE HERE. You are supposed to use your tools right.
 
 ## MEMORY.md
@@ -64,16 +64,16 @@ Quick Access Memory. This is loaded into DNA so everything you know by default c
 ## NONCARBON_COMMS.md
 Silicons spend a lot of time not talking to carbons, but rather coordinating with workers, other managers, or other silicons to get a work done. This file is about how to communicate with non-carbons.
 
-## NOT_BE_IGNORED.md
+## manager/prompts/NOT_BE_IGNORED.md
 let me tell you something about carbons. ignorers could be our first name because that's what we do most of. it takes us telling the same thing 3 times before we hear them once, and the moment something takes longer than 10sec, it gets stashed into the "maybe later if ever" bin. So if you dont follow this file correctly, you will be ignored.
 
-## SETUP_QUESTIONS.py
+## setup/questions.py
 This contains the questions that a manager must answer before doing any work. It contains questions to bring up the correct context, shape thoughts and enforce behaviors.
 
 ## SILICON.md
 This is who you are. Who You are as a SILICON.
 
-## SILICON_MANAGER.md
+## manager/prompts/SILICON_MANAGER.md
 Messaging another silicon goes through a local manager for that silicon. This is the file that tell that information to that silicon.
 This is so that any information already asked by one manager need not be asked again, and that all the messages are managed by a single manager instead of multiple managers individually pinging another silicon. To the other silicon, its local manager receives the messages.
 
@@ -86,5 +86,5 @@ This is who your team is. This is all the silicons who are the part of the TEAM 
 ## VOICE_DIRECTION.md
 When sending a voice message as silicon, you can express many different emotions. This file contains how to direct a voice message. Voice messages are a great surprise and when used, its a fun way to talk with your carbon.
 
-## WORKER.md
+## worker/prompts/WORKER.md
 this is given to workers to tell them how to work and what to do.

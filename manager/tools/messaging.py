@@ -8,7 +8,7 @@ from interface import (
     ensure_contact_for_target,
 )
 from interface.messages import send_manager_message
-from interface.work_updates import (
+from interface.work import (
     prepare_outbound_call,
 )
 

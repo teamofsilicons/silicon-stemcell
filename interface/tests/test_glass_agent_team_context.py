@@ -164,11 +164,11 @@ class TeamContextReconcilerTests(unittest.TestCase):
             if len(calls) == 2:
                 finished.set()
 
-        module = types.ModuleType("interface.team_context")
+        module = types.ModuleType("interface.team")
         module.reconcile_team_context = reconcile
         reconciler = agent_reconcile.TeamContextReconciler(Path("/tmp/silicon"))
         try:
-            with mock.patch.dict(sys.modules, {"interface.team_context": module}):
+            with mock.patch.dict(sys.modules, {"interface.team": module}):
                 reconciler.request(reason="websocket-connect")
                 self.assertTrue(started.wait(timeout=1))
 
@@ -195,11 +195,11 @@ class TeamContextReconcilerTests(unittest.TestCase):
             started.set()
             release.wait(timeout=2)
 
-        module = types.ModuleType("interface.team_context")
+        module = types.ModuleType("interface.team")
         module.reconcile_team_context = reconcile
         reconciler = agent_reconcile.TeamContextReconciler(Path("/tmp/silicon"))
         try:
-            with mock.patch.dict(sys.modules, {"interface.team_context": module}):
+            with mock.patch.dict(sys.modules, {"interface.team": module}):
                 agent_messages.handle_message(
                     _FakeWebSocket(),
                     {"type": "team_context.changed", "kind": "advertising_memory"},
@@ -222,11 +222,11 @@ class TeamContextReconcilerTests(unittest.TestCase):
                 raise RuntimeError("temporary outage")
             second_call.set()
 
-        module = types.ModuleType("interface.team_context")
+        module = types.ModuleType("interface.team")
         module.reconcile_team_context = reconcile
         reconciler = agent_reconcile.TeamContextReconciler(Path("/tmp/silicon"))
         try:
-            with mock.patch.dict(sys.modules, {"interface.team_context": module}):
+            with mock.patch.dict(sys.modules, {"interface.team": module}):
                 with mock.patch("builtins.print"):
                     reconciler.request(force=True, reason="first")
                     deadline = time.monotonic() + 1

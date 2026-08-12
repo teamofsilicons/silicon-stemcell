@@ -22,7 +22,7 @@ import manager.tools.registry as m_manager_tools_registry
 import manager.tracing as m_manager_tracing
 import manager.turn as m_manager_turn
 from interface import long_tasks as long_task_updates
-from interface import work_updates
+from interface import work as work_updates
 from interface.work import cache as w_cache
 from interface.work import constants as w_constants
 
