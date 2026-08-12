@@ -13,8 +13,8 @@ from unittest import mock
 
 from inference import telemetry
 from inference.claude import stream as claude_stream
-from diagnostics.iwantto import actor as actor_module
-from diagnostics.iwantto import journal
+from iwantto import actor as actor_module
+from diagnostics import journal
 
 
 class _IsolatedJournal(unittest.TestCase):
@@ -141,8 +141,8 @@ class ManagerInvocationTest(_IsolatedJournal):
             mock.patch.object(advisor, "_rotate_session"),
             mock.patch.object(advisor, "ADVISOR_STATE_FILE",
                               os.path.join(self._temp.name, "advisors.json")),
-            mock.patch("diagnostics.iwantto.actor.issue_run_env", return_value=("t", {})),
-            mock.patch("diagnostics.iwantto.actor.revoke_actor"),
+            mock.patch("iwantto.actor.issue_run_env", return_value=("t", {})),
+            mock.patch("iwantto.actor.revoke_actor"),
             mock.patch("manager.run_agent", return_value="Delegate it."),
         ):
             advisor.ask("carbon-a", "should I?")

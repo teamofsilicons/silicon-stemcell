@@ -11,7 +11,7 @@ import sys
 import time
 from contextlib import ExitStack, nullcontext
 
-from diagnostics.iwantto import injection
+from iwantto import injection
 from inference.codex.progress import codex_log_lines, codex_progress_event
 from interface.progress import (
     progress_display_line,

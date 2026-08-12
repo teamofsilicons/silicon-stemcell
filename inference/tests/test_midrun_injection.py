@@ -17,7 +17,7 @@ from unittest import mock
 import manager.dispatcher as m_manager_dispatcher
 from inference.claude.injector import ClaudeInjector
 from inference.codex.injector import CodexInjector
-from diagnostics.iwantto import injection
+from iwantto import injection
 
 
 class RegistryTest(unittest.TestCase):

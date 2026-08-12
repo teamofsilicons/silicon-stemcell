@@ -5,7 +5,7 @@ parser_cls)`` and attaches its handler with ``set_defaults(_handler=...)``, so
 a command's flags and its behaviour stay in one file.
 """
 
-from diagnostics.iwantto.commands import (
+from iwantto.commands import (
     advice,
     aux,
     delegate,

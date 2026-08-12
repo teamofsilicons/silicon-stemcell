@@ -1,7 +1,7 @@
 """`iwantto` — the command line a Silicon acts through.
 
 Each command group registers its own arguments and handler (see
-``diagnostics.iwantto.commands``), so the flags for a command live next to the code
+``iwantto.commands``), so the flags for a command live next to the code
 that honours them.  The dispatcher's own job is small: identify the caller,
 route to the handler, record what happened, and turn any failure into a
 sentence the Silicon running it can act on.
@@ -14,9 +14,9 @@ from __future__ import annotations
 import argparse
 import sys
 
-from diagnostics.iwantto import journal
-from diagnostics.iwantto.actor import ActorError, resolve_actor
-from diagnostics.iwantto.commands import COMMAND_MODULES
+from diagnostics import journal
+from iwantto.actor import ActorError, resolve_actor
+from iwantto.commands import COMMAND_MODULES
 
 PROGRAM = "iwantto"
 
@@ -62,7 +62,7 @@ def _pending_mail(actor) -> str:
     next command it runs carries the reply back with its own result.
     """
     try:
-        from diagnostics.iwantto import mailbox
+        from iwantto import mailbox
 
         return mailbox.format_mail(mailbox.drain(actor.kind, actor.actor_id))
     except Exception:

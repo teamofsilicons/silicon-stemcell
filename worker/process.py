@@ -52,8 +52,8 @@ def _worker_process_env(contact_id, worker_id="", worker_type=""):
     """
     if not worker_id:
         return os.environ.copy()
-    from diagnostics.iwantto import journal
-    from diagnostics.iwantto.actor import WORKER, issue_run_env
+    from diagnostics import journal
+    from iwantto.actor import WORKER, issue_run_env
 
     _token, env = issue_run_env(
         WORKER,
@@ -92,7 +92,8 @@ def _start_worker_feeder(worker_id, carbon_id, process, task, output_path):
     it exit. If the Stemcell dies first the pipe closes with it, the worker sees
     end-of-input, and it finishes on its own.
     """
-    from diagnostics.iwantto import journal, mailbox
+    from diagnostics import journal
+    from iwantto import mailbox
     from inference import stream_json_user
 
     def write(text):

@@ -17,7 +17,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from diagnostics.iwantto.routing import RoutingError, resolve_target
+from iwantto.routing import RoutingError, resolve_target
 from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
@@ -34,7 +34,7 @@ REAP_GRACE_SECONDS = 180
 
 
 def _error(message):
-    from diagnostics.iwantto.cli import CommandError
+    from iwantto.cli import CommandError
 
     return CommandError(message)
 

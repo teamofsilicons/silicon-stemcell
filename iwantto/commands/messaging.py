@@ -13,8 +13,8 @@ import os
 from helpers.paths import STATE_DIR
 from datetime import datetime, timezone
 
-from diagnostics.iwantto import mailbox, message_log
-from diagnostics.iwantto.routing import (
+from iwantto import mailbox, message_log
+from iwantto.routing import (
     RoutingError,
     claim_first_contact,
     first_contact_preamble,
@@ -26,7 +26,7 @@ MANAGER_TARGET = "manager"
 
 
 def _error(message):
-    from diagnostics.iwantto.cli import CommandError
+    from iwantto.cli import CommandError
 
     return CommandError(message)
 

@@ -84,8 +84,8 @@ def record_file_write(progress, env, tag: str) -> None:
     if not path:
         return
     try:
-        from diagnostics.iwantto import journal
-        from diagnostics.iwantto.actor import CONTACT_ENV, ID_ENV, KIND_ENV
+        from diagnostics import journal
+        from iwantto.actor import CONTACT_ENV, ID_ENV, KIND_ENV
 
         source = env if env is not None else os.environ
         journal.record_file_write(

@@ -24,6 +24,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 "helpers",
                 "inference",
                 "interface",
+                "iwantto",
                 "manager",
                 "prompts",
                 "worker",

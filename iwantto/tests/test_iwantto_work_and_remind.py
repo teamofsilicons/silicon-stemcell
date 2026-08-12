@@ -14,11 +14,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from diagnostics.iwantto import routing as routing_module
-from diagnostics.iwantto.actor import MANAGER, Actor
-from diagnostics.iwantto.cli import CommandError, build_parser
-from diagnostics.iwantto.commands import remind as remind_module
-from diagnostics.iwantto.commands import work as work_module
+from iwantto import routing as routing_module
+from iwantto.actor import MANAGER, Actor
+from iwantto.cli import CommandError, build_parser
+from iwantto.commands import remind as remind_module
+from iwantto.commands import work as work_module
 
 
 def _run(argv, actor):

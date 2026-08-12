@@ -14,7 +14,7 @@ RESTART_REQUEST_FILE = os.path.join(PROJECT_ROOT, ".restart_requested")
 
 
 def _error(message):
-    from diagnostics.iwantto.cli import CommandError
+    from iwantto.cli import CommandError
 
     return CommandError(message)
 

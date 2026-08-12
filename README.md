@@ -289,7 +289,10 @@ inference/               # how Silicon thinks
   base.py                #   the contract every provider signs
   claude/ codex/         #   one folder per provider
 
-diagnostics/             # logs, traces, and the iwantto operator CLI
+iwantto/                 # how a Silicon acts: send, delegate, work, trust,
+                         #   get-advice, remind — plus the actor identity that
+                         #   says which agent is running a command
+diagnostics/             # logs, traces, and the invocation journal
 helpers/                 # paths, durable state, processes, file watching
 prompts/                 # shared prompts, DNA.md, the loader
 memory/                  # carbons/, silicons/, core/

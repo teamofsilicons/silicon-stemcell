@@ -15,7 +15,7 @@ WORKER_TYPES = ("browser", "terminal", "writer")
 
 
 def _error(message):
-    from diagnostics.iwantto.cli import CommandError
+    from iwantto.cli import CommandError
 
     return CommandError(message)
 

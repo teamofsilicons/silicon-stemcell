@@ -419,7 +419,7 @@ def send_manager_message(
             )
     try:
         from interface import notify_runtime_activity
-        from diagnostics.iwantto.journal import record_message
+        from diagnostics.journal import record_message
 
         record_message(
             "out",

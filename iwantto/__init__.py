@@ -7,11 +7,11 @@ Interface daemon, and the result comes straight back on stdout.  A manager can
 therefore send a message, read the reply, and act on it inside a single turn.
 
 Identity is not a flag.  Every process Silicon spawns is registered in
-:mod:`diagnostics.iwantto.actor` before it starts and handed a token, so `iwantto`
+:mod:`iwantto.actor` before it starts and handed a token, so `iwantto`
 resolves "I" from who is running it rather than from what they claim to be.
 """
 
-from diagnostics.iwantto.actor import (
+from iwantto.actor import (
     Actor,
     ActorError,
     actor_env,

@@ -37,7 +37,7 @@ class ManagerToolsDocTest(unittest.TestCase):
     """A manager's tools are `iwantto` commands now, not end-of-turn tool JSON."""
 
     def test_every_command_the_prompts_promise_exists_in_the_cli(self):
-        from diagnostics.iwantto.cli import build_parser
+        from iwantto.cli import build_parser
 
         text = "\n".join(
             Path(DNA._prompt_path(name)).read_text(encoding="utf-8")
@@ -68,7 +68,7 @@ class ManagerToolsDocTest(unittest.TestCase):
         file. if you notice any descripency – then update it in accordance to
         the iwantto cli reference." This is that check, mechanically.
         """
-        from diagnostics.iwantto.cli import build_parser
+        from iwantto.cli import build_parser
 
         reference = Path(
             DNA._prompt_path("IWANTTO_CLI_REFERENCE.md")

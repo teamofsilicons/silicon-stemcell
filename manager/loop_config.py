@@ -10,7 +10,7 @@ from interface import get_unread_events_durable
 from interface.cron import check_crons
 from manager.advisor import run_heartbeats as check_advisor_heartbeats
 from manager.advisor.heartbeat import check_manager_heartbeats
-from diagnostics.iwantto.commands.remind import reap_fired_reminders
+from iwantto.commands.remind import reap_fired_reminders
 from interface.messages import check_manager_messages_durable
 from worker import check_completed_workers_formatted
 from interface.release.updater import check_for_system_update

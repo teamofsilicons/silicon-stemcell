@@ -17,8 +17,8 @@ from interface import (
     start_listener,
     stop_listener,
 )
-from diagnostics.iwantto import injection
-from diagnostics.iwantto import journal as iwantto_journal
+from iwantto import injection
+from diagnostics import journal as iwantto_journal
 from manager.runtime.maintenance import (
     COORDINATOR as MAINTENANCE,
     RootAdmission,

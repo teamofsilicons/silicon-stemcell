@@ -123,7 +123,7 @@ def _record_invocation(contact_id: str, now: float, *, heartbeat: bool) -> None:
 
 def ask(contact_id: str, question: str, *, heartbeat: bool = False) -> str:
     """Run the advisor and return its advice. Blocks until it answers."""
-    from diagnostics.iwantto.actor import ADVISOR, issue_run_env, revoke_actor
+    from iwantto.actor import ADVISOR, issue_run_env, revoke_actor
     from manager import run_agent
 
     contact_id = str(contact_id or "")
@@ -140,7 +140,7 @@ def ask(contact_id: str, question: str, *, heartbeat: bool = False) -> str:
 
     # The environment is what lets the advisor run `iwantto` at all: it carries
     # the token that resolves it as this manager's advisor.
-    from diagnostics.iwantto import journal
+    from diagnostics import journal
 
     token, env = issue_run_env(ADVISOR, contact_id, contact_id)
     started = time.monotonic()

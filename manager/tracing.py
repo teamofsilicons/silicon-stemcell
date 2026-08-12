@@ -15,7 +15,7 @@ from manager import (
     parse_manager_output,
     provider_failed,
 )
-from diagnostics.iwantto import journal as iwantto_journal
+from diagnostics import journal as iwantto_journal
 from diagnostics.store import Diagnostics
 from interface.progress import (
     diagnostic_error_summary,
@@ -235,7 +235,7 @@ def _instrumented_manager_call(
     actually did, which is the only evidence the loop gets that a manager acted
     at all — the actions no longer come back as tool JSON.
     """
-    from diagnostics.iwantto.actor import MANAGER, issue_run_env, revoke_actor
+    from iwantto.actor import MANAGER, issue_run_env, revoke_actor
 
     token, env = issue_run_env(MANAGER, carbon_id, carbon_id)
     started = time.monotonic()

@@ -27,7 +27,7 @@ import sys
 sys.path.insert(0, {code_root!r})
 os.environ.setdefault("SILICON_DATA_ROOT", {data_root!r})
 
-from diagnostics.iwantto.cli import main
+from iwantto.cli import main
 
 raise SystemExit(main())
 """

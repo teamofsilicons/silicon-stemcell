@@ -28,7 +28,7 @@ COMPLETED = "completed"
 
 
 def _error(message):
-    from diagnostics.iwantto.cli import CommandError
+    from iwantto.cli import CommandError
 
     return CommandError(message)
 
@@ -455,7 +455,7 @@ def active_works(contact_id: str = "") -> list:
 def _list_active(args, actor) -> str:
     by = str(args.by or "")
     if by:
-        from diagnostics.iwantto.routing import RoutingError, resolve_target
+        from iwantto.routing import RoutingError, resolve_target
 
         try:
             by = resolve_target(by).fixed_id
@@ -471,7 +471,7 @@ def _list_last(args, actor) -> str:
     limit = int(args.last or 10)
     by = str(args.by or "")
     if by:
-        from diagnostics.iwantto.routing import RoutingError, resolve_target
+        from iwantto.routing import RoutingError, resolve_target
 
         try:
             by = resolve_target(by).fixed_id

@@ -12,7 +12,7 @@ import os
 import time
 from datetime import datetime, timezone
 
-from diagnostics.iwantto.routing import RoutingError, resolve_target
+from iwantto.routing import RoutingError, resolve_target
 from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
@@ -26,7 +26,7 @@ MAX_HISTORY_PER_TARGET = 200
 
 
 def _error(message):
-    from diagnostics.iwantto.cli import CommandError
+    from iwantto.cli import CommandError
 
     return CommandError(message)
 

@@ -42,7 +42,7 @@ def _default_state() -> dict:
 def _active_work_section(contact_id: str) -> str:
     """The manager's own open work, rendered as it would be on the CLI."""
     try:
-        from diagnostics.iwantto.commands.work import _summary_line, active_works
+        from iwantto.commands.work import _summary_line, active_works
 
         entries = active_works(contact_id)
     except Exception:

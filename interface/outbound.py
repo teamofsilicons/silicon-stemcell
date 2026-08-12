@@ -268,8 +268,8 @@ def reply_contact(
                     # receipts outward only, so what this Silicon sent is only
                     # knowable if it is written down here as it goes out.
                     try:
-                        from diagnostics.iwantto.journal import record_message
-                        from diagnostics.iwantto.message_log import record_outbound
+                        from diagnostics.journal import record_message
+                        from iwantto.message_log import record_outbound
 
                         record_outbound(
                             contact_id, sent_event_id, seg_value, seg_type

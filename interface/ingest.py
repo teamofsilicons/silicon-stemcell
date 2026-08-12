@@ -291,7 +291,7 @@ def _record_incoming_bookkeeping(
     try:
         # A reply arriving is what makes earlier messages "read" as far as
         # `iwantto see --unread` is concerned, so inbound is recorded too.
-        from diagnostics.iwantto.message_log import record_inbound
+        from iwantto.message_log import record_inbound
 
         record_inbound(
             contact_id,

@@ -12,14 +12,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-from diagnostics.iwantto import actor as actor_module
-from diagnostics.iwantto import journal as journal_module
-from diagnostics.iwantto import mailbox as mailbox_module
-from diagnostics.iwantto import message_log as message_log_module
-from diagnostics.iwantto import routing as routing_module
-from diagnostics.iwantto.actor import MANAGER, WORKER, Actor
-from diagnostics.iwantto.cli import CommandError, build_parser, main as cli_main
-from diagnostics.iwantto.commands import messaging
+from iwantto import actor as actor_module
+from diagnostics import journal as journal_module
+from iwantto import mailbox as mailbox_module
+from iwantto import message_log as message_log_module
+from iwantto import routing as routing_module
+from iwantto.actor import MANAGER, WORKER, Actor
+from iwantto.cli import CommandError, build_parser, main as cli_main
+from iwantto.commands import messaging
 
 
 def _args(argv):
@@ -452,7 +452,7 @@ class DispatcherTest(_IsolatedState):
         buffer = io.StringIO()
         with (
             mock.patch(
-                "diagnostics.iwantto.cli.resolve_actor", return_value=self.manager
+                "iwantto.cli.resolve_actor", return_value=self.manager
             ),
             contextlib.redirect_stderr(buffer),
         ):
@@ -463,7 +463,7 @@ class DispatcherTest(_IsolatedState):
 
     def test_a_successful_command_is_recorded_against_its_run(self):
         with mock.patch(
-            "diagnostics.iwantto.cli.resolve_actor", return_value=self.manager
+            "iwantto.cli.resolve_actor", return_value=self.manager
         ):
             code = cli_main(["do-nothing", "--reason", "nothing needs doing"])
 
@@ -484,7 +484,7 @@ class DispatcherTest(_IsolatedState):
         buffer = io.StringIO()
         with (
             mock.patch(
-                "diagnostics.iwantto.cli.resolve_actor", return_value=self.worker
+                "iwantto.cli.resolve_actor", return_value=self.worker
             ),
             mock.patch(
                 "interface.messages.send_manager_message", return_value="Done. queued"
@@ -500,7 +500,7 @@ class DispatcherTest(_IsolatedState):
 
     def test_every_invocation_lands_in_the_diagnosis_store(self):
         with mock.patch(
-            "diagnostics.iwantto.cli.resolve_actor", return_value=self.manager
+            "iwantto.cli.resolve_actor", return_value=self.manager
         ):
             cli_main(["do-nothing", "--reason", "quiet"])
 
