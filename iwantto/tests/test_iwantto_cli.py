@@ -343,6 +343,31 @@ class SeeAndBundleTest(_IsolatedState):
         )
         self.assertIn("Bundled 2 of my 2 message(s)", result)
 
+    def test_bundling_forces_the_take_back_because_they_have_seen_it(self):
+        """An ordinary take-back refuses a seen event.
+
+        That refusal used to be the honest answer, and is now the entire case
+        this command exists for, so the force flag is not optional.
+        """
+        with (
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts
+            ),
+            mock.patch(
+                "interface.take_back_event", return_value="Taken back"
+            ) as take_back,
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.reply_contact", return_value="Message sent"),
+        ):
+            _run(
+                ["bundle", "carbon-b", "--from", "event-3", "--text", "tldr"],
+                self.manager,
+            )
+
+        self.assertTrue(take_back.call_args_list)
+        for call in take_back.call_args_list:
+            self.assertTrue(call.kwargs.get("force"))
+
     def test_bundling_works_on_messages_they_have_already_seen(self):
         """The whole reason the range is named rather than inferred.
 

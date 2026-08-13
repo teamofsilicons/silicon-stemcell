@@ -954,7 +954,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 return_value=DONE,
             ) as execute,
         ):
-            accepted = lifecycle.terminalize_before_reply(
+            accepted = lifecycle.settle_open_card(
                 has_active_workers=False,
             )
 
@@ -984,7 +984,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 "execute_work_update",
             ) as execute,
         ):
-            accepted = lifecycle.terminalize_before_reply(
+            accepted = lifecycle.settle_open_card(
                 has_active_workers=False,
             )
 
@@ -1228,7 +1228,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
             ),
         ):
             thread = threading.Thread(
-                target=lifecycle.terminalize_before_reply,
+                target=lifecycle.settle_open_card,
                 kwargs={"has_active_workers": False},
             )
             thread.start()
@@ -1299,7 +1299,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
             "execute_work_update",
             side_effect=[ERROR, DONE],
         ) as execute:
-            accepted = lifecycle.terminalize_before_reply(
+            accepted = lifecycle.settle_open_card(
                 has_active_workers=False,
             )
             self.assertFalse(accepted)
@@ -1307,7 +1307,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
             self.assertTrue(lifecycle._settle_requested)
 
             lifecycle._next_settle_attempt_at = 0
-            accepted = lifecycle.terminalize_before_reply(
+            accepted = lifecycle.settle_open_card(
                 has_active_workers=False,
             )
 
@@ -1396,7 +1396,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
             "execute_work_update",
             return_value=DONE,
         ) as execute:
-            accepted = lifecycle.terminalize_before_reply(
+            accepted = lifecycle.settle_open_card(
                 has_active_workers=True,
             )
 

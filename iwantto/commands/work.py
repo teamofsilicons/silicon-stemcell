@@ -424,7 +424,39 @@ def _complete(args, actor) -> str:
         work["completed_at"] = time.time()
 
     update_json(WORK_FILE, _default(), update)
-    return f"Work {args.id!r} completed: {title}. ({glass_result})"
+    return (
+        f"Work {args.id!r} completed: {title}. ({glass_result})"
+        + _settle_durable_card(actor)
+    )
+
+
+def _settle_durable_card(actor) -> str:
+    """Terminalize the open long-task card, if the turn opened one.
+
+    A `work_update` turn and an `iwantto work` turn keep two different cards, and
+    only one of them is the durable lifecycle. Finishing the work used to settle
+    the lifecycle as a side effect of sending the final reply; with that gone,
+    completing the work has to say so itself, or the lifecycle stays registered
+    and its watcher keeps heartbeating about work that is over.
+    """
+    try:
+        from interface.long_tasks import registry as lt_registry
+        from silicon.activity import _contact_has_active_workers
+
+        lifecycle = lt_registry.current_long_task(actor.contact_id)
+        if lifecycle is None:
+            return ""
+        settled = lifecycle.settle_open_card(
+            has_active_workers=_contact_has_active_workers(actor.contact_id),
+        )
+    except Exception as exc:
+        return f" Your durable task card could not be settled ({type(exc).__name__})."
+    if settled:
+        return ""
+    return (
+        " Your durable task card is still open — a worker it started has not "
+        "reported yet. It settles once that lands."
+    )
 
 
 # --- listing ---------------------------------------------------------------

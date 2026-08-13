@@ -295,7 +295,12 @@ def cmd_bundle(args, actor) -> str:
         event_id = str(entry.get("event_id") or "")
         if not event_id:
             continue
-        status = take_back_event(event_id, reason="bundled into a summary")
+        # Forced, because the pile worth bundling is the one they have already
+        # read. An ordinary take-back refuses a seen event, which used to be the
+        # honest answer and is now the whole case this command exists for.
+        status = take_back_event(
+            event_id, reason="bundled into a summary", force=True
+        )
         if str(status).startswith("Error"):
             failures.append(f"{event_id}: {status}")
         else:

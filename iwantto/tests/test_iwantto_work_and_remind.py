@@ -204,6 +204,75 @@ class WorkTest(unittest.TestCase):
         self.assertIn("No active work", _run(["work", "--active"], MANAGER_ACTOR))
         self.assertIn("market-research", _run(["work", "--last", "10"], MANAGER_ACTOR))
 
+    def test_completing_a_work_settles_the_open_durable_card(self):
+        """The leak `--final` used to cover.
+
+        Every `_settle_requested = True` was on the final-reply path, so removing
+        `--final` left nothing able to terminalize a lifecycle card. A card whose
+        work is over but which never settles keeps its watcher heartbeating until
+        the lease expires, and the carbon keeps seeing a task in progress.
+        """
+        self._new_work()
+        lifecycle = mock.Mock()
+        lifecycle.settle_open_card.return_value = True
+        with (
+            mock.patch(
+                "interface.long_tasks.registry.current_long_task",
+                return_value=lifecycle,
+            ),
+            mock.patch(
+                "silicon.activity._contact_has_active_workers", return_value=False
+            ),
+        ):
+            result = _run(
+                [
+                    "work", "--id", "market-research", "--completed",
+                    "--title", "DONE", "--description", "note",
+                ],
+                MANAGER_ACTOR,
+            )
+
+        lifecycle.settle_open_card.assert_called_once_with(has_active_workers=False)
+        self.assertNotIn("still open", result)
+
+    def test_a_card_held_by_a_worker_says_so_instead_of_claiming_it_settled(self):
+        self._new_work()
+        lifecycle = mock.Mock()
+        lifecycle.settle_open_card.return_value = False
+        with (
+            mock.patch(
+                "interface.long_tasks.registry.current_long_task",
+                return_value=lifecycle,
+            ),
+            mock.patch(
+                "silicon.activity._contact_has_active_workers", return_value=True
+            ),
+        ):
+            result = _run(
+                [
+                    "work", "--id", "market-research", "--completed",
+                    "--title", "DONE", "--description", "note",
+                ],
+                MANAGER_ACTOR,
+            )
+
+        self.assertIn("still open", result)
+
+    def test_completing_a_work_without_a_lifecycle_says_nothing_extra(self):
+        self._new_work()
+        with mock.patch(
+            "interface.long_tasks.registry.current_long_task", return_value=None
+        ):
+            result = _run(
+                [
+                    "work", "--id", "market-research", "--completed",
+                    "--title", "DONE", "--description", "note",
+                ],
+                MANAGER_ACTOR,
+            )
+
+        self.assertNotIn("durable task card", result)
+
     def test_listing_work_takes_no_owner_because_there_is_only_one(self):
         """`--by` filtered work by whose manager started it. Nobody else has one."""
         self._new_work()

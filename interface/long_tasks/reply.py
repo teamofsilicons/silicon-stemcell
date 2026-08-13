@@ -175,8 +175,15 @@ class FinalReplyMixin:
         return "Message queued for durable delivery"
 
 
-    def terminalize_before_reply(self, *, has_active_workers: bool) -> bool:
-        """Compatibility helper: settle the card, but never bypass the barrier."""
+    def settle_open_card(self, *, has_active_workers: bool) -> bool:
+        """Terminalize the durable card, without bypassing the barrier.
+
+        Named for the barrier, not for a caller: it refuses while a worker it
+        started is still unpublished, or the card was never confirmed, and says so
+        by returning False rather than pretending. It used to be reached only on
+        the way to a final reply; now `iwantto work --completed` calls it, which
+        is what keeps a card from outliving the work it describes.
+        """
         self._reconcile_worker_intents()
         self._deliver_pending_workers(force=True)
         with self._lock:
