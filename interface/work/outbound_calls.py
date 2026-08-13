@@ -12,6 +12,7 @@ from interface.work import journal as journal_module
 from interface.work import store as store_module
 from copy import deepcopy
 from typing import Any
+from helpers.session import SILICON
 from interface import (
     InterfaceClient,
 
@@ -28,7 +29,11 @@ def prepare_outbound_call(
     task_id: str = "",
 ) -> dict[str, Any]:
     """Allocate local correlation without performing any network operation."""
-    task_id = str(task_id or cache_module.active_task_id(contact_id) or "")
+    # The call's correlation is per peer, but the task it belongs to is the
+    # session's, and the session's active task is filed under SILICON. Defaulting
+    # it from the peer's own key found it back when the peer had a manager of its
+    # own; now it is always empty and the call card loses its task.
+    task_id = str(task_id or cache_module.active_task_id(SILICON) or "")
     target_kind = "silicon" if target_kind == "silicon" else "manager"
     with store_module._state_guard():
         state = store_module._read_state()

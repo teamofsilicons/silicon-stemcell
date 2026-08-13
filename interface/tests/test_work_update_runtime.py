@@ -2397,6 +2397,14 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
         )
 
     def test_task_linked_call_bridge_still_mirrors_transcript(self):
+        """Both sides of a call see the same transcript.
+
+        The task ids are passed explicitly. They used to be defaulted from each
+        contact's own active task, which only worked because each contact had a
+        manager holding one; with a single session there is one active task, so
+        that default now reads from SILICON and this two-sided fiction has to say
+        which task it means.
+        """
         client = FakeWorkClient()
 
         self._create_task(client, "carbon-a", "task-a")
@@ -2406,6 +2414,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             target_id="carbon-b",
             target_name="Babbage's manager",
             message="Can you confirm the colour?",
+            task_id="task-a",
             client=client,
         )
         self._create_task(client, "carbon-b", "task-b")
@@ -2416,6 +2425,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             source_name="Ada's manager",
             message="Can you confirm the colour?",
             outbound=outbound,
+            task_id="task-b",
             client=client,
         )
         continuation = work_updates.record_outbound_call(
@@ -2424,6 +2434,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             target_id="carbon-a",
             target_name="Ada's manager",
             message="Use blue.",
+            task_id="task-b",
             client=client,
         )
 

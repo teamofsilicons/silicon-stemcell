@@ -235,13 +235,20 @@ def reply_contact(
         try:
             from interface.work import current_manager_activity_group
 
-            progress_group_id = current_manager_activity_group(contact_id)
+            # The activity belongs to the turn, and the turn is the session's, so
+            # it is stored under SILICON. Looking it up under the *destination*
+            # found it back when there was a manager per contact; now it always
+            # comes back empty, and the reply arrives detached from the spinner
+            # that was running for it.
+            progress_group_id = current_manager_activity_group(SILICON)
         except Exception:
             progress_group_id = ""
     errors: list[str] = []
     try:
         from diagnostics.store import Diagnostics
-        trace = Diagnostics.get_active_run(contact_id)
+
+        # Same reason: one session, one active run, registered under SILICON.
+        trace = Diagnostics.get_active_run(SILICON)
     except Exception:
         trace = None
     segments = _parse_reply_segments(message)

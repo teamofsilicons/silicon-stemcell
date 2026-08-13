@@ -298,11 +298,15 @@ def cmd_bundle(args, actor) -> str:
         # Forced, because the pile worth bundling is the one they have already
         # read. An ordinary take-back refuses a seen event, which used to be the
         # honest answer and is now the whole case this command exists for.
-        status = take_back_event(
-            event_id, reason="bundled into a summary", force=True
-        )
-        if str(status).startswith("Error"):
-            failures.append(f"{event_id}: {status}")
+        #
+        # Caught per message, not around the loop: Interface raises rather than
+        # returning a status, so one refusal used to abort the command with some
+        # messages already withdrawn and no summary sent in their place — the
+        # worst of both. One that will not come back is reported and skipped.
+        try:
+            take_back_event(event_id, reason="bundled into a summary", force=True)
+        except Exception as exc:
+            failures.append(f"{event_id}: {type(exc).__name__}: {exc}"[:200])
         else:
             withdrawn.append(event_id)
 

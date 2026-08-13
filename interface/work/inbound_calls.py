@@ -1,6 +1,7 @@
 """Being called by another Silicon: preparing, enqueuing, recording.
 """
 from __future__ import annotations
+from helpers.session import SILICON
 
 from interface.work import cache as cache_module
 from interface.work import correlation as correlation_module
@@ -22,10 +23,15 @@ def prepare_inbound_call(
     source_name: str,
     message: str,
     outbound: dict[str, Any] | None = None,
+    task_id: str = "",
 ) -> dict[str, Any]:
     """Allocate an inbound reference without publishing or caching it."""
     outbound = dict(outbound or {})
-    task_id = cache_module.active_task_id(contact_id)
+    # The session's active task, not the peer's — see prepare_outbound_call. This
+    # is the side that actually runs now: a peer Silicon messaging us arrives
+    # through interface/ingest.py, whose contact_id is that peer, and a peer has
+    # no task of its own in our state.
+    task_id = str(task_id or cache_module.active_task_id(SILICON) or "")
     call_id = identity_module._new_id("call", source_id)
     work_event_id = identity_module._stable_id(
         "call-event",
@@ -75,6 +81,7 @@ def enqueue_inbound_call(
     outbound: dict[str, Any] | None = None,
     client: InterfaceClient | None = None,
     idempotency_key: str = "",
+    task_id: str = "",
 ) -> dict[str, str]:
     reference = prepare_inbound_call(
         contact_id,
@@ -83,6 +90,7 @@ def enqueue_inbound_call(
         source_name=source_name,
         message=message,
         outbound=outbound,
+        task_id=task_id,
     )
     retry_id = journal_module._journal_call_create(
         "inbound",
@@ -115,6 +123,7 @@ def record_inbound_call(
     outbound: dict[str, Any] | None = None,
     client: InterfaceClient | None = None,
     idempotency_key: str = "",
+    task_id: str = "",
 ) -> dict[str, str]:
     """Synchronously create an inbound call for explicit work-update callers."""
     reference = prepare_inbound_call(
@@ -124,6 +133,7 @@ def record_inbound_call(
         source_name=source_name,
         message=message,
         outbound=outbound,
+        task_id=task_id,
     )
     retry_id = journal_module._journal_call_create(
         "inbound",

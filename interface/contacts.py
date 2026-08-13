@@ -244,6 +244,25 @@ def _cache_own_ids(own_ids: list[str]) -> list[str]:
     return normalized
 
 
+def is_own_identity(fixed_id: str) -> bool:
+    """Whether this id is us.
+
+    A self-addressed cron is the case that needs it: a reminder is stored in
+    Glass against our own identity so it survives a reinstall, and when it fires
+    it must land in the session rather than send us to open a DM with ourselves.
+    """
+    fixed_id = str(fixed_id or "").strip()
+    if not fixed_id:
+        return False
+    state = _load_state()
+    if fixed_id in {str(value) for value in (state.get("own_ids") or [])}:
+        return True
+    profile = state.get("profile")
+    if isinstance(profile, dict):
+        return fixed_id == str(profile.get("silicon_id") or "").strip()
+    return False
+
+
 @state_serialized
 def _finish_room_sync() -> dict[str, Any]:
     """Timestamp room discovery against the newest state written by ingestion."""

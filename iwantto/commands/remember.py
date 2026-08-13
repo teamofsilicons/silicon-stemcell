@@ -78,18 +78,41 @@ def _parse_at(value: str) -> datetime:
 
 
 def _one_shot_trigger(when: datetime) -> str:
-    """A cron expression that matches exactly one minute of one day."""
+    """A cron expression that matches exactly one minute of one day.
+
+    Five-field cron has no year, so "one shot" only holds inside a single
+    12-month cycle: a moment 14 months out would match the same day *this* year
+    and fire early, then fire again on the real date, and the reaper would not
+    clean it up because its ``fire_at`` is still in the future. So the far date is
+    refused rather than silently mistimed — see :func:`_reject_unreachable`.
+    """
     moment = when.astimezone(timezone.utc)
     return f"{moment.minute} {moment.hour} {moment.day} {moment.month} *"
+
+
+# Comfortably inside one cron cycle, leaving room for a leap day and for the
+# reminder to be set slightly before it is stored.
+MAX_ONE_SHOT_DAYS = 300
+
+
+def _reject_unreachable(when: datetime) -> None:
+    if when - datetime.now(timezone.utc) > timedelta(days=MAX_ONE_SHOT_DAYS):
+        raise _error(
+            f"That is more than {MAX_ONE_SHOT_DAYS} days out, and a one-off "
+            "reminder is stored as a cron, which has no year — it would fire on "
+            "that day and month of *this* year instead. Set a nearer reminder to "
+            "come back to it, or use --cron if it should genuinely recur."
+        )
 
 
 def _own_target() -> list:
     """The Silicon itself, as a Glass cron target.
 
     A reminder is stored in Glass so it survives a reinstall, and a Glass cron
-    record needs somebody to be for. That somebody is us. :mod:`interface.cron`
-    recognises our own id and fires the reminder into the session rather than
-    trying to open a DM with ourselves.
+    record needs somebody to be for. That somebody is us.
+    :func:`interface.cron._check_glass_crons` recognises our own id and fires the
+    reminder into the session, rather than going off to open a DM with ourselves
+    the way any other target would.
     """
     from interface import get_own_profile
 
@@ -181,11 +204,13 @@ def _create(args, actor) -> str:
         trigger = str(args.cron)
     elif args.at:
         fire_at = _parse_at(args.at)
+        _reject_unreachable(fire_at)
         trigger = _one_shot_trigger(fire_at)
         one_shot = True
         timezone_name = "UTC"
     elif getattr(args, "in_", None):
         fire_at = _parse_relative(args.in_)
+        _reject_unreachable(fire_at)
         trigger = _one_shot_trigger(fire_at)
         one_shot = True
         timezone_name = "UTC"

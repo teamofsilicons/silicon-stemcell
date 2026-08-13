@@ -9,8 +9,10 @@ from zoneinfo import ZoneInfo
 
 from interface.cron.checkback import get_checkback_jobs
 from interface import InterfaceClient, InterfaceError, ensure_contact_for_target
+from interface.contacts import is_own_identity
 from helpers import session as silicon
 from helpers.paths import DATA_ROOT, STATE_DIR
+from helpers.session import SILICON
 from helpers.state import file_lock, read_json, update_json, write_json
 
 PROJECT_ROOT = DATA_ROOT
@@ -407,6 +409,15 @@ def _check_glass_crons(now: datetime | None = None, client: InterfaceClient | No
 
     for record, _latest, _fire_count, context in due:
         for target in _targets(record):
+            # A reminder the Silicon set for itself is stored against our own
+            # Glass identity, because a cron record needs a target. It has no
+            # room and never should: opening a DM with ourselves is what
+            # `ensure_contact_for_target` would otherwise go and do. It fires
+            # into the session carrying no envelope, so like a heartbeat it
+            # produces no frames in anybody's chat.
+            if is_own_identity(target["id"]):
+                results.setdefault(SILICON, []).append(context)
+                continue
             try:
                 contact = ensure_contact_for_target(target["kind"], target["id"], client=client)
             except Exception as exc:

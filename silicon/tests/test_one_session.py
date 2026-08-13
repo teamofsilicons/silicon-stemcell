@@ -181,5 +181,58 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(origins_in(cleaned[SILICON]), ["carbon-b"])
 
 
+class SelfReminderTest(unittest.TestCase):
+    """A reminder the Silicon set for itself fires into the session, not a DM.
+
+    A Glass cron record needs a target, so a self-reminder is stored against our
+    own Glass identity. Without a short-circuit, delivery would hand that id to
+    `ensure_contact_for_target` and go off to open a DM with ourselves — and
+    every frame for that reminder would land in it.
+    """
+
+    def _fire(self, own):
+        from interface import cron as cron_module
+
+        record = {
+            "cron_id": "c-1",
+            "trigger": "0 9 * * *",
+            "task": "chase the worker",
+            "targets": [{"kind": "silicon", "id": "me"}],
+        }
+        with (
+            mock.patch.object(cron_module, "_records_from_payload", return_value=[record]),
+            mock.patch.object(cron_module, "_load_cached_cron_records", return_value=[record]),
+            mock.patch.object(cron_module, "fire_times_between", return_value=[
+                cron_module._utc_now()
+            ]),
+            mock.patch.object(cron_module, "_load_cron_state", return_value={
+                "version": 1,
+                "crons": {"c-1": {"watermark_utc": "2020-01-01T00:00:00+00:00"}},
+            }),
+            mock.patch.object(cron_module, "_save_cron_state"),
+            mock.patch.object(cron_module, "is_own_identity", side_effect=lambda i: i == own),
+            mock.patch.object(cron_module, "ensure_contact_for_target") as ensure,
+        ):
+            return cron_module._check_glass_crons(client=mock.Mock()), ensure
+
+    def test_a_self_reminder_never_opens_a_dm_with_itself(self):
+        fired, ensure = self._fire(own="me")
+
+        ensure.assert_not_called()
+        self.assertEqual(list(fired), [SILICON])
+        self.assertIn("chase the worker", fired[SILICON])
+
+    def test_a_self_reminder_names_nobody_so_it_shows_up_in_no_ones_chat(self):
+        fired, _ = self._fire(own="me")
+
+        self.assertEqual(origins_in(fired[SILICON]), [])
+
+    def test_a_cron_for_somebody_else_still_resolves_their_room(self):
+        fired, ensure = self._fire(own="not-me")
+
+        ensure.assert_called_once()
+        self.assertNotIn(SILICON, fired)
+
+
 if __name__ == "__main__":
     unittest.main()

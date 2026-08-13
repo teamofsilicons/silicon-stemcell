@@ -86,8 +86,11 @@ MANDATORY_CLASSES: tuple[OwnershipClass, ...] = (
         "task_delivery",
         (
             "interface/state/**",
-            "core/cron/checkbacks.json",
-            "core/cron/history.json",
+            # Worker checkbacks moved under interface/ with the rest of the
+            # runtime state; the old `core/` spelling matched nothing, so a
+            # pending checkback was silently outside every backup class.
+            "interface/cron/checkbacks.json",
+            "interface/cron/history.json",
             ".silicon-interface/**",
             "sessions/**",
             "worker/sessions/**",
