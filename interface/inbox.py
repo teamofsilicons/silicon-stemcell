@@ -442,7 +442,7 @@ def get_unread_events(*, durable_handoff: bool = False) -> dict[str, str]:
         print(f"[Interface] room discovery failed: {exc}", flush=True)
 
     try:
-        from manager.runtime.maintenance import accepting_new_roots
+        from silicon.runtime.maintenance import accepting_new_roots
 
         if accepting_new_roots():
             start_listener()
@@ -485,7 +485,7 @@ def get_unread_events(*, durable_handoff: bool = False) -> dict[str, str]:
                             ).hexdigest()
                             ingress_id = f"interface-event:{event_digest}"
                         try:
-                            from manager.runtime.maintenance import COORDINATOR
+                            from silicon.runtime.maintenance import COORDINATOR
 
                             accepted = COORDINATOR.enqueue_ingress_root(
                                 contact_id,

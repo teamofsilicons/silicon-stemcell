@@ -286,7 +286,7 @@ class TestTracerIntegration(unittest.TestCase):
         self.assertAlmostEqual(rollup["cost_usd"], 0.01734, places=5)
 
     def test_codex_harvest_feeds_rollup(self):
-        # The exact path manager.py's codex provider_call span will follow:
+        # The exact path a Silicon turn's codex provider_call span will follow:
         # tokenUsage/updated stashes usage -> turn/completed emits DONE ->
         # usage_from_done_event -> span.set_tokens -> rollup.
         import tempfile

@@ -46,7 +46,7 @@ def start_worker(worker_id, task, worker_type, carbon_id, incognito=False):
 
     worker_type = worker_type.lower()
     try:
-        from manager.runtime.maintenance import (
+        from silicon.runtime.maintenance import (
             acquire_descendant_activity,
             bind_activity,
             release_activity,
@@ -119,7 +119,7 @@ def message_worker(worker_id, task, carbon_id):
         return f"Error: Worker '{worker_id}' is already in the browser queue."
 
     try:
-        from manager.runtime.maintenance import (
+        from silicon.runtime.maintenance import (
             acquire_descendant_activity,
             bind_activity,
             release_activity,

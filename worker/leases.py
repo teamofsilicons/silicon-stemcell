@@ -10,7 +10,7 @@ from __future__ import annotations
 
 def _maintenance_reference():
     try:
-        from manager.runtime.maintenance import current_activity
+        from silicon.runtime.maintenance import current_activity
 
         activity = current_activity()
         return activity.reference() if activity is not None else {}
@@ -20,7 +20,7 @@ def _maintenance_reference():
 
 def _maintenance_activity(reference):
     try:
-        from manager.runtime.maintenance import activity_from_reference
+        from silicon.runtime.maintenance import activity_from_reference
 
         return activity_from_reference(reference)
     except Exception:
@@ -32,7 +32,7 @@ def _heartbeat_maintenance_activity(reference):
     if activity is None:
         return None
     try:
-        from manager.runtime.maintenance import heartbeat_activity
+        from silicon.runtime.maintenance import heartbeat_activity
 
         return activity if heartbeat_activity(activity) else None
     except Exception:
@@ -44,7 +44,7 @@ def _release_maintenance_activity(reference):
     if activity is None:
         return False
     try:
-        from manager.runtime.maintenance import release_activity
+        from silicon.runtime.maintenance import release_activity
 
         return release_activity(activity)
     except Exception:

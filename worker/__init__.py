@@ -14,7 +14,7 @@ can find them.
     pool        the queue drain, the completion sweep, the listings
     leases      the one place worker/ talks to maintenance
 
-Nothing at this level imports interface/ or manager/: interface.cron.checkback
+Nothing at this level imports interface/ or silicon/: interface.cron.checkback
 imports this package at module scope, so those must stay lazy and in-function.
 """
 from worker.base import Worker

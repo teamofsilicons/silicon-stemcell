@@ -21,7 +21,7 @@ def drain_diagnostics(ws, root: Path, config: dict) -> int:
     activity = None
     heartbeat_context = None
     try:
-        from manager.runtime.maintenance import MaintenanceCoordinator, heartbeat_scope
+        from silicon.runtime.maintenance import MaintenanceCoordinator, heartbeat_scope
 
         coordinator = MaintenanceCoordinator(root)
         activity = coordinator.acquire_activity(

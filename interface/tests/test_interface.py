@@ -706,7 +706,7 @@ class InterfaceStateTest(unittest.TestCase):
         )
 
     def test_lost_root_acceptance_response_replays_without_duplicate_turn(self):
-        from manager.runtime.maintenance import MaintenanceCoordinator
+        from silicon.runtime.maintenance import MaintenanceCoordinator
 
         interface.upsert_contact(
             "carbon",
@@ -762,7 +762,7 @@ class InterfaceStateTest(unittest.TestCase):
                 "diagnostics.store.Diagnostics.start_run",
                 side_effect=RuntimeError,
             ),
-            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
+            mock.patch("silicon.runtime.maintenance.COORDINATOR", coordinator),
             mock.patch.object(
                 coordinator,
                 "enqueue_ingress_root",
@@ -798,7 +798,7 @@ class InterfaceStateTest(unittest.TestCase):
                 "diagnostics.store.Diagnostics.start_run",
                 side_effect=RuntimeError,
             ),
-            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
+            mock.patch("silicon.runtime.maintenance.COORDINATOR", coordinator),
         ):
             self.assertEqual(interface.get_unread_events_durable(), {})
 

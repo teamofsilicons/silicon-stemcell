@@ -15,8 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from helpers.silicon import SILICON
-from iwantto import routing as routing_module
+from helpers.session import SILICON
 from iwantto.actor import MANAGER, Actor
 from iwantto.cli import CommandError, build_parser
 from iwantto.commands import remember as remember_module

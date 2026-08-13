@@ -38,7 +38,7 @@ _SWEEP_INTERVAL = 10
 def reconcile_maintenance_activities():
     """Attach leases to legacy active/queued worker records before draining."""
     try:
-        from manager.runtime.maintenance import COORDINATOR
+        from silicon.runtime.maintenance import COORDINATOR
     except Exception:
         return 0
 
@@ -106,7 +106,7 @@ def _process_browser_queue():
             next_job.get("maintenance_activity")
         )
         try:
-            from manager.runtime.maintenance import (
+            from silicon.runtime.maintenance import (
                 acquire_descendant_activity,
                 bind_activity,
                 public_status,
@@ -164,7 +164,7 @@ def _process_browser_queue():
                 scope.__exit__(None, None, None)
         if not ok and activity is not None:
             try:
-                from manager.runtime.maintenance import release_activity
+                from silicon.runtime.maintenance import release_activity
 
                 release_activity(activity)
             except Exception:

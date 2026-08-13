@@ -25,7 +25,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 "inference",
                 "interface",
                 "iwantto",
-                "manager",
+                "silicon",
                 "prompts",
                 "worker",
             ):
@@ -80,14 +80,14 @@ class RuntimeDataRootTests(unittest.TestCase):
                 from interface import config as glass
                 from interface import work as work_updates
                 from interface.cron import checkback
-                from manager.runtime.maintenance import MaintenanceCoordinator
+                from silicon.runtime.maintenance import MaintenanceCoordinator
                 from prompts import loader as DNA
                 from interface.agent import config as agent_config
                 import inference
                 from inference.codex import provider as codex_provider
                 import main
-                import manager
-                import manager.settings as m_manager_settings
+                import silicon
+                import silicon.settings as m_manager_settings
                 from interface.release import updater as update
                 import worker.constants
                 from worker import pool as handler
@@ -96,7 +96,7 @@ class RuntimeDataRootTests(unittest.TestCase):
                 data = DATA_ROOT
                 messages._save_manager_messages({"carbon-a": [{"message": "hi"}]})
                 checkback.add_checkback("worker-a", "carbon-a", 5)
-                manager.new_session("carbon-a", brain="claude")
+                silicon.new_session("carbon-a", brain="claude")
                 registry_module._save_active({"worker-a": {"pid": 1}})
                 activity_log.log("TEST", "runtime root")
                 MaintenanceCoordinator().request_drain(
@@ -195,10 +195,10 @@ class RuntimeDataRootTests(unittest.TestCase):
                 str(release_root),
                 result["worker_ownership_prompt"],
             )
-            # The manager's own prompts live next to the manager's code now.
+            # The Silicon's own prompts live next to the Silicon's code now.
             self.assertTrue(
                 Path(result["manager_prompt_path"]).is_relative_to(
-                    release_root / "manager" / "prompts"
+                    release_root / "silicon" / "prompts"
                 )
             )
             self.assertIn("prompts/MEMORY.md", result["snapshot_paths"])

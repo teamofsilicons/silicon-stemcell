@@ -15,7 +15,7 @@ from typing import Any
 import requests
 
 from helpers import process as background
-from helpers import silicon
+from helpers import session as silicon
 from helpers.timefmt import now as _now
 from helpers.timefmt import utc_iso as _utc_iso
 from interface import client as client_module
@@ -249,7 +249,7 @@ def _format_event_context(
 
     # The envelope leads, and what they actually said comes straight after it.
     # It is the only thing telling one session who a message is from — see
-    # helpers.silicon.envelope, which the runtime reads back to find the room
+    # helpers.session.envelope, which the runtime reads back to find the room
     # this reply and its progress frames belong in.
     lines = [
         silicon.envelope(

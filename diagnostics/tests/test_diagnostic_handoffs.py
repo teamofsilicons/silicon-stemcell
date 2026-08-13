@@ -8,7 +8,7 @@ from unittest import mock
 
 from interface import messages
 from diagnostics.store import Diagnostics
-from manager.runtime.maintenance import MaintenanceCoordinator
+from silicon.runtime.maintenance import MaintenanceCoordinator
 
 
 class DiagnosticHandoffTests(unittest.TestCase):
@@ -99,7 +99,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "manager.runtime.maintenance.COORDINATOR",
+            "silicon.runtime.maintenance.COORDINATOR",
             coordinator,
         ):
             self.assertEqual(messages.check_manager_messages_durable(), {})
@@ -128,7 +128,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "manager.runtime.maintenance.COORDINATOR",
+                "silicon.runtime.maintenance.COORDINATOR",
                 coordinator,
             ),
             mock.patch.object(
@@ -146,7 +146,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
         coordinator.complete_roots(first_turn)
 
         with mock.patch(
-            "manager.runtime.maintenance.COORDINATOR",
+            "silicon.runtime.maintenance.COORDINATOR",
             coordinator,
         ):
             self.assertEqual(messages.check_manager_messages_durable(), {})
@@ -390,10 +390,10 @@ class DiagnosticHandoffTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "manager.runtime.maintenance.current_activity",
+                "silicon.runtime.maintenance.current_activity",
                 return_value=object(),
             ),
-            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
+            mock.patch("silicon.runtime.maintenance.COORDINATOR", coordinator),
             mock.patch("helpers.process.submit_best_effort") as submit,
         ):
             accepted = messages._queue_lineage_handoff(
@@ -424,10 +424,10 @@ class DiagnosticHandoffTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "manager.runtime.maintenance.current_activity",
+                "silicon.runtime.maintenance.current_activity",
                 return_value=object(),
             ),
-            mock.patch("manager.runtime.maintenance.COORDINATOR", coordinator),
+            mock.patch("silicon.runtime.maintenance.COORDINATOR", coordinator),
             mock.patch.object(
                 messages,
                 "_ensure_manager_work_calls",
@@ -466,11 +466,11 @@ class DiagnosticHandoffTests(unittest.TestCase):
         }
         with (
             mock.patch(
-                "manager.runtime.maintenance.current_activity",
+                "silicon.runtime.maintenance.current_activity",
                 return_value=object(),
             ),
             mock.patch(
-                "manager.runtime.maintenance.COORDINATOR",
+                "silicon.runtime.maintenance.COORDINATOR",
                 coordinator,
             ),
             mock.patch.object(
@@ -493,7 +493,7 @@ class DiagnosticHandoffTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "manager.runtime.maintenance.COORDINATOR",
+                "silicon.runtime.maintenance.COORDINATOR",
                 coordinator,
             ),
             mock.patch.object(

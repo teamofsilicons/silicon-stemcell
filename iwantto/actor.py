@@ -1,10 +1,10 @@
 """Who is running `iwantto`.
 
-Every process the Stemcell spawns — a manager turn, an advisor turn, a worker
+Every process the Stemcell spawns — a session turn, an advisor turn, a worker
 run — is registered here before it starts and handed a token in its
-environment.  The CLI resolves that token back to an actor, so `iwantto send
-shubham --text "..."` can tell whether "I" is shubham's own manager (send
-directly) or somebody else's (route through shubham's manager).
+environment. The CLI resolves that token back to an actor, so `iwantto send
+shubham --text "..."` knows whether "I" is the Silicon, which speaks for itself,
+or one of its workers, which does not.
 
 The token is the identity, not the variable names around it.  A stale or copied
 `SILICON_ACTOR_*` value cannot name an actor it was never issued for, and a
@@ -78,7 +78,7 @@ class Actor:
 
     @property
     def acts_as_manager(self) -> bool:
-        """Advisors share the manager's "I" — same contact, same routing."""
+        """Advisors share the Silicon's "I" — same contact, same voice."""
         return self.kind in (MANAGER, ADVISOR)
 
     def describe(self) -> str:

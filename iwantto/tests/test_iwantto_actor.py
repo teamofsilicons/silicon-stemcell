@@ -1,8 +1,8 @@
 """Who `iwantto` thinks is running it.
 
 Identity is the whole basis for routing: whether `iwantto send shubham` goes
-straight to shubham or through shubham's manager depends entirely on which
-manager is asking. These tests hold that the answer comes from a token issued
+straight to shubham or not at all depends entirely on who is asking — the
+Silicon speaks, its workers do not. These tests hold that the answer comes from a token issued
 per run, that it cannot be guessed or inherited, and that it stops working when
 the run ends.
 """

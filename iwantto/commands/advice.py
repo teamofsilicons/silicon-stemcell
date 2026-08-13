@@ -14,7 +14,7 @@ def _error(message):
 
 
 def cmd_get_advice(args, actor) -> str:
-    from manager import advisor
+    from silicon import advisor
 
     if actor.is_advisor:
         raise _error(

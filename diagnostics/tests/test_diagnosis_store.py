@@ -1,4 +1,4 @@
-import manager.tracing as m_manager_tracing
+import silicon.tracing as m_manager_tracing
 """The diagnosis store — everything that happens inside this Silicon.
 
 TODO.md names four things it must hold, so a session can be reconstructed when
@@ -135,7 +135,7 @@ class ManagerInvocationTest(_IsolatedJournal):
         )
 
     def test_every_advisor_turn_is_recorded(self):
-        from manager import advisor
+        from silicon import advisor
 
         with (
             mock.patch.object(advisor, "_rotate_session"),
@@ -143,7 +143,7 @@ class ManagerInvocationTest(_IsolatedJournal):
                               os.path.join(self._temp.name, "advisors.json")),
             mock.patch("iwantto.actor.issue_run_env", return_value=("t", {})),
             mock.patch("iwantto.actor.revoke_actor"),
-            mock.patch("manager.run_agent", return_value="Delegate it."),
+            mock.patch("silicon.run_agent", return_value="Delegate it."),
         ):
             advisor.ask("carbon-a", "should I?")
 

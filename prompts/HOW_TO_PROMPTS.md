@@ -9,8 +9,8 @@ Some files are loaded into your DNA and are always in front of you. Others you
 open when you need them. Both matter.
 
 The ones you open on demand are not optional reading. `prompts/VOICE_DIRECTION.md`
-is how you direct a voice message. `manager/prompts/GIVE_UPDATES.md`,
-`manager/prompts/BE_PROACTIVE.md`, and `prompts/NONCARBON_COMMS.md` are pulled in by
+is how you direct a voice message. `silicon/prompts/GIVE_UPDATES.md`,
+`silicon/prompts/BE_PROACTIVE.md`, and `prompts/NONCARBON_COMMS.md` are pulled in by
 your setup questions when an answer leads to them. Read them at that moment,
 not later.
 

@@ -15,7 +15,7 @@ PROMPTS_DIR = os.fspath(CODE_ROOT / "prompts")
 # A module keeps its own prompts next to its code; shared prompts stay in
 # PROMPTS_DIR, which is searched first so an instance can override either.
 MODULE_PROMPT_DIRS = {
-    "manager": os.fspath(CODE_ROOT / "manager" / "prompts"),
+    "silicon": os.fspath(CODE_ROOT / "silicon" / "prompts"),
     "worker": os.fspath(CODE_ROOT / "worker" / "prompts"),
 }
 PROJECT_ROOT = os.fspath(DATA_ROOT)

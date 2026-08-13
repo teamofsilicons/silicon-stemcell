@@ -199,7 +199,7 @@ def check_completed_workers():
         continuation_queued = False
         if activity_reference:
             try:
-                from manager.runtime.maintenance import COORDINATOR
+                from silicon.runtime.maintenance import COORDINATOR
 
                 continuation_queued = COORDINATOR.enqueue_continuation(
                     carbon_id,

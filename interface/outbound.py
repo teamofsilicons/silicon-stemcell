@@ -12,7 +12,7 @@ import threading
 from typing import Any
 
 from helpers import process as background
-from helpers.silicon import SILICON, live_origins, resolve_rooms
+from helpers.session import SILICON, live_origins, resolve_rooms
 from interface import client as client_module
 from interface.constants import RICH_MEDIA_RE
 from interface.contacts import get_own_profile
@@ -70,7 +70,7 @@ def deliver_maintenance_notices(*, limit: int = 20) -> int:
     The maintenance coordinator stores only one acknowledgement per contact
     and update.  A failed Interface call releases the claim for retry.
     """
-    from manager.runtime.maintenance import COORDINATOR
+    from silicon.runtime.maintenance import COORDINATOR
 
     delivered = 0
     client = client_module.InterfaceClient()

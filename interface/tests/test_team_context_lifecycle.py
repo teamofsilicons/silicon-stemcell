@@ -4,10 +4,10 @@ import unittest
 from unittest import mock
 
 from interface import team_tick as config
-from manager import loop_config
+from silicon import loop_config
 import main
-import manager.dispatcher as m_manager_dispatcher
-from helpers.silicon import SILICON
+import silicon.dispatcher as m_manager_dispatcher
+from helpers.session import SILICON
 
 
 class TeamContextLifecycleTest(unittest.TestCase):

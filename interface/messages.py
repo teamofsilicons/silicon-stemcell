@@ -244,7 +244,7 @@ def _ensure_manager_work_calls(contact_id, item):
 
 def _resume_prepared_lineage(contact_id, item):
     """Idempotently commit or verify a prepared maintenance continuation."""
-    from manager.runtime.maintenance import COORDINATOR
+    from silicon.runtime.maintenance import COORDINATOR
 
     return COORDINATOR.enqueue_continuation(
         str(contact_id),
@@ -266,7 +266,7 @@ def _queue_lineage_handoff(
     activity = None
     reconciliation = None
     try:
-        from manager.runtime.maintenance import COORDINATOR, current_activity
+        from silicon.runtime.maintenance import COORDINATOR, current_activity
 
         if current_activity() is None:
             return False
@@ -533,7 +533,7 @@ def _check_manager_messages(*, durable_handoff=False):
                 )
             if durable_handoff:
                 try:
-                    from manager.runtime.maintenance import COORDINATOR
+                    from silicon.runtime.maintenance import COORDINATOR
 
                     accepted = COORDINATOR.enqueue_ingress_root(
                         str(contact_id),

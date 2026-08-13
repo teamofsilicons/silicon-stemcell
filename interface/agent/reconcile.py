@@ -68,7 +68,7 @@ class TeamContextReconciler:
                 # Dynamic import keeps the sidecar alive across partial updates
                 # and makes a missing/transient sync dependency fail open.
                 from interface.team import reconcile_team_context
-                from manager.runtime.maintenance import (
+                from silicon.runtime.maintenance import (
                     MaintenanceCoordinator,
                     heartbeat_scope,
                 )
@@ -149,7 +149,7 @@ class TrustPolicyReconciler:
                 self._force = False
                 self._reasons.clear()
             try:
-                from manager.runtime.maintenance import MaintenanceCoordinator, heartbeat_scope
+                from silicon.runtime.maintenance import MaintenanceCoordinator, heartbeat_scope
                 from interface.trust import reconcile_trust_policy
 
                 coordinator = MaintenanceCoordinator(self.root)

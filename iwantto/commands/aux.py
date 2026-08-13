@@ -26,7 +26,7 @@ def cmd_start_new_session(args, actor) -> str:
     the new session gets to inherit, so it should say what was being discussed
     or what still needs doing.
     """
-    from manager import new_session
+    from silicon import new_session
 
     if actor.is_worker:
         raise _error("Workers do not hold a session. Finish your task instead.")

@@ -1,8 +1,8 @@
 """Silicon Stemcell process entrypoint.
 
-Boot the runtime, then run the loop. What a manager does with a turn is in
-``manager/``; what Silicon says to the outside world is in ``interface/``; how
-it thinks is in ``inference/``.
+Boot the runtime, then run the loop. What the Silicon does with a turn is in
+``silicon/``; what it says to the outside world is in ``interface/``; how it
+thinks is in ``inference/``.
 
 Import order matters at the top of this file: the active release must be on
 ``sys.path`` and ``PATH`` must prefer the selected generation's bin directory
@@ -23,7 +23,7 @@ CODE_ROOT = os.path.dirname(os.path.abspath(__file__))
 if CODE_ROOT not in sys.path:
     sys.path.insert(0, CODE_ROOT)
 from helpers.paths import DATA_ROOT
-from helpers.silicon import SILICON
+from helpers.session import SILICON
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 LOCAL_BIN = os.path.join(PROJECT_ROOT, ".local", "bin")
@@ -63,18 +63,18 @@ from interface.work import (
     complete_inactive_calls,
     next_inactive_call_deadline,
 )
-from manager.activity import _contact_has_active_workers
-from manager.dispatcher import (
+from silicon.activity import _contact_has_active_workers
+from silicon.dispatcher import (
     ManagerDispatcher,
     _maintenance_runtime_tick,
     _merge_due_internal_roots,
 )
-from manager.loop import EventLoopSchedule, run_event_loop_tick
-from manager.loop_config import EVENT_LOOP, LOOP_TICK
-from manager.runtime.health import start_runtime_health, stop_runtime_health
-from manager.runtime.maintenance import COORDINATOR as MAINTENANCE
-from manager.runtime.restart import _check_restart_flag, _check_restart_request
-from manager.settings import PROJECT_ROOT
+from silicon.loop import EventLoopSchedule, run_event_loop_tick
+from silicon.loop_config import EVENT_LOOP, LOOP_TICK
+from silicon.runtime.health import start_runtime_health, stop_runtime_health
+from silicon.runtime.maintenance import COORDINATOR as MAINTENANCE
+from silicon.runtime.restart import _check_restart_flag, _check_restart_request
+from silicon.settings import PROJECT_ROOT
 from worker import get_worker_status
 from worker.constants import ACTIVE_FILE, BROWSER_QUEUE_FILE
 

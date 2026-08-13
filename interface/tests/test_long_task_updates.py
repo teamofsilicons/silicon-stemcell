@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import manager.activity as m_manager_activity
-from helpers.silicon import SILICON
+import silicon.activity as m_manager_activity
+from helpers.session import SILICON
 from interface.long_tasks import constants as lt_constants
 from interface.long_tasks import registry as lt_registry
 from interface.long_tasks import store as lt_store
@@ -15,12 +15,12 @@ from interface.long_tasks import util as lt_util
 from interface.work import updates as w_updates
 from interface.work import workers as w_workers
 from interface import outbound as i_outbound
-import manager.tools.work as m_manager_tools_work
-import manager.tools.worker as m_manager_tools_worker
-import manager.dispatcher as m_manager_dispatcher
-import manager.tools.registry as m_manager_tools_registry
-import manager.tracing as m_manager_tracing
-import manager.turn as m_manager_turn
+import silicon.tools.work as m_manager_tools_work
+import silicon.tools.worker as m_manager_tools_worker
+import silicon.dispatcher as m_manager_dispatcher
+import silicon.tools.registry as m_manager_tools_registry
+import silicon.tracing as m_manager_tracing
+import silicon.turn as m_manager_turn
 from interface import long_tasks as long_task_updates
 from interface import work as work_updates
 from interface.work import cache as w_cache
@@ -2898,7 +2898,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
         send_progress.assert_not_called()
 
     def test_dispatcher_retry_preserves_claimed_root_until_runner_ack(self):
-        from manager.runtime.maintenance import MaintenanceCoordinator
+        from silicon.runtime.maintenance import MaintenanceCoordinator
 
         prior = self.lifecycle()
         prior.task_id = "task-prior"
@@ -2986,7 +2986,7 @@ class LongTaskLifecycleTest(unittest.TestCase):
     def test_tick_claims_accuracy_review_and_dispatcher_retries_exact_root(
         self,
     ):
-        from manager.runtime.maintenance import MaintenanceCoordinator
+        from silicon.runtime.maintenance import MaintenanceCoordinator
 
         lifecycle = self.lifecycle()
         self.accept_task(

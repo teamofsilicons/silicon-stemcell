@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from interface.cron.checkback import get_checkback_jobs
 from interface import InterfaceClient, InterfaceError, ensure_contact_for_target
-from helpers import silicon
+from helpers import session as silicon
 from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, update_json, write_json
 
@@ -416,7 +416,7 @@ def _check_glass_crons(now: datetime | None = None, client: InterfaceClient | No
             if contact_id:
                 # Nobody sent this, but it is still somebody's. Naming them is
                 # what puts the work's progress in their chat rather than
-                # nowhere — see helpers.silicon.regarding.
+                # nowhere — see helpers.session.regarding.
                 results.setdefault(contact_id, []).append(
                     silicon.regarding(
                         contact_id,
@@ -437,7 +437,7 @@ def check_crons() -> dict[str, str]:
     """Check local worker checkbacks and due Glass cron records."""
     # Do not claim checkbacks or advance Glass cron watermarks while an update
     # fence is active. They remain due and are picked up after maintenance.
-    from manager.runtime.maintenance import accepting_new_roots
+    from silicon.runtime.maintenance import accepting_new_roots
 
     if not accepting_new_roots():
         return {}

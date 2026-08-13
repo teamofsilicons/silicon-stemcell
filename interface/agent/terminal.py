@@ -74,7 +74,7 @@ def _terminal_reader(ws, session_id: str, provider: str, fd: int, proc: subproce
             pass
         if current:
             try:
-                from manager.runtime.maintenance import MaintenanceCoordinator
+                from silicon.runtime.maintenance import MaintenanceCoordinator
 
                 lease_id = str(maintenance_activity.get("lease_id") or "")
                 if lease_id:
@@ -118,7 +118,7 @@ def terminal_stop(ws=None, reason: str = "stopped") -> bool:
     if isinstance(proc, subprocess.Popen) and reference:
         def release_when_stopped():
             try:
-                from manager.runtime.maintenance import MaintenanceCoordinator
+                from silicon.runtime.maintenance import MaintenanceCoordinator
 
                 coordinator = MaintenanceCoordinator(silicon_dir())
                 lease_id = str(reference.get("lease_id") or "")
@@ -170,7 +170,7 @@ def terminal_start(ws, root: Path, provider: str) -> None:
         )
         return
     try:
-        from manager.runtime.maintenance import MaintenanceCoordinator
+        from silicon.runtime.maintenance import MaintenanceCoordinator
 
         coordinator = MaintenanceCoordinator(root)
         maintenance_activity = coordinator.acquire_activity(

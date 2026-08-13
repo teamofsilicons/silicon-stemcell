@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from helpers.silicon import SILICON
+from helpers.session import SILICON
 from iwantto import actor as actor_module
 from diagnostics import journal as journal_module
 from iwantto import mailbox as mailbox_module
@@ -494,7 +494,7 @@ class AdviceGuardTest(_IsolatedState):
         self.assertIn("You are the advisor", str(advisor_asks.exception))
 
     def test_advice_is_synchronous_and_returned_to_the_caller(self):
-        with mock.patch("manager.advisor.ask", return_value="Delegate it.") as ask:
+        with mock.patch("silicon.advisor.ask", return_value="Delegate it.") as ask:
             result = _run(["get-advice", "should I do this myself?"], self.manager)
 
         ask.assert_called_once_with("carbon-a", "should I do this myself?")

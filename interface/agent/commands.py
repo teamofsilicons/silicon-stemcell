@@ -27,7 +27,7 @@ def run_backup(root: Path, note: str = "glass command") -> tuple[str, str]:
     coordinator = None
     activity = None
     try:
-        from manager.runtime.maintenance import (
+        from silicon.runtime.maintenance import (
             MaintenanceCoordinator,
             heartbeat_scope,
         )

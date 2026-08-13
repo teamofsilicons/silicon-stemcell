@@ -149,7 +149,7 @@ def _run_team_context_tick():
     global _TEAM_CONTEXT_MAINTENANCE_ACTIVITY
 
     try:
-        from manager.runtime.maintenance import heartbeat_scope
+        from silicon.runtime.maintenance import heartbeat_scope
 
         with _TEAM_CONTEXT_LOCK:
             result_epoch = _TEAM_CONTEXT_RESULT_EPOCH
@@ -185,7 +185,7 @@ def _run_team_context_tick():
         _TEAM_CONTEXT_MAINTENANCE_ACTIVITY = None
         if activity is not None:
             try:
-                from manager.runtime.maintenance import release_activity
+                from silicon.runtime.maintenance import release_activity
 
                 release_activity(activity)
             except Exception:
@@ -218,7 +218,7 @@ def check_team_context():
         )
         if not _TEAM_CONTEXT_RUNNING and due:
             try:
-                from manager.runtime.maintenance import acquire_descendant_activity
+                from silicon.runtime.maintenance import acquire_descendant_activity
 
                 activity = acquire_descendant_activity(
                     "team_context_sync",

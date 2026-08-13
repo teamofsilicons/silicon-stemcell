@@ -41,7 +41,7 @@ because `iwantto send <target>` names its room. What needed a new home is a
 frame the Silicon did *not* address to anybody — a typing indicator, a work
 card, a "provider unavailable" notice. Those fan out to whoever the live turn is
 answering, recovered from the sender envelope on each root
-(`helpers/silicon.py`), which is also how the right room is found again after a
+(`helpers/session.py`), which is also how the right room is found again after a
 restart. A root nobody sent — a heartbeat — carries no envelope and so produces
 no frames in anyone's chat.
 
@@ -159,7 +159,7 @@ JSON out of provider text and are gone. What remains is machinery a turn drives:
 - `brain_error` — the runtime's own voice when no provider answered; never written by the session
 - `do_nothing`
 
-See `manager/prompts/MANAGER_TOOLS.md`.
+See `silicon/prompts/MANAGER_TOOLS.md`.
 
 ## Crons
 
@@ -295,7 +295,7 @@ main.py                  # event loop and tool execution
 glass_agent.py           # entry point for the Interface sidecar
 update.py                # entry point for the self-updater
 
-manager/                 # the manager, its advisor, its runtime
+silicon/                 # the one session: its turn, its advisor, its runtime
   advisor/               #   the one advisor, and the heartbeat
   runtime/               #   maintenance windows, runtime health
   prompts/               #   MANAGER.md, MANAGER_TOOLS.md, ADVISOR.md, ...
@@ -323,13 +323,15 @@ iwantto/                 # how a Silicon acts: send, delegate, work, trust,
                          #   says which agent is running a command
 diagnostics/             # logs, traces, and the invocation journal
 helpers/                 # paths, durable state, processes, file watching
-                         #   silicon.py: the one session, and who it is answering
+                         #   session.py: the one session, and who it is
+                         #   answering. Here, not in silicon/, because
+                         #   interface/ needs it and silicon/ needs interface/.
 prompts/                 # shared prompts, DNA.md, the loader
 memory/                  # carbons/, silicons/, core/
 logs/                    # one file per agent, kept forever
 ```
 
-Tests live with the code they cover — `interface/tests/`, `manager/tests/`,
+Tests live with the code they cover — `interface/tests/`, `silicon/tests/`,
 `inference/tests/`, and so on. `pytest` from the repository root runs all of
 them; `pytest interface` runs one package's.
 

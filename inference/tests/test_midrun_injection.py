@@ -14,7 +14,7 @@ import threading
 import unittest
 from unittest import mock
 
-import manager.dispatcher as m_manager_dispatcher
+import silicon.dispatcher as m_manager_dispatcher
 from inference.claude.injector import ClaudeInjector
 from inference.codex.injector import CodexInjector
 from iwantto import injection
