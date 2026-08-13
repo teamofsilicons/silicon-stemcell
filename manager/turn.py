@@ -328,7 +328,7 @@ def run_all_managers(context_by_carbon):
                         manager_outputs[carbon_id] = json.dumps({
                             "tools": [
                                 {
-                                    "tool": "reply",
+                                    "tool": "brain_error",
                                     "message": f"Manager error: {safe_error}",
                                 },
                                 {"tool": "do_nothing"},

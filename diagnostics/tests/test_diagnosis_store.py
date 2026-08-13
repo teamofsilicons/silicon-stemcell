@@ -112,7 +112,7 @@ class ManagerInvocationTest(_IsolatedJournal):
     def test_visible_brain_failure_is_preserved(self):
 
         provider_failure = (
-            '{"tools": [{"tool": "reply", '
+            '{"tools": [{"tool": "brain_error", '
             '"message": "Usage limit reached."}]}'
         )
         with mock.patch.object(
@@ -130,7 +130,7 @@ class ManagerInvocationTest(_IsolatedJournal):
         self.assertTrue(m_manager_tracing._is_terminal_brain_failure(provider_failure))
         self.assertFalse(
             m_manager_tracing._is_terminal_brain_failure(
-                '{"tools": [{"tool": "reply", "message": "Try again."}]}'
+                '{"tools": [{"tool": "brain_error", "message": "Try again."}]}'
             )
         )
 

@@ -17,7 +17,7 @@ class MessagePromptTest(unittest.TestCase):
             mock.patch.object(DNA, "_glass_team_context_section", return_value=""),
             mock.patch.object(DNA, "_glass_trust_policy_section", return_value=""),
         ):
-            prompt = DNA.get_manager_prompt("carbon-1")
+            prompt = DNA.get_manager_prompt()
 
         filename = "NOT_BE_IGNORED.md"
         path = DNA._prompt_path(filename)

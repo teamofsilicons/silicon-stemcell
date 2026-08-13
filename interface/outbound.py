@@ -12,6 +12,7 @@ import threading
 from typing import Any
 
 from helpers import process as background
+from helpers.silicon import SILICON, live_origins, resolve_rooms
 from interface import client as client_module
 from interface.constants import RICH_MEDIA_RE
 from interface.contacts import get_own_profile
@@ -48,6 +49,19 @@ def _contact_room_or_error(contact_id: str) -> tuple[dict[str, Any] | None, str]
     if not contact.get("room_id"):
         return None, f"Error: contact '{contact_id}' has no Interface DM"
     return contact, ""
+
+
+def _fan_out(send, empty_status: str) -> str:
+    """Run ``send`` once per contact the live turn is answering.
+
+    One session serves everyone, so a frame it did not address to anybody
+    belongs to every room in the current turn — usually exactly one.
+    """
+    origins = live_origins()
+    if not origins:
+        return f"Error: {empty_status}"
+    statuses = [f"{origin}: {send(origin)}" for origin in origins]
+    return "; ".join(statuses)
 
 
 def deliver_maintenance_notices(*, limit: int = 20) -> int:
@@ -197,6 +211,20 @@ def reply_contact(
     progress_group_id: str = "",
     client_id: str = "",
 ) -> str:
+    if contact_id == SILICON:
+        # Not a room. Something the runtime generated rather than the session
+        # addressing anybody — a timeout notice, a paused-work note — so it goes
+        # to whoever the live turn is answering.
+        return _fan_out(
+            lambda origin: reply_contact(
+                message,
+                origin,
+                work_continues=work_continues,
+                progress_group_id=progress_group_id,
+                client_id=client_id,
+            ),
+            "Nobody to reply to: this turn is answering no message.",
+        )
     contact, err = _contact_room_or_error(contact_id)
     if err:
         return err
@@ -345,8 +373,12 @@ def send_progress(
     progress_pct: float | None = None,
     summary: str = "",
 ) -> None:
-    contact = get_contact(contact_id)
-    if not contact or not contact.get("room_id"):
+    rooms = {}
+    for origin in resolve_rooms(contact_id):
+        contact = get_contact(origin)
+        if contact and contact.get("room_id"):
+            rooms[origin] = str(contact["room_id"])
+    if not rooms:
         return
     try:
         from interface.work import (
@@ -383,22 +415,26 @@ def send_progress(
             )
             if revision is None:
                 revision = accepted_revision
-        background.submit_best_effort(
-            _deliver_progress,
-            contact_id,
-            str(contact["room_id"]),
-            group,
-            state,
-            message,
-            frame_id,
-            task_id,
-            revision,
-            occurred_at,
-            progress_pct,
-            summary,
-            key=f"progress:{contact_id}:{group}:{frame_id}",
-            coalesce=True,
-        )
+        # The frame's identity and revision are computed once, above, and the
+        # same frame is delivered to every room in this turn — so a fanned-out
+        # activity stays one activity rather than diverging per room.
+        for origin, room_id in rooms.items():
+            background.submit_best_effort(
+                _deliver_progress,
+                contact_id,
+                room_id,
+                group,
+                state,
+                message,
+                frame_id,
+                task_id,
+                revision,
+                occurred_at,
+                progress_pct,
+                summary,
+                key=f"progress:{origin}:{group}:{frame_id}",
+                coalesce=True,
+            )
     except Exception as exc:
         _record_progress_failure(contact_id, group, state, exc)
 

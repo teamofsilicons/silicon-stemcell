@@ -1,38 +1,22 @@
-"""Working out who a target is, and how a message reaches them.
+"""Working out who a target is.
 
-Two problems live here.
-
-**Typing a bare id.** The CLI is written as `iwantto send shubham`, not
-`iwantto send --carbon shubham`. So a bare name has to be resolved to a typed
+One problem lives here now. The CLI is written as `iwantto send shubham`, not
+`iwantto send --carbon shubham`, so a bare name has to be resolved to a typed
 identity: local contacts first, then the Glass trust policy (the only
-authoritative typed directory this Silicon holds), matching on id before
-display name.
+authoritative typed directory this Silicon holds), matching on id before display
+name.
 
-**Choosing the path.** A manager talking to its *own* contact sends directly.
-Anyone else is reached through their manager, because a contact has exactly one
-manager and everything said to them should pass through it — otherwise two
-managers ask the same carbon the same question twice.
+Choosing a path used to live here too. It does not need to: there is one session
+and one hop, so a resolved target *is* the route.
 """
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
 
-from helpers.paths import DATA_ROOT, STATE_DIR
-from helpers.state import update_json
+from helpers.paths import DATA_ROOT
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
-ROUTING_FILE = os.path.join(
-    os.fspath(STATE_DIR), "iwantto_routing.json"
-)
-
-# Attached the first time this Silicon speaks to a contact it has never spoken
-# to, so the freshly started manager understands why it exists.
-FIRST_CONTACT_NOTE = (
-    "you are not yet talking to your carbon, but this is the message that "
-    "{sender} wants to send to your carbon, its advised to pass it forward."
-)
 
 
 class RoutingError(RuntimeError):
@@ -161,52 +145,3 @@ def resolve_target(name: str, *, kind_hint: str = "") -> Target:
         "contacts or my Glass trust policy. If they are real and new, say "
         f"which they are: --carbon {raw} or --silicon {raw}."
     )
-
-
-def _default_routing_state() -> dict:
-    return {"version": 1, "first_contact": {}}
-
-
-def claim_first_contact(fixed_id: str) -> bool:
-    """True exactly once per target: on the first message this Silicon sends it.
-
-    Recorded durably so a retried or repeated send does not re-attach the
-    first-contact note to a manager that has already been told why it exists.
-    """
-    fixed_id = str(fixed_id or "")
-    if not fixed_id:
-        return False
-
-    def update(state):
-        seen = state.setdefault("first_contact", {})
-        if fixed_id in seen:
-            return False
-        seen[fixed_id] = time.time()
-        return True
-
-    try:
-        return bool(update_json(ROUTING_FILE, _default_routing_state(), update))
-    except Exception:
-        return False
-
-
-def is_new_relationship(target: Target) -> bool:
-    """Has this Silicon ever actually exchanged a message with the target?
-
-    A contact row can exist because Glass listed them without a single message
-    ever passing, so presence alone does not count as a relationship.
-    """
-    if not target.known:
-        return True
-    contact = _local_contacts().get(target.fixed_id)
-    if not isinstance(contact, dict):
-        return True
-    return not (
-        contact.get("last_processed_event_id")
-        or contact.get("last_processed_event_ids")
-        or contact.get("last_polled_event_id")
-    )
-
-
-def first_contact_preamble(sender_label: str) -> str:
-    return FIRST_CONTACT_NOTE.format(sender=sender_label)

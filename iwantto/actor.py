@@ -84,7 +84,7 @@ class Actor:
     def describe(self) -> str:
         if self.is_worker:
             label = f"{self.worker_type or 'worker'} worker `{self.actor_id}`"
-            return f"{label} working for the manager of `{self.contact_id}`"
+            return f"{label} working for `{self.contact_id}`"
         return f"{self.kind} of `{self.contact_id}`"
 
 

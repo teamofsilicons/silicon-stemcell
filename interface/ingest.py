@@ -15,6 +15,7 @@ from typing import Any
 import requests
 
 from helpers import process as background
+from helpers import silicon
 from helpers.timefmt import now as _now
 from helpers.timefmt import utc_iso as _utc_iso
 from interface import client as client_module
@@ -212,6 +213,26 @@ def _transcript_for_event(event: dict[str, Any], local_path: str, media_id: str,
     return str(payload or "").strip()
 
 
+def _contact_trust_level(contact_id: str, contact: dict[str, Any]) -> str:
+    """This Silicon's Glass-confirmed trust toward the sender.
+
+    One session hears from everybody, so trust travels on the message rather
+    than being baked into a prompt built for one contact. Anything unresolvable
+    fails closed at ``very_low``.
+    """
+    try:
+        from interface.trust import cached_trust_entry
+
+        entry = cached_trust_entry(
+            str(contact.get("contact_type") or "carbon"),
+            contact_id,
+            root=PROJECT_ROOT,
+        )
+    except Exception:
+        return "very_low"
+    return str((entry or {}).get("level") or "very_low")
+
+
 def _format_event_context(
     contact_id: str,
     contact: dict[str, Any],
@@ -225,16 +246,32 @@ def _format_event_context(
     room_id = _event_room_id(event) or contact.get("room_id", "")
     body = _event_body(event)
     display_time = _event_display_time(event)
-    identity_label = "silicon_id" if contact.get("contact_type") == "silicon" else "carbon_id"
-    display_name = contact.get("display_name") or contact.get("name") or contact_id
 
+    # The envelope leads, and what they actually said comes straight after it.
+    # It is the only thing telling one session who a message is from — see
+    # helpers.silicon.envelope, which the runtime reads back to find the room
+    # this reply and its progress frames belong in.
     lines = [
-        f"Interface event from {display_name} ({identity_label}: {contact_id})",
-        f"contact_type: {contact.get('contact_type', 'carbon')}",
+        silicon.envelope(
+            contact_id,
+            display_name=str(
+                contact.get("display_name") or contact.get("name") or ""
+            ),
+            contact_type=str(contact.get("contact_type") or "carbon"),
+            trust=_contact_trust_level(contact_id, contact),
+        )
+        + (f" {body}" if body else "")
+    ]
+    if transcript:
+        lines.extend(["transcript:", transcript])
+    if local_paths:
+        lines.append("downloaded_files:")
+        lines.extend(f"- {path}" for path in local_paths)
+    lines.extend([
         f"room_id: {room_id}",
         f"event_id: {event_id}",
         f"event_type: {event_type}",
-    ]
+    ])
     if display_time:
         lines.append(f"display_time: {display_time}")
     reply_to = _event_reply_to(event)
@@ -254,13 +291,6 @@ def _format_event_context(
     take_back_request_id = _event_take_back_request_id(event)
     if take_back_request_id:
         lines.append(f"take_back_request_id: {take_back_request_id}")
-    if body:
-        lines.extend(["message:", body])
-    if transcript:
-        lines.extend(["transcript:", transcript])
-    if local_paths:
-        lines.append("downloaded_files:")
-        lines.extend(f"- {path}" for path in local_paths)
     return "\n".join(lines)
 
 
@@ -469,10 +499,13 @@ def process_incoming_event(
         transcript = _transcript_for_event(event, local_path, media_id, client)
 
     body = _event_body(event).strip()
-    if event_type == "m.text" and body == "/new":
-        context = "[COMMAND: NEW_SESSION]"
-    elif event_type == "m.text" and body == "/start":
-        context = "[COMMAND: START]"
+    if event_type == "m.text" and body in {"/new", "/start"}:
+        # A command is runtime control rather than conversation, so it carries
+        # no sender envelope — but somebody typed it and is owed the
+        # acknowledgement, so the marker names them. Nothing else survives it,
+        # which is what keeps a command from costing a turn.
+        name = "NEW_SESSION" if body == "/new" else "START"
+        context = f"[COMMAND: {name} from {contact_id}]"
     else:
         context = _format_event_context(contact_id, contact, event, local_paths=local_paths, transcript=transcript)
     try:

@@ -1,6 +1,6 @@
 # Silicon Stemcell
 
-Silicon is an autonomous manager-worker agent. It talks to contacts through Silicon Interface, enforces Glass-confirmed trust and keeps local memory, delegates real work to workers, uses Glass for crons/backups/control, and uses `silicon-browser` for browser automation.
+Silicon is an autonomous manager-worker agent. One session answers every Carbon and every Silicon that talks to it. It enforces Glass-confirmed trust per message, keeps local memory, delegates real work to workers, uses Glass for crons/backups/control, and uses `silicon-browser` for browser automation.
 
 ## Runtime Shape
 
@@ -19,12 +19,37 @@ The event loop:
 
 The CLI owns WebSocket-before-sync barriers, signed/vector cursors, reconnect
 backfill, inbox spooling, and delivery acknowledgements. Stemcell commits its
-own inbox byte offset only after interpreting a complete durable frame. Manager
-turns are serialized per contact, while unrelated contacts run independently,
-so a long task cannot stop Interface ingestion.
+own inbox byte offset only after interpreting a complete durable frame.
+Ingestion stays live while a turn runs, and a message that arrives mid-turn is
+injected into it rather than queued behind it, so it lands as soon as it is sent
+even during a long task.
 
-Managers are persistent Claude or Codex sessions per fixed contact id. Workers
-are separate Claude/Codex runs for browser, terminal, and writing tasks.
+## One session
+
+There is one persistent Claude or Codex session, `__silicon__`, with one advisor
+and three workers (browser, terminal, writer). Every root — a message, a cron, a
+worker result, a heartbeat — is merged into it, and turns against it are
+serialized.
+
+It used to be one session per contact, plus one per Silicon it could talk to. So
+"ask Silicon B for X" travelled from the Carbon's manager, to the local
+manager-for-B, to B's local manager-for-us, to B: four sessions and four session
+states before any work started. Now it is one hop.
+
+Nothing about the outside view changed. Each contact still has their own chat,
+because `iwantto send <target>` names its room. What needed a new home is a
+frame the Silicon did *not* address to anybody — a typing indicator, a work
+card, a "provider unavailable" notice. Those fan out to whoever the live turn is
+answering, recovered from the sender envelope on each root
+(`helpers/silicon.py`), which is also how the right room is found again after a
+restart. A root nobody sent — a heartbeat — carries no envelope and so produces
+no frames in anyone's chat.
+
+Trust travels on the message rather than in the prompt: every inbound message
+leads with `message from @name (carbon: id) (trust: level)` and a readable local
+timestamp, and all six levels are loaded from `prompts/TRUST.md`. Per-contact
+memory is read on demand from `memory/` rather than pasted in for one contact
+who may not be the one talking next.
 
 ## Contact Model
 
@@ -34,7 +59,7 @@ Stemcell owns:
 - fixed `carbon_id` / `silicon_id` contact keys
 - the local cache and enforcement of effective trust
 - central carbon flag
-- manager sessions
+- the Silicon session and its advisor session
 - memory files
 - cron execution watermarks
 
@@ -120,18 +145,21 @@ Replies use Interface:
 
 ## Manager Tools
 
-Main tools:
-- `reply`
-- `message_manager`
+Talking is not a tool. `iwantto send <target>` is, and it runs the moment the
+session types it — `reply` and `message_manager` were remnants of parsing tool
+JSON out of provider text and are gone. What remains is machinery a turn drives:
+
 - `remote_browser`
 - `take_back`
 - `cron/create`, `cron/update`, `cron/delete`, `cron/list`
 - worker tools
 - `new_session`
 - `restart_silicon_service`
+- `work_update`, `trust/*`, `advertising_memory/update`
+- `brain_error` — the runtime's own voice when no provider answered; never written by the session
 - `do_nothing`
 
-See `prompts/MANAGER_TOOLS.md`.
+See `manager/prompts/MANAGER_TOOLS.md`.
 
 ## Crons
 
@@ -253,6 +281,7 @@ updated first because messaging, backup, and browser traffic use it directly.
 ## Memory
 
 - global: `prompts/MEMORY.md`
+- trust levels: `prompts/TRUST.md`
 - carbon: `memory/carbons/{carbon_id}.md`
 - silicon: `memory/silicons/{silicon_id}.md`
 - core: `memory/core/{detail}.md`
@@ -267,7 +296,7 @@ glass_agent.py           # entry point for the Interface sidecar
 update.py                # entry point for the self-updater
 
 manager/                 # the manager, its advisor, its runtime
-  advisor/               #   advisor + heartbeat
+  advisor/               #   the one advisor, and the heartbeat
   runtime/               #   maintenance windows, runtime health
   prompts/               #   MANAGER.md, MANAGER_TOOLS.md, ADVISOR.md, ...
 
@@ -294,6 +323,7 @@ iwantto/                 # how a Silicon acts: send, delegate, work, trust,
                          #   says which agent is running a command
 diagnostics/             # logs, traces, and the invocation journal
 helpers/                 # paths, durable state, processes, file watching
+                         #   silicon.py: the one session, and who it is answering
 prompts/                 # shared prompts, DNA.md, the loader
 memory/                  # carbons/, silicons/, core/
 logs/                    # one file per agent, kept forever

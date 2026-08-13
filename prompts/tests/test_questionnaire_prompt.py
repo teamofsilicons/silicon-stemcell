@@ -20,7 +20,7 @@ class SetupQuestionsPromptTest(unittest.TestCase):
             mock.patch.object(DNA, "_glass_profile_section", return_value=""),
             mock.patch.object(DNA, "_glass_team_context_section", return_value=""),
         ):
-            return DNA.get_manager_prompt("carbon-1")
+            return DNA.get_manager_prompt()
 
     def test_setup_questions_are_rendered_once_and_come_last(self):
         prompt = self._manager_prompt()

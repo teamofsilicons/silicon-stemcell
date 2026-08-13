@@ -196,7 +196,7 @@ class ActorDescriptionTest(unittest.TestCase):
                 contact_id="carbon-a",
                 worker_type="writer",
             ).describe(),
-            "writer worker `w1` working for the manager of `carbon-a`",
+            "writer worker `w1` working for `carbon-a`",
         )
 
 

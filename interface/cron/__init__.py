@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from interface.cron.checkback import get_checkback_jobs
 from interface import InterfaceClient, InterfaceError, ensure_contact_for_target
+from helpers import silicon
 from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import file_lock, read_json, update_json, write_json
 
@@ -413,7 +414,22 @@ def _check_glass_crons(now: datetime | None = None, client: InterfaceClient | No
                 continue
             contact_id = contact.get("silicon_id") if contact.get("contact_type") == "silicon" else contact.get("carbon_id")
             if contact_id:
-                results.setdefault(contact_id, []).append(context)
+                # Nobody sent this, but it is still somebody's. Naming them is
+                # what puts the work's progress in their chat rather than
+                # nowhere — see helpers.silicon.regarding.
+                results.setdefault(contact_id, []).append(
+                    silicon.regarding(
+                        contact_id,
+                        display_name=str(
+                            contact.get("display_name")
+                            or contact.get("name")
+                            or ""
+                        ),
+                        contact_type=str(contact.get("contact_type") or "carbon"),
+                    )
+                    + "\n"
+                    + context
+                )
     return {contact_id: "\n\n".join(parts) for contact_id, parts in results.items()}
 
 

@@ -1,13 +1,17 @@
-"""Serializing turns per contact while unrelated contacts run independently.
+"""Serializing turns, and landing a message in one that is already running.
 
-A message for a contact already running is coalesced into that contact's next
-turn — or injected into the live one — rather than queued behind it.
+There is one session, so there is one turn at a time. A message that arrives
+while it is running is injected into it rather than queued behind it, which is
+why a message lands as soon as it is sent even mid-task. The keying below is
+still generic — the queue does not care that today every root arrives under
+:data:`helpers.silicon.SILICON`.
 """
 from interface import long_tasks as long_tasks_module
 from manager.turn import run_all_managers
 import os
 import threading
 import time
+from helpers.silicon import also_answering, answering, origins_in
 from manager import (
     INJECTED_PREFIX,
 )
@@ -39,11 +43,12 @@ from diagnostics.logs import runtime_log as log
 
 
 class ManagerDispatcher:
-    """Serialize turns per contact while allowing unrelated contacts to run.
+    """Serialize turns, coalescing anything that arrives while one is running.
 
-    Interface ingestion stays live while managers and workers are busy. A new
-    message for an active contact is coalesced into that contact's next turn;
-    a message for another contact starts independently.
+    Interface ingestion stays live while the session and its workers are busy.
+    A new message reaches the running turn through
+    :mod:`iwantto.injection`, and only falls back to the next turn if that turn
+    has stopped accepting.
     """
 
     def __init__(self, runner=None, *, max_active_contacts=16):
@@ -105,6 +110,9 @@ class ManagerDispatcher:
         )
         if not accepted:
             return False
+        # Whoever sent it is part of what this turn is answering from now on, so
+        # its progress and work frames reach their room too.
+        also_answering(origins_in(admission.context))
         self._injected.setdefault(carbon_id, []).append(admission)
         log(f"[Silicon] Injected a new message into the live run for {carbon_id}.")
         try:
@@ -192,18 +200,17 @@ class ManagerDispatcher:
 
                     for batch in batches:
                         try:
+                            context = "\n\n".join(
+                                item.context for item in batch
+                            )
                             # Internal accuracy reviews stay isolated from
                             # user roots; every admission remains leased until
                             # its own manager turn actually returns.
                             with heartbeat_scope(
                                 [item.activity for item in batch],
                                 coordinator=MAINTENANCE,
-                            ):
-                                self._runner({
-                                    carbon_id: "\n\n".join(
-                                        item.context for item in batch
-                                    )
-                                })
+                            ), answering(origins_in(context)):
+                                self._runner({carbon_id: context})
                             for item in batch:
                                 review_id, _ = long_tasks_module.extract_accuracy_review_root(
                                     item.context

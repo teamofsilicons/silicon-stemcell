@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import manager.activity as m_manager_activity
+from helpers.silicon import SILICON
 from interface.long_tasks import constants as lt_constants
 from interface.long_tasks import registry as lt_registry
 from interface.long_tasks import store as lt_store
@@ -14,7 +15,6 @@ from interface.long_tasks import util as lt_util
 from interface.work import updates as w_updates
 from interface.work import workers as w_workers
 from interface import outbound as i_outbound
-import manager.tools.messaging as m_manager_tools_messaging
 import manager.tools.work as m_manager_tools_work
 import manager.tools.worker as m_manager_tools_worker
 import manager.dispatcher as m_manager_dispatcher
@@ -25,6 +25,7 @@ from interface import long_tasks as long_task_updates
 from interface import work as work_updates
 from interface.work import cache as w_cache
 from interface.work import constants as w_constants
+
 
 
 DONE = "Done. work_update accepted"
@@ -1351,9 +1352,10 @@ class LongTaskLifecycleTest(unittest.TestCase):
             ) as reply,
             mock.patch.object(i_outbound, "send_progress"),
         ):
-            m_manager_tools_registry._execute_single_tool(
-                {"tool": "reply", "message": "All done."},
-                "carbon-a",
+            lifecycle.deliver_final_reply(
+                "All done.",
+                has_active_workers=False,
+                reply_sender=i_outbound.reply_contact,
             )
 
         reply.assert_not_called()
@@ -1459,45 +1461,6 @@ class LongTaskLifecycleTest(unittest.TestCase):
         saved = lt_store._state_entry("carbon-a")
         self.assertTrue(saved["deferred"])
         self.assertEqual(saved["defer_pause_reason"], "rate_limited")
-
-    def test_final_card_is_attempted_before_the_normal_reply(self):
-        lifecycle = mock.Mock()
-        order = []
-        lifecycle.deliver_final_reply.side_effect = (
-            lambda *_args, **_kwargs: order.extend(["terminal", "reply"])
-            or "Message sent"
-        )
-        with (
-            mock.patch.object(
-                lt_registry,
-                "current_long_task",
-                return_value=lifecycle,
-            ),
-            mock.patch.object(
-                m_manager_activity,
-                "_contact_has_active_workers",
-                return_value=False,
-            ),
-            mock.patch.object(
-                i_outbound,
-                "reply_contact",
-                side_effect=lambda *_args, **_kwargs: (
-                    order.append("reply") or "Message sent"
-                ),
-            ) as reply,
-            mock.patch.object(i_outbound, "send_progress"),
-        ):
-            m_manager_tools_registry._execute_single_tool(
-                {"tool": "reply", "message": "All done."},
-                "carbon-a",
-            )
-
-        self.assertEqual(order, ["terminal", "reply"])
-        lifecycle.deliver_final_reply.assert_called_once_with(
-            "All done.",
-            has_active_workers=False,
-            reply_sender=reply,
-        )
 
     def test_worker_spawn_ensures_durable_task_before_start(self):
         lifecycle = mock.Mock()
@@ -1697,56 +1660,61 @@ class LongTaskLifecycleTest(unittest.TestCase):
         self.assertEqual(intent["state"], "completed")
         self.assertEqual(intent["state_description"], "Build delivered")
 
-    def test_final_reply_is_executed_after_worker_tools_in_same_batch(self):
-        order = []
+    def test_a_pending_worker_holds_the_final_message_back(self):
+        """The tool executor used to sort a final reply last to get this.
 
-        def execute(spec, _contact_id):
-            order.append(spec["tool"])
-            return "Done"
+        It no longer sorts anything, because the guarantee was never really
+        ordering: the lifecycle refuses to release the message while a worker it
+        started is still unpublished, whatever order things were asked for in.
+        """
+        lifecycle = self.lifecycle()
+        self.accept_task(lifecycle)
+        lifecycle.journal_worker_start("builder", "terminal", "Build it.")
 
-        with mock.patch.object(
-            m_manager_tools_registry,
-            "execute_single_tool",
-            side_effect=execute,
+        with (
+            mock.patch.object(
+                w_updates, "execute_work_update", return_value=DONE
+            ),
+            mock.patch.object(
+                w_workers, "record_worker_started", return_value={}
+            ),
+            mock.patch.object(
+                i_outbound, "reply_contact", return_value="Message sent"
+            ) as reply,
         ):
-            m_manager_tools_registry.execute_all_tools(
-                [
-                    (
-                        "carbon-a",
-                        {"tool": "reply", "message": "Started."},
-                    ),
-                    (
-                        "carbon-a",
+            status = lifecycle.deliver_final_reply(
+                "All done.",
+                has_active_workers=False,
+                reply_sender=i_outbound.reply_contact,
+            )
+
+        reply.assert_not_called()
+        self.assertIn("queued", status)
+        self.assertTrue(lifecycle.pending_reply)
+
+    def test_nothing_is_executed_mid_stream(self):
+        """Mid-stream execution existed to get a reply out before the turn ended.
+
+        Talking is `iwantto send` now, which already runs the moment it is
+        typed — so there is nothing left worth intercepting, and an accuracy
+        review cannot leak a checkpoint into anybody's chat this way.
+        """
+        for allowed in (True, False):
+            with self.subTest(allow_intermediate_replies=allowed):
+                handler = m_manager_tracing._make_mid_stream_handler(
+                    SILICON,
+                    allow_intermediate_replies=allowed,
+                )
+                self.assertEqual(
+                    handler([
                         {
-                            "tool": "worker/terminal",
-                            "type": "new",
-                            "worker-id": "builder",
-                            "task": "Build it.",
-                        },
-                    ),
-                ]
-            )
-
-        self.assertEqual(order, ["worker/terminal", "reply"])
-
-    def test_accuracy_review_suppresses_intermediate_reply_tools(self):
-        handler = m_manager_tracing._make_mid_stream_handler(
-            "carbon-a",
-            allow_intermediate_replies=False,
-        )
-        with mock.patch.object(m_manager_tracing, "execute_single_tool") as execute:
-            handled = handler(
-                [
-                    {
-                        "tool": "reply",
-                        "message": "Internal checkpoint.",
-                        "work_continues": True,
-                    }
-                ]
-            )
-
-        self.assertEqual(handled, [])
-        execute.assert_not_called()
+                            "tool": "reply",
+                            "message": "Internal checkpoint.",
+                            "work_continues": True,
+                        }
+                    ]),
+                    [],
+                )
 
     def test_deferred_accuracy_review_remains_durable_without_failing_turn(self):
         review_id = "review-deferred"
@@ -1870,7 +1838,6 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 "execute_work_update",
                 return_value=DONE,
             ) as execute_work_update,
-            mock.patch.object(m_manager_tools_messaging, "send_manager_message") as message_manager,
             mock.patch.object(m_manager_tools_worker, "start_worker") as start_worker,
             mock.patch.object(
                 m_manager_activity,
@@ -1884,7 +1851,6 @@ class LongTaskLifecycleTest(unittest.TestCase):
         handle_commands.assert_not_called()
         send_progress.assert_not_called()
         reply.assert_not_called()
-        message_manager.assert_not_called()
         start_worker.assert_not_called()
         execute_work_update.assert_called_once()
         self.assertEqual(
@@ -1953,7 +1919,6 @@ class LongTaskLifecycleTest(unittest.TestCase):
                 return_value=(forbidden, None, []),
             ),
             mock.patch.object(i_outbound, "reply_contact") as reply,
-            mock.patch.object(m_manager_tools_messaging, "send_manager_message") as message_manager,
             mock.patch.object(m_manager_tools_worker, "start_worker") as start_worker,
             mock.patch.object(
                 m_manager_activity,
@@ -1969,7 +1934,6 @@ class LongTaskLifecycleTest(unittest.TestCase):
 
         handle_commands.assert_not_called()
         reply.assert_not_called()
-        message_manager.assert_not_called()
         start_worker.assert_not_called()
         self.assertTrue(lifecycle.accuracy_schedule["pending_review"])
 

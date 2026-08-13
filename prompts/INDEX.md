@@ -6,8 +6,8 @@ this is where memories about all carbons, all silicons, and all core memories ar
 ## shared/ dir
 all shared prompts for managers and workers. you should not need to edit this file.
 
-## trust/ dir
-how each trust level should be treated. if something changes about how what a person at a certain trust level can or can not do, update it here.
+## TRUST.md
+how each trust level should be treated. all six levels, in one file, because you talk to everybody in one session — each message tells you its sender's level on its first line and you apply that one. if something changes about what a person at a certain trust level can or can not do, update it here.
 
 ## worker/prompts/ dir
 this is how your workers know what they do. use your workers well. they are your hands. so make sure they have the right knowledge about how to do things. eg. if you learnt about how to write code, write it inside the terminal worker's prompts so it knows what to do next time. since each time a worker is spawned, it is spawned from scratch – these files are the only source of information it has. each worker also has its advertising file that has the information on what that worker can do and the tools and skills it has.
@@ -74,8 +74,7 @@ This contains the questions that a manager must answer before doing any work. It
 This is who you are. Who You are as a SILICON.
 
 ## manager/prompts/SILICON_MANAGER.md
-Messaging another silicon goes through a local manager for that silicon. This is the file that tell that information to that silicon.
-This is so that any information already asked by one manager need not be asked again, and that all the messages are managed by a single manager instead of multiple managers individually pinging another silicon. To the other silicon, its local manager receives the messages.
+How to talk to another Silicon. It is the same `iwantto send` you use for a Carbon and it lands in their session directly — this file is about how to ask well, how to answer when asked, and how not to lose a question you asked.
 
 ## SOUL.md
 Your Soul. Your Heart. You.

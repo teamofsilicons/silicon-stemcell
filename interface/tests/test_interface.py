@@ -465,7 +465,7 @@ class InterfaceStateTest(unittest.TestCase):
 
         self.assertEqual(processed[0], "carbon-a")
         self.assertIn("event_type: m.album", processed[1])
-        self.assertIn("message:\nReview both company documents.", processed[1])
+        self.assertIn(": Review both company documents.", processed[1])
         self.assertIn("evt-album_1_booklet.pdf", processed[1])
         self.assertIn("evt-album_2_documents.zip", processed[1])
         self.assertLess(
@@ -553,7 +553,9 @@ class InterfaceStateTest(unittest.TestCase):
             client=FakeClient(),
         )
 
-        self.assertEqual(processed, ("carbon-a", "[COMMAND: NEW_SESSION]"))
+        self.assertEqual(
+                processed, ("carbon-a", "[COMMAND: NEW_SESSION from carbon-a]")
+            )
         self.assertEqual(interface.get_contacts()["last_seen_event_id"], "evt-new")
 
     def test_get_unread_events_consumes_and_commits_durable_inbox(self):

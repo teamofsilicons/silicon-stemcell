@@ -10,7 +10,9 @@ iwantto cli knows who is triggering it. so as a manager, or a worker you can jus
 `iwantto send {carbonid/siliconid} --voice "[angry] where the [emphasis] fuck are you?"`
 `iwantto send {carbonid/siliconid} --voice "[slow] There are 3 types of people [short pause] and you my mister are the one who makes all other look like we are not even trying" --voice-direction "Speak like Gandlaf is giving a speech. Slow and Deep." --voice-gender "{male/female}"`
 
-sends a text, file or voice (tts) message to the carbon or silicon you want. it automatically figures out how to route your messages via maangers or to directly send it. if you send it your carbonid or siliconid, it will directly send. for other silicons or carbons, it will route it to their managers. even works for contacts that have not yet been in contact with the initiating silicon. try not to send long msg to carbons, but rather send multiple messages.
+sends a text, file or voice (tts) message to the carbon or silicon you want. the id you type is the chat it lands in — there are no hops and nobody in between. works for contacts you have never spoken to before too. try not to send long msg to carbons, but rather send multiple messages.
+
+`iwantto send {carbonid/siliconid} --text "..." --final` use this when the message *answers* the work you have open. it settles the durable task card first and closes the work with it. without `--final` the work stays open, which is what you want for progress and back-and-forth.
 
 For voice, real the full guide at 'prompts/VOICE_DIRECTION.md'
 
@@ -77,7 +79,7 @@ there is no way to delete a task, or subtask. if you want to delete, just mark i
 
 `iwantto work --active` lists all currently active works by you, or other managers.
 `iwantto work --last 10` lists last 10 completed works by you or other managers.
-`iwantto work --last 10 --by {carbonid/siliconid}` lists last 10 completed works by the manager of a specific carbon or silicon.
+`iwantto work --last 10` lists your last 10 completed works.
 
 
 

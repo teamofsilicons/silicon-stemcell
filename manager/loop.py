@@ -5,7 +5,9 @@ interval on each handler is its recovery ceiling, not its normal cadence.
 """
 from interface import outbound
 import hashlib
+import re
 import time
+from helpers.silicon import SILICON
 from manager.loop_config import EVENT_LOOP, LOOP_TICK
 from manager import (
     new_session,
@@ -18,19 +20,29 @@ from manager.settings import (
 from diagnostics.logs import runtime_log as log
 
 
+COMMAND_RE = re.compile(r"\[COMMAND: (NEW_SESSION|START) from ([^\]]+)\]")
+
+
 def handle_commands(context_by_carbon):
-    """Handle /new and /start commands per carbon. Returns cleaned context dict."""
+    """Answer /new and /start, and return what is left to run a turn on.
+
+    A command names the contact who typed it rather than arriving with a sender
+    envelope, because it is runtime control and its acknowledgement is the whole
+    of it — there is nothing here for the session to think about.
+    """
     cleaned = {}
     for carbon_id, context in context_by_carbon.items():
-        if "[COMMAND: NEW_SESSION]" in context:
-            new_id = new_session(carbon_id)
-            outbound.reply_contact("New session started. Fresh context loaded.", carbon_id)
-            log(f"[Silicon] New session for {carbon_id}: {new_id}")
-            context = context.replace("[COMMAND: NEW_SESSION]", "").strip()
-
-        if "[COMMAND: START]" in context:
-            outbound.reply_contact("Silicon is online and ready.", carbon_id)
-            context = context.replace("[COMMAND: START]", "").strip()
+        for match in COMMAND_RE.finditer(context):
+            name, sender = match.group(1), match.group(2)
+            if name == "NEW_SESSION":
+                new_id = new_session(carbon_id)
+                log(f"[Silicon] New session at {sender}'s request: {new_id}")
+                outbound.reply_contact(
+                    "New session started. Fresh context loaded.", sender
+                )
+            else:
+                outbound.reply_contact("Silicon is online and ready.", sender)
+        context = COMMAND_RE.sub("", context).strip()
 
         if context:
             cleaned[carbon_id] = context
@@ -43,8 +55,15 @@ def handle_commands(context_by_carbon):
 
 
 def run_event_loop_tick(handler_names=None):
-    """Run selected event handlers. Returns {carbon_id: context_string}."""
-    context_by_carbon = {}
+    """Run selected event handlers. Returns ``{SILICON: context_string}``.
+
+    Handlers still answer per contact, because a message, a cron and a worker
+    result each belong to somebody. There is only one session to hand them to,
+    so they are merged into one root here. Who each part came from travels in
+    the text — see :func:`helpers.silicon.envelope` — which is what lets a
+    reply and a progress frame find their room again after a restart.
+    """
+    parts = []
     selected = None if handler_names is None else set(handler_names)
 
     for handler in EVENT_LOOP:
@@ -56,24 +75,14 @@ def run_event_loop_tick(handler_names=None):
                 continue
 
             if isinstance(result, dict):
-                # Multi-user handler returns {carbon_id: context_string}
-                for carbon_id, ctx in result.items():
-                    if ctx:
-                        if carbon_id not in context_by_carbon:
-                            context_by_carbon[carbon_id] = []
-                        context_by_carbon[carbon_id].append(ctx)
+                parts.extend(ctx for ctx in result.values() if ctx)
             elif isinstance(result, str) and result:
                 log(f"[Silicon] Warning: handler '{handler['name']}' returned string instead of dict")
 
         except Exception as e:
             log(f"[Silicon] Error in {handler['name']}: {e}")
 
-    # Merge context lists into strings
-    merged = {}
-    for carbon_id, parts in context_by_carbon.items():
-        merged[carbon_id] = "\n\n".join(parts)
-
-    return merged
+    return {SILICON: "\n\n".join(parts)} if parts else {}
 
 
 class EventLoopSchedule:

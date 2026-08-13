@@ -1,20 +1,20 @@
-"""The Advisor: one per manager, whose only job is to help it think.
+"""The Advisor, whose only job is to help the Silicon think.
 
-    carbon
-      |
-    manager — advisor
-      |
-    3 workers
+    carbons and silicons
+              |
+          silicon — advisor
+              |
+          3 workers
 
-An advisor does no work and talks to nobody. It reads, it thinks, it tells the
-manager what it is drifting away from. It runs on the same provider as the
-manager and holds its own conversation, so advice accumulates across a working
-session instead of starting cold every time.
+One advisor, for the one session. It does no work and talks to nobody. It
+reads, it thinks, it says what the Silicon is drifting away from. It runs on the
+same provider and holds its own conversation, so advice accumulates across a
+working session instead of starting cold every time.
 
-Two things reach it. `iwantto get-advice "..."` is **synchronous** — the manager
+Two things reach it. `iwantto get-advice "..."` is **synchronous** — the caller
 blocks until the advice comes back, because advice you receive after you have
 already acted is not advice. And a five-hourly heartbeat, whose output is
-delivered to the manager the same way a worker's result is.
+delivered the same way a worker's result is.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 
 from helpers.paths import DATA_ROOT, STATE_DIR
+from helpers.silicon import SILICON
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
@@ -37,7 +38,7 @@ SESSION_GAP_SECONDS = 2 * 60 * 60
 SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
 HEARTBEAT_INTERVAL_SECONDS = 5 * 60 * 60
 
-HEARTBEAT_PROMPT = "[HEARTBEAT] Is your manager doing a good job, or should they change something?"
+HEARTBEAT_PROMPT = "[HEARTBEAT] Is the Silicon you advise doing a good job, or should it change something?"
 
 # The files that make an advisor, in the order it reads them.
 ADVISOR_PROMPT_FILES = ("INDEX.md", "IWANTTO_CLI_REFERENCE.md", "ADVISOR.md")
@@ -55,8 +56,8 @@ def _default_state() -> dict:
     return {"version": 1, "advisors": {}}
 
 
-def session_key(contact_id: str) -> str:
-    """The advisor's own conversation, kept apart from the manager's."""
+def session_key(contact_id: str = SILICON) -> str:
+    """The advisor's own conversation, kept apart from the session it advises."""
     return f"advisor__{contact_id}"
 
 
@@ -66,25 +67,26 @@ def _state_for(contact_id: str) -> dict:
     return dict(entry) if isinstance(entry, dict) else {}
 
 
-def build_prompt(contact_id: str) -> str:
+def build_prompt(contact_id: str = SILICON) -> str:
     """INDEX.md, then IWANTTO_CLI_REFERENCE.md, then ADVISOR.md."""
     from prompts.loader import _read_prompt
 
     parts = [_read_prompt(name) for name in ADVISOR_PROMPT_FILES]
     parts.append(
         "## Who you are advising\n"
-        f"You are the advisor to the manager of `{contact_id}`. Your advice "
-        "goes to that manager and nobody else. You do not message carbons, you "
-        "do not do the work, and you do not act on the manager's behalf. Use "
-        "`iwantto` only to read the context you need in order to advise well."
+        "You are the advisor to this Silicon — the one session that answers "
+        "every Carbon and every Silicon that talks to it. Your advice goes to "
+        "it and nobody else. You do not message carbons, you do not do the "
+        "work, and you do not act on its behalf. Use `iwantto` only to read the "
+        "context you need in order to advise well."
     )
     return "\n\n".join(part for part in parts if part)
 
 
 def _should_rotate(entry: dict, now: float) -> str:
-    """Why this advisor needs a fresh session, or an empty string if it does not."""
+    """Why the advisor needs a fresh session, or an empty string if it does not."""
     if not entry:
-        return "first advice for this manager"
+        return "first advice given"
     last = float(entry.get("last_invoked_at") or 0.0)
     started = float(entry.get("session_started_at") or 0.0)
     if last and now - last > SESSION_GAP_SECONDS:
@@ -121,15 +123,13 @@ def _record_invocation(contact_id: str, now: float, *, heartbeat: bool) -> None:
     update_json(ADVISOR_STATE_FILE, _default_state(), update)
 
 
-def ask(contact_id: str, question: str, *, heartbeat: bool = False) -> str:
+def ask(contact_id: str = SILICON, question: str = "", *, heartbeat: bool = False) -> str:
     """Run the advisor and return its advice. Blocks until it answers."""
     from iwantto.actor import ADVISOR, issue_run_env, revoke_actor
     from manager import run_agent
 
-    contact_id = str(contact_id or "")
+    contact_id = str(contact_id or SILICON)
     question = str(question or "").strip()
-    if not contact_id:
-        return "Error: an advisor belongs to a manager; no contact was given."
     if not question:
         return "Error: ask the advisor something."
 
@@ -175,51 +175,38 @@ def ask(contact_id: str, question: str, *, heartbeat: bool = False) -> str:
     return advice
 
 
-def contacts_due_for_heartbeat(now: float | None = None) -> list:
-    """Managers whose advisor has not been heard from in five hours."""
-    from interface import get_contacts
-
+def heartbeat_due(now: float | None = None) -> bool:
+    """Has the advisor gone five hours without being heard from?"""
     now = _now() if now is None else now
     state = read_json(ADVISOR_STATE_FILE, _default_state())
-    advisors = state.get("advisors") or {}
-    due = []
-    for contact_id, contact in (get_contacts() or {}).items():
-        if not isinstance(contact, dict):
-            continue
-        entry = advisors.get(contact_id)
-        entry = entry if isinstance(entry, dict) else {}
-        last = float(
-            entry.get("last_heartbeat_at") or entry.get("last_invoked_at") or 0.0
-        )
-        if not last:
-            # An advisor that has never run waits one full interval before its
-            # first heartbeat, so a newly created contact is not immediately
-            # advised about work that has not started.
-            def seed(state_doc, key=contact_id, stamp=now):
-                state_doc.setdefault("advisors", {}).setdefault(key, {})[
-                    "last_heartbeat_at"
-                ] = stamp
+    entry = (state.get("advisors") or {}).get(SILICON)
+    entry = entry if isinstance(entry, dict) else {}
+    last = float(
+        entry.get("last_heartbeat_at") or entry.get("last_invoked_at") or 0.0
+    )
+    if not last:
+        # An advisor that has never run waits one full interval before its
+        # first heartbeat, so a fresh instance is not immediately advised
+        # about work that has not started.
+        def seed(state_doc):
+            state_doc.setdefault("advisors", {}).setdefault(SILICON, {})[
+                "last_heartbeat_at"
+            ] = now
 
-            update_json(ADVISOR_STATE_FILE, _default_state(), seed)
-            continue
-        if now - last >= HEARTBEAT_INTERVAL_SECONDS:
-            due.append(contact_id)
-    return due
+        update_json(ADVISOR_STATE_FILE, _default_state(), seed)
+        return False
+    return now - last >= HEARTBEAT_INTERVAL_SECONDS
 
 
 def run_heartbeats() -> dict:
-    """Advise every manager whose advisor is due. Returns {contact_id: context}.
+    """Advise the Silicon if its advisor is due. Returns ``{SILICON: context}``.
 
-    The advice is handed back as manager context, the same shape a worker
-    result takes, so the manager reads it as a message from its advisor.
+    The advice is handed back as session context, the same shape a worker
+    result takes, so it reads as a message from the advisor.
     """
-    contexts = {}
-    for contact_id in contacts_due_for_heartbeat():
-        advice = ask(contact_id, HEARTBEAT_PROMPT, heartbeat=True)
-        if not advice or advice.startswith("Error"):
-            continue
-        contexts[contact_id] = (
-            "[Message from your Advisor]\n"
-            f"{advice}"
-        )
-    return contexts
+    if not heartbeat_due():
+        return {}
+    advice = ask(SILICON, HEARTBEAT_PROMPT, heartbeat=True)
+    if not advice or advice.startswith("Error"):
+        return {}
+    return {SILICON: f"[Message from your Advisor]\n{advice}"}

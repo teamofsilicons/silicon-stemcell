@@ -182,7 +182,7 @@ def provider_failed(output, rate_limit) -> bool:
             if not isinstance(tool, dict):
                 continue
             message = str(tool.get("message") or "")
-            if tool.get("tool") == "reply" and (
+            if tool.get("tool") == "brain_error" and (
                 "Manager error:" in message
                 or message in _not_authenticated_messages()
             ):

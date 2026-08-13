@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from helpers.silicon import SILICON
 from iwantto import actor as actor_module
 from diagnostics import journal as journal_module
 from iwantto import mailbox as mailbox_module
@@ -44,7 +45,6 @@ class _IsolatedState(unittest.TestCase):
             (journal_module, "DIAGNOSIS_DIR", "diagnosis"),
             (mailbox_module, "MAILBOX_FILE", "mailbox.json"),
             (message_log_module, "MESSAGES_DIR", "messages"),
-            (routing_module, "ROUTING_FILE", "routing.json"),
         ):
             patcher = mock.patch.object(
                 module, attribute, os.path.join(root, name)
@@ -127,141 +127,120 @@ class SendRoutingTest(_IsolatedState):
                 "display_name": "Bee",
                 "last_processed_event_id": "event-1",
             },
+            "silicon-x": {"contact_type": "silicon", "display_name": "Ex"},
         }
 
-    def test_a_manager_reaches_its_own_contact_directly(self):
-        with (
-            mock.patch.object(routing_module, "_local_contacts", return_value=self._contacts()),
-            mock.patch("interface.reply_contact", return_value="Message sent") as reply,
-            mock.patch("interface.messages.send_manager_message") as via_manager,
-        ):
-            result = _run(["send", "carbon-a", "--text", "hey"], self.manager)
+    def test_everyone_is_reached_in_one_hop(self):
+        """The id you type is the chat it lands in.
 
-        reply.assert_called_once()
-        self.assertEqual(reply.call_args.args[0], "hey")
-        self.assertEqual(reply.call_args.args[1], "carbon-a")
-        via_manager.assert_not_called()
-        self.assertIn("Sent to", result)
-
-    def test_anyone_else_is_reached_through_their_manager(self):
-        with (
-            mock.patch.object(routing_module, "_local_contacts", return_value=self._contacts()),
-            mock.patch("interface.ensure_contact_for_target", return_value={}),
-            mock.patch("interface.reply_contact") as reply,
-            mock.patch(
-                "interface.messages.send_manager_message", return_value="Done. queued"
-            ) as via_manager,
-        ):
-            result = _run(["send", "carbon-b", "--text", "can you help?"], self.manager)
-
-        reply.assert_not_called()
-        via_manager.assert_called_once_with(
-            "carbon-a",
-            "carbon-b",
-            "can you help?",
-            target_type="carbon",
-            # A manager speaks as itself; only workers need an explicit label.
-            sender_label="",
-        )
-        self.assertIn("manager", result)
-
-    def test_a_first_message_tells_a_new_manager_why_it_exists(self):
-        contacts = {"carbon-a": {"contact_type": "carbon"}}
-        directory = [{"kind": "carbon", "id": "carbon-new", "name": "New"}]
-        with (
-            mock.patch.object(routing_module, "_local_contacts", return_value=contacts),
-            mock.patch.object(routing_module, "_trust_directory", return_value=directory),
-            mock.patch("interface.ensure_contact_for_target", return_value={}),
-            mock.patch.object(messaging, "_own_label", return_value="my-silicon"),
-            mock.patch(
-                "interface.messages.send_manager_message", return_value="Done. queued"
-            ) as via_manager,
-        ):
-            _run(["send", "carbon-new", "--text", "hello"], self.manager)
-            first_body = via_manager.call_args.args[2]
-            # A second send must not repeat the explanation.
-            _run(["send", "carbon-new", "--text", "again"], self.manager)
-            second_body = via_manager.call_args.args[2]
-
-        self.assertIn("you are not yet talking to your carbon", first_body)
-        self.assertIn("my-silicon", first_body)
-        self.assertIn("its advised to pass it forward", first_body)
-        self.assertIn("hello", first_body)
-        self.assertEqual(second_body, "again")
-
-    def test_direct_delivery_belongs_to_the_managing_actor_alone(self):
-        """`send` goes direct only when run by that contact's own manager.
-
-        Every other case routes through the target's manager, so a contact only
-        ever hears one voice. A worker shares its manager's contact id, so
-        identity has to be checked as well as the target — otherwise a worker
-        could message the Carbon behind its own manager's back.
+        There used to be a manager per contact, so anyone but your own carbon was
+        reached by handing the message to *their* manager. That is the hop this
+        change exists to delete: one session, one send.
         """
-        contacts = {
-            "carbon-a": {"contact_type": "carbon", "last_processed_event_id": "e1"},
-            "carbon-b": {"contact_type": "carbon", "last_processed_event_id": "e1"},
-            "silicon-x": {"contact_type": "silicon", "last_processed_event_id": "e1"},
-        }
-        advisor = Actor(kind="advisor", actor_id="carbon-a", contact_id="carbon-a")
-        silicon_manager = Actor(
-            kind=MANAGER, actor_id="silicon-x", contact_id="silicon-x"
-        )
-        expected = {
-            # (actor, target): goes direct?
-            (self.manager, "carbon-a"): True,
-            (self.manager, "carbon-b"): False,
-            (self.manager, "silicon-x"): False,
-            # An advisor shares the manager's "I", so it shares this too.
-            (advisor, "carbon-a"): True,
-            (advisor, "carbon-b"): False,
-            # A worker is never the manager, not even of its own contact.
-            (self.worker, "carbon-a"): False,
-            (self.worker, "carbon-b"): False,
-            (self.worker, "silicon-x"): False,
-            # A silicon contact's manager talks to that silicon directly.
-            (silicon_manager, "silicon-x"): True,
-            (silicon_manager, "carbon-a"): False,
-        }
-
-        for (actor, target), should_be_direct in expected.items():
-            with self.subTest(actor=actor.kind, id=actor.actor_id, target=target):
+        for target in ("carbon-a", "carbon-b", "silicon-x"):
+            with self.subTest(target=target):
                 with (
                     mock.patch.object(
-                        routing_module, "_local_contacts", return_value=contacts
+                        routing_module, "_local_contacts", return_value=self._contacts()
                     ),
-                    mock.patch(
-                        "interface.ensure_contact_for_target", return_value={}
-                    ),
+                    mock.patch("interface.ensure_contact_for_target", return_value={}),
                     mock.patch(
                         "interface.reply_contact", return_value="Message sent"
-                    ) as direct,
+                    ) as reply,
                     mock.patch(
-                        "interface.messages.send_manager_message",
-                        return_value="Done. queued",
+                        "interface.messages.send_manager_message"
                     ) as via_manager,
                 ):
-                    _run(["send", target, "--text", "hi"], actor)
+                    result = _run(["send", target, "--text", "hey"], self.manager)
 
-                self.assertEqual(direct.called, should_be_direct)
-                self.assertEqual(via_manager.called, not should_be_direct)
+                self.assertEqual(reply.call_args.args, ("hey", target))
+                via_manager.assert_not_called()
+                self.assertIn("Sent to", result)
 
-    def test_a_routed_worker_message_names_the_worker_not_a_peer_manager(self):
-        contacts = {
-            "carbon-a": {"contact_type": "carbon", "last_processed_event_id": "e1"},
-            "carbon-b": {"contact_type": "carbon", "last_processed_event_id": "e1"},
-        }
+    def test_an_advisor_shares_the_sessions_voice(self):
+        advisor = Actor(kind="advisor", actor_id=SILICON, contact_id=SILICON)
         with (
-            mock.patch.object(routing_module, "_local_contacts", return_value=contacts),
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts()
+            ),
             mock.patch("interface.ensure_contact_for_target", return_value={}),
             mock.patch(
-                "interface.messages.send_manager_message", return_value="Done. queued"
-            ) as via_manager,
+                "interface.reply_contact", return_value="Message sent"
+            ) as reply,
+        ):
+            _run(["send", "carbon-b", "--text", "hi"], advisor)
+
+        self.assertEqual(reply.call_args.args, ("hi", "carbon-b"))
+
+    def test_a_worker_cannot_talk_to_a_contact_behind_the_sessions_back(self):
+        with (
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts()
+            ),
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.reply_contact") as reply,
+            mock.patch("interface.messages.send_manager_message") as via_manager,
+            self.assertRaises(CommandError) as refused,
         ):
             _run(["send", "carbon-b", "--text", "a question"], self.worker)
 
-        label = via_manager.call_args.kwargs["sender_label"]
-        self.assertIn("browser worker `researcher`", label)
-        self.assertIn("carbon-a", label)
+        reply.assert_not_called()
+        via_manager.assert_not_called()
+        self.assertIn("Send it to `manager`", str(refused.exception))
+
+    def test_an_unreachable_target_is_refused_before_anything_is_sent(self):
+        with (
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts()
+            ),
+            mock.patch(
+                "interface.ensure_contact_for_target",
+                side_effect=Exception("api 404: no such contact"),
+            ),
+            mock.patch("interface.reply_contact") as reply,
+            self.assertRaises(CommandError) as refused,
+        ):
+            _run(["send", "carbon-b", "--text", "hi"], self.manager)
+
+        reply.assert_not_called()
+        self.assertIn("Could not reach", str(refused.exception))
+
+    def test_final_settles_the_open_work_before_the_message_goes_out(self):
+        """`--final` is what the deleted `reply` tool used to do implicitly.
+
+        The lifecycle owns the ordering — the durable card settles first — but
+        the target comes from the command, not from the lifecycle's owner.
+        """
+        lifecycle = mock.Mock()
+        lifecycle.deliver_final_reply.return_value = "Message sent"
+        with (
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts()
+            ),
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
+            mock.patch(
+                "interface.reply_contact", return_value="Message sent"
+            ) as reply,
+            mock.patch.object(
+                messaging, "_closable_work", return_value=lifecycle
+            ),
+            mock.patch(
+                "manager.activity._contact_has_active_workers", return_value=False
+            ),
+        ):
+            result = _run(
+                ["send", "carbon-b", "--text", "all done", "--final"], self.manager
+            )
+
+        lifecycle.deliver_final_reply.assert_called_once()
+        self.assertEqual(
+            lifecycle.deliver_final_reply.call_args.args[0], "all done"
+        )
+        # The lifecycle's own contact id is ignored; carbon-b is who was named.
+        sender = lifecycle.deliver_final_reply.call_args.kwargs["reply_sender"]
+        sender("all done", SILICON)
+        self.assertEqual(reply.call_args.args, ("all done", "carbon-b"))
+        self.assertIn("Your open work is closed", result)
 
     def test_a_worker_reaches_its_manager_by_name(self):
         with (
@@ -408,8 +387,8 @@ class SeeAndBundleTest(_IsolatedState):
             ) as take_back,
             mock.patch("interface.ensure_contact_for_target", return_value={}),
             mock.patch(
-                "interface.messages.send_manager_message", return_value="Done. queued"
-            ) as via_manager,
+                "interface.reply_contact", return_value="Message sent"
+            ) as replaced_with,
         ):
             result = _run(
                 ["bundle-unread", "carbon-b", "--text", "tldr: two things"],
@@ -420,7 +399,9 @@ class SeeAndBundleTest(_IsolatedState):
             sorted(call.args[0] for call in take_back.call_args_list),
             ["event-3", "event-4"],
         )
-        via_manager.assert_called_once()
+        self.assertEqual(
+            replaced_with.call_args.args, ("tldr: two things", "carbon-b")
+        )
         self.assertIn("Bundled 2 unread message(s)", result)
 
     def test_bundling_with_nothing_unread_is_refused(self):

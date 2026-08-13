@@ -156,7 +156,7 @@ class TeamContextPromptTests(unittest.TestCase):
                 mock.patch.object(DNA, "_get_contact_info", return_value=None),
                 mock.patch.object(DNA, "_glass_profile_section", return_value=""),
             ):
-                prompt = DNA.get_manager_prompt("carbon-1")
+                prompt = DNA.get_manager_prompt()
 
         self.assertIn("# Acme Silicon Team", prompt)
         self.assertIn("{load-ref!private.txt}", prompt)
@@ -355,45 +355,43 @@ class TeamContextPromptTests(unittest.TestCase):
         self.assertIn("effective `high`", section)
         self.assertNotIn("Treat every identity as `very_low`", section)
 
-    def test_manager_session_trust_comes_from_glass_cache_not_contact_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            prompts = root / "prompts"
-            (prompts / "trust").mkdir(parents=True)
-            (prompts / "trust" / "high.md").write_text(
-                "HIGH TRUST INSTRUCTIONS",
-                encoding="utf-8",
-            )
-            with (
-                mock.patch.object(DNA, "PROMPTS_DIR", str(prompts)),
-                mock.patch.object(DNA, "PROJECT_ROOT", str(root)),
-                mock.patch.object(
-                    DNA,
-                    "_get_contact_info",
-                    return_value={
-                        "contact_type": "silicon",
-                        "trust_level": "very_low",
-                        "is_central_carbon": False,
-                    },
-                ),
-                mock.patch(
-                    "interface.trust.cached_trust_entry",
-                    return_value={
-                        "kind": "silicon",
-                        "id": "peer-si",
-                        "level": "high",
-                        "source": "team_base",
-                    },
-                ),
-                mock.patch.object(DNA, "_glass_profile_section", return_value=""),
-                mock.patch.object(DNA, "_glass_team_context_section", return_value=""),
-                mock.patch.object(DNA, "_glass_trust_policy_section", return_value=""),
-            ):
-                prompt = DNA.get_manager_prompt("peer-si")
+    def test_message_trust_comes_from_glass_cache_not_the_contact_file(self):
+        """Trust rides on the message, and Glass is the only source of it.
 
-        self.assertIn("Their trust level: high", prompt)
-        self.assertIn("HIGH TRUST INSTRUCTIONS", prompt)
-        self.assertNotIn("Their trust level: very_low", prompt)
+        It used to be baked into a prompt built for one contact. One session
+        hears from everybody, so it is stamped on each message instead — but the
+        rule it enforces is unchanged: a `trust_level` sitting in the local
+        contact file is not evidence of anything.
+        """
+        from interface import ingest
+
+        with mock.patch(
+            "interface.trust.cached_trust_entry",
+            return_value={
+                "kind": "silicon",
+                "id": "peer-si",
+                "level": "high",
+                "source": "team_base",
+            },
+        ):
+            level = ingest._contact_trust_level(
+                "peer-si",
+                {"contact_type": "silicon", "trust_level": "very_low"},
+            )
+
+        self.assertEqual(level, "high")
+
+    def test_unresolvable_trust_fails_closed(self):
+        from interface import ingest
+
+        with mock.patch(
+            "interface.trust.cached_trust_entry",
+            side_effect=RuntimeError("glass unreachable"),
+        ):
+            self.assertEqual(
+                ingest._contact_trust_level("peer-si", {"trust_level": "ultimate"}),
+                "very_low",
+            )
 
 
 if __name__ == "__main__":

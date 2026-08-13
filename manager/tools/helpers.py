@@ -1,11 +1,10 @@
 """The small readings a tool and the registry both need.
 
 Parsing a worker tool name, naming the progress group a contact is watching,
-and turning a failed send into the status a work card should show. Kept apart
-from the registry so a tool can use them without importing the thing that
-imports every tool.
+and exposing an accepted durable identity without its contents. Kept apart from
+the registry so a tool can use them without importing the thing that imports
+every tool.
 """
-from interface import outbound
 from interface.work import current_manager_activity_group
 
 from diagnostics.store import Diagnostics
@@ -24,42 +23,6 @@ def _parse_worker_tool(tool_spec):
             worker_type = parts[1]
 
     return worker_type, action_type, worker_id
-
-
-def _message_failure_status(carbon_id, target_kind, target_id, error):
-    message = f"Message failed: {target_kind} '{target_id}' could not be reached. {error}"
-    group = _manager_progress_group(carbon_id)
-    if group:
-        outbound.send_progress(
-            carbon_id,
-            group,
-            "calling",
-            message,
-        )
-    return message
-
-
-def _call_preparation_failure_status(
-    carbon_id,
-    target_kind,
-    target_id,
-    error,
-):
-    """Report a local call-card barrier failure without exposing its details."""
-    error_type = type(error).__name__[:80] or "Exception"
-    message = (
-        f"Message not sent: the call update for {target_kind} '{target_id}' "
-        f"could not be prepared ({error_type})."
-    )
-    group = _manager_progress_group(carbon_id)
-    if group:
-        outbound.send_progress(
-            carbon_id,
-            group,
-            "calling",
-            message,
-        )
-    return message
 
 
 def _work_reference_suffix(reference, *keys):
@@ -89,8 +52,6 @@ def _manager_progress_group(carbon_id):
 def _tool_progress_state(tool_spec):
     tool_name = str(tool_spec.get("tool", "") or "")
     action_type = str(tool_spec.get("type", "") or "")
-    if tool_name == "message_manager":
-        return "calling"
     if tool_name.startswith("worker") and action_type == "new":
         return "spawning_worker"
     return "executing"

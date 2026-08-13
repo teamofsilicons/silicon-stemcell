@@ -51,7 +51,7 @@ def error_tools(value) -> str:
     detail = detail or "provider call failed"
     return json.dumps({
         "tools": [
-            {"tool": "reply", "message": f"Manager error: {detail}"},
+            {"tool": "brain_error", "message": f"Manager error: {detail}"},
             {"tool": "do_nothing"},
         ]
     })
@@ -62,7 +62,7 @@ def not_authenticated_tools(provider: str) -> str:
     return json.dumps({
         "tools": [
             {
-                "tool": "reply",
+                "tool": "brain_error",
                 "message": provider_not_authenticated_message(provider),
             },
             {"tool": "do_nothing"},

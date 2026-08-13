@@ -7,6 +7,7 @@ from interface import team_tick as config
 from manager import loop_config
 import main
 import manager.dispatcher as m_manager_dispatcher
+from helpers.silicon import SILICON
 
 
 class TeamContextLifecycleTest(unittest.TestCase):
@@ -65,7 +66,7 @@ class TeamContextLifecycleTest(unittest.TestCase):
                 "team-context",
                 "trust-policy",
                 "restart-check",
-                ("manager", {"carbon-a": "restarted"}),
+                ("manager", {SILICON: "restarted"}),
             ],
         )
         dispatcher.shutdown.assert_called_once_with(wait=False)

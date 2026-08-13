@@ -13,7 +13,6 @@ import manager.tools.memory as m_manager_tools_memory
 from interface import outbound as i_outbound
 from interface import work as i_work_updates
 import manager.tools.browser as m_manager_tools_browser
-import manager.tools.messaging as m_manager_tools_messaging
 import manager.tools.work as m_manager_tools_work
 import manager.tools.worker as m_manager_tools_worker
 import manager.settings as m_manager_settings
@@ -220,18 +219,11 @@ class ManagerActivityVisibilityTest(unittest.TestCase):
                 {"tool": "work_update", "action": "task/update"},
                 "carbon-a",
             )
-            failure = m_manager_tools_helpers._message_failure_status(
-                "carbon-a",
-                "silicon",
-                "peer-a",
-                "offline",
-            )
 
         send_progress.assert_not_called()
         touch_manager_call_activity.assert_called_once_with("carbon-a")
         trace.event.assert_called_once()
         self.assertIn("Done. internal update", result)
-        self.assertIn("offline", failure)
 
 
 class ManagerToolExecutionTest(unittest.TestCase):
@@ -558,201 +550,6 @@ class ManagerToolExecutionTest(unittest.TestCase):
         self.assertIn("task_id=task-fitness", result)
         self.assertIn("group_id=group-build", result)
         self.assertIn("invocation_id=invocation-builder-1", result)
-
-    def test_message_manager_returns_the_local_automatic_call_identity(self):
-        spec = {
-            "tool": "message_manager",
-            "carbon_id": "carbon-b",
-            "message": "Can you review this?",
-        }
-        work_call = {
-            "owner_contact_id": "carbon-a",
-            "task_id": "task-fitness",
-            "call_id": "call-review",
-        }
-
-        with (
-            mock.patch.object(
-                m_manager_tools_messaging,
-                "ensure_contact_for_target",
-                return_value={
-                    "carbon_id": "carbon-b",
-                    "display_name": "B",
-                },
-            ),
-            mock.patch.object(
-                m_manager_tools_messaging,
-                "prepare_outbound_call",
-                return_value=work_call,
-            ),
-            mock.patch.object(
-                m_manager_tools_messaging,
-                "send_manager_message",
-                return_value="Done. queued",
-            ) as send_manager_message,
-            mock.patch.object(i_outbound, "send_progress"),
-        ):
-            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
-
-        send_manager_message.assert_called_once_with(
-            "carbon-a",
-            "carbon-b",
-            "Can you review this?",
-            target_type="carbon",
-            work_call=work_call,
-        )
-        self.assertIn("task_id=task-fitness", result)
-        self.assertIn("call_id=call-review", result)
-
-    def test_message_manager_returns_identity_after_durable_queue_acceptance(self):
-        work_call = {
-            "owner_contact_id": "carbon-a",
-            "task_id": "task-fitness",
-            "work_event_id": "event-review",
-            "call_id": "call-review",
-        }
-        targets = (
-            (
-                {"carbon_id": "carbon-b"},
-                {
-                    "contact_type": "carbon",
-                    "carbon_id": "carbon-b",
-                    "display_name": "B",
-                },
-            ),
-            (
-                {"silicon_id": "silicon-b"},
-                {
-                    "contact_type": "silicon",
-                    "silicon_id": "silicon-b",
-                    "display_name": "Builder",
-                },
-            ),
-        )
-
-        for target, contact in targets:
-            with self.subTest(target=target):
-                spec = {
-                    "tool": "message_manager",
-                    **target,
-                    "message": "Can you review this?",
-                }
-                with (
-                    mock.patch.object(
-                        m_manager_tools_messaging,
-                        "ensure_contact_for_target",
-                        return_value=contact,
-                    ),
-                    mock.patch.object(
-                        m_manager_tools_messaging,
-                        "prepare_outbound_call",
-                        return_value=work_call,
-                    ),
-                    mock.patch.object(
-                        m_manager_tools_messaging,
-                        "send_manager_message",
-                        return_value="Done. queued",
-                    ) as send_manager_message,
-                    mock.patch.object(i_outbound, "send_progress"),
-                ):
-                    result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
-
-                send_manager_message.assert_called_once()
-                self.assertIn("Done. queued", result)
-                self.assertIn("Work update:", result)
-                self.assertIn("task_id=task-fitness", result)
-                self.assertIn("work_event_id=event-review", result)
-                self.assertIn("call_id=call-review", result)
-
-    def test_message_manager_preparation_failure_sends_nothing_and_is_body_free(
-        self,
-    ):
-        targets = (
-            (
-                {"carbon_id": "carbon-b"},
-                {
-                    "contact_type": "carbon",
-                    "carbon_id": "carbon-b",
-                    "display_name": "B",
-                },
-            ),
-            (
-                {"silicon_id": "silicon-b"},
-                {
-                    "contact_type": "silicon",
-                    "silicon_id": "silicon-b",
-                    "display_name": "Builder",
-                },
-            ),
-        )
-
-        for target, contact in targets:
-            with self.subTest(target=target):
-                spec = {
-                    "tool": "message_manager",
-                    **target,
-                    "message": "Private manager message.",
-                }
-                with (
-                    mock.patch.object(
-                        m_manager_tools_messaging,
-                        "ensure_contact_for_target",
-                        return_value=contact,
-                    ),
-                    mock.patch.object(
-                        m_manager_tools_messaging,
-                        "prepare_outbound_call",
-                        side_effect=OSError(
-                            "disk failed while handling Private manager message."
-                        ),
-                    ),
-                    mock.patch.object(
-                        m_manager_tools_messaging,
-                        "send_manager_message",
-                    ) as send_manager_message,
-                    mock.patch(
-                        "interface.work.enqueue_outbound_call",
-                    ) as enqueue_outbound_call,
-                    mock.patch.object(i_outbound, "send_progress"),
-                ):
-                    result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
-
-                send_manager_message.assert_not_called()
-                enqueue_outbound_call.assert_not_called()
-                self.assertIn("Message not sent", result)
-                self.assertIn("(OSError)", result)
-                self.assertNotIn("Private manager message", result)
-                self.assertNotIn("disk failed", result)
-
-    def test_message_manager_failure_reports_progress_and_output(self):
-        spec = {
-            "tool": "message_manager",
-            "carbon_id": "missing-carbon",
-            "message": "hello",
-        }
-
-        with (
-            mock.patch.object(m_manager_tools_messaging, "ensure_contact_for_target", side_effect=Exception("api 404: Target not found.")),
-            mock.patch.object(m_manager_tools_messaging, "send_manager_message") as send_manager_message,
-            mock.patch.object(i_outbound, "send_progress") as send_progress,
-        ):
-            result = m_manager_tools_registry.execute_single_tool(spec, "carbon-a")
-
-        send_manager_message.assert_not_called()
-        self.assertIn("Message failed: carbon 'missing-carbon' could not be reached.", result)
-        self.assertIn("api 404: Target not found.", result)
-        self.assertTrue(
-            any(
-                call.args
-                == (
-                    "carbon-a",
-                    "manager:carbon-a",
-                    "calling",
-                    "Message failed: carbon 'missing-carbon' could not be reached. api 404: Target not found.",
-                )
-                for call in send_progress.call_args_list
-            )
-        )
 
     def test_remote_browser_share_passes_start_url(self):
         spec = {

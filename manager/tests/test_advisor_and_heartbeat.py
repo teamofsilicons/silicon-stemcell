@@ -1,12 +1,13 @@
-"""The advisor, and the heartbeat that wakes a manager nobody messaged.
+"""The advisor, and the heartbeat that wakes a Silicon nobody messaged.
 
-An advisor holds its own conversation so advice accumulates across a working
-session, but not indefinitely: a two-hour gap or a day-old session means the
-manager has moved on and the advisor should start clean.
+There is one advisor for the one session. It holds its own conversation so
+advice accumulates across a working session, but not indefinitely: a two-hour
+gap or a day-old session means it has moved on and should start clean.
 
 The heartbeat is what makes a Silicon capable of acting rather than only
 reacting, so it must fire on its own schedule and arrive carrying the work the
-manager already has running.
+session already has running. One beat, not one per contact — a beat belongs to
+nobody in particular.
 """
 import os
 import tempfile
@@ -14,6 +15,7 @@ import time
 import unittest
 from unittest import mock
 
+from helpers.silicon import SILICON
 from manager import advisor as advisor_module
 from manager.advisor import heartbeat as heartbeat_module
 
@@ -33,7 +35,7 @@ class AdvisorSessionTest(unittest.TestCase):
     def test_a_first_question_opens_a_session(self):
         self.assertEqual(
             advisor_module._should_rotate({}, time.time()),
-            "first advice for this manager",
+            "first advice given",
         )
 
     def test_a_two_hour_gap_starts_a_fresh_session(self):
@@ -61,7 +63,7 @@ class AdvisorSessionTest(unittest.TestCase):
             advisor_module.ADVISOR_PROMPT_FILES,
             ("INDEX.md", "IWANTTO_CLI_REFERENCE.md", "ADVISOR.md"),
         )
-        prompt = advisor_module.build_prompt("carbon-a")
+        prompt = advisor_module.build_prompt()
 
         from prompts import loader
 
@@ -72,11 +74,13 @@ class AdvisorSessionTest(unittest.TestCase):
             for name in advisor_module.ADVISOR_PROMPT_FILES
         ]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("advisor to the manager of `carbon-a`", prompt)
-        self.assertIn("do not act on the manager's behalf", prompt)
+        self.assertIn("advisor to this Silicon", prompt)
+        self.assertIn("do not act on its behalf", prompt)
 
     def test_the_advisor_keeps_its_own_conversation(self):
-        self.assertEqual(advisor_module.session_key("carbon-a"), "advisor__carbon-a")
+        self.assertEqual(
+            advisor_module.session_key(), f"advisor__{SILICON}"
+        )
 
     def test_asking_runs_the_agent_under_an_advisor_identity_and_revokes_it(self):
         with (
@@ -156,8 +160,8 @@ class AdvisorSessionTest(unittest.TestCase):
         self.assertIn("Decide without it", advice)
 
     def test_an_empty_question_is_refused(self):
-        self.assertTrue(advisor_module.ask("carbon-a", "   ").startswith("Error"))
-        self.assertTrue(advisor_module.ask("", "something").startswith("Error"))
+        self.assertTrue(advisor_module.ask(SILICON, "   ").startswith("Error"))
+        self.assertTrue(advisor_module.ask(question="").startswith("Error"))
 
 
 class AdvisorHeartbeatTest(unittest.TestCase):
@@ -171,15 +175,10 @@ class AdvisorHeartbeatTest(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.contacts = {"carbon-a": {"contact_type": "carbon"}}
 
     def test_a_never_run_advisor_waits_a_full_interval_before_its_first_beat(self):
-        with mock.patch("interface.get_contacts", return_value=self.contacts):
-            first = advisor_module.contacts_due_for_heartbeat()
-            second = advisor_module.contacts_due_for_heartbeat()
-
-        self.assertEqual(first, [])
-        self.assertEqual(second, [])
+        self.assertFalse(advisor_module.heartbeat_due())
+        self.assertFalse(advisor_module.heartbeat_due())
 
     def test_an_advisor_silent_for_five_hours_is_due(self):
         stale = time.time() - (5 * 60 * 60 + 60)
@@ -187,20 +186,15 @@ class AdvisorHeartbeatTest(unittest.TestCase):
             advisor_module.ADVISOR_STATE_FILE,
             advisor_module._default_state(),
             lambda state: state.setdefault("advisors", {}).setdefault(
-                "carbon-a", {}
+                SILICON, {}
             ).update({"last_heartbeat_at": stale}),
         )
 
-        with mock.patch("interface.get_contacts", return_value=self.contacts):
-            due = advisor_module.contacts_due_for_heartbeat()
+        self.assertTrue(advisor_module.heartbeat_due())
 
-        self.assertEqual(due, ["carbon-a"])
-
-    def test_heartbeat_advice_reaches_the_manager_marked_as_the_advisors(self):
+    def test_heartbeat_advice_reaches_the_session_marked_as_the_advisors(self):
         with (
-            mock.patch.object(
-                advisor_module, "contacts_due_for_heartbeat", return_value=["carbon-a"]
-            ),
+            mock.patch.object(advisor_module, "heartbeat_due", return_value=True),
             mock.patch.object(
                 advisor_module, "ask", return_value="Chase that worker."
             ) as ask,
@@ -208,10 +202,11 @@ class AdvisorHeartbeatTest(unittest.TestCase):
             contexts = advisor_module.run_heartbeats()
 
         ask.assert_called_once_with(
-            "carbon-a", advisor_module.HEARTBEAT_PROMPT, heartbeat=True
+            SILICON, advisor_module.HEARTBEAT_PROMPT, heartbeat=True
         )
-        self.assertIn("[Message from your Advisor]", contexts["carbon-a"])
-        self.assertIn("Chase that worker.", contexts["carbon-a"])
+        self.assertEqual(list(contexts), [SILICON])
+        self.assertIn("[Message from your Advisor]", contexts[SILICON])
+        self.assertIn("Chase that worker.", contexts[SILICON])
 
     def test_a_heartbeat_asks_the_advisor_something(self):
         """The wording is the operator's to change; that there is one is not."""
@@ -229,10 +224,6 @@ class ManagerHeartbeatTest(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.contacts = {
-            "carbon-a": {"contact_type": "carbon"},
-            "carbon-b": {"contact_type": "carbon"},
-        }
 
     def test_the_interval_is_thirteen_minutes(self):
         self.assertEqual(heartbeat_module.INTERVAL_SECONDS, 13 * 60)
@@ -241,35 +232,45 @@ class ManagerHeartbeatTest(unittest.TestCase):
             "congrats, your heart is beating, make it count!",
         )
 
-    def test_a_new_contact_starts_its_clock_instead_of_beating_immediately(self):
-        with mock.patch("interface.get_contacts", return_value=self.contacts):
-            self.assertIsNone(heartbeat_module.check_manager_heartbeats())
-            self.assertIsNone(heartbeat_module.check_manager_heartbeats())
+    def test_a_fresh_instance_starts_its_clock_instead_of_beating_immediately(self):
+        self.assertIsNone(heartbeat_module.check_manager_heartbeats())
+        self.assertIsNone(heartbeat_module.check_manager_heartbeats())
 
-    def test_a_manager_silent_for_the_interval_gets_a_beat(self):
+    def test_a_session_silent_for_the_interval_gets_one_beat(self):
         stale = time.time() - (13 * 60 + 1)
         heartbeat_module.update_json(
             heartbeat_module.HEARTBEAT_STATE_FILE,
             heartbeat_module._default_state(),
             lambda state: state.setdefault("contacts", {}).setdefault(
-                "carbon-a", {}
+                SILICON, {}
             ).update({"last_beat_at": stale}),
         )
 
-        with (
-            mock.patch("interface.get_contacts", return_value=self.contacts),
-            mock.patch.object(
-                heartbeat_module, "_active_work_section", return_value=""
-            ),
+        with mock.patch.object(
+            heartbeat_module, "_active_work_section", return_value=""
         ):
             contexts = heartbeat_module.check_manager_heartbeats()
             # Immediately after beating, it is not due again.
             again = heartbeat_module.check_manager_heartbeats()
 
-        self.assertEqual(list(contexts), ["carbon-a"])
-        self.assertIn("[HEARTBEAT]", contexts["carbon-a"])
-        self.assertIn(heartbeat_module.BEAT_MESSAGE, contexts["carbon-a"])
+        self.assertEqual(list(contexts), [SILICON])
+        self.assertIn("[HEARTBEAT]", contexts[SILICON])
+        self.assertIn(heartbeat_module.BEAT_MESSAGE, contexts[SILICON])
         self.assertIsNone(again)
+
+    def test_a_beat_names_nobody_so_it_shows_up_in_no_ones_chat(self):
+        """A heartbeat has no sender, so it must not carry an origin envelope.
+
+        Untargeted frames fan out to whoever a turn is answering. A beat is
+        answering nobody, and a spinner appearing unprompted in five chats every
+        thirteen minutes is exactly what that would cause.
+        """
+        from helpers.silicon import origins_in
+
+        with mock.patch.object(
+            heartbeat_module, "_active_work_section", return_value=""
+        ):
+            self.assertEqual(origins_in(heartbeat_module.build_context()), [])
 
     def test_each_beat_carries_the_managers_own_active_work(self):
         work = [
@@ -278,7 +279,7 @@ class ManagerHeartbeatTest(unittest.TestCase):
                 {
                     "name": "Market Research",
                     "state": "in_progress",
-                    "owner_contact_id": "carbon-a",
+                    "owner_contact_id": SILICON,
                     "tasks": {},
                     "created_at_iso": "2026-08-09T00:00:00Z",
                 },
@@ -287,17 +288,17 @@ class ManagerHeartbeatTest(unittest.TestCase):
         with mock.patch(
             "iwantto.commands.work.active_works", return_value=work
         ) as active:
-            context = heartbeat_module.build_context("carbon-a")
+            context = heartbeat_module.build_context()
 
-        active.assert_called_once_with("carbon-a")
-        self.assertIn("iwantto work --active --by carbon-a", context)
+        active.assert_called_once_with(SILICON)
+        self.assertIn("iwantto work --active", context)
         self.assertIn("market-research", context)
 
     def test_a_manager_with_no_work_is_told_so_plainly(self):
         with mock.patch(
             "iwantto.commands.work.active_works", return_value=[]
         ):
-            context = heartbeat_module.build_context("carbon-a")
+            context = heartbeat_module.build_context()
 
         self.assertIn("no active work right now", context)
 

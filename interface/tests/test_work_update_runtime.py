@@ -2600,7 +2600,7 @@ class WorkUpdateRuntimeTest(unittest.TestCase):
             ),
             context,
         )
-        self.assertIn("message:\nUse blue.", context)
+        self.assertIn(": Use blue.", context)
         self.assertEqual(client.reads, [("room-a", "reply-event")])
 
 

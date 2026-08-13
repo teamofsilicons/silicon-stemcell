@@ -437,7 +437,7 @@ def _summary_line(work_id: str, work: dict) -> str:
     when = work.get("completed_at_iso") or work.get("created_at_iso") or ""
     return (
         f"[{work.get('state')}] {work_id} — {work.get('name')} "
-        f"({done}/{len(tasks)} tasks) by manager of {owner} {when}"
+        f"({done}/{len(tasks)} tasks) owned by {owner} {when}"
     )
 
 

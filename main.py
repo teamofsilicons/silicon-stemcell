@@ -23,6 +23,7 @@ CODE_ROOT = os.path.dirname(os.path.abspath(__file__))
 if CODE_ROOT not in sys.path:
     sys.path.insert(0, CODE_ROOT)
 from helpers.paths import DATA_ROOT
+from helpers.silicon import SILICON
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
 LOCAL_BIN = os.path.join(PROJECT_ROOT, ".local", "bin")
@@ -42,7 +43,6 @@ os.environ["PATH"] = os.pathsep.join(
 from diagnostics.logs import announce_session, runtime_log as log
 from diagnostics.store import Diagnostics
 from interface import (
-    get_contacts,
     runtime_file_notifications_active,
     start_listener,
     start_runtime_file_watch,
@@ -208,20 +208,12 @@ def main():
         lambda: str(MAINTENANCE.public_status().get("phase", "available"))
     )
 
-    # Check if we just restarted
+    # Check if we just restarted. There is one session to tell, so the carbon
+    # the restart was requested for is context rather than a routing decision.
     restart_msg, restart_carbon_id = _check_restart_flag()
     if restart_msg:
-        if restart_carbon_id:
-            log(f"[Silicon] Post-restart for {restart_carbon_id}: {restart_msg}")
-            dispatcher.submit({restart_carbon_id: restart_msg})
-        else:
-            # Find central carbon to notify
-            log(f"[Silicon] Post-restart (no carbon_id): {restart_msg}")
-            contacts_data = get_contacts()
-            for cid, info in contacts_data.get("contacts", {}).items():
-                if info.get("is_central_carbon"):
-                    dispatcher.submit({cid: restart_msg})
-                    break
+        log(f"[Silicon] Post-restart ({restart_carbon_id or 'no contact'}): {restart_msg}")
+        dispatcher.submit({SILICON: restart_msg})
 
     schedule = EventLoopSchedule(EVENT_LOOP, identity=PROJECT_ROOT)
     activity_ready = True

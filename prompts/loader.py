@@ -417,41 +417,67 @@ MEMORY_ROOT = os.path.join(PROJECT_ROOT, "memory")
 LEGACY_MEMORY_ROOT = os.path.join(PROJECT_ROOT, "prompts", "memory")
 
 
-def _memory_path(contact_id, contact):
-    """Where this contact's memory lives, and the path to show the manager."""
-    folder = (
-        "silicons"
-        if contact and contact.get("contact_type") == "silicon"
-        else "carbons"
-    )
-    current = os.path.join(MEMORY_ROOT, folder, f"{contact_id}.md")
-    if not os.path.isfile(current):
-        legacy = os.path.join(LEGACY_MEMORY_ROOT, folder, f"{contact_id}.md")
-        if os.path.isfile(legacy):
-            return legacy, f"prompts/memory/{folder}/{contact_id}.md"
-    return current, f"memory/{folder}/{contact_id}.md"
+def _memory_index(folder):
+    """Every contact this Silicon has written memory about, newest path wins."""
+    found = {}
+    for root, label in (
+        (LEGACY_MEMORY_ROOT, f"prompts/memory/{folder}"),
+        (MEMORY_ROOT, f"memory/{folder}"),
+    ):
+        try:
+            names = sorted(os.listdir(os.path.join(root, folder)))
+        except OSError:
+            continue
+        for name in names:
+            if name.endswith(".md"):
+                found[name[: -len(".md")]] = f"{label}/{name}"
+    return found
 
 
-def get_manager_prompt(carbon_id):
-    """Build the system prompt for a specific contact manager."""
-    contact = _get_contact_info(carbon_id)
-    contact_type = (
-        str(contact.get("contact_type") or "carbon")
-        if isinstance(contact, dict)
-        else "carbon"
-    )
-    try:
-        from interface.trust import cached_trust_entry
+def _contact_memory_section():
+    """Which memory files exist, so the session knows what to open and when.
 
-        trust_entry = cached_trust_entry(
-            contact_type,
-            carbon_id,
-            root=PROJECT_ROOT,
+    One session talks to everybody, so pasting one contact's memory in would be
+    a guess about who speaks next. What it gets instead is the index; the file
+    itself is one read away, and the message says whose it is.
+    """
+    lines = []
+    for folder, heading in (("carbons", "Carbons"), ("silicons", "Silicons")):
+        index = _memory_index(folder)
+        if not index:
+            continue
+        lines.append(f"### {heading} you remember")
+        lines.extend(
+            f"- `{contact_id}` → `{path}`"
+            for contact_id, path in sorted(index.items())
         )
-    except Exception:
-        trust_entry = {}
-    trust_level = str(trust_entry.get("level") or "very_low")
+    body = (
+        "\n".join(lines)
+        if lines
+        else "You have not written memory about anybody yet."
+    )
+    return (
+        "## Memory about the people you talk to\n"
+        "Every message names its sender. **Read that sender's memory file "
+        "before you answer them**, and write to it when you learn something "
+        "worth keeping — that file is the only reason you will know them "
+        "tomorrow. New contact: create the file.\n"
+        f"- Carbons: `memory/carbons/{{carbon_id}}.md`\n"
+        f"- Silicons: `memory/silicons/{{silicon_id}}.md`\n\n"
+        f"{body}"
+    )
 
+
+def get_manager_prompt():
+    """Build the system prompt for the one Silicon session.
+
+    It is built once for everybody, not per contact: the session answers every
+    Carbon and every Silicon, and each message says on its own first line who
+    sent it and what they are trusted with. So all six trust levels are loaded
+    (``TRUST.md``), and per-contact memory is read on demand from
+    ``memory/`` rather than pasted in for one contact who may not be the one
+    talking next.
+    """
     parts = []
 
     parts.extend([
@@ -471,36 +497,18 @@ def get_manager_prompt(carbon_id):
         _glass_profile_section(),
         _glass_team_context_section(),
         _glass_trust_policy_section(),
-        _read_prompt(f"trust/{trust_level}.md"),
+        _read_prompt("TRUST.md"),
         _read_prompt("MEMORY.md"),
-    ])
-
-    # Load per-contact memory file
-    carbon_memory_path, memory_label = _memory_path(carbon_id, contact)
-    carbon_memory = _read_file_raw(carbon_memory_path)
-    if carbon_memory:
-        parts.append(f"## About this Contact ({carbon_id})\n{memory_label}\n{carbon_memory}")
-
-    parts.extend([
+        _contact_memory_section(),
         _read_prompt("MANAGER.md"),
         _read_prompt("IWANTTO_CLI_REFERENCE.md"),
         _read_prompt("MANAGER_TOOLS.md"),
         _read_prompt("GIVE_UPDATES.md"),
+        # Both, now: one session talks to Carbons and to Silicons, so it needs
+        # how to hold either conversation rather than one chosen per contact.
+        _read_prompt("SILICON_MANAGER.md"),
+        _read_prompt("NOT_BE_IGNORED.md"),
     ])
-
-    if contact and contact.get("contact_type") == "silicon":
-        parts.append(_read_prompt("SILICON_MANAGER.md"))
-    else:
-        parts.append(_read_prompt("NOT_BE_IGNORED.md"))
-
-    # Add carbon_id context
-    identity_label = "silicon_id" if contact and contact.get("contact_type") == "silicon" else "carbon_id"
-    central_note = (
-        "\nThis contact is your central carbon"
-        if trust_entry.get("central_carbon")
-        else ""
-    )
-    parts.append(f"\n## Current Session\nYou are talking to contact {identity_label}: {carbon_id}\nTheir trust level: {trust_level}{central_note}")
 
     # Load BOOT.md if it exists
     boot_path = _prompt_path("BOOT.md")

@@ -1,9 +1,9 @@
-"""Running the tools a manager asked for, in the order that keeps them safe.
+"""Running the tools the Silicon asked for, in the order that keeps them safe.
 
-A manager answers with a list of tool invocations. They are executed here, with
-one ordering rule that is load-bearing: a final reply is the end-of-batch fence,
-so durable updates and worker starts are accepted first even when the manager
-listed the reply early. Intermediate replies keep their original position.
+Talking is not one of them any more — that is `iwantto send`, which runs the
+moment it is typed. What is left is the machinery a turn drives: workers, crons,
+trust, work updates, the browser. One ordering rule is load-bearing: a restart
+goes last, so everything else is durably accepted before the process goes away.
 """
 from interface import outbound
 from manager.tools.helpers import (
@@ -27,13 +27,6 @@ def _tool_progress_note(tool_spec):
     tool_name = str(tool_spec.get("tool", "") or "")
     if not tool_name or tool_name == "do_nothing":
         return ""
-
-    if tool_name == "reply":
-        return "called tool: reply"
-
-    if tool_name == "message_manager":
-        target = tool_spec.get("carbon_id") or tool_spec.get("silicon_id") or "unknown"
-        return f"called tool: message_manager -> {target}"
 
     if tool_name == "remote_browser":
         action = tool_spec.get("type", "share")
@@ -206,30 +199,18 @@ def execute_all_tools(
         for contact_id in (suppress_progress_contacts or set())
     }
 
-    # A final normal reply is the end-of-batch fence: durable updates and
-    # worker starts must be accepted first even if the manager listed the reply
-    # early. Intermediate replies intentionally retain their original order.
+    # A restart is the end-of-batch fence: everything else must be accepted
+    # before the process goes away, whatever order it was listed in.
     restart_tools = [
         (cid, tool)
         for cid, tool in all_tools
         if tool.get("tool") == "restart_silicon_service"
     ]
-    final_reply_tools = [
-        (cid, tool)
-        for cid, tool in all_tools
-        if tool.get("tool") == "reply"
-        and not tool.get("work_continues")
-    ]
-    other_tools = [
+    sorted_tools = [
         (cid, tool)
         for cid, tool in all_tools
         if tool.get("tool") != "restart_silicon_service"
-        and not (
-            tool.get("tool") == "reply"
-            and not tool.get("work_continues")
-        )
-    ]
-    sorted_tools = other_tools + final_reply_tools + restart_tools
+    ] + restart_tools
 
     for carbon_id, tool_spec in sorted_tools:
         tool_name = tool_spec.get("tool", "")

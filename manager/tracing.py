@@ -6,7 +6,6 @@ provider failure nobody asked for is suppressed rather than shown.
 """
 from interface import outbound
 from interface import work as work_updates
-from manager.tools.registry import execute_single_tool
 from manager import activity as activity_module
 import re
 import time
@@ -138,25 +137,17 @@ def _make_mid_stream_handler(
     *,
     allow_intermediate_replies=True,
 ):
-    """Create a callback that executes reply tools mid-stream for fast delivery.
-    Only explicitly intermediate replies are fire-and-forget. Final replies
-    stay in the ordered executor so a terminal card or other preceding update
-    is accepted first. All non-reply tools need their results fed back to the
-    manager and therefore also use the centralized executor."""
+    """Nothing is executed mid-stream any more.
+
+    This existed so a reply could be delivered before the turn ended. Talking is
+    `iwantto send` now, which runs the moment the session types it — so there is
+    nothing left to intercept, and every remaining tool needs its result fed
+    back through the ordered executor anyway. The hook stays because providers
+    still call it, and something may yet want it.
+    """
     def on_tools(tools_list):
-        if not allow_intermediate_replies:
-            return []
-        succeeded = []
-        for tool_spec in tools_list:
-            tool_name = tool_spec.get("tool", "")
-            if tool_name != "reply" or not tool_spec.get("work_continues"):
-                continue
-            result = execute_single_tool(tool_spec, carbon_id)
-            if result:
-                log(f"[Silicon] Mid-stream: {result}")
-                if "Error" not in result:
-                    succeeded.append(tool_spec)
-        return succeeded
+        return []
+
     return on_tools
 
 
@@ -198,7 +189,7 @@ def _is_terminal_brain_failure(output):
     if not tools_data:
         return False
     for tool in tools_data.get("tools", []):
-        if not isinstance(tool, dict) or tool.get("tool") != "reply":
+        if not isinstance(tool, dict) or tool.get("tool") != "brain_error":
             continue
         message = str(tool.get("message") or "").lower()
         if any(marker in message for marker in _TERMINAL_BRAIN_FAILURE_MARKERS):

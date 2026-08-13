@@ -1,10 +1,20 @@
-"""Durable queue for manager-to-manager messages.
+"""Durable queue for waking the Silicon session with a local message.
 
-Messages between silicons outlive the sending turn, so they are journalled to
-``manager_queue.json`` under a lock rather than delivered in-process.  The
-queue is bounded (``MANAGER_QUEUE_MAX_ITEMS``), carries diagnostic lineage so a
-handoff can be correlated across runs, and reports capacity/conflict problems
-through ``ManagerQueueCapacityError`` / ``ManagerQueueConflictError``.
+A worker reporting in, or a session handing its first message to the one
+replacing it, outlives the run that sent it — so it is journalled to
+``manager_queue.json`` under a lock rather than delivered in-process. The queue
+is bounded (``MANAGER_QUEUE_MAX_ITEMS``), carries diagnostic lineage so a handoff
+can be correlated across runs, and reports capacity/conflict problems through
+``ManagerQueueCapacityError`` / ``ManagerQueueConflictError``.
+
+It used to carry manager-to-manager traffic as well: reaching another Silicon
+meant queueing to a local manager session that spoke to it on your behalf. That
+hop is gone — `iwantto send` reaches a contact's room directly — so nothing
+passes ``work_call`` any longer.
+
+ponytail: the ``work_call`` call-card bookkeeping below is kept only to drain
+items queued before that change. Delete it, and ``_ensure_manager_work_calls``,
+once no deployed instance can still hold one.
 """
 import os
 import json
@@ -268,8 +278,8 @@ def _queue_lineage_handoff(
         if activity is None:
             return False
         parts = [
-            f"Inter-manager messages:\nMessage from manager of "
-            f"{from_contact_id or 'unknown'}:\n{message}"
+            f"Local messages:\nMessage from {from_contact_id or 'unknown'}:"
+            f"\n{message}"
         ]
         if isinstance(work_call, dict) and work_call:
             correlation = {
@@ -503,8 +513,7 @@ def _check_manager_messages(*, durable_handoff=False):
                 continue
             sender_label = str(m.get("sender_label") or "")
             item_parts = [
-                f"Message from {sender_label or f'manager of {sender}'}:"
-                f"\n{m['message']}"
+                f"Message from {sender_label or sender}:\n{m['message']}"
             ]
             if isinstance(work_call, dict) and work_call:
                 correlation = {
@@ -528,7 +537,7 @@ def _check_manager_messages(*, durable_handoff=False):
 
                     accepted = COORDINATOR.enqueue_ingress_root(
                         str(contact_id),
-                        "Inter-manager messages:\n"
+                        "Local messages:\n"
                         + "\n---\n".join(item_parts),
                         ingress_id=f"manager:{queue_id}",
                     )
@@ -554,7 +563,7 @@ def _check_manager_messages(*, durable_handoff=False):
             continue
         if parts:
             result[contact_id] = (
-                "Inter-manager messages:\n" + "\n---\n".join(parts)
+                "Local messages:\n" + "\n---\n".join(parts)
             )
 
     _remove_manager_queue_ids(delivered_ids)

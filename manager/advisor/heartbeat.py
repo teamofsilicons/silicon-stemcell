@@ -1,13 +1,17 @@
-"""The manager heartbeat.
+"""The Silicon heartbeat.
 
-Every thirteen minutes, every manager is woken whether or not anyone spoke to
-it. A Silicon that only ever runs when addressed can only ever react; the
-heartbeat is the window in which it can notice that a worker has gone quiet,
-that a carbon never replied, that a memory was never written down.
+Every thirteen minutes the session is woken whether or not anyone spoke to it. A
+Silicon that only ever runs when addressed can only ever react; the heartbeat is
+the window in which it can notice that a worker has gone quiet, that a carbon
+never replied, that a memory was never written down.
 
-Each beat carries the manager's own active work with it, so the first thing it
-sees is what it already has running — the same list `iwantto work --active`
-would print.
+Each beat carries its own active work with it, so the first thing it sees is
+what it already has running — the same list `iwantto work --active` would print.
+
+There is one beat, not one per contact. A heartbeat belongs to nobody in
+particular, so it carries no sender envelope and produces no progress in
+anyone's room. If the Silicon decides a beat is worth telling someone about, it
+says so explicitly with `iwantto send`.
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ import time
 from datetime import datetime, timezone
 
 from helpers.paths import DATA_ROOT, STATE_DIR
+from helpers.silicon import SILICON
 from helpers.state import read_json, update_json
 
 PROJECT_ROOT = os.fspath(DATA_ROOT)
@@ -39,12 +44,12 @@ def _default_state() -> dict:
     return {"version": 1, "contacts": {}}
 
 
-def _active_work_section(contact_id: str) -> str:
-    """The manager's own open work, rendered as it would be on the CLI."""
+def _active_work_section() -> str:
+    """The Silicon's own open work, rendered as it would be on the CLI."""
     try:
         from iwantto.commands.work import _summary_line, active_works
 
-        entries = active_works(contact_id)
+        entries = active_works(SILICON)
     except Exception:
         return ""
     if not entries:
@@ -52,39 +57,29 @@ def _active_work_section(contact_id: str) -> str:
     lines = "\n".join(
         _summary_line(work_id, work) for work_id, work in entries
     )
-    return (
-        "\nWork you have active right now "
-        f"(`iwantto work --active --by {contact_id}`):\n{lines}"
-    )
+    return f"\nWork you have active right now (`iwantto work --active`):\n{lines}"
 
 
-def contacts_due(now: float | None = None) -> list:
-    """Every contact whose manager has not beaten in the last interval."""
-    from interface import get_contacts
+def beat_due(now: float | None = None) -> bool:
+    """Has the session gone an interval without beating?
 
+    A first boot starts the clock rather than beating immediately, so a fresh
+    instance is not woken about work it has never done.
+    """
     now = _now() if now is None else now
-    state = read_json(HEARTBEAT_STATE_FILE, _default_state())
-    beats = state.get("contacts") or {}
-    due = []
-    for contact_id, contact in (get_contacts() or {}).items():
-        if not isinstance(contact, dict):
-            continue
-        entry = beats.get(contact_id)
-        last = float(entry.get("last_beat_at") or 0.0) if isinstance(entry, dict) else 0.0
-        if not last:
-            # A contact seen for the first time starts its clock now rather
-            # than beating immediately, so adding a contact does not wake a
-            # manager that has nothing yet to be woken about.
-            _record(contact_id, now)
-            continue
-        if now - last >= INTERVAL_SECONDS:
-            due.append(contact_id)
-    return due
+    entry = (
+        read_json(HEARTBEAT_STATE_FILE, _default_state()).get("contacts") or {}
+    ).get(SILICON)
+    last = float(entry.get("last_beat_at") or 0.0) if isinstance(entry, dict) else 0.0
+    if not last:
+        _record(now)
+        return False
+    return now - last >= INTERVAL_SECONDS
 
 
-def _record(contact_id: str, now: float) -> None:
+def _record(now: float) -> None:
     def update(state):
-        entry = state.setdefault("contacts", {}).setdefault(contact_id, {})
+        entry = state.setdefault("contacts", {}).setdefault(SILICON, {})
         entry["last_beat_at"] = now
         entry["last_beat_at_iso"] = _iso(now)
         entry["beats"] = int(entry.get("beats") or 0) + 1
@@ -92,21 +87,15 @@ def _record(contact_id: str, now: float) -> None:
     update_json(HEARTBEAT_STATE_FILE, _default_state(), update)
 
 
-def build_context(contact_id: str) -> str:
-    return (
-        f"[HEARTBEAT]\n{BEAT_MESSAGE}\n"
-        f"{_active_work_section(contact_id)}"
-    )
+def build_context() -> str:
+    return f"[HEARTBEAT]\n{BEAT_MESSAGE}\n{_active_work_section()}"
 
 
 def check_manager_heartbeats():
-    """Event-loop handler. Returns {contact_id: context} for managers now due."""
+    """Event-loop handler. Returns ``{SILICON: context}`` when a beat is due."""
     now = _now()
-    due = contacts_due(now)
-    if not due:
+    if not beat_due(now):
         return None
-    contexts = {}
-    for contact_id in due:
-        contexts[contact_id] = build_context(contact_id)
-        _record(contact_id, now)
-    return contexts
+    context = build_context()
+    _record(now)
+    return {SILICON: context}

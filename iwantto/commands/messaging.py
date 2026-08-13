@@ -1,10 +1,13 @@
 """Talking: `send`, `see`, `bundle-unread`, `transcribe`, `request-lords`.
 
-`send` is the command that carries the routing rule. A manager talking to its
-own contact sends straight into the Interface DM. Anyone else is reached
-through *their* manager, so a contact only ever hears one Silicon voice and no
-two managers ask them the same question twice. Workers address their manager as
-`manager`, and a manager addresses a running worker by its worker id.
+`send` is how the Silicon talks, and it goes straight into the named contact's
+Interface DM. There used to be a manager per contact, so reaching anyone else
+meant handing the message to *their* manager and hoping it passed it on — four
+sessions between "ask silicon B for X" and anyone starting on X. There is one
+session now, so "I" is the Silicon and one hop is the whole journey.
+
+Workers address the session as `manager`, and the session addresses a running
+worker by its worker id.
 """
 from __future__ import annotations
 
@@ -14,13 +17,7 @@ from helpers.paths import STATE_DIR
 from datetime import datetime, timezone
 
 from iwantto import mailbox, message_log
-from iwantto.routing import (
-    RoutingError,
-    claim_first_contact,
-    first_contact_preamble,
-    is_new_relationship,
-    resolve_target,
-)
+from iwantto.routing import RoutingError, resolve_target
 
 MANAGER_TARGET = "manager"
 
@@ -32,18 +29,6 @@ def _error(message):
 
 
 # --- helpers ---------------------------------------------------------------
-
-
-def _own_label(actor) -> str:
-    """How this Silicon names itself to the manager on the other side."""
-    try:
-        from interface import get_own_profile
-
-        profile = get_own_profile() or {}
-    except Exception:
-        profile = {}
-    silicon_id = str(profile.get("silicon_id") or "").strip()
-    return silicon_id or "this silicon"
 
 
 def _compose_voice(text: str, direction: str, gender: str) -> str:
@@ -140,7 +125,7 @@ def _send_to_manager(actor, message: str) -> str:
 
 def _send_to_worker(actor, worker_id: str, record: dict, message: str) -> str:
     """A manager answering a worker mid-task, without interrupting it."""
-    sender = f"the manager of {actor.contact_id}"
+    sender = "the Silicon"
     mailbox.deliver("worker", worker_id, sender, message)
     state = "running" if record.get("state") == "active" else str(
         record.get("state") or "known"
@@ -151,63 +136,54 @@ def _send_to_worker(actor, worker_id: str, record: dict, message: str) -> str:
     )
 
 
-def _send_direct(actor, target, message: str, kind: str) -> str:
-    """Straight into the Interface DM — only for the caller's own contact."""
-    from interface import reply_contact
+def _send_direct(actor, target, message: str, *, final: bool = False) -> str:
+    """Straight into the target's Interface DM. The only path there is.
 
-    status = reply_contact(message, target.fixed_id, work_continues=True)
-    if str(status).startswith("Error"):
-        raise _error(f"Could not send to {target.label}: {status}")
-    return f"Sent to {target.label}. ({status})"
-
-
-def _send_via_manager(actor, target, message: str) -> str:
-    """Hand the message to the target's manager, starting one if there is none."""
-    from interface import ensure_contact_for_target
-    from interface.messages import send_manager_message
+    ``final`` routes the send through the open work's lifecycle instead, so the
+    durable task card settles before the message goes out and the work closes
+    with it — that ordering is the whole reason the lifecycle exists.
+    """
+    from interface import ensure_contact_for_target, reply_contact
 
     try:
         ensure_contact_for_target(target.kind, target.fixed_id)
     except Exception as exc:
         raise _error(f"Could not reach {target.label}: {exc}")
 
-    body = message
-    if is_new_relationship(target) and claim_first_contact(target.fixed_id):
-        body = f"{first_contact_preamble(_own_label(actor))}\n\n{message}"
+    lifecycle = _closable_work(actor) if final else None
+    if lifecycle is not None:
+        from manager.activity import _contact_has_active_workers
 
-    # A worker is not a manager, so the receiving manager must be told who is
-    # really asking rather than seeing it as a peer manager's message.
-    sender_label = (
-        f"{actor.worker_type or 'worker'} worker `{actor.actor_id}` "
-        f"(working for the manager of {actor.contact_id})"
-        if actor.is_worker
-        else ""
-    )
-
-    status = send_manager_message(
-        actor.contact_id,
-        target.fixed_id,
-        body,
-        target_type=target.kind,
-        sender_label=sender_label,
-    )
-    if str(status).startswith("Error"):
-        raise _error(f"Could not reach {target.label}'s manager: {status}")
-    if target.fixed_id == actor.contact_id:
-        routed = "your own manager"
-    elif target.kind == "carbon":
-        routed = f"{target.label}'s manager"
+        status = lifecycle.deliver_final_reply(
+            message,
+            has_active_workers=_contact_has_active_workers(actor.contact_id),
+            # The lifecycle belongs to the session, but this message is for one
+            # named contact, so the target comes from here rather than from it.
+            reply_sender=lambda text, _owner, **kwargs: reply_contact(
+                text, target.fixed_id, **kwargs
+            ),
+        )
     else:
-        routed = f"{target.label}"
-    return (
-        f"Routed to {routed}. It is their manager's call whether to pass it on. "
-        f"({status})"
-    )
+        status = reply_contact(message, target.fixed_id, work_continues=True)
+    if str(status).startswith("Error"):
+        raise _error(f"Could not send to {target.label}: {status}")
+    closed = " Your open work is closed." if lifecycle is not None else ""
+    return f"Sent to {target.label}. ({status}){closed}"
+
+
+def _closable_work(actor):
+    """The open long task this send should close, if there is one."""
+    try:
+        from interface.long_tasks import registry as lt_registry
+
+        return lt_registry.current_long_task(actor.contact_id)
+    except Exception:
+        return None
 
 
 def cmd_send(args, actor) -> str:
     raw_target = str(args.target or "").strip()
-    message, kind = _build_message(args)
+    message, _kind = _build_message(args)
 
     if raw_target == MANAGER_TARGET:
         return _send_to_manager(actor, message)
@@ -222,13 +198,15 @@ def cmd_send(args, actor) -> str:
     except RoutingError as exc:
         raise _error(str(exc))
 
-    # Direct delivery is the manager's alone. A worker shares its manager's
-    # contact id, so identity has to be checked as well as the target —
-    # otherwise a worker could message the Carbon behind its own manager's back.
-    # An advisor shares the manager's "I" and so shares this too.
-    if actor.acts_as_manager and target.fixed_id == actor.contact_id:
-        return _send_direct(actor, target, message, kind)
-    return _send_via_manager(actor, target, message)
+    # A worker shares the session's contact id but not its voice: it reports to
+    # the session and the session decides what anybody outside hears.
+    if actor.is_worker:
+        raise _error(
+            f"A worker does not talk to {target.label} directly. Send it to "
+            "`manager` and say what you need — the Silicon decides what goes "
+            "out and who it goes to."
+        )
+    return _send_direct(actor, target, message, final=bool(getattr(args, "final", False)))
 
 
 # --- see -------------------------------------------------------------------
@@ -331,10 +309,7 @@ def cmd_bundle_unread(args, actor) -> str:
         else:
             withdrawn.append(event_id)
 
-    if target.fixed_id == actor.contact_id:
-        sent = _send_direct(actor, target, message, "text")
-    else:
-        sent = _send_via_manager(actor, target, message)
+    sent = _send_direct(actor, target, message)
 
     lines = [
         f"Bundled {len(withdrawn)} unread message(s) to {target.label} into one.",
@@ -446,8 +421,8 @@ def add_parser(subparsers, parser_cls):
     send = subparsers.add_parser(
         "send",
         help="message a carbon, a silicon, your manager, or one of your workers",
-        description="Send a message. Routing is automatic: your own contact "
-        "gets it directly, anyone else gets it through their manager.",
+        description="Send a message straight to whoever you name. There are no "
+        "hops: the id you type is the chat it lands in.",
     )
     send.add_argument(
         "target",
@@ -455,6 +430,11 @@ def add_parser(subparsers, parser_cls):
     )
     _add_body_flags(send)
     _add_target_kind_flags(send)
+    send.add_argument(
+        "--final",
+        action="store_true",
+        help="this answers the work you have open: settle its card and close it",
+    )
     send.set_defaults(_handler=cmd_send)
 
     see = subparsers.add_parser(
