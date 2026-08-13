@@ -150,6 +150,45 @@ def unanswered(contact_id: str) -> list:
     ]
 
 
+def span(contact_id: str, from_id: str, to_id: str = "") -> tuple[list, str]:
+    """Messages between two msgids inclusive, oldest first.
+
+    What `iwantto bundle --from X --to Y` names. Returns ``(entries, error)`` —
+    an error rather than an exception, because "I cannot find that msgid" is
+    something the caller has to say out loud before withdrawing anything.
+
+    ``to_id`` empty means "up to the latest", so bundling everything since a
+    message does not require naming its other end.
+    """
+    from_id = str(from_id or "").strip()
+    to_id = str(to_id or "").strip()
+    messages = history(contact_id)
+    if not messages:
+        return [], f"No messages recorded with {contact_id}."
+
+    ids = [str(item.get("event_id") or "") for item in messages]
+    try:
+        start = ids.index(from_id)
+    except ValueError:
+        return [], (
+            f"--from {from_id} is not a message I have with {contact_id}. "
+            "Find the msgid with `iwantto see`."
+        )
+    if to_id:
+        try:
+            end = ids.index(to_id)
+        except ValueError:
+            return [], (
+                f"--to {to_id} is not a message I have with {contact_id}. "
+                "Find the msgid with `iwantto see`."
+            )
+    else:
+        end = len(messages) - 1
+    if end < start:
+        return [], "--from comes after --to. Give them oldest first."
+    return messages[start : end + 1], ""
+
+
 def find(event_id: str) -> tuple[str, dict]:
     """Locate a message by its id across every contact. Returns (contact, entry)."""
     event_id = str(event_id or "").strip()

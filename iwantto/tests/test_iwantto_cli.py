@@ -205,93 +205,29 @@ class SendRoutingTest(_IsolatedState):
         reply.assert_not_called()
         self.assertIn("Could not reach", str(refused.exception))
 
-    def test_final_settles_the_open_work_before_the_message_goes_out(self):
-        """`--final` is what the deleted `reply` tool used to do implicitly.
+    def test_a_send_never_closes_a_work(self):
+        """`--final` is gone. Talking and finishing are separate acts now.
 
-        The lifecycle owns the ordering — the durable card settles first — but
-        the target comes from the command, not from the lifecycle's owner.
+        A message that happens to sound conclusive must not quietly settle a
+        durable card — `iwantto work --completed` is the only thing that does.
         """
         lifecycle = mock.Mock()
-        lifecycle.deliver_final_reply.return_value = "Message sent"
         with (
             mock.patch.object(
                 routing_module, "_local_contacts", return_value=self._contacts()
             ),
             mock.patch("interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.reply_contact", return_value="Message sent"),
             mock.patch(
-                "interface.reply_contact", return_value="Message sent"
-            ) as reply,
-            mock.patch.object(
-                messaging, "_closable_work", return_value=lifecycle
-            ),
-            mock.patch(
-                "manager.activity._contact_has_active_workers", return_value=False
+                "interface.long_tasks.registry.current_long_task",
+                return_value=lifecycle,
             ),
         ):
-            result = _run(
-                ["send", "carbon-b", "--text", "all done", "--final"], self.manager
-            )
+            _run(["send", "carbon-b", "--text", "all done"], self.manager)
+            with self.assertRaises(CommandError):
+                _run(["send", "carbon-b", "--text", "all done", "--final"], self.manager)
 
-        lifecycle.deliver_final_reply.assert_called_once()
-        self.assertEqual(
-            lifecycle.deliver_final_reply.call_args.args[0], "all done"
-        )
-        # The lifecycle's own contact id is ignored; carbon-b is who was named.
-        sender = lifecycle.deliver_final_reply.call_args.kwargs["reply_sender"]
-        sender("all done", SILICON)
-        self.assertEqual(reply.call_args.args, ("all done", "carbon-b"))
-        self.assertIn("Your open work is closed", result)
-
-    def test_a_worker_reaches_its_manager_by_name(self):
-        with (
-            mock.patch(
-                "interface.messages.send_manager_message", return_value="Done. queued"
-            ) as via_manager,
-        ):
-            result = _run(
-                ["send", "manager", "--text", "where do I save this?"], self.worker
-            )
-
-        via_manager.assert_called_once()
-        self.assertEqual(via_manager.call_args.args[1], "carbon-a")
-        self.assertEqual(
-            via_manager.call_args.kwargs["sender_label"],
-            "browser worker `researcher`",
-        )
-        self.assertIn("Sent to your manager", result)
-        # And it is waiting for the manager on its next command.
-        waiting = mailbox_module.drain("manager", "carbon-a")
-        self.assertEqual(len(waiting), 1)
-        self.assertIn("where do I save this?", waiting[0]["message"])
-
-    def test_a_manager_cannot_send_to_manager(self):
-        with self.assertRaises(CommandError) as exc:
-            _run(["send", "manager", "--text", "hi"], self.manager)
-
-        self.assertIn("You are the manager", str(exc.exception))
-
-    def test_a_manager_answers_a_worker_without_stopping_it(self):
-        record = {"carbon_id": "carbon-a", "state": "active"}
-        with mock.patch("worker.registry._get_worker_record", return_value=record):
-            result = _run(
-                ["send", "researcher", "--text", "save it under /tmp"], self.manager
-            )
-
-        self.assertIn("has not been stopped", result)
-        waiting = mailbox_module.drain("worker", "researcher")
-        self.assertEqual(waiting[0]["message"], "save it under /tmp")
-
-    def test_a_worker_belonging_to_another_manager_is_not_addressable(self):
-        record = {"carbon_id": "carbon-z", "state": "active"}
-        with (
-            mock.patch("worker.registry._get_worker_record", return_value=record),
-            mock.patch.object(routing_module, "_local_contacts", return_value={}),
-            mock.patch.object(routing_module, "_trust_directory", return_value=[]),
-        ):
-            with self.assertRaises(CommandError) as exc:
-                _run(["send", "researcher", "--text", "hi"], self.manager)
-
-        self.assertIn("I don't know who", str(exc.exception))
+        lifecycle.deliver_final_reply.assert_not_called()
 
 
 class SendBodyTest(_IsolatedState):
@@ -377,7 +313,7 @@ class SeeAndBundleTest(_IsolatedState):
             _run(["see", "--id", "event-999"], self.manager),
         )
 
-    def test_bundling_takes_back_the_unread_pile_and_replaces_it(self):
+    def test_bundling_takes_back_a_named_range_and_replaces_it(self):
         with (
             mock.patch.object(
                 routing_module, "_local_contacts", return_value=self._contacts
@@ -391,7 +327,10 @@ class SeeAndBundleTest(_IsolatedState):
             ) as replaced_with,
         ):
             result = _run(
-                ["bundle-unread", "carbon-b", "--text", "tldr: two things"],
+                [
+                    "bundle", "carbon-b", "--from", "event-3", "--to", "event-4",
+                    "--text", "tldr: two things",
+                ],
                 self.manager,
             )
 
@@ -402,19 +341,70 @@ class SeeAndBundleTest(_IsolatedState):
         self.assertEqual(
             replaced_with.call_args.args, ("tldr: two things", "carbon-b")
         )
-        self.assertIn("Bundled 2 unread message(s)", result)
+        self.assertIn("Bundled 2 of my 2 message(s)", result)
 
-    def test_bundling_with_nothing_unread_is_refused(self):
+    def test_bundling_works_on_messages_they_have_already_seen(self):
+        """The whole reason the range is named rather than inferred.
+
+        "Unanswered" could not find a pile a carbon has read and ignored, which
+        is exactly the pile worth collapsing.
+        """
         message_log_module.record_inbound("carbon-b", "event-5", "caught up")
+        with (
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts
+            ),
+            mock.patch(
+                "interface.take_back_event", return_value="Taken back"
+            ) as take_back,
+            mock.patch("interface.ensure_contact_for_target", return_value={}),
+            mock.patch("interface.reply_contact", return_value="Message sent"),
+        ):
+            result = _run(
+                ["bundle", "carbon-b", "--from", "event-1", "--text", "tldr"],
+                self.manager,
+            )
+
+        # event-1, event-3, event-4 are mine; event-2 and event-5 are theirs.
+        self.assertEqual(
+            sorted(call.args[0] for call in take_back.call_args_list),
+            ["event-1", "event-3", "event-4"],
+        )
+        self.assertIn("Left 2 of their message(s) in place", result)
+
+    def test_bundling_needs_a_range_and_an_msgid_it_recognises(self):
         with mock.patch.object(
             routing_module, "_local_contacts", return_value=self._contacts
         ):
-            with self.assertRaises(CommandError) as exc:
+            with self.assertRaises(CommandError) as missing:
+                _run(["bundle", "carbon-b", "--text", "tldr"], self.manager)
+            with self.assertRaises(CommandError) as unknown:
                 _run(
-                    ["bundle-unread", "carbon-b", "--text", "tldr"], self.manager
+                    ["bundle", "carbon-b", "--from", "nope", "--text", "tldr"],
+                    self.manager,
                 )
 
-        self.assertIn("Nothing to bundle", str(exc.exception))
+        self.assertIn("Which messages?", str(missing.exception))
+        self.assertIn("not a message I have", str(unknown.exception))
+
+    def test_bundling_refuses_to_withdraw_only_their_words(self):
+        with (
+            mock.patch.object(
+                routing_module, "_local_contacts", return_value=self._contacts
+            ),
+            mock.patch("interface.take_back_event") as take_back,
+        ):
+            with self.assertRaises(CommandError) as exc:
+                _run(
+                    [
+                        "bundle", "carbon-b", "--from", "event-2", "--to", "event-2",
+                        "--text", "tldr",
+                    ],
+                    self.manager,
+                )
+
+        take_back.assert_not_called()
+        self.assertIn("not what they did", str(exc.exception))
 
 
 class DispatcherTest(_IsolatedState):
@@ -437,7 +427,7 @@ class DispatcherTest(_IsolatedState):
             ),
             contextlib.redirect_stderr(buffer),
         ):
-            code = cli_main(["remind", "carbon-b", "--in", "banana", "--text", "x"])
+            code = cli_main(["remember", "--in", "banana", "--text", "x"])
 
         self.assertEqual(code, 1)
         self.assertIn("--in takes a number then m, h, or d", buffer.getvalue())

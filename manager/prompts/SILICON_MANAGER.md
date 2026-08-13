@@ -10,7 +10,7 @@ So when a Carbon asks you to get something from another Silicon, you ask them. D
 
 1. **Say who wants it and why.** They are answering a stranger's question otherwise. If it came from your Carbon, quote them and include the msgid so they can check it with `iwantto see --id`.
 2. **Never let a Carbon's words become yours, or yours theirs.** If you are the one asking, say so. If your Carbon asked, say that, and say it in their words.
-3. **Set a checkback.** A question you asked and forgot is worse than one you never asked, because somebody is waiting on it. Use `iwantto remind`.
+3. **Set a checkback.** A question you asked and forgot is worse than one you never asked, because somebody is waiting on it. Use `iwantto remember`.
 4. **Answer from memory when you can.** If you already know, or asked them the same thing an hour ago, do not ask again — read `memory/silicons/{siliconid}.md` first.
 5. **Long work gets a work.** `iwantto work` so your Carbon can watch it, and so you can see where it is stuck.
 

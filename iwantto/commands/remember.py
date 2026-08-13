@@ -1,13 +1,16 @@
-"""`iwantto remind` — the only way a Silicon acts without being spoken to.
+"""`iwantto remember` — the only way a Silicon acts without being spoken to.
+
+A reminder is for the Silicon itself. It used to take a target, because there was
+a manager per contact and one could poke another's; there is one session now, so
+"who is this for" has exactly one answer and asking it was noise.
 
 Glass schedules on five-field cron expressions, so a one-off reminder (`--in
 30m`, `--at <ISO>`) is stored as a cron that matches exactly one minute and is
 deleted once it has fired. The reaper that deletes it runs on the event loop;
 see :func:`reap_fired_reminders`.
 
-Reminder ids are local and stable. Glass cron ids are not, because changing who
-a reminder is for means deleting and recreating it — Glass's cron update cannot
-change targets. Holding our own id means `--id` keeps working across that.
+Reminder ids are local and stable, and stay that way: Glass cron ids are not
+guaranteed across a recreate, so holding our own id means `--id` keeps working.
 """
 from __future__ import annotations
 
@@ -17,7 +20,6 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from iwantto.routing import RoutingError, resolve_target
 from helpers.paths import DATA_ROOT, STATE_DIR
 from helpers.state import read_json, update_json
 
@@ -81,15 +83,24 @@ def _one_shot_trigger(when: datetime) -> str:
     return f"{moment.minute} {moment.hour} {moment.day} {moment.month} *"
 
 
-def _targets_for(names, kind_hint: str = "") -> list:
-    targets = []
-    for name in names:
-        try:
-            target = resolve_target(name, kind_hint=kind_hint)
-        except RoutingError as exc:
-            raise _error(str(exc))
-        targets.append({"kind": target.kind, "id": target.fixed_id})
-    return targets
+def _own_target() -> list:
+    """The Silicon itself, as a Glass cron target.
+
+    A reminder is stored in Glass so it survives a reinstall, and a Glass cron
+    record needs somebody to be for. That somebody is us. :mod:`interface.cron`
+    recognises our own id and fires the reminder into the session rather than
+    trying to open a DM with ourselves.
+    """
+    from interface import get_own_profile
+
+    silicon_id = str((get_own_profile() or {}).get("silicon_id") or "").strip()
+    if not silicon_id:
+        raise _error(
+            "I do not know my own Glass identity yet, so I cannot store a "
+            "reminder that would survive a restart. Try again once Glass has "
+            "confirmed who I am."
+        )
+    return [{"kind": "silicon", "id": silicon_id}]
 
 
 def _create_glass_cron(trigger: str, task: str, targets: list, timezone_name: str) -> str:
@@ -140,23 +151,19 @@ def _get(reminder_id: str) -> dict:
     if not isinstance(entry, dict):
         raise _error(
             f"No reminder with id {reminder_id!r}. List them with "
-            "`iwantto remind <someone> --list`."
+            "`iwantto remember --list`."
         )
     return entry
 
 
 def _describe(reminder_id: str, entry: dict) -> str:
-    who = ", ".join(
-        f"{target.get('kind')}:{target.get('id')}"
-        for target in entry.get("targets") or []
-    )
     when = (
         f"once at {entry.get('fire_at_iso')}"
         if entry.get("one_shot")
         else f"cron {entry.get('trigger')} ({entry.get('timezone')})"
     )
     task = " ".join(str(entry.get("task") or "").split())[:160]
-    return f"{reminder_id} — {when} → {who}\n    {task}"
+    return f"{reminder_id} — {when}\n    {task}"
 
 
 # --- create ----------------------------------------------------------------
@@ -167,8 +174,6 @@ def _create(args, actor) -> str:
     if not text:
         raise _error("A reminder needs --text: what should you be reminded of?")
 
-    # Work out *when* before *who*: the schedule is a local parse, so a
-    # malformed --in is reported without a contact lookup first.
     one_shot = False
     fire_at = None
     timezone_name = str(args.tz or "UTC")
@@ -189,9 +194,7 @@ def _create(args, actor) -> str:
             "Say when: --in 2m/3h/4d, --at <ISO 8601>, or --cron \"0 9 * * 1-5\"."
         )
 
-    kind_hint = "carbon" if args.carbon else "silicon" if args.silicon else ""
-    targets = _targets_for([args.target], kind_hint)
-
+    targets = _own_target()
     cron_id = _create_glass_cron(trigger, text, targets, timezone_name)
     reminder_id = f"r-{uuid.uuid4().hex[:10]}"
     _store(
@@ -222,54 +225,6 @@ def _create(args, actor) -> str:
 # --- manage ----------------------------------------------------------------
 
 
-def _recreate(reminder_id: str, entry: dict, targets: list) -> None:
-    """Glass cannot change a cron's targets, so replace the cron in place."""
-    _delete_glass_cron(str(entry.get("cron_id") or ""))
-    cron_id = _create_glass_cron(
-        str(entry.get("trigger") or ""),
-        str(entry.get("task") or ""),
-        targets,
-        str(entry.get("timezone") or "UTC"),
-    )
-    updated = dict(entry)
-    updated["cron_id"] = cron_id
-    updated["targets"] = targets
-    _store(reminder_id, updated)
-
-
-def _include(args, actor) -> str:
-    entry = _get(args.id)
-    added = _targets_for([args.include])[0]
-    targets = list(entry.get("targets") or [])
-    if any(
-        target.get("id") == added["id"] and target.get("kind") == added["kind"]
-        for target in targets
-    ):
-        return f"{added['id']} is already on reminder {args.id}."
-    targets.append(added)
-    _recreate(args.id, entry, targets)
-    return f"Added {added['kind']}:{added['id']} to reminder {args.id}."
-
-
-def _exclude(args, actor) -> str:
-    entry = _get(args.id)
-    removed = _targets_for([args.exclude])[0]
-    targets = [
-        target
-        for target in entry.get("targets") or []
-        if not (
-            target.get("id") == removed["id"]
-            and target.get("kind") == removed["kind"]
-        )
-    ]
-    if len(targets) == len(entry.get("targets") or []):
-        return f"{removed['id']} was not on reminder {args.id}."
-    if not targets:
-        return _delete_reminder(args.id, entry) + " (its last target was removed)"
-    _recreate(args.id, entry, targets)
-    return f"Removed {removed['kind']}:{removed['id']} from reminder {args.id}."
-
-
 def _delete_reminder(reminder_id: str, entry: dict) -> str:
     _delete_glass_cron(str(entry.get("cron_id") or ""))
 
@@ -281,43 +236,22 @@ def _delete_reminder(reminder_id: str, entry: dict) -> str:
 
 
 def _list(args, actor) -> str:
-    kind_hint = "carbon" if args.carbon else "silicon" if args.silicon else ""
-    try:
-        target = resolve_target(args.target, kind_hint=kind_hint)
-    except RoutingError as exc:
-        raise _error(str(exc))
-    matching = {
-        reminder_id: entry
-        for reminder_id, entry in _reminders().items()
-        if any(
-            item.get("id") == target.fixed_id
-            for item in entry.get("targets") or []
-        )
-    }
-    if not matching:
-        return f"No reminders set for {target.label}."
+    reminders = _reminders()
+    if not reminders:
+        return "You have no reminders set."
     return "\n".join(
         _describe(reminder_id, entry)
-        for reminder_id, entry in sorted(matching.items())
+        for reminder_id, entry in sorted(reminders.items())
     )
 
 
-def cmd_remind(args, actor) -> str:
+def cmd_remember(args, actor) -> str:
     if args.id:
         entry = _get(args.id)
         if args.delete:
             return _delete_reminder(args.id, entry)
-        if args.include:
-            return _include(args, actor)
-        if args.exclude:
-            return _exclude(args, actor)
         return _describe(args.id, entry)
 
-    if not args.target:
-        raise _error(
-            "Who is the reminder for? `iwantto remind <carbonid/siliconid> "
-            '--in 2h --text "..."`, or act on one with `--id <reminder-id>`.'
-        )
     if args.list:
         return _list(args, actor)
     return _create(args, actor)
@@ -346,10 +280,11 @@ def reap_fired_reminders() -> int:
 
 def add_parser(subparsers, parser_cls):
     parser = subparsers.add_parser(
-        "remind",
-        help="set a one-off or recurring reminder — your only way to be proactive",
+        "remember",
+        help="remind yourself later — your only way to be proactive",
+        description="Reminders are for you. When one fires you are woken with "
+        "its text and decide what to do about it.",
     )
-    parser.add_argument("target", nargs="?", help="carbon id or silicon id")
     parser.add_argument(
         "--in",
         dest="in_",
@@ -360,11 +295,7 @@ def add_parser(subparsers, parser_cls):
     parser.add_argument("--cron", help='recurring, e.g. "0 9 * * 1-5"')
     parser.add_argument("--tz", help="IANA zone for --cron, e.g. Asia/Dubai")
     parser.add_argument("--text", help="what to be reminded of")
-    parser.add_argument("--list", action="store_true", help="list their reminders")
+    parser.add_argument("--list", action="store_true", help="list your reminders")
     parser.add_argument("--id", help="an existing reminder id")
-    parser.add_argument("--include", help="add a carbon or silicon to it")
-    parser.add_argument("--exclude", help="remove a carbon or silicon from it")
     parser.add_argument("--delete", action="store_true", help="delete it")
-    parser.add_argument("--carbon", action="store_true")
-    parser.add_argument("--silicon", action="store_true")
-    parser.set_defaults(_handler=cmd_remind)
+    parser.set_defaults(_handler=cmd_remember)

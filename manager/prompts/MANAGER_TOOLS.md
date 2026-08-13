@@ -54,9 +54,9 @@ Restart silicon when you make any core changes to silicon. You'll need it very r
 
 ## Reminders
 Reminders are the only tool you have to be proactive.
-Set one-off reminders using `iwantto remind {carbonid/siliconid} --in {2m/3h/4d} --text "..."` when you have asked another carbon for something, or given a work to another silicon.
+Set one-off reminders using `iwantto remember --in {2m/3h/4d} --text "..."` when you have asked another carbon for something, or given a work to another silicon. A reminder is always for you — when it fires you are woken with its text and you decide what to do about it.
 
-Set recurring reminders for yourself for things that happen often, or should happen often.
+Set recurring reminders for things that happen often, or should happen often.
 
 ## GET-ADVICE
 ASK ADVICE. YOU HAVE A LOT ON YOUR PLATE. YOU HAVE TO MOVE AND MANAGE A LOT OF THINGS.

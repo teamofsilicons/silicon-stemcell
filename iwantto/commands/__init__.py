@@ -10,7 +10,7 @@ from iwantto.commands import (
     aux,
     delegate,
     messaging,
-    remind,
+    remember,
     trust,
     work,
 )
@@ -20,7 +20,7 @@ COMMAND_MODULES = (
     messaging,
     work,
     trust,
-    remind,
+    remember,
     advice,
     delegate,
     aux,

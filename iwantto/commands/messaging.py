@@ -1,4 +1,4 @@
-"""Talking: `send`, `see`, `bundle-unread`, `transcribe`, `request-lords`.
+"""Talking: `send`, `see`, `bundle`, `transcribe`, `request-lords`.
 
 `send` is how the Silicon talks, and it goes straight into the named contact's
 Interface DM. There used to be a manager per contact, so reaching anyone else
@@ -136,12 +136,13 @@ def _send_to_worker(actor, worker_id: str, record: dict, message: str) -> str:
     )
 
 
-def _send_direct(actor, target, message: str, *, final: bool = False) -> str:
+def _send_direct(actor, target, message: str) -> str:
     """Straight into the target's Interface DM. The only path there is.
 
-    ``final`` routes the send through the open work's lifecycle instead, so the
-    durable task card settles before the message goes out and the work closes
-    with it — that ordering is the whole reason the lifecycle exists.
+    A send never closes a work. Talking and finishing are separate acts now —
+    `iwantto work --completed` settles the durable card, and it says so in the
+    chat itself, so a message that happens to sound conclusive cannot quietly
+    end something.
     """
     from interface import ensure_contact_for_target, reply_contact
 
@@ -150,35 +151,10 @@ def _send_direct(actor, target, message: str, *, final: bool = False) -> str:
     except Exception as exc:
         raise _error(f"Could not reach {target.label}: {exc}")
 
-    lifecycle = _closable_work(actor) if final else None
-    if lifecycle is not None:
-        from manager.activity import _contact_has_active_workers
-
-        status = lifecycle.deliver_final_reply(
-            message,
-            has_active_workers=_contact_has_active_workers(actor.contact_id),
-            # The lifecycle belongs to the session, but this message is for one
-            # named contact, so the target comes from here rather than from it.
-            reply_sender=lambda text, _owner, **kwargs: reply_contact(
-                text, target.fixed_id, **kwargs
-            ),
-        )
-    else:
-        status = reply_contact(message, target.fixed_id, work_continues=True)
+    status = reply_contact(message, target.fixed_id, work_continues=True)
     if str(status).startswith("Error"):
         raise _error(f"Could not send to {target.label}: {status}")
-    closed = " Your open work is closed." if lifecycle is not None else ""
-    return f"Sent to {target.label}. ({status}){closed}"
-
-
-def _closable_work(actor):
-    """The open long task this send should close, if there is one."""
-    try:
-        from interface.long_tasks import registry as lt_registry
-
-        return lt_registry.current_long_task(actor.contact_id)
-    except Exception:
-        return None
+    return f"Sent to {target.label}. ({status})"
 
 
 def cmd_send(args, actor) -> str:
@@ -206,7 +182,7 @@ def cmd_send(args, actor) -> str:
             "`manager` and say what you need — the Silicon decides what goes "
             "out and who it goes to."
         )
-    return _send_direct(actor, target, message, final=bool(getattr(args, "final", False)))
+    return _send_direct(actor, target, message)
 
 
 # --- see -------------------------------------------------------------------
@@ -273,12 +249,17 @@ def cmd_see(args, actor) -> str:
 # --- bundle-unread ---------------------------------------------------------
 
 
-def cmd_bundle_unread(args, actor) -> str:
-    """Retract the pile of unanswered messages and replace it with one summary.
+def cmd_bundle(args, actor) -> str:
+    """Retract a named range of messages and replace it with one summary.
 
-    Take-back is the mechanism: each unanswered message is withdrawn, then the
-    summary is sent in their place, so the contact opens the conversation to one
-    readable message instead of eleven.
+    Take-back is the mechanism: each message this Silicon sent in the range is
+    withdrawn, then the summary is sent in their place, so the contact opens the
+    conversation to one readable message instead of eleven.
+
+    The range is named rather than inferred, because the useful case is a carbon
+    who *has* seen the pile and still not replied — "unanswered" would not have
+    found it. Their own messages inside the range are left alone; withdrawing
+    somebody else's words is not ours to do.
     """
     from interface import take_back_event
 
@@ -291,15 +272,26 @@ def cmd_bundle_unread(args, actor) -> str:
         raise _error(str(exc))
 
     message, _kind = _build_message(args)
-    pending = message_log.unanswered(target.fixed_id)
-    if not pending:
+    if not getattr(args, "from_id", None):
         raise _error(
-            f"Nothing to bundle: {target.label} has replied to everything. "
-            "Bundling only works on unread messages."
+            "Which messages? `iwantto bundle <target> --from <msgid> --to "
+            "<msgid>`. Find the msgids with `iwantto see --last 20 <target>`."
+        )
+    entries, error = message_log.span(
+        target.fixed_id, args.from_id, getattr(args, "to_id", "") or ""
+    )
+    if error:
+        raise _error(error)
+
+    mine = [entry for entry in entries if entry.get("direction") == message_log.OUT]
+    if not mine:
+        raise _error(
+            f"Nothing of mine in that range — all {len(entries)} message(s) are "
+            f"{target.label}'s. Bundling replaces what I said, not what they did."
         )
 
     withdrawn, failures = [], []
-    for entry in pending:
+    for entry in mine:
         event_id = str(entry.get("event_id") or "")
         if not event_id:
             continue
@@ -312,13 +304,17 @@ def cmd_bundle_unread(args, actor) -> str:
     sent = _send_direct(actor, target, message)
 
     lines = [
-        f"Bundled {len(withdrawn)} unread message(s) to {target.label} into one.",
+        f"Bundled {len(withdrawn)} of my {len(mine)} message(s) to "
+        f"{target.label} into one.",
         sent,
     ]
+    theirs = len(entries) - len(mine)
+    if theirs:
+        lines.append(f"Left {theirs} of their message(s) in place.")
     if failures:
         lines.append(
-            f"{len(failures)} could not be taken back (already seen, or too "
-            "old): " + "; ".join(failures[:5])
+            f"{len(failures)} could not be taken back (too old, or Glass "
+            "refused): " + "; ".join(failures[:5])
         )
     return "\n".join(lines)
 
@@ -430,11 +426,6 @@ def add_parser(subparsers, parser_cls):
     )
     _add_body_flags(send)
     _add_target_kind_flags(send)
-    send.add_argument(
-        "--final",
-        action="store_true",
-        help="this answers the work you have open: settle its card and close it",
-    )
     send.set_defaults(_handler=cmd_send)
 
     see = subparsers.add_parser(
@@ -455,13 +446,27 @@ def add_parser(subparsers, parser_cls):
     see.set_defaults(_handler=cmd_see)
 
     bundle = subparsers.add_parser(
-        "bundle-unread",
-        help="take back unread messages and replace them with one summary",
+        "bundle",
+        help="take back a range of your messages and replace them with one summary",
+        description="For when they have seen the pile and still not replied. "
+        "Name the range with msgids from `iwantto see`.",
     )
     bundle.add_argument("target", help="carbon id or silicon id")
+    bundle.add_argument(
+        "--from",
+        dest="from_id",
+        metavar="MSGID",
+        help="first message of the range",
+    )
+    bundle.add_argument(
+        "--to",
+        dest="to_id",
+        metavar="MSGID",
+        help="last message of the range (defaults to the most recent)",
+    )
     _add_body_flags(bundle)
     _add_target_kind_flags(bundle)
-    bundle.set_defaults(_handler=cmd_bundle_unread)
+    bundle.set_defaults(_handler=cmd_bundle)
 
     transcribe = subparsers.add_parser(
         "transcribe", help="transcribe an audio or video file"

@@ -433,16 +433,20 @@ def _complete(args, actor) -> str:
 def _summary_line(work_id: str, work: dict) -> str:
     tasks = work.get("tasks") or {}
     done = sum(1 for task in tasks.values() if task.get("state") == COMPLETED)
-    owner = work.get("owner_contact_id") or "?"
     when = work.get("completed_at_iso") or work.get("created_at_iso") or ""
     return (
         f"[{work.get('state')}] {work_id} — {work.get('name')} "
-        f"({done}/{len(tasks)} tasks) owned by {owner} {when}"
+        f"({done}/{len(tasks)} tasks) {when}"
     )
 
 
 def active_works(contact_id: str = "") -> list:
-    """Open works, optionally only those owned by one contact's manager."""
+    """Open works, optionally only those owned by one contact.
+
+    ``contact_id`` survives because callers still pass it, but there is one
+    session now, so in practice every work is owned by it and the filter matches
+    everything or nothing.
+    """
     return [
         (work_id, work)
         for work_id, work in sorted(_works().items())
@@ -453,15 +457,7 @@ def active_works(contact_id: str = "") -> list:
 
 
 def _list_active(args, actor) -> str:
-    by = str(args.by or "")
-    if by:
-        from iwantto.routing import RoutingError, resolve_target
-
-        try:
-            by = resolve_target(by).fixed_id
-        except RoutingError as exc:
-            raise _error(str(exc))
-    entries = active_works(by)
+    entries = active_works()
     if not entries:
         return "No active work."
     return "\n".join(_summary_line(work_id, work) for work_id, work in entries)
@@ -469,20 +465,11 @@ def _list_active(args, actor) -> str:
 
 def _list_last(args, actor) -> str:
     limit = int(args.last or 10)
-    by = str(args.by or "")
-    if by:
-        from iwantto.routing import RoutingError, resolve_target
-
-        try:
-            by = resolve_target(by).fixed_id
-        except RoutingError as exc:
-            raise _error(str(exc))
     finished = [
         (work_id, work)
         for work_id, work in _works().items()
         if isinstance(work, dict)
         and work.get("state") == COMPLETED
-        and (not by or work.get("owner_contact_id") == by)
     ]
     finished.sort(key=lambda item: float(item[1].get("completed_at") or 0.0))
     finished = finished[-limit:] if limit > 0 else finished
@@ -579,5 +566,4 @@ def add_parser(subparsers, parser_cls):
 
     parser.add_argument("--active", action="store_true", help="list open work")
     parser.add_argument("--last", type=int, help="list the last N completed works")
-    parser.add_argument("--by", help="filter by a carbon's or silicon's manager")
     parser.set_defaults(_handler=cmd_work)

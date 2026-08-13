@@ -1,4 +1,18 @@
 """The final reply, queued durably and flushed once the card is terminal.
+
+This existed to stop a Carbon reading "all done" before the durable card agreed
+it was done: the closing message was held here until the task went terminal. Its
+only producer was the `reply` manager tool, then `iwantto send --final`, and both
+are gone — finishing a work is `iwantto work --completed`, which settles the card
+and says so itself, so there is no longer an ordering to enforce between a
+message and a card.
+
+ponytail: nothing queues a final reply any more, so `pending_reply` is always
+empty on a fresh instance and this whole mixin is inert. It is kept because an
+instance updated mid-flight can still have one persisted in
+`long_task_state.json`, and the timer and recovery paths that read it are what
+deliver that last message instead of stranding it. Delete once no deployed
+instance can still hold one.
 """
 from __future__ import annotations
 from interface.long_tasks import constants

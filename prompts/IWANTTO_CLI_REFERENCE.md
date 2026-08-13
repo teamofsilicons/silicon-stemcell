@@ -10,15 +10,13 @@ iwantto cli knows who is triggering it. so as a manager, or a worker you can jus
 `iwantto send {carbonid/siliconid} --voice "[angry] where the [emphasis] fuck are you?"`
 `iwantto send {carbonid/siliconid} --voice "[slow] There are 3 types of people [short pause] and you my mister are the one who makes all other look like we are not even trying" --voice-direction "Speak like Gandlaf is giving a speech. Slow and Deep." --voice-gender "{male/female}"`
 
-sends a text, file or voice (tts) message to the carbon or silicon you want. the id you type is the chat it lands in — there are no hops and nobody in between. works for contacts you have never spoken to before too. try not to send long msg to carbons, but rather send multiple messages.
-
-`iwantto send {carbonid/siliconid} --text "..." --final` use this when the message *answers* the work you have open. it settles the durable task card first and closes the work with it. without `--final` the work stays open, which is what you want for progress and back-and-forth.
+sends a text, file or voice (tts) message to the carbon or silicon you want. this also works for contacts you have never spoken to before. try not to send long msg to carbons, but rather send multiple messages. for silicons only, you can send all the details in one message. --text supports and renders as markdown.
 
 For voice, real the full guide at 'prompts/VOICE_DIRECTION.md'
 
 `iwantto send manager --text "a question, or clarification, or update"`. if you are a worker, you can use this to ask a question, or give update, or clarification before exiting back to your manager. you can use this mid-run to ask or send something.
 
-`iwantto send worker-id --text "a new request, or answering a question asked by a worker"`. as a manager, you can use this to send a message to a worker without stopping it from doing what its doing. it can be used to send a update on a task, or to answer a question that a worker asked you.
+`iwantto send {worker-id} --text "a new request, or answering a question asked by a worker"`. as a manager, you can use this to send a message to a worker without stopping it from doing what its doing. it can be used to send a update on a task, or to answer a question that a worker asked you.
 
 
 ### iwantto see
@@ -28,8 +26,8 @@ For voice, real the full guide at 'prompts/VOICE_DIRECTION.md'
 `iwantto see --id {msgid}` will show you the msg logs of a given msg id, this can be used to verify what a silicon is saying correct, or to check verbaitim.
 
 
-### iwantto bundle-unread
-`iwantto bundle-unread {carbonid/siliconid} --{text/voice/file} "you seem busy; tldr:..."` this is used to bunch up multiple messages when its been left unread for long, into one msg, shorter, summarized version so its easier to read and understand. it can only be done with unread messages. always use see --unread to see the unread messages before bundling.
+### iwantto bundle
+`iwantto bundle {carbonid/siliconid} --from {msg id} --to {msg id} --{text/voice/file} "you seem busy; tldr:..."` this is used to bunch up multiple messages when its been left unread for long into one msg, shorter, summarized version so its easier to read and understand. always use see --unread or --last to see the messages before bundling. use this when a carbon hasn't replied to you even after seeing your messages.
 
 
 ### iwantto transcribe
@@ -58,9 +56,9 @@ when you're working on a big work – it is imp to keep your carbon updated on w
 
 `iwantto work --id "market-research" --expand` will show you all the tasks and sub-tasks with their ids and statuses, descriptions and everything.
 
-`iwantto work --id "market-research" --task {task-id} --start "note on starting the task"` now marks the task as started. start a task when you or someone is actively working on this task. you can start multiple tasks at once if more than one thing is being worked on at once.
+`iwantto work --id "market-research" --task {task-id} --start "note on starting the task"` now marks the task as started. start a task when you or someone is actively working on this task. you can start multiple tasks at once if more than one thing is being worked on at once. MAKE SURE TO MARK AS STARTED WHEN YOU ARE WORKING ON A GIVEN TODO.
 
-`iwantto work --id "market-research" --task {task-id} --end "end note, could be learning or something"` marks the task as finished with a note you can add that will be visible to carbon on what was this like to finish the work.
+`iwantto work --id "market-research" --task {task-id} --end "end note, could be learning or something"` marks the task as finished with a note you can add that will be visible to carbon on what was this like to finish the work. END A RUNNING TODO WHEN YOU ARE DONE. IT IS AUTOMATICALLY SENT AS AN UPDATE.
 
 `iwantto work --id "market-research" --task {task-id} --add-subtask --title "Read Reddit" --description "I think reddit should..."` adds a subtask inside a task. this helps with managing long tasks by breaking it down into subtask. every task, or subtask requires a title and a description so that all things are always documented and the way to create things remain similar. this returns the subtask id. you can also get the subtask id from the --expand command on the entire work. or using --list-subtask.
 
@@ -69,17 +67,16 @@ when you're working on a big work – it is imp to keep your carbon updated on w
 `iwantto work --id "market-research" --subtask {subtask-id} --start "start note"`
 `iwantto work --id "market-research" --subtask {subtask-id} --end "end note, could be learning or something"`
 
-there is no way to delete a task, or subtask. if you want to delete, just mark it as --end and write why did you leave it undone.
+there is no way to delete a task, or subtask. if you want to delete, just mark it as --end and write why did you leave it undone. IT IS AUTOMATICALLY SENT AS AN UPDATE WHEN ENDED.
 
 `iwantto work --id "market-research" --dispatch-update --title "Part 1 Completed with interesting learnings" --description "this is what happened until now..."` a one liner update that is sent about this work when a set of things are done. this will ping the carbon. marking tasks and subtasks with --end doesnt ping the carbon. use this to show what you've done so far. it is shown in a different looking UI.
 
-`iwantto work --id "market-research" --blocker --title "What is the...?" --description "What caused this blocker was..."` this is also pinged to the carbon when you hit a blocker when doing a work. use this whenever you need any input or decision from the carbon. it is shown in a different looking UI, and also sent as a notification so a carbon is more likely to reply to you.
+`iwantto work --id "market-research" --blocker --title "What is the...?" --description "What caused this blocker was..."` this is also pinged to the carbon when you hit a blocker when doing a work. use this whenever you need any input or decision from the carbon. it is shown in a different looking UI, and also sent as a notification so a carbon is more likely to reply to you. USE THIS INSTEAD OF A SIMPLE SEND MESSAGE WHEN YOU RUN INTO A BLOCKER.
 
 `iwantto work --id "market-research" --completed --title "MARKET RESEARCH COMPLETED BABY!" --description "finishing note"` feel free to write paragraphs and all as notes. this is used to finally mark the work as completed. this is then pinged and shown as a different UI.
 
-`iwantto work --active` lists all currently active works by you, or other managers.
-`iwantto work --last 10` lists last 10 completed works by you or other managers.
-`iwantto work --last 10` lists your last 10 completed works.
+`iwantto work --active` lists all currently active works by you.
+`iwantto work --last 10` lists last 10 completed works by you.
 
 
 
@@ -97,15 +94,14 @@ there is no way to delete a task, or subtask. if you want to delete, just mark i
 
 
 ## How to use crons/reminders
-`iwantto remind {carbonid/siliconid} --in {2m/3h/4d} --text "..."` reminds a given carbon or silcon manager in 2min, 3hours or 4days. second, month or year is not supported. it is relative to "now". so if set at 3:12pm EST to remind --in 2d, it will remind at 3:12pm 2 days from now. this can be used as "checkbacks".
+`iwantto remember --in {2m/3h/4d} --text "..."` reminds you in 2min, 3hours or 4days. second, month or year is not supported. it is relative to "now". so if set at 3:12pm EST to remind --in 2d, it will remind at 3:12pm 2 days from now. this can be used as "checkbacks".
 
-`iwantto remind {carbonid/siliconid} --at {ISO 8601 datetime} --text "..."` is triggered on the exact date, time and timezone mentioned.
-`iwantto remind {carbonid/siliconid} --cron "0 9 * * 1-5" --tz {IANA (TZDB) Zone ID} --text "..."` is how you can set recurring reminders in a certain timezone (eg: Asia/Dubai)
+`iwantto remember --at {ISO 8601 datetime} --text "..."` is triggered on the exact date, time and timezone mentioned.
+`iwantto remember --cron "0 9 * * 1-5" --tz {IANA (TZDB) Zone ID} --text "..."` is how you can set recurring reminders in a certain timezone (eg: Asia/Dubai)
 
-`iwantto remind {carbonid/siliconid} --list` will list all reminders set for a given carbon or silicon
-`iwantto remind --id {reminder-id} --include {carbonid/siliconid}` will add a carbon or silicon to an already created reminder.
-`iwantto remind --id {reminder-id} --exclude {carbonid/siliconid}` will exclude a carbon or silicon from an already created reminder. the reminder will be deleted if no carbon or silicon is associated with a reminder.
-`iwantto remind --id {reminder-id} --delete` will delete a reminder.
+`iwantto remember --list` will list all reminders set for you.
+
+`iwantto remember --id {reminder-id} --delete` will delete a reminder.
 
 there is no way to update a reminder. you can delete a reminder and make it again to update it.
 

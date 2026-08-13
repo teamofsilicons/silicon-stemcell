@@ -1,12 +1,13 @@
-"""`iwantto work` and `iwantto remind`.
+"""`iwantto work` and `iwantto remember`.
 
 Work is the three-level model — work, task, subtask — that Glass does not
 natively store, so what matters is that the local structure stays coherent and
 that every change is pushed outward for the carbon to see.
 
-Reminders are the only way a Silicon acts without being spoken to. Glass only
-schedules cron expressions, so a one-off reminder is a cron that matches one
-minute and is deleted after it fires.
+Reminders are the only way a Silicon acts without being spoken to, and they are
+its own: one session means "who is this for" has one answer. Glass only schedules
+cron expressions, so a one-off reminder is a cron that matches one minute and is
+deleted after it fires.
 """
 import os
 import tempfile
@@ -14,10 +15,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from helpers.silicon import SILICON
 from iwantto import routing as routing_module
 from iwantto.actor import MANAGER, Actor
 from iwantto.cli import CommandError, build_parser
-from iwantto.commands import remind as remind_module
+from iwantto.commands import remember as remember_module
 from iwantto.commands import work as work_module
 
 
@@ -27,7 +29,7 @@ def _run(argv, actor):
 
 
 MANAGER_ACTOR = Actor(
-    kind=MANAGER, actor_id="carbon-a", contact_id="carbon-a", token="t"
+    kind=MANAGER, actor_id=SILICON, contact_id=SILICON, token="t"
 )
 
 
@@ -203,20 +205,12 @@ class WorkTest(unittest.TestCase):
         self.assertIn("No active work", _run(["work", "--active"], MANAGER_ACTOR))
         self.assertIn("market-research", _run(["work", "--last", "10"], MANAGER_ACTOR))
 
-    def test_work_can_be_listed_by_the_manager_that_started_it(self):
+    def test_listing_work_takes_no_owner_because_there_is_only_one(self):
+        """`--by` filtered work by whose manager started it. Nobody else has one."""
         self._new_work()
-        contacts = {
-            "carbon-a": {"contact_type": "carbon"},
-            "carbon-b": {"contact_type": "carbon"},
-        }
-        with mock.patch.object(
-            routing_module, "_local_contacts", return_value=contacts
-        ):
-            mine = _run(["work", "--active", "--by", "carbon-a"], MANAGER_ACTOR)
-            theirs = _run(["work", "--active", "--by", "carbon-b"], MANAGER_ACTOR)
-
-        self.assertIn("market-research", mine)
-        self.assertIn("No active work", theirs)
+        self.assertIn("market-research", _run(["work", "--active"], MANAGER_ACTOR))
+        with self.assertRaises(CommandError):
+            _run(["work", "--active", "--by", "carbon-b"], MANAGER_ACTOR)
 
     def _failing_glass(self):
         """Stop mocking _glass so its own failure handling runs."""
@@ -288,60 +282,90 @@ class WorkTest(unittest.TestCase):
         self.assertIn("Renamed 'market-research'", result)
 
 
-class RemindTest(unittest.TestCase):
+class RememberTest(unittest.TestCase):
     def setUp(self):
         self._temp = tempfile.TemporaryDirectory()
         self.addCleanup(self._temp.cleanup)
         patcher = mock.patch.object(
-            remind_module,
+            remember_module,
             "REMINDERS_FILE",
             os.path.join(self._temp.name, "reminders.json"),
         )
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.contacts = {
-            "carbon-a": {"contact_type": "carbon"},
-            "carbon-b": {"contact_type": "carbon"},
-        }
-        contacts_patcher = mock.patch.object(
-            routing_module, "_local_contacts", return_value=self.contacts
+        own = mock.patch.object(
+            remember_module,
+            "_own_target",
+            return_value=[{"kind": "silicon", "id": "me"}],
         )
-        contacts_patcher.start()
-        self.addCleanup(contacts_patcher.stop)
+        own.start()
+        self.addCleanup(own.stop)
 
     def test_a_relative_reminder_becomes_a_one_shot_cron(self):
         with mock.patch.object(
-            remind_module, "_create_glass_cron", return_value="cron-1"
+            remember_module, "_create_glass_cron", return_value="cron-1"
         ) as create:
             result = _run(
-                ["remind", "carbon-b", "--in", "2h", "--text", "check on it"],
+                ["remember", "--in", "2h", "--text", "check on it"],
                 MANAGER_ACTOR,
             )
 
         trigger = create.call_args.args[0]
         self.assertRegex(trigger, r"^\d+ \d+ \d+ \d+ \*$")
         self.assertEqual(create.call_args.args[1], "check on it")
-        self.assertEqual(create.call_args.args[2], [{"kind": "carbon", "id": "carbon-b"}])
         self.assertIn("Reminder r-", result)
         self.assertIn("once at", result)
+
+    def test_a_reminder_is_for_the_silicon_itself(self):
+        """It takes no target, and it is stored against our own Glass identity.
+
+        Naming somebody was meaningful when there was a manager per contact and
+        one could poke another\'s. There is one session now.
+        """
+        with self.assertRaises(CommandError):
+            _run(["remember", "carbon-b", "--in", "2h", "--text", "x"], MANAGER_ACTOR)
+
+        with mock.patch.object(
+            remember_module, "_create_glass_cron", return_value="cron-1"
+        ) as create:
+            _run(["remember", "--in", "2h", "--text", "x"], MANAGER_ACTOR)
+
+        self.assertEqual(
+            create.call_args.args[2], [{"kind": "silicon", "id": "me"}]
+        )
+
+    def test_a_reminder_needs_an_identity_it_can_outlive_a_restart_with(self):
+        """No Glass identity means no durable cron, and that is worth refusing.
+
+        Storing it locally only would look like it worked and then vanish on the
+        next reinstall, because reminders are not in `.backupsilicon`.
+        """
+        with (
+            mock.patch.object(
+                remember_module,
+                "_own_target",
+                side_effect=CommandError("I do not know my own Glass identity yet"),
+            ),
+            self.assertRaises(CommandError) as refused,
+        ):
+            _run(["remember", "--in", "2h", "--text", "x"], MANAGER_ACTOR)
+
+        self.assertIn("my own Glass identity", str(refused.exception))
 
     def test_unsupported_units_are_refused(self):
         for value in ("30s", "2w", "1y", "banana"):
             with self.subTest(value=value):
                 with self.assertRaises(CommandError) as exc:
-                    _run(
-                        ["remind", "carbon-b", "--in", value, "--text", "x"],
-                        MANAGER_ACTOR,
-                    )
+                    _run(["remember", "--in", value, "--text", "x"], MANAGER_ACTOR)
                 self.assertIn("m, h, or d", str(exc.exception))
 
     def test_a_recurring_reminder_keeps_its_cron_and_timezone(self):
         with mock.patch.object(
-            remind_module, "_create_glass_cron", return_value="cron-2"
+            remember_module, "_create_glass_cron", return_value="cron-2"
         ) as create:
             _run(
                 [
-                    "remind", "carbon-b", "--cron", "0 9 * * 1-5",
+                    "remember", "--cron", "0 9 * * 1-5",
                     "--tz", "Asia/Dubai", "--text", "standup",
                 ],
                 MANAGER_ACTOR,
@@ -352,89 +376,63 @@ class RemindTest(unittest.TestCase):
 
     def test_a_reminder_must_say_when(self):
         with self.assertRaises(CommandError) as exc:
-            _run(["remind", "carbon-b", "--text", "x"], MANAGER_ACTOR)
+            _run(["remember", "--text", "x"], MANAGER_ACTOR)
         self.assertIn("Say when", str(exc.exception))
 
-    def test_including_someone_replaces_the_cron_because_glass_cannot_patch_targets(self):
+    def test_a_reminder_can_be_deleted_by_id(self):
         with mock.patch.object(
-            remind_module, "_create_glass_cron", side_effect=["cron-1", "cron-2"]
-        ):
-            with mock.patch.object(remind_module, "_delete_glass_cron") as delete:
-                created = _run(
-                    ["remind", "carbon-b", "--cron", "0 9 * * *", "--text", "x"],
-                    MANAGER_ACTOR,
-                )
-                reminder_id = created.split()[1]
-                result = _run(
-                    ["remind", "--id", reminder_id, "--include", "carbon-a"],
-                    MANAGER_ACTOR,
-                )
-
-        delete.assert_called_once_with("cron-1")
-        self.assertIn("Added carbon:carbon-a", result)
-        entry = remind_module._reminders()[reminder_id]
-        self.assertEqual(entry["cron_id"], "cron-2")
-        self.assertEqual(len(entry["targets"]), 2)
-
-    def test_removing_the_last_target_deletes_the_reminder(self):
-        with (
-            mock.patch.object(
-                remind_module, "_create_glass_cron", return_value="cron-1"
-            ),
-            mock.patch.object(remind_module, "_delete_glass_cron"),
+            remember_module, "_create_glass_cron", return_value="cron-1"
         ):
             created = _run(
-                ["remind", "carbon-b", "--cron", "0 9 * * *", "--text", "x"],
-                MANAGER_ACTOR,
+                ["remember", "--cron", "0 9 * * *", "--text", "x"], MANAGER_ACTOR
             )
-            reminder_id = created.split()[1]
+        reminder_id = created.split()[1]
+
+        with mock.patch.object(remember_module, "_delete_glass_cron") as delete:
             result = _run(
-                ["remind", "--id", reminder_id, "--exclude", "carbon-b"],
-                MANAGER_ACTOR,
+                ["remember", "--id", reminder_id, "--delete"], MANAGER_ACTOR
             )
 
+        delete.assert_called_once_with("cron-1")
         self.assertIn("Deleted reminder", result)
-        self.assertNotIn(reminder_id, remind_module._reminders())
+        self.assertNotIn(reminder_id, remember_module._reminders())
 
     def test_a_fired_one_shot_is_reaped_and_a_recurring_one_is_not(self):
         past = datetime.now(timezone.utc) - timedelta(hours=1)
         future = datetime.now(timezone.utc) + timedelta(hours=1)
-        remind_module._store(
+        remember_module._store(
             "r-past",
             {"cron_id": "c1", "one_shot": True, "fire_at": past.timestamp()},
         )
-        remind_module._store(
+        remember_module._store(
             "r-future",
             {"cron_id": "c2", "one_shot": True, "fire_at": future.timestamp()},
         )
-        remind_module._store(
+        remember_module._store(
             "r-recurring",
             {"cron_id": "c3", "one_shot": False, "trigger": "0 9 * * *"},
         )
 
-        with mock.patch.object(remind_module, "_delete_glass_cron") as delete:
-            reaped = remind_module.reap_fired_reminders()
+        with mock.patch.object(remember_module, "_delete_glass_cron") as delete:
+            reaped = remember_module.reap_fired_reminders()
 
         self.assertEqual(reaped, 1)
         delete.assert_called_once_with("c1")
         self.assertEqual(
-            sorted(remind_module._reminders()), ["r-future", "r-recurring"]
+            sorted(remember_module._reminders()), ["r-future", "r-recurring"]
         )
 
-    def test_listing_shows_only_that_contacts_reminders(self):
+    def test_listing_shows_every_reminder_because_they_are_all_mine(self):
         with mock.patch.object(
-            remind_module, "_create_glass_cron", return_value="cron-1"
+            remember_module, "_create_glass_cron", return_value="cron-1"
         ):
-            _run(
-                ["remind", "carbon-b", "--cron", "0 9 * * *", "--text", "theirs"],
-                MANAGER_ACTOR,
-            )
+            self.assertIn("no reminders", _run(["remember", "--list"], MANAGER_ACTOR))
+            _run(["remember", "--cron", "0 9 * * *", "--text", "standup"], MANAGER_ACTOR)
+            _run(["remember", "--in", "3h", "--text", "chase the worker"], MANAGER_ACTOR)
 
-        listed = _run(["remind", "carbon-b", "--list"], MANAGER_ACTOR)
-        empty = _run(["remind", "carbon-a", "--list"], MANAGER_ACTOR)
-
-        self.assertIn("theirs", listed)
-        self.assertIn("No reminders set", empty)
+        listed = _run(["remember", "--list"], MANAGER_ACTOR)
+        self.assertIn("standup", listed)
+        self.assertIn("chase the worker", listed)
 
 
 if __name__ == "__main__":
