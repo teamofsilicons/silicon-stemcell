@@ -282,16 +282,21 @@ def discover_rooms(client: client_module.InterfaceClient | None = None, *, force
     ):
         return state
 
+    # Asked on every sync we actually perform, not only the first. This used to
+    # be gated on `own_ids` being empty, and nothing ever empties it — so after
+    # the first success `me_payload` stayed None forever, `_sync_profile_from_glass`
+    # returned immediately, and the cached profile (our name, our team, who our
+    # central carbon is) could never change. The early return above already
+    # rate-limits how often we get here.
     me_payload = None
     own_ids = list(state.get("own_ids") or [])
-    if not own_ids:
-        try:
-            me_payload = client.whoami()
-            own_ids = _extract_own_ids(me_payload)
-            if own_ids:
-                own_ids = _cache_own_ids(own_ids)
-        except Exception:
-            own_ids = _load_state().get("own_ids", [])
+    try:
+        me_payload = client.whoami()
+        fresh_ids = _extract_own_ids(me_payload)
+        if fresh_ids:
+            own_ids = _cache_own_ids(fresh_ids)
+    except Exception:
+        own_ids = own_ids or _load_state().get("own_ids", [])
 
     rooms_payload = client.rooms_list()
     rooms = _as_list(rooms_payload, ("rooms", "data", "results"))
