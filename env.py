@@ -1,2 +1,0 @@
-INTERFACE_API_KEY = ""
-BROWSER_PROFILE = "silicon"

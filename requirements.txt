@@ -1,5 +1,0 @@
-requests
-websockets
-croniter
-certifi
-pydantic
