@@ -33,10 +33,6 @@ For voice, real the full guide at 'prompts/VOICE_DIRECTION.md'
 ### iwantto transcribe
 `iwantto transcribe ./video.mp4` will transcribe a video or audio file and return back the raw text. voice messages are auto transcribed, but in case something fails you can use this. or you can use this for any other audio or video file you get.
 
-### iwantto request-lords
-`iwantto request-lords --title "An android phone for silicons" --description "I get a lot of requests to do something that only exists as an app. can i get an android phone, emulator to do it"` sends a request to lords at team of silicons about a feature request if you have any that would meaningfully increase the quality of work that silicons do.
-
-
 
 
 
