@@ -1,0 +1,18 @@
+silicon-id = ""
+silicon-token = ""
+
+[silicon.dm]
+auth-type = "Bearer"
+auth-token = ""
+
+[silicon.briefcase]
+auth-type = "Bearer"
+auth-token = ""
+
+[silicon.commit]
+auth-type = "Bearer"
+auth-token = ""
+
+[silicon.hook]
+auth-type = "Bearer"
+auth-token = ""

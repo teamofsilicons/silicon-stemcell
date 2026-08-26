@@ -1,0 +1,37 @@
+[silicon]
+name = ""
+timezone = "America/Los_Angeles"
+birthdate = "DD-MM-YYYY"
+role = """..."""
+version = "3.5.0"
+providers = ["openai", "claude", "gemini"]
+
+[new-session-suggestion]
+min-inactivity-minutes = 30 # in mins
+min-new-messages = 10
+suggestion-message = "Good time to start a new session? Write anything in context into memories before starting a new session. To start a new session, run the command: `si session --new {intuit/deliberate/advisor}`"
+
+[silicon.intuit]
+model = "fast"
+dna = ["file1", "file2"]
+heartbeat-message = "This is a heartbeat. Make it count."
+
+[silicon.deliberate]
+model = "general"
+dna = ["file1", "file2"]
+
+[silicon.advisor]
+model = "research"
+dna = ["file1", "file2"]
+
+[silicon.worker.browser]
+model = "fast"
+dna = ["file1", "file2"]
+
+[silicon.worker.terminal]
+model = "code"
+dna = ["file1", "file2"]
+
+[silicon.worker.creative]
+model = "design"
+dna = ["file1", "file2"]
