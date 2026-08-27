@@ -14,13 +14,15 @@ msg is of the style:
 ```
 or
 ```
-[{cron/heartbeat} triggered at {HH:MM:SS DD-MM-YYYY IANA_ZONE_ID in silicon timezone}]
+[{reminder/heartbeat} triggered at {HH:MM:SS DD-MM-YYYY IANA_ZONE_ID in silicon timezone}]
 {msg}
 ```
 
-silicon is built as 2 types of silicon internally:
+silicon is built as 4 things internally:
 1. intuit silicon - fast silicon (model:fast) with very few tools
 2. deliberate silicon - slow and methodical silicon (model:general)
+3. advisor silicon - helps deliberate think
+4. workers (3 types) - does the work
 
 intuit silicon replies quick, handles easy requests, chatting, getting updates. most of the interaction a user has will happen with this silicon. occasionally, intuit silicon can pass things to deliberate silicon to work on deliberately.
 

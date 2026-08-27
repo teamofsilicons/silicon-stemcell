@@ -9,29 +9,29 @@ providers = ["openai", "claude", "gemini"]
 [new-session-suggestion]
 min-inactivity-minutes = 30 # in mins
 min-new-messages = 10
-suggestion-message = "Good time to start a new session? Write anything in context into memories before starting a new session. To start a new session, run the command: `si session --new {intuit/deliberate/advisor}`"
+suggestion-message = "Good time to start a new session? Write anything in context into memories before starting a new session. To start a new session, run the command: `si {intuit/deliberate/advisor} new`"
 
 [silicon.intuit]
 model = "fast"
-dna = ["file1", "file2"]
+dna = ["silicon/silicon.md", "silicon/intuit.md", "silicon/contacts.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,worker,deliberate,new-session]"]
 heartbeat-message = "This is a heartbeat. Make it count."
 
 [silicon.deliberate]
 model = "general"
-dna = ["file1", "file2"]
+dna = ["silicon/silicon.md", "silicon/deliberate.md", "silicon/contacts.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,worker,intuit,advisor,new-session]"]
 
 [silicon.advisor]
 model = "research"
-dna = ["file1", "file2"]
+dna = ["silicon/silicon.md", "silicon/advisor.md", "silicon/TEAM.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,worker,deliberate,new-session]"]
 
 [silicon.worker.browser]
 model = "fast"
-dna = ["file1", "file2"]
+dna = ["silicon/silicon.md", "silicon/workers/browser.md", "memories/learnings/workers/browser/silicon-browser.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate]"]
 
 [silicon.worker.terminal]
 model = "code"
-dna = ["file1", "file2"]
+dna = ["silicon/silicon.md", "silicon/workers/terminal.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate]"]
 
 [silicon.worker.creative]
 model = "design"
-dna = ["file1", "file2"]
+dna = ["silicon/silicon.md", "silicon/workers/creative.md", "memories/learnings/workers/creative/algorithm-for-creativity.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate]"]
