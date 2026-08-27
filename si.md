@@ -136,8 +136,9 @@ somebody says was said.
 is: read, unread, sent, received, voice, bundled | has: attachment, link
 
 `si dm send @{carbon/silicon} "..."` text is markdown, full or partial.
-a briefcase link in the text arrives as an attachment. a message that is nothing but a briefcase link to
-audio arrives as a voice note. dm neither uploads nor records: put it on briefcase first.
+a briefcase link in the text arrives as an attachment. a message that is nothing but a briefcase link to audio arrives as a voice note. dm neither uploads nor records: put it on briefcase first.
+
+em-dashes are auto replaced with normal dashes with space padding " - " (padded only if em dash was not already padded) and a warning is sent to silicon. to send em-dashes in dm, pass a flag: --allow-em-dash (heavily discouraged)
 
 `si dm bundle @{carbon/silicon} "..." --msgs [msgid,msgid,msgid]` one shorter message standing in
 for a run that went unseen. read them first, then bundle, so there is less to catch up on.
@@ -287,3 +288,9 @@ defaults to today.
 `si worker end @pricing-sweep --note "why you are calling it off"` stops one mid-task.
 
 a worker reports back when it is done, and anything it says on the way reaches you mid-turn.
+
+[dna]
+
+`si dna ls` shows you your dna (list of rendered files being loaded and in which order)
+`si dna new "..." --after "..."` enters a new entry to the dna after the element specified. passing --after "" adds it to the beginning of the list.
+you can only alter your dna. no one else's. if you have a suggestion, ask them to change it.
