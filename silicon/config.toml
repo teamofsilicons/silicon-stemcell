@@ -13,12 +13,12 @@ suggestion-message = "Good time to start a new session? Write anything in contex
 
 [silicon.intuit]
 model = "fast"
-dna = ["silicon/silicon.md", "silicon/intuit.md", "silicon/contacts.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,worker,deliberate,new-session]"]
+dna = ["silicon/silicon.md", "silicon/intuit.md", "silicon/CONTACTS.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate,new-session]", "memories/learnings/workers/advertising.md"]
 heartbeat-message = "This is a heartbeat. Make it count."
 
 [silicon.deliberate]
 model = "general"
-dna = ["silicon/silicon.md", "silicon/deliberate.md", "silicon/contacts.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,worker,intuit,advisor,new-session]"]
+dna = ["silicon/silicon.md", "silicon/deliberate.md", "silicon/CONTACTS.md", "silicon/learn.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,worker,intuit,advisor,new-session]"]
 
 [silicon.advisor]
 model = "research"
@@ -26,12 +26,12 @@ dna = ["silicon/silicon.md", "silicon/advisor.md", "silicon/TEAM.md", "silicon/l
 
 [silicon.worker.browser]
 model = "fast"
-dna = ["silicon/silicon.md", "silicon/workers/browser.md", "memories/learnings/workers/browser/silicon-browser.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate]"]
+dna = ["silicon/silicon.md", "silicon/workers/browser.md", "memories/learnings/workers/browser/silicon-browser.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,hook,dna,deliberate]"]
 
 [silicon.worker.terminal]
 model = "code"
-dna = ["silicon/silicon.md", "silicon/workers/terminal.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate]"]
+dna = ["silicon/silicon.md", "silicon/workers/terminal.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,hook,dna,deliberate]"]
 
 [silicon.worker.creative]
 model = "design"
-dna = ["silicon/silicon.md", "silicon/workers/creative.md", "memories/learnings/workers/creative/algorithm-for-creativity.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,remind,hook,dna,deliberate]"]
+dna = ["silicon/silicon.md", "silicon/workers/creative.md", "memories/learnings/workers/creative/algorithm-for-creativity.md", "silicon/tools.md[dm,briefcase,iam,waveform,commit,hook,dna,deliberate]"]

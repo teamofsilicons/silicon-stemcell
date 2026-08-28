@@ -113,12 +113,12 @@ ttlm being the minutes that output stays fresh before si is run for it again.
 
 read is `ls`, `show`, `logs`, `check`. write is everything that changes something.
 
-silicon.intuit = [dm.read, dm.write, commit.read, briefcase.read, briefcase.write, iam.read, remind.read, remind.write, waveform, intuit.new, deliberate.send]
-silicon.deliberate = [dm.read, dm.write, commit.read, commit.write, briefcase.read, briefcase.write, iam.read, iam.write, remind.read, remind.write, hook.read, hook.write, waveform, deliberate.new, intuit.send, advisor.send, worker.read, worker.write]
+silicon.intuit = [dm, commit.read, briefcase, iam, remind, hook, waveform, intuit.new, deliberate.send, dna]
+silicon.deliberate = [dm, commit, briefcase, iam, remind, hook, waveform, deliberate.new, intuit.send, advisor.send, worker]
 silicon.advisor = [dm.read, commit.read, briefcase.read, hook.read, iam.read, worker.read, deliberate.send, advisor.new]
-silicon.worker.browser = [iam.read, hook.read, hook.write, briefcase.read, briefcase.write, waveform, deliberate.send]
-silicon.worker.terminal = [iam.read, hook.read, hook.write, briefcase.read, briefcase.write, waveform, deliberate.send]
-silicon.worker.creative = [iam.read, briefcase.read, briefcase.write, waveform, deliberate.send]
+silicon.worker.browser = [iam.read, commit, hook.read, hook.write, briefcase.read, briefcase.write, waveform, deliberate.send]
+silicon.worker.terminal = [iam.read, commit, hook.read, hook.write, briefcase.read, briefcase.write, waveform, deliberate.send]
+silicon.worker.creative = [iam.read, commit, briefcase.read, briefcase.write, waveform, deliberate.send]
 
 the advisor reads everything and writes nothing, and the only thing it can say anything to is
 deliberate. a worker has no dm at all: it does its job and reports to deliberate, and deliberate
