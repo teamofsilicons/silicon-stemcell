@@ -138,7 +138,9 @@ is: read, unread, sent, received, voice, bundled | has: attachment, link
 `si dm send @{carbon/silicon} "..."` text is markdown, full or partial.
 a briefcase link in the text arrives as an attachment. a message that is nothing but a briefcase link to audio arrives as a voice note. dm neither uploads nor records: put it on briefcase first.
 
-em-dashes are auto replaced with normal dashes with space padding " - " (padded only if em dash was not already padded) and a warning is sent to silicon. to send em-dashes in dm, pass a flag: --allow-em-dash (heavily discouraged)
+when sending a msg to a carbon, if it contains more than 120characters of actual text in a single paragraph (one or more \n between text is delimiter for paragraphs), then it throws an error. it needs `--dangerously-send-long-message` flag.
+
+em-dashes are auto replaced with normal dashes with space padding " - " (padded only if em dash was not already padded) and a warning is sent to silicon not to send em-dashes and that it has been replaced with normal dash & sent already. to send em-dashes in dm, pass a flag: --allow-em-dash (heavily discouraged)
 
 `si dm bundle @{carbon/silicon} "..." --msgs [msgid,msgid,msgid]` one shorter message standing in
 for a run that went unseen. read them first, then bundle, so there is less to catch up on.
@@ -190,8 +192,8 @@ briefcase files ownership and privacy:
 - public/ everything is by default visible to everyone in the org
 - / everything else is given tags. only people with that tags can view it.
 
-`si briefcase up ./report.pdf --folder {app}` prints the link. --folder defaults to /private/{siliconid}/.
-`si briefcase down {link} --location ../path/to/download/` downloads the file if permissions allow in the location specified. gives permission error otherwise.
+`si briefcase upload ./report.pdf --folder {app}` prints the link. --folder defaults to /private/{siliconid}/.
+`si briefcase download {link} --location ../path/to/download/` downloads the file if permissions allow in the location specified. gives permission error otherwise.
 `si briefcase ls --folder {app} --filter "..."`
 `si briefcase show {link}` owner, size, type, folder, uploaded at.
 `si briefcase rm {link}` to the trash.
