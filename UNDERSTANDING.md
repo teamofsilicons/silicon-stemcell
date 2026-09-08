@@ -24,23 +24,22 @@ create a local listening url ({lsid}.{orgid}.localhost) for this silicon and map
 for the items in webhooks, run `app webhook "{lsid}.{orgid}.localhost"`
 
 disconnect:
-`tos disconnect {path to yaml}`
-`tos disconnect` shows a list of silicons connected (silicon id) and asks to run the next command
-`tos disconnect {sid}` disconnect a silicon id
+`silicon disconnect {path to yaml}`
+`silicon disconnect` shows a list of silicons connected (silicon id) and asks to run the next command
+`silicon disconnect {sid}` disconnect a silicon id
 
 list:
-`tos ls` lists all connected silicons
-`tos ls *:abc` list all matching
+`silicon ls` lists all connected silicons
+`silicon ls *:abc` list all matching
 
 logs:
-`tos logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
+`silicon logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
 
 
 Events:
-for anything that tos receives from any of the silicon's url, has to be of the shape {type: str, data: obj, metadata: obj}, and only send an ack when the entire flow is finished. not when all the send turn finishes... but when all has happened and things are running.
+for anything that silicon interpreter receives from any of the silicon's url, has to be of the shape {type: str, data: obj, metadata: obj}, and only send an ack when the entire flow is finished. not when all the send turn finishes... but when all has happened and things are running.
 
 send always sends a msg mid turn. no msg is ever queued, its passed as soon as it comes in.
-
 
 Logs:
 Log everything. New msg, what's happening in flow, what each of the isi is doing, everything. Omni has a event that you can subscribe to and use for loggin the active work. when displaying, color code different isi msg, runtime logs, errors. not the complete msg, but just the first section. include metadata with the logs like [type] [origin] [timestamp] [message]
