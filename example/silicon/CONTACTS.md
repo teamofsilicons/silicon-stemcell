@@ -1,9 +1,9 @@
 Thi is not a fill list of all team members in this organization.
 For full list of team members, read silicon/TEAM.md
 
-Recently Contacted:
-{!-freq_contact
-replaced with the list of silicons & carbons contacted in the last 30 days in decending order as
+Direct Contacts:
+{!-direct_contacts
+replaced with the list of silicons & carbons contacted in the last 30 days in decending order + silicons in direct contact with this silicon, display as
 {display_name}
 @{cid/sid}
 {org_display_name}

@@ -1,0 +1,265 @@
+silicon:
+  id: ...
+  token: ...
+  timezone: America/Los_Angeles
+  SILICON_HOME: ! pwd
+
+  inference_providers:
+    - codex-app-server
+    - claude-code-cli
+    - antigravity-cli
+  
+  login:
+    - ! dm
+    - ! briefcase
+    - ! waveform
+    - ! commit
+    - ! remind
+    - ! hook
+  
+  webhook:
+    - ! dm
+    - ! hook
+
+
+isi:
+  intuit:
+    model: fast
+    primary_send_mode: global # or session
+    session_type: persistent
+
+    dna:
+      assemble:
+        - silicon.md
+        - ! cat intuit.md
+        - ! ./contacts.sh !>> "You have no contacts"
+        - learn.sh
+        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ../memories/learnings/workers/advertising.md
+      next_refresh: 30min # time in min or shell evaluating to Xmin or a new session started, whichever is sooner. evaluated at each refresh.
+
+    heartbeat:
+      next: 13min # or shell command that evaluates to a Xmin time.
+      message: This is a heartbeat. Make it count.
+
+    new_session_suggestion:
+      cooldown_minutes: 30 # in mins
+      min_new_messages: 10 # after N messages
+      suggestion_message: Good time to start a new session? Write anything in context into memories before starting a new session. To start a new session, run the command: `si session new --archive-current-session --id '...' --title '...' --description '...'` stored inside SILICON_HOME/.silicon/sessions/archived/{isi}/ with id, session id, title, description (summary), and first (invication) & last (session completion/archive) timestamp.
+
+  deliberate:
+    model: general
+    primary_send_mode: global
+    archive_on_end: false
+
+    dna:
+      assemble:
+        - silicon.md
+        - ! cat deliberate.md
+        - ! ./contacts.sh
+        - learn.sh
+        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook, worker]
+        - ../memories/learnings/workers/advertising.md
+      next_refresh: 30min
+    
+    heartbeat:
+      next: 41min # or shell command that evaluates to a Xmin time.
+      message: This is a heartbeat. Make it count.
+
+    new_session_suggestion:
+      cooldown_minutes: 60 # in mins
+      min_new_messages: 5 # after N messages
+      suggestion_message: Good time to start a new session? Write anything in context into memories before starting a new session. To start a new session, run the command: `si deliberate start-new-session --archive-current-session --id '...' --title '...' --summary '...'` stored inside SILICON_HOME/.silicon/sessions/archived/{isi}/ with id, session id, title, description (summary), and first (invication) & last (session completion/archive) timestamp.
+
+  advisor:
+    model: research
+    primary_send_mode: global
+    archive_on_end: false
+
+    dna:
+      assemble:
+        - silicon.md
+        - ! cat advisor.md
+        - ! ./team.sh
+        - learn.sh
+        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ../memories/learnings/workers/advertising.md
+      next_refresh: 30min
+
+    heartbeat:
+      next: 41min # or shell command that evaluates to a Xmin time.
+      message: This is a heartbeat. Make it count.
+
+    new_session_suggestion:
+      cooldown_minutes: 60 # in mins
+      min_new_messages: 5 # after N messages
+      suggestion_message: Good time to start a new session? Write anything in context into memories before starting a new session. To start a new session, run the command: `si advisor start-new-session --archive-current-session --id '...' --title '...' --summary '...'` stored inside SILICON_HOME/.silicon/sessions/archived/{isi}/ with id, session id, title, description (summary), and first (invication) & last (session completion/archive) timestamp.
+
+  worker.terminal:
+    model: code
+    primary_send_mode: session # each invocation needs a id, title, and message. or msg archived sessions with an id and msg.
+    archive_on_end: false
+
+    dna:
+      assemble:
+        - silicon.md
+        - ! cat workers/terminal.md
+        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+      next_refresh: 30min
+
+  worker.browser:
+    model: fast
+    sticky: false # each invocation needs a id, title, and message. or msg archived sessions with an id and msg.
+    archive_on_end: false
+
+    dna:
+      assemble:
+        - silicon.md
+        - ! cat workers/browser.md
+        - ../memories/learnings/workers/browser/silicon-browser.md
+        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+      next_refresh: 30min
+    
+  worker.creative:
+    model: design
+    sticky: false # each invocation needs a id, title, and message. or msg archived sessions with an id and msg.
+    archive_on_end: false
+
+    dna:
+      assemble:
+        - silicon.md
+        - ! cat workers/creative.md
+        - ../memories/learnings/workers/creative/algorithm-for-creativity.md
+        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+      next_refresh: 30min
+
+access:
+  intuit: [deliberate]
+  deliberate: [intuit, advisor, worker.terminal, worker.browser, worker.creative]
+  advisor: [deliberate]
+  worker.terminal: [deliberate]
+  worker.browser: [deliberate]
+  worker.creative: [deliberate]
+
+# run everytime silicon is pinged at {sid}.{org}.localhost
+# {
+#   type: "new_message", # message_sent, event, or anything else.
+#   data: {
+#     msg_id: "msg-1234567890",
+#     message: "Where are we?",
+#     from: "@shubham",
+#     to: "deliberate@silicon:org",
+#     sender_timezone: "Asia/Kolkata",
+#     sent_at: "2026-09-10T03:12:34Z",
+
+#     reply_to: {
+#       msg_id: "msg-0987654321",
+#       message: "I'm close to finishing the task. Will update you soon.",
+#       from: "deliberate@silicon:org", # worker.terminal:session-id@silicon:org for non sticky isi
+#       to: "@shubham",
+#       sender_timezone: "Asia/Kolkata",
+#       sent_at: "2026-09-10T03:12:11Z",
+#     },
+#   },
+#   metadata: {
+#     app: "tos>dm",
+#     timestamp: "2024-06-10T12:00:00Z",
+#   }
+# }
+flow:
+  if:
+    condition: '{request.type == "new_message"}'
+    then:
+      - var:
+        name: new_message
+        value: 'New message from {request.data.from} to {request.data.to} at {tz_time(request.data.sent_at, request.data.sender_timezone)} sender time, or {tz_time(request.data.sent_at, silicon.timezone) your time}:\n\n<|message:{request.data.msg_id}|>\n{request.data.message}\n<|message:{request.data.msg_id}|>'
+
+      - if:
+          condition: '{request.data.to.startswith("deliberate")}'
+          then:
+            - send:
+                isi: deliberate
+                message: '{var.new_message}'
+                catch: 
+            - send:
+                isi: intuit
+                message: 'Deliberate got a direct reply & has been sent to deleberate. This is for your information only.\n{var.new_message}'
+            - if:
+                condition: '{request.data.reply_to is not None}'
+                then:
+                  - var:
+                      name: time_delay
+                      value: ! './time_delay.sh {tz_time(request.data.sent_at, request.data.sender_timezone)} {convert_time(request.data.reply_to.sent_at, request.data.reply_to.sender_timezone)}'
+                      catch:
+                        - var:
+                            name: time_delay
+                            value: "unknown"
+                  - send:
+                      isi: advisor
+                      message: 'Deliberate got a direct reply which was sent after a delay of {var.time_delay}. This is for your information only.'
+                      catch:
+                        - var:
+                            name: advisor_error
+                            value: '{error}'
+                        - send:
+                            isi: intuit
+                            message: 'Advisor got an error {var.advisor_error}'
+                        - log:
+                            message: 'Advisor got an error {var.advisor_error}'
+      - if:
+          condition: '{request.data.to.startswith("worker")}'
+          then:
+            - var:
+                name: worker
+                value: '{request.data.to.split("@")[0]}'
+            - send:
+                isi: deliberate
+                message: 'Worker {var.worker} got a direct message. This is for your information only\n{var.new_message}'
+            - send:
+                isi: intuit
+                message: 'Worker {var.worker} got a direct message. This is for your information only.\n{var.new_message}'
+            - var:
+                name: worker_isi
+                value: '{var.worker.split(":")[0]}'
+            - var:
+                name: worker_session_id
+                value: '{var.worker.split(":")[1]}'
+            - send:
+                isi: '{var.worker_isi}'
+                session_id: '{var.worker_session_id}'
+                message: '{var.new_message}'
+
+      - if:
+          condition: '{request.data.to.startswith("advisor")}'
+          then:
+            - send:
+                isi: advisor
+                message: '{var.new_message}'
+            - send:
+                isi: intuit
+                message: 'Advisor got a direct reply & has been sent to advisor. This is for your information only.\n{var.new_message}'
+      - else:
+        - send:
+            isi: intuit
+            message: '{var.new_message}'
+  if:
+    condition: '{request.type == "message_sent"}'
+    then:
+      - var:
+          name: message_sent_recipt
+          value: 'New message sent by {request.data.from} to {request.data.to} at {tz_time(request.data.sent_at, silicon.timezone) your time}:\n\n<|message:{request.data.msg_id}|>\n{request.data.message}\n<|message:{request.data.msg_id}|>'
+      - send:
+          isi: intuit
+          message: '{var.message_sent_recipt}'
+  if:
+    condition: '{request.type == "event"}'
+    then:
+      - var:
+          name: event
+          value: 'New event received at {tz_time(request.data.timestamp, silicon.timezone) your time}:\n\n{make_readable(request.data)}'
+      - send:
+          isi: intuit
+          message: '{var.event}'
+
+  
+# errors

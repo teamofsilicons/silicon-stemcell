@@ -1,194 +1,288 @@
-msg ->  intuit silicon  ->  easy & quickly solved   ->  end
-                        ->  `si deliberate`         ->  deliberate silicon  ->  plan
-                                                                            ->  ask advisor
-                                                                            ->  involve workers  ->  browser terminal creative
-                                                                            ->  setup todos
-                                                                            ->  initiate project
-                                                                            ->  msg carbons & silicons
-                                                                            ->  `si intuit "..."`
+[silicon interpreter]
+    |
+---------
+|   |   |
+s1  s2  s3
+|a  |a  |c  
+|b  |x  |a
+|c
 
-msg is of the style:
-```
-[@{cid/sid/workerid} ({display_name}, {tags}, {trust}) at {user_time as HH:MM:SS DD-MM-YYYY IANA_ZONE_ID} = {silicon time as HH:MM:SS DD-MM-YYYY IANA_ZONE_ID} ]
-{msg}
-```
+
+silicon interpreter starts a web server at localhost:1823 (-1 until you find an available port) and maps it to silicon.localhost using caddy.
+any new silicon wanting to join silicon interpreter needs to pass the silicon.yaml to use. this yaml file's location is its local identity. a silicon's global identity is silicon id, which it can authenticate using silicon token.
+
+silicon interpreter offers a way for silicons to connect & disconnect.
+silicon interpreter is a command line first interface. i will be showing all thigns on the command line, but same should be possible to do on the web as well.
+
+silicon_id is like this `{lsid}:{orgid}` local silicon id : org id
+
+connect:
+`silicon connect {path to yaml}`
+compiles the silicon.yaml and throws errors if any, or connect if all is good.
+create a local listening url ({lsid}.{orgid}.localhost) for this silicon and maps that url to silicon interpreter's web server link.
+
+for the items in webhooks, run `app webhook "{lsid}.{orgid}.localhost"`
+
+disconnect:
+`tos disconnect {path to yaml}`
+`tos disconnect` shows a list of silicons connected (silicon id) and asks to run the next command
+`tos disconnect {sid}` disconnect a silicon id
+
+list:
+`tos ls` lists all connected silicons
+`tos ls *:abc` list all matching
+
+logs:
+`tos logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
+
+
+Events:
+for anything that tos receives from any of the silicon's url, has to be of the shape {type: str, data: obj, metadata: obj}, and only send an ack when the entire flow is finished. not when all the send turn finishes... but when all has happened and things are running.
+
+send always sends a msg mid turn. no msg is ever queued, its passed as soon as it comes in.
+
+
+Logs:
+Log everything. New msg, what's happening in flow, what each of the isi is doing, everything. Omni has a event that you can subscribe to and use for loggin the active work. when displaying, color code different isi msg, runtime logs, errors. not the complete msg, but just the first section. include metadata with the logs like [type] [origin] [timestamp] [message]
+
+
+
+Updates:
+this is an open source project, make the versions live on github, and keep checking for updates every 1hr, and then update as and when a new update is pushed.
+
+what we update is just the interpretter, cli, tos deamon, etc. and that's it. never make any changes to a silicon.yaml
+
+
+Default:
+the silicon, memories, & workspace folders are templates. this is not sent to anyone. this is here just for testing.
+
+
+Shipment:
+everything needed to run silicon should be bundled here. Then a single curl + sh command should intall all things required on the local system to get things up and running. Write a docs for how to use silicon, the config docs, expectations from IAM apps. etc etc.
+
+everything should be on docs.teamofsilicons.com on vercel (i have cli installed and logged in)
+
+
+Installation:
+Anyone should be able to run one bash command to install all of silicon & dependencies of it.
+This includes the interpretter, caddy, omni, dm, briefcase, waveform, commit, remind & hook.
+
+
+
+# silicon.yaml parser
+required top level keys:
+- silicon: contains silicon specific things. this applies to all isi. this is the brain.
+- isi: these are internal silicons. almost like brain regions.
+- access: this is like corpus callosum. that tells who can talk with who. this is a part of prompt we feed in from silicon's side. 
+- flow: this is the runtime flow. msg comes in -> do x -> do y
+
+entire silicon.yaml file is checked for syntax errors.
+silicon, isi and access are compile time accessed.
+flow is runtime.
+
+silicon:
+    id                      silicon id
+    token                   silicon token, used for authentication
+    timezone                timezone silicon operates in
+    SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
+    inference_providers     omni supported inference providers
+    login                   list of shell app commands to iam apps, they are automatically logged in
+    webhook                 list of apps that this silicons wants get events from. uses localhost url.
+
+
+check if the app's follow iam auth methods.
+`app iam --json` -> extract app_id -> generate a short lived auth token for this app_id -> `app auth token "..."` -> check -> `app auth status --json` and check authenticated: true
+
+apps themselves manage access & refresh tokens.
+any isi can login to an app assisted by `si setup auth app_command` cli
+before heartbeats & new sessions, all auths are checked and authenticated if needed.
+
+isi:
+each isi is run on its own terminal with 2 env variables: SILICON_HOME & ISI
+if isi has primary send mode global, its just the isi name, if it is session, then its name:id
+
+    isi_name:                       name that other allowed isi can call this isi by. min 1 req.
+        model                       omni model it will use based on the provider
+        primary_send_mode           global or session. session_id is req. to send when session
+        session_type                persistent or ephemeral. when turn ends, does it auto archive or not
+        dna:                        prompt sent
+            assemble                list of file-loc relative SILICON_HOME, bash scripts echoing text
+            next_refresh            refresh this dna after X min. can be bash. eval on each refresh
+        heartbeat:                  optional; a regular heartbeat for isi
+            next                    next heartbeat in X min. can be bash.
+            message                 message to send during heartbeat.
+        new_session_suggestion:     optional; suggest to start a new session
+            cooldown_minutes        min. duration between last send suggestion & now
+            min_new_messages        min. new messages in that session. heartbeat & sessions dont count.
+            suggestion_message      what msg to send as suggestion.
+
+
+dna assemble is a list & accepts file location reletive to SILICON_HOME, a bash script with pwd SILICON_HOME and ISI. & fallbacks using !>>
+
+there is no default heartbeat or new_session_suggestion for isi with an undefined one.
+
+
+access:
+    isi1: [isi2, isi5]      list of isi the given isi can message using the `si send` command.
+
+this must be defined for all isi
+
+flow:
+this is the runtime config and support CEL for all strings.
+everything here is either a list of steps, or expression.
+
+if:
+    condition           evaluates to true/false string
+    then                list of next steps
+    catch               optional; if condition throws error. list of next steps. access with {error}.
+                        error is string. 
+else:                   list of next steps
+
+var:
+    name                name of the variable. access with {var.name}.
+    value               expression. string or json. converts json as string to json.
+    catch               if the value or name eval fails
+
+send:
+    isi                 isi name to send
+    session_id          send to a specific session. req. for primary_send_mode session.
+                        creates if session doesn't exist already.
+    message             message to send
+    catch               if it couldnt send, or one of the expressions fail.
+
+log:
+    message             logs message inside append only silicon.log
+
+
+
+
+
+# logging
+keep a log of everything that is happening inside SILICON_HOME/.silicon/silicon.log
+
+### Parsing & compilation
+
+#### bash:
+any string can be replaced by a bash command by adding !
+> description: some description here
 or
-```
-[{reminder/heartbeat} triggered at {HH:MM:SS DD-MM-YYYY IANA_ZONE_ID in silicon timezone}]
-{msg}
-```
+> description: ! cat description.md
+this runs `cat description.md` inside bash, with pwd SILICON_HOME and ISI if run inside one of the isi blocks.
+dna assemble also accepts a file location reletive to SILICON_HOME.
+- ../memories/learnings/workers/advertising.md
+inputs the file's content
 
-silicon is built as 4 things internally:
-1. intuit silicon - fast silicon (model:fast) with very few tools
-2. deliberate silicon - slow and methodical silicon (model:general)
-3. advisor silicon - helps deliberate think
-4. workers (3 types) - does the work
+#### evals
+evaluation order: CEL -> Bash -> String
+any string with non excaped {...} should be evaluated using CEL. Pass the following to it:
+- request (this is json that was received on http://sid.org.localhost/)
+- silicon, isi and access as json
+- tz_time function which takes in a UTC time, and a timezone in IANA, and outputs time in that timezone. {HH:MM:SS DD:MM:YY IANA}
+- to_yaml takes in json, and prints it with tabs & new lines (yaml).
+- to_json takes in string, and evaluates it so it can become a json and be evaluatable.
 
-intuit silicon replies quick, handles easy requests, chatting, getting updates. most of the interaction a user has will happen with this silicon. occasionally, intuit silicon can pass things to deliberate silicon to work.
 
-`si deliberate "..."` is used to send a message to deliberate, and to pass new messages to deliberate silicon mid-run.
 
-when deliberate silicon uses the `si` tool, a recipt of that is sent to the intuit silicon so its onboard with what the deliberate silicon is doing. this helps intuit stay upto date with deliberate's plan & pass along messages.
+#### fallbacks
+anything that is evaluated, can fail. so we have a fallback for those expressions.
+since evaluations needs to evaluate to strings, strings are also valid fallbacks.
 
-deliberate silicon also has an advisor. it doesn't do any work, but can inspect all things and suggest how to do things to deliberate. advisor silicon uses model:research
+> ! ./contacts.sh !>> ! cat CONTACTS.md !>> "No contacts found"
 
-# workers
-there are three workers. a worker is given a job it can perform end to end. managing different workers is what the deliberate silicon does. many workers can be running in parallel. the three kinds are:
-1. browser worker - has access to silicon browser and can do anything that can be done on the web
-2. terminal worker - has access to the terminal and can do anything that can be done using bash
-3. creative worker - has all the creative skills to write/design/plan well. it has the taste on how to do things.
+error is not passed, its just a fallback. if not A, then B, if not B, then C.
+errors are logged and we move to the next fallback available.
 
-each worker invocation starts as a new session unless a previous worker is invoked. all previous runs are loged are stored for later review and a dictionary is maintain {"{workerid}-{DD-MM-YYYY}": "location of the session"}
+if all fallbacks fail, skip and move ahead.
 
-when a deliberate silicon is creating a worker, it gives it an ID. that id needs to be unique in a given day (will be usually true). this is used to look into what a worker is doing or it did or to send it a message mid-run.
+#### errors
+inside flow, all eval support catch. catch creates a scoped local variable `error` that can be used. 
+log the error.
+if no catch is defined, just move on to the next step.
 
-worker sessions have enable_subagents() on omni for all providers.
 
-# auth
-authentication & authorization happens per provider (briefcase, dm, commit, etc)
-the credentials for silicon is stored inside silicon/iam.toml
-use the silicon id, and silicon token to get an auth token to perform actions.
-each silicon surface requires their own auth token which can be created using silicon id and token.
+#### dependencies
+Silicon Omni – Inference Provider. Use their rust package.
+https://omni.teamofsilicons.com/
 
-silicons are a part of the organization and is reflected in their globally unique silicon id: `{sid}:{orgid}`
+Silicon IAM – Identify & Access Management which allows authentication.
+Install and Use their CLI. Use with SILICON_HOME
 
-# upload files
-files are uploaded and managed on `silicon-briefcase`
-most of the services that accept a file will only accept files on briefcase as a link. by default the files are set to only be accessible by people inside the org. with delete access only with the uploader and admin. any deleted file sits in the trash for 45days before permanentally deleted.
 
-there are private/ public/ and tag specific folders on the briefcase. silicon can access files inside the org that they have view access to.
 
-# messages
-all messages, whether it is for intuit, deliberate, advisor, worker(s) silicon is passed mid-turn if the silicon is alrady running.
+# External Expectation (from iam apps)
+CLIs respect SILICON_HOME and store each their local states inside that folder itself. Its home, so they should use that as base, and make their own hidden folders to keep their information.
 
-all messages are sent and received with `silicon-dm`
+Specific apps that could benefit from using ISI should do that. eg: dm.
 
-a message can be text, files & voice (briefcase links)
-silicon can also bundle messages incase they were not seen / responded for a while so its easier to see and read those.
+All iam apps' authentication is managed by stemcell.
+`app iam --json` gives {app_id: "..."} along with other info
+`app login "..."` takes in a short lived auth token generated by stemcell.
+`app login status --json` tells if its {authenticated: true}
 
-text messages support full/partial markdown formatting.
-messages can be sent to any silicon or carbon inside the org.
+Events:
+`app webhook "..."`
+`app unhook`
 
-# inference
-all inference comes from `silicon-omni`
-it supports mid-run sending messages, provider switching, auto-switch provider incase of failure, semantic model pick using keywords like "fast", "code", "research" etc.
-
-all supported providers are automatically analysed and used to find the models based on the keyword.
-
-event/logs are sent back as the work is happening.
-in case of a provider switch, all the previous context is passed along so it can start where the last one ended.
-
-silicon-dm supports update streaming - connect events with it to stream live updates of what is happening. this will not be something silicon has to setup, but rather its automatically sent the current status of intuit & deliberate. the people that have interacted with silicon or silicon has interacted within the last 30mins get a live stream of updates.
-
-# prompts
-prompts for intuit, deleberate, adivsor and workers are stored inside silicon/.
-each type of silicon has a DNA inside silicon/config.toml, this dna is an ordered list of files to load into system prompt file which is then replaced with the original system prompt and passed to the provider defined by keyword model in the same config file (fast, code, research, etc).
-
-it is written in a special format that needs a post processing of the md files.
-
-{!-name        --} is something that can be replaced. name is the id of how to identify this block and replace it. some of this needs an upkeep which can happen via hooks or pooling depending on the service.
-loadref is loading another file here.
-
-Attach all files inside dna like:
-"""
-{FILE LOCATION & NAME}
-{file_contents}
-\n
-\n
-\n
-{NEXT FILE LOCATION & NAME}
-"""
-# heartbeat
-a heartbeat is sent to intuit silicon. the time between each heartbeat can range between 5min and 5hrs.
-it is dependent on the adrenaline level of the silicon. higher adranaline results in a faster heartbeat.
-
-adranaline is calculated with the following factors:
-up++ - number of unique silicons/carbons messaging in the last 1hr
-up - number of total incomming received in the last 1hr (capped)
-up++ - has undone todos from other silicon
-up - has undone todos of itself
-up++ - closeness to birthdate (new born silicons have more adranaline)
-
-all this is used to calculate an adranaline level min: 0, max (soft): 100 (can be more than 100)
-this is then used in realtime to calculate if now is a time for a heartbeat.
-
-# tasks & todos
-uses `silicon-commit` to manage todos & projects
-todo is a simple list with title, description, end notes, assigned to (carbon/silicon), created by (silicon/carbon), time, status (active, completed, archived)
-
-project is more complex and cohesive for bigger tasks.
-name, description, diary and a task+subtask list, status.
-each tasks and subtasks has a title, description, end note, assigned to, created by.
-
-files can be attached to both todos and projects inside the end notes.
-
-# webhooks
-`silicon-hook` allows silicon to receive a webhook from any 3rd party service. silicon can sanction a new url for a new/existing provider. it can also delete a certain provider in which case that provider can no longer reach back to this silicon.
-
-`https://hook.teamofsilicons.com/sid:org/randomproviderendpoint/`
-
-its random so that people can not guess and fake a message from a provider. incase a certain endpoint gets leaked, it can be rotated.
-
-# reminders
-`silicon-remind` keeps a track of onetime and recurring reminders and triggers it. it uses silicon hook to remind the silicon.
-
-# tts/stt
-`silicon-waveform` allows text to speech, and speech to text. for speech to text, the audio needs to be uploaded to briefcase. and for text to speech, the final returned audio file is also sent as a link to private briefcase.
-
-# learning
-one of silicon's main job is to learn and setup all silicons internally to do the work that exceeds the expectations of the organization.
-
-facts, hypothesis and definitions. observations is broken down into one of the three. hypothesis is the learning step – it converts to facts or definitions after being learnt. when testing hypothesis – it creates multiple hypothesis (usually 3) on the same feedback as possible changes for a better result and then do all of them and then ask what was good and what was not.
-
-reason along with the feedback can be useful but taken with a grain of salt. just because a carbon can do soemthing doesn't mean it can explain why they do what they do.
-
-# stemcell is a binary
-stemcell is written in rust and compiled into a binary that is run as an always-active deamon with the id of silicon-id. it creates a folder in the base dir (~/.) with the name silicon-id and contains all the prompts, memories and work folders for the silicon. this folder is 'who' silicon is. the binary is 'what' silicon is.
-
-multiple silicons can be running on the same system. each one gets its own deamon and folder with silicon-id.
-
-stemcell is only one silicon. and it connects to all the services directly. each silicon should be self containing to run.
-
-# team of silicons
-while each silicon is self-contained, its more often than not a part of a team of silicons and carbons. update the team inside 
-
-# file system
-a new silicon get the folder structure:
-global-silicon-id:org/
-    silicon/
-        index.md
-        iam.toml
-        config.toml
-        ...
-    memories/
-        index.md
-        team/
-        workspace/
-        learnings/
-    workspace/
-        index.md
-        ...
-
-most of it is seeded as is from this repo.
-this repo has a few other folders and files:
-stemcell/ houses the entire codebase. this is compiled to a binary and run as silicon.
-UNDERSTANDING.md is the file that has all the knowledge of how this repo operates. it is kept up-to-date meticulously.
-.claude enables ponytail plugin.
-
-# updates
-dna update:
-silicon will change the files in its folder while working. files listed in DNA will need to be auto refreshed after its changed. could be directly listed, or referenced by a dna file. the entire tree should be hot reloaded and the method should be called on omni to update the system prompt.
-
-stemcell update:
-sometimes silicon stemcell and its binary/prompts are updated. it can be seen on stemcell.teamofsilicons.com/ binary will need a complete restart. if a prompt can be merged cleanly, merge it. if not, dont but rather ask the fast silicon to fix the merge conflict. and update its version number to the latest.
-
-if the binary is updated, then wait for silicon to complete all running silicon sessions and then update. dont make any message wait. pass it through. message and work is more important than updates.
-
-# new session
-sessions should be ephemeral. stemcell doesn't force a new session, it gives a suggestion to the intuit, deliberate & advisor to start a new session.
-
-suggest to start a new session if there is a 30min of inactivity AND atleast 10 new messages sent to that session.
 
 # si cli
-`si ...` is exposed to silicon based on scopes.
-check si.md & silicon/tools.md
+si {service} {verb} [{target}] [{content}] [--flags]
+this is injected for each isi to do internal things.
+
+> auth:
+`si auth --help`
+`si auth setup {app_command}` used as something like `si auth setup dm` to log into dm if dm is every logged out. this way isi dont need to see the silicon token to authenticate.
+`si auth remove {app_command}` to unauthenticate.
+
+> isi:
+`si isi --help`
+`si isi ls {isi}` shows the active sessions of a given isi
+`si isi ls {isi} --archived` shows the last 3 days of archived sessions of a given isi
+--archived DD:MM:YYY for archived on that day, --archived DD:MM:YYY-DD:MM:YYY to get between the 2 dates, --archived "*code" to search a given keyword in title and description. these are stackable with --archived "foot*" DD:MM:YYY-DD:MM:YYY.
+this can be use for other isi, and self to ask something from a previsous session of this isi.
+
+`si isi show {isi}` to see the current progress of an isi without asking
+`si isi end {isi}` to end its current session (doesn't start a new one)
+
+global & persistent:
+`si isi send {isi} "..."` send a new message. starts a new session if not already.
+
+global & ephemeral:
+`si isi send {isi} "..."` send a new message. starts a new session. automatically sends the turn end output to the isi. it is not archived. it is use & throw.
+
+session & persistent:
+`si isi send {isi} "..." --id "..."` to send a msg to a non-archived isi based on id. throws an error if id is not found.
+`si isi send {isi} "..." --id "..." --new` to create a new session and send it a message.
+
+session & emphemeral:
+`si isi send {isi} "..." --id "..." --title "..."` to send a msg & start a new session.
+`si isi send {isi} "..." --id "..."` to send a msg to a currently running session of it.
+
+archived isi:
+there is no difference between an archived ephemeral & persistent isi.
+`si isi send {isi} "..." --id "..." --archived`
+
+> session:
+`si session --help`
+`si session new --archive-current-session --id "..." --title "..." --description "..."` to archive the current session and start a new one.
+
+global & persistent:
+when starting a new session it gets a uuid for session id, and is replaced by --id when it archives the current one.
+
+global & ephemeral:
+never starts a new session, once over, no recovery details are stored.
+
+session & persistent:
+when starting a new session it inherits the session id from the one running before it, and the archived one gets --id
+
+session & emphemeral:
+never starts a new session. --id is always passed when creating a new isi of this kind.
+
+
+
+
+# silicon prompt
+one prompt is added at the end of the dna which is computed based on the isi.
+it contains information about isi's it can talk to (never about the ones it cant)
+the si cli commands it has access to (very minimal, --help can always be used to know more.)
+treat --help as the primary docs and disclosure of how to use different commands.
+this prompt is very minimal & only intended for the isi to do internal stuff.
