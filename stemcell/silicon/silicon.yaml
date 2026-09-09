@@ -5,9 +5,7 @@ silicon:
   SILICON_HOME: ! pwd
 
   inference_providers:
-    - codex-app-server
-    - claude-code-cli
-    - antigravity-cli
+    - all-available-providers
   
   login:
     - ! dm
