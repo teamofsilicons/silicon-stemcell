@@ -309,14 +309,17 @@ fn header<'a>(req: &'a Request, key: &str) -> &'a str {
 }
 
 fn handle(app: Arc<App>, mut request: Request) {
-    if app.runtime.stopping.load(Ordering::SeqCst) {
-        respond(
-            request,
-            503,
-            json!({"error":"interpreter is stopping; retry after it restarts"}),
-        );
-        return;
-    }
+    let _activity = match app.runtime.activity() {
+        Ok(activity) => activity,
+        Err(_) => {
+            respond(
+                request,
+                503,
+                json!({"error":"interpreter is stopping; retry after it restarts"}),
+            );
+            return;
+        }
+    };
     let path = request.url().split('?').next().unwrap_or("").to_owned();
     let host = header(&request, "Host")
         .split(':')
@@ -710,4 +713,75 @@ pub fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
         .into_iter()
         .rev()
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_compile_blocks_restart_until_its_shell_and_response_finish() {
+        let home = tempfile::tempdir().unwrap();
+        let yaml = home.path().join("silicon.yaml");
+        fs::write(
+            &yaml,
+            format!(
+                r#"
+silicon:
+  id: test:org
+  token: test
+  timezone: UTC
+  SILICON_HOME: {}
+  inference_providers: [all-available-providers]
+isi:
+  a:
+    model: '! touch started; while ! test -f release; do sleep 0.01; done; printf fast'
+    primary_send_mode: global
+    session_type: persistent
+    dna: {{assemble: [], next_refresh: 30min}}
+access: {{a: []}}
+flow: []
+"#,
+                serde_json::to_string(home.path()).unwrap()
+            ),
+        )
+        .unwrap();
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let daemon = Daemon {
+            pid: std::process::id(),
+            port: server.server_addr().to_ip().unwrap().port(),
+            token: "test-capability".into(),
+        };
+        let runtime = Runtime::new(format!("http://127.0.0.1:{}", daemon.port));
+        let app = Arc::new(App {
+            runtime: runtime.clone(),
+            daemon: daemon.clone(),
+            mutation: Mutex::new(()),
+            proxy: Mutex::new(None),
+        });
+        let handler = thread::spawn(move || {
+            handle(
+                app,
+                server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap(),
+            );
+        });
+        let request = thread::spawn(move || call(&daemon, "compile", json!({"yaml": yaml})));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let started = home.path().join("started");
+        while !started.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let shell_started = started.exists();
+        let restarted_while_busy = runtime.begin_restart_if_idle();
+        // Release the shell before asserting so even a failing check cannot strand it.
+        fs::write(home.path().join("release"), "").unwrap();
+        assert!(shell_started, "compile did not reach its Bash expression");
+        assert!(!restarted_while_busy);
+        assert_eq!(request.join().unwrap().unwrap()["valid"], true);
+        handler.join().unwrap();
+        assert!(runtime.begin_restart_if_idle());
+    }
 }

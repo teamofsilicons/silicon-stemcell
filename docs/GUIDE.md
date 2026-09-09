@@ -381,13 +381,13 @@ A flow send can create a missing session-addressed session automatically. An int
 
 ### Acknowledgment and delivery
 
-An event response is sent after the entire flow has finished and its dispatched messages have received provider delivery receipts (`START` or `INJECTED`). It does not wait for inference turns to finish. Successful responses contain `status: "ok"` and an `event_id`.
+Each flow send waits for its provider delivery receipt (`START` or `INJECTED`) before the next step. The event response is sent after the entire flow, including its error handling, finishes. It does not wait for inference turns to finish. Successful responses contain `status: "ok"` and an `event_id`.
 
 Silicon forwards new messages immediately, including while an addressed session is working. It does not keep an interpreter queue waiting for a turn to end. Provider initialization and actual provider delivery can still take time. Delivery receipts have a 60-second deadline. Omni's provider behavior determines when an injection or native follow-up is acknowledged.
 
 The ordinary send CLI returns session and delivery information after dispatch acceptance. `show`, logs, and Omni events reveal subsequent work. A completed model answer is not returned in the event acknowledgment.
 
-Immediate expression/dispatch failures can trigger a send catch. A later delivery-receipt failure makes the event request fail after the flow has run; it does not replay the earlier catch branch. There is no general event deduplication or transaction rollback. If an upstream app retries an event after an uncertain response, already-completed actions can run again. Design side-effecting flows with that retry behavior in mind.
+Expression, dispatch, and provider delivery-receipt failures run the send action's scoped catch. Without a catch, they are logged and the flow continues. A successful acknowledgment means the flow was processed; inspect logs and catch results to distinguish handled delivery failures. There is no general event deduplication or transaction rollback. If an upstream app retries an event after an uncertain response, already-completed actions can run again. Design side-effecting flows with that retry behavior in mind.
 
 ## CLI reference
 
@@ -597,7 +597,7 @@ Requests require `Content-Type: application/json` and are limited to 16 MiB. Cro
 | HTTP status | Typical cause |
 | --- | --- |
 | 200 | Flow/control operation completed to its documented acknowledgment boundary. |
-| 400 | Invalid JSON, invalid event shape, configuration error, failed runtime operation, or failed delivery receipt. |
+| 400 | Invalid JSON, invalid event shape, configuration error, or failed control/runtime operation. |
 | 401 | Invalid management token or ISI capability. |
 | 403 | Cross-origin browser request. |
 | 404 | Unknown route/host; Caddy also rejects non-loopback peers and unknown hosts. |
@@ -686,7 +686,7 @@ Correct a separate copy for your deployment. Compilation can report expression s
 
 ## Verification and requirement-to-evidence map
 
-The current library suite completed with 21 passing tests and two Caddy-dependent tests excluded from the ordinary test run. `cargo clippy --all-targets -- -D warnings` passed. The ignored Caddy tests are explicit integration checks, not automatically verified by `cargo test` alone.
+The current library suite completed with 24 passing tests and two Caddy-dependent tests excluded from the ordinary test run. `cargo clippy --all-targets -- -D warnings` passed. The ignored Caddy tests are explicit integration checks, not automatically verified by `cargo test` alone.
 
 The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated `claude-code-cli` provider returned `SILICON_SMOKE_OK` and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.
 
@@ -703,22 +703,25 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Expression-generated flow | `flow::tests::flow_and_branch_expressions_produce_operations`. |
 | CLI command shapes and intersecting archive filters | `cli::tests::command_shapes_and_archive_filters_preserve_scope`. |
 | Log tail/follow boundary and prefix coloring | `cli::tests::tail_snapshot_follows_exact_read_boundary_and_colors_only_prefix`. |
+| Delivery receipts reach flow catches before acknowledgment | `runtime::tests::webhook_ack_waits_for_delivery_and_runs_send_catch_before_continuing` uses the real Omni Rust client over a controlled Unix transport. |
 | Delivery acknowledgment precedes turn completion | `runtime::tests::receipts_ack_provider_delivery_before_end_and_native_next_turns_do_not_retire_early`; also `tests/e2e.py`. |
 | Retry/late errors and listener recovery | `runtime::tests::retry_and_late_errors_preserve_receipts_and_failed_listeners_are_recreated`. |
 | Retirement does not race a new send | `runtime::tests::retirement_rechecks_pending_work_after_waiting_for_send_lock`. |
 | Restart admission gate respects nested active work | `runtime::tests::restart_gate_rejects_active_nested_work_then_rejects_new_dispatches`. |
+| Restart waits for HTTP compilation and its response | `server::tests::http_compile_blocks_restart_until_its_shell_and_response_finish` runs an actual HTTP request and a blocked Bash expression. The same activity guard covers authentication requests and heartbeat preparation. |
 | Suggestion thresholds/cooldown and archived worker retirement | `runtime::tests::suggestions_require_new_messages_and_cooldown_and_archived_workers_retire`; timed protocol E2E checks per-session heartbeats and suggestions. |
 | Disconnect still removes capabilities after app cleanup failure | `runtime::tests::disconnect_unhook_failure_still_removes_connection_and_capabilities`. |
+| A stale connection cannot recreate workers after disconnect | `runtime::tests::stale_disconnected_connection_cannot_create_workers_or_capabilities`. |
 | Archive timestamps and safe physical identity | `state::tests::archive_keeps_original_time_and_safe_disk_identity`; E2E verifies both persistent rollover modes and restart restoration. |
 | IAM issuance/isolation/secret handling contract | `auth::tests::application_tokens_are_iam_issued_isolated_and_never_logged` uses controlled CLI fixtures. This is not evidence that all six real apps have authenticated successfully. |
 | Caddy route constraints | `proxy::tests::only_local_dns_hosts_can_be_routed`. |
 | Real Caddy routing, reload rollback, child cleanup | `proxy::tests::real_caddy_routes_reload_rollback_and_child_cleanup`, run separately with real Caddy; ordinary unit runs mark it ignored. |
 | Port 80 denies non-loopback peers and spoofed forwarding headers | macOS integration test `proxy::tests::real_caddy_port_80_only_forwards_loopback_peers`, run with `SILICON_TEST_LAN_IP` and real Caddy; requires a free port 80. |
-| Stable-version selection | `update::tests::only_newer_stable_releases_are_candidates`. |
+| Stable-version selection | `update::tests::only_newer_stable_releases_are_candidates`; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in the test copy. |
 | End-to-end protocol and lifecycle | `python3 tests/e2e.py`: port decrement, HTTP shape/errors, mid-turn injection, ISI environment/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, shutdown, restart restoration, disconnect, unchanged YAML bytes. |
 | Actual inference | Separate live Claude smoke result: provider `claude-code-cli`, reply `SILICON_SMOKE_OK`, final status `idle`. Recorded delivery acknowledgment 27.82 s and total time 28.07 s in this run; these are observations, not latency guarantees. |
-| Complete public release | Workflow prepares four platform bundles, checks executables/discovery, and creates a draft. Public asset publication remains pending at this snapshot. |
-| Live documentation domain | Deployment to `docs.teamofsilicons.com` remains pending at this snapshot. |
+| Complete public release | Complete macOS ARM64 source/package installations and installed-bundle E2E passed. GitHub checks passed on Linux and macOS. The four-platform release workflow and public asset publication remain pending. |
+| Live documentation domain | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) serves the static guide over verified HTTPS on Vercel; desktop/mobile navigation and layout were checked in Chrome. |
 | Full real-app authentication | Separate isolated integration work is pending. Successful `iam --json` discovery is only one prerequisite. |
 
 Reproducible development commands:
@@ -740,3 +743,6 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 
 Source references for maintainers: `src/config.rs`, `src/eval.rs`, `src/flow.rs`, `src/runtime.rs`, `src/auth.rs`, `src/state.rs`, `src/server.rs`, `src/proxy.rs`, `src/cli.rs`, `src/update.rs`, `src/dashboard.html`, `install.sh`, `.github/workflows/release.yml`, and `tests/e2e.py`. The specification is `UNDERSTANDING.md`; the preserved fixture is `stemcell/silicon/silicon.yaml`.
 
+### Maintaining the documentation
+
+The source is `docs/GUIDE.md`, `docs/DIARY.md`, and `docs/shell.html`. With Python Markdown installed, run `python3 docs/render.py` and commit the updated `docs/site/index.html`. Vercel serves that committed static output; it does not build or upload the interpreter, template homes, or local state.

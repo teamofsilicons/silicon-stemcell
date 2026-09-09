@@ -17,7 +17,7 @@ silicon ls
 silicon web
 ```
 
-Read the [complete guide](docs/GUIDE.md), [implementation diary](docs/DIARY.md), and [source specification](UNDERSTANDING.md). The preserved `stemcell/` directory is reference material, with placeholders and unfinished example expressions; create your own configuration using the guide.
+Read [the live documentation](https://docs.teamofsilicons.com), the [complete guide](docs/GUIDE.md), [implementation diary](docs/DIARY.md), and [source specification](UNDERSTANDING.md). The preserved `stemcell/` directory is reference material, with placeholders and unfinished example expressions; create your own configuration using the guide.
 
 ```sh
 cargo test --locked

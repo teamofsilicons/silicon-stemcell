@@ -116,7 +116,7 @@ pub struct Runtime {
     activities: AtomicUsize,
 }
 
-struct Activity<'a>(&'a AtomicUsize);
+pub(crate) struct Activity<'a>(&'a AtomicUsize);
 impl Drop for Activity<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
@@ -283,8 +283,7 @@ impl Runtime {
         log_line(&cfg.home, "event", "webhook", &request.to_string())?;
         let mut env = environment(cfg);
         env["request"] = request;
-        let mut sent = Vec::new();
-        let result = flow::execute(
+        flow::execute(
             &cfg.flow,
             env,
             &cfg.home,
@@ -295,22 +294,10 @@ impl Runtime {
                     new: true,
                     ..Default::default()
                 };
-                sent.push(self.send(id, None, target, message, &options, false)?);
-                Ok(())
+                self.send(id, None, target, message, &options, false)?
+                    .wait_started()
             },
-        );
-        result?;
-        let mut errors = Vec::new();
-        for delivery in sent {
-            if let Err(error) = delivery.wait_started() {
-                let error = format!("{error:#}");
-                log_line(&cfg.home, "error", "webhook", &error)?;
-                errors.push(error);
-            }
-        }
-        if !errors.is_empty() {
-            bail!("{}", errors.join("; "));
-        }
+        )?;
         Ok(json!({"status":"ok","event_id":event_id}))
     }
 
@@ -367,6 +354,9 @@ impl Runtime {
             bail!("{target} uses session addressing; session_id/--id is required");
         }
         let mut workers = connected.workers.lock().unwrap();
+        if !connected.enabled.load(Ordering::SeqCst) {
+            bail!("silicon disconnected");
+        }
         if !options.archived && !(ephemeral && !by_session) {
             if let Some(worker) = workers.values().find(|w| {
                 let state = w.state.lock().unwrap();
@@ -649,9 +639,9 @@ impl Runtime {
                 let Some(runtime) = runtime.upgrade() else {
                     break;
                 };
-                if runtime.stopping.load(Ordering::SeqCst) {
+                let Ok(_activity) = runtime.activity() else {
                     break;
-                }
+                };
                 let connections: Vec<_> = runtime
                     .silicons
                     .read()
@@ -721,6 +711,7 @@ impl Runtime {
                             );
                             thread::spawn(move || {
                                 let result = (|| -> Result<()> {
+                                    let _activity = runtime.activity()?;
                                     let cfg = &connected.cfg;
                                     auth::ensure_all(
                                         &cfg.home,
@@ -798,7 +789,7 @@ impl Runtime {
             })
     }
 
-    fn activity(&self) -> Result<Activity<'_>> {
+    pub(crate) fn activity(&self) -> Result<Activity<'_>> {
         // The short reader lets callbacks dispatch recursively while a restart writer is waiting.
         let _gate = self.dispatch_gate.read().unwrap();
         if self.stopping.load(Ordering::SeqCst) {
@@ -1164,11 +1155,11 @@ impl Worker {
                     && omni_idle
                 {
                     let error = format!("{}: {}", event.kind, event.error);
-                    for dispatch in &state.pending {
-                        dispatch.receipt.finish(Err(error.clone()));
-                    }
-                    state.record.status = "error".into();
-                    state.record.save(&cfg.home)?;
+                    // A blocked provider can fail before START and never emit END.
+                    // Retire its daemon so failed receipts/Omni work cannot strand idle detection.
+                    drop(state);
+                    self.fail(&error);
+                    return Ok(());
                 }
             }
             Event::END => {
@@ -1593,6 +1584,13 @@ mod tests {
     use super::*;
 
     fn worker(ephemeral: bool) -> (tempfile::TempDir, Arc<Runtime>, Arc<Connected>, Arc<Worker>) {
+        worker_with_flow(ephemeral, serde_yaml::Value::Sequence(Vec::new()))
+    }
+
+    fn worker_with_flow(
+        ephemeral: bool,
+        flow: serde_yaml::Value,
+    ) -> (tempfile::TempDir, Arc<Runtime>, Arc<Connected>, Arc<Worker>) {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg: Config = serde_yaml::from_str(&format!(
             r#"
@@ -1607,6 +1605,7 @@ flow: []
         .unwrap();
         cfg.home = dir.path().to_owned();
         cfg.path = dir.path().join("silicon.yaml");
+        cfg.flow = flow;
         let runtime = Runtime::new("http://127.0.0.1:1823".into());
         runtime.connect(cfg).unwrap();
         let connected = runtime.get("test:org").unwrap();
@@ -1631,6 +1630,106 @@ flow: []
             session: state.record.clone(),
             id,
             receipt,
+        }
+    }
+
+    #[test]
+    fn stale_disconnected_connection_cannot_create_workers_or_capabilities() {
+        let (_dir, runtime, connected, worker) = worker(false);
+        runtime.disconnect("test:org").unwrap();
+        assert!(worker.stopped.load(Ordering::SeqCst));
+        assert!(runtime
+            .worker(&connected, "a", &SendOptions::default())
+            .is_err());
+        assert!(connected.workers.lock().unwrap().is_empty());
+        assert!(runtime.callers.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn webhook_ack_waits_for_delivery_and_runs_send_catch_before_continuing() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+
+        for failed in [false, true] {
+            let flow = serde_yaml::from_str(
+                r#"
+- send:
+    isi: a
+    message: hello
+    catch:
+      - log: {message: 'caught: {error}'}
+- log: {message: continued}
+"#,
+            )
+            .unwrap();
+            let (dir, runtime, _connected, worker) = worker_with_flow(false, flow);
+            let (client, mut daemon) = UnixStream::pair().unwrap();
+            daemon
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            *worker.client.lock().unwrap() = Some(Client::from_stream(client).unwrap());
+            let (accepted, delivered) = mpsc::channel();
+            let transport = thread::spawn(move || {
+                let mut reader = BufReader::new(daemon.try_clone().unwrap());
+                for operation in ["send", "stop"] {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(request["op"], operation);
+                    let result = if operation == "send" {
+                        json!({"accepted": true})
+                    } else {
+                        json!({"stopped": true})
+                    };
+                    writeln!(
+                        daemon,
+                        "{}",
+                        json!({"id": request["id"], "ok": true, "result": result})
+                    )
+                    .unwrap();
+                    if operation == "send" {
+                        accepted.send(()).unwrap();
+                    }
+                }
+            });
+            let (ack, response) = mpsc::channel();
+            let event_runtime = runtime.clone();
+            let event = thread::spawn(move || {
+                ack.send(event_runtime.event(
+                    "test:org",
+                    json!({"type": "test", "data": {}, "metadata": {}}),
+                ))
+                .unwrap();
+            });
+            delivered.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(response.recv_timeout(Duration::from_millis(50)).is_err());
+            let log = dir.path().join(".silicon/silicon.log");
+            assert!(!fs::read_to_string(&log).unwrap().contains("[continued]"));
+            if failed {
+                let mut error = Event::new(Event::ERROR);
+                error.kind = "crash".into();
+                error.error = "blocked before START".into();
+                worker.on_event(error, true, 1).unwrap();
+            } else {
+                worker
+                    .on_event(Event::new(Event::START).saying("hello"), false, 0)
+                    .unwrap();
+            }
+            let result = response.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(result.unwrap()["status"], "ok");
+            let log = fs::read_to_string(log).unwrap();
+            assert!(log.contains("[continued]"));
+            if failed {
+                assert!(log.contains("blocked before START"));
+                assert!(log.find("[caught:").unwrap() < log.find("[continued]").unwrap());
+            } else {
+                assert!(!log.contains("[caught:"));
+                assert!(!runtime.idle(), "ACK must not wait for provider END");
+            }
+            runtime.shutdown();
+            event.join().unwrap();
+            transport.join().unwrap();
         }
     }
 
@@ -1680,6 +1779,15 @@ flow: []
         assert!(!Arc::ptr_eq(&worker, &replacement));
         assert_eq!(replacement.session_id, worker.session_id);
         assert!(!replacement.stopped.load(Ordering::SeqCst));
+        let blocked = pending(&replacement, "cannot route before START");
+        let mut error = Event::new(Event::ERROR);
+        error.kind = "blocked".into();
+        error.error = "no available providers".into();
+        replacement.on_event(error, true, 1).unwrap();
+        assert!(blocked.wait_started().is_err());
+        assert!(replacement.state.lock().unwrap().pending.is_empty());
+        assert!(replacement.stopped.load(Ordering::SeqCst));
+        assert!(runtime.idle());
     }
 
     #[test]
