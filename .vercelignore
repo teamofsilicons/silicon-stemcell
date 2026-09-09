@@ -1,0 +1,5 @@
+*
+!docs/
+!docs/site/
+!docs/site/**
+!vercel.json

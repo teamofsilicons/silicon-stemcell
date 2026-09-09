@@ -1,4 +1,4 @@
-[silicon interpreter]
+[silicon interpreter 3.5]
     |
 ---------
 |   |   |

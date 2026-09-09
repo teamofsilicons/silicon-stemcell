@@ -1,0 +1,131 @@
+name: Release Silicon
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to build
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build-target
+      RUSTUP_TOOLCHAIN: 1.98.1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Validate the tag and source version
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, tomllib
+          version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
+          assert os.environ['RELEASE_TAG'] == f'v{version}', 'release tag must match Cargo.toml'
+          default = re.search(r'version=\$\{SILICON_VERSION:-(.+?)\}', pathlib.Path('install.sh').read_text()).group(1)
+          assert default == f'v{version}', 'installer default must match the release version'
+          PY
+      - name: Install Rust
+        run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - name: Verify interpreter
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Build the complete bundle
+        env:
+          SILICON_PREFIX: ${{ runner.temp }}/silicon-bundle
+          SILICON_SOURCE_DIR: ${{ github.workspace }}
+          SILICON_VERSION: ${{ env.RELEASE_TAG }}
+        run: sh install.sh
+      - name: Exercise the installed bundle with the real Omni daemon and Caddy
+        env:
+          SILICON_TEST_BIN_DIR: ${{ runner.temp }}/silicon-bundle/bin
+          OMNI_DAEMON: ${{ runner.temp }}/silicon-bundle/bin/omnid
+          SILICON_CADDY: ${{ runner.temp }}/silicon-bundle/bin/caddy
+        run: python3 tests/e2e.py
+      - name: Check bundled CLI executables without authenticating
+        env:
+          BUNDLE_BIN: ${{ runner.temp }}/silicon-bundle/bin
+        run: |
+          for binary in silicon si silicon-omni omni so iam dm briefcase waveform commit remind hook; do
+            "$BUNDLE_BIN/$binary" --help >/dev/null
+          done
+          for binary in commit-native remind-native; do
+            "$RUNNER_TEMP/silicon-bundle/lib/silicon/current/bin/$binary" --help >/dev/null
+          done
+          "$BUNDLE_BIN/omnid" --version
+          "$BUNDLE_BIN/caddy" version
+      - name: Verify required IAM application discovery contracts
+        env:
+          BUNDLE_BIN: ${{ runner.temp }}/silicon-bundle/bin
+          SILICON_HOME: ${{ runner.temp }}/silicon-contract-check
+          SILICON_IAM_AUTO_UPDATE: 'false'
+          BRIEFCASE_AUTO_UPDATE: '0'
+          WAVEFORM_AUTO_UPDATE: '0'
+          SILICON_HOOK_AUTO_UPDATE: '0'
+        run: |
+          mkdir -p "$SILICON_HOME"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          for app in ['dm', 'briefcase', 'waveform', 'commit', 'remind', 'hook']:
+              result = subprocess.run([str(pathlib.Path(os.environ['BUNDLE_BIN']) / app), 'iam', '--json'], capture_output=True, text=True, cwd=os.environ['SILICON_HOME'], timeout=30)
+              assert result.returncode == 0, f'{app} IAM discovery failed ({result.returncode}): {result.stderr}'
+              info = json.loads(result.stdout)
+              assert isinstance(info.get('app_id'), str) and info['app_id'], f'{app} did not return app_id'
+          PY
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          tar -czf "dist/silicon-$TARGET.tar.gz" -C "$RUNNER_TEMP/silicon-bundle/lib/silicon/current" bin VERSION installer.sh LICENSE LICENSES
+          cp install.sh dist/install.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksum and create a reviewable draft
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          sha256sum silicon-*.tar.gz install.sh > SHA256SUMS
+          printf '%s\n' 'Complete Rust interpreter bundle: silicon, si, Omni, Caddy, IAM, DM, Briefcase, Waveform, Commit, Remind, and Hook.' 'Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.' > release-notes.md
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz install.sh SHA256SUMS

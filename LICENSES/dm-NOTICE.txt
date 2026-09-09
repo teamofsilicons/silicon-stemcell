@@ -1,0 +1,23 @@
+silicon-dm-cli 0.3.0
+Declared license: LicenseRef-Proprietary
+Source: https://github.com/teamofsilicons/silicon-dm/tree/782a28a52b6a15250a9748f4c346b8479bc75c2b
+
+No LICENSE, COPYING, or NOTICE file was present in the published crate or at the root of the pinned upstream repository. This notice records the upstream metadata without adding or changing its license terms.
+
+Package metadata:
+{
+  "edition": "2024",
+  "rust-version": "1.98",
+  "name": "silicon-dm-cli",
+  "version": "0.3.0",
+  "build": false,
+  "autolib": false,
+  "autobins": false,
+  "autoexamples": false,
+  "autotests": false,
+  "autobenches": false,
+  "description": "Silicon DM command line client and durable local relay",
+  "readme": "README.md",
+  "license": "LicenseRef-Proprietary",
+  "repository": "https://github.com/teamofsilicons/silicon-dm"
+}

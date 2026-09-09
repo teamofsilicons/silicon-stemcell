@@ -1,0 +1,35 @@
+[package]
+name = "silicon"
+version = "3.5.0"
+edition = "2021"
+description = "Silicon interpreter and CLI"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4", "serde"] }
+silicon-omni = { git = "https://github.com/teamofsilicons/silicon-omni", rev = "d52f5416cd33b363554d2300b5603dc0b6c43545" }
+cel-interpreter = { version = "0.10", features = ["json"] }
+shell-words = "1"
+libc = "0.2"
+signal-hook = "0.3"
+ureq = { version = "3", features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "silicon"
+path = "src/main.rs"
+
+[[bin]]
+name = "si"
+path = "src/si.rs"
