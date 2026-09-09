@@ -25,10 +25,10 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>No terminal window is opened for each ISI. Each receives an independent process context, an Omni session, and the environment needed by its commands. Persistent session data survives stopping the interpreter. Global ephemeral work is discarded when it finishes.</p>
 </section><section class="chapter"><h2 id="installation">Installation</h2>
 <h3 id="public-binary-installation">Public binary installation</h3>
-<p>The public installer is designed to download a complete, versioned bundle. It does not require a Rust compiler. Once the <code>v3.5.0</code> release and its assets have been published and verified, the release-specific command is:</p>
+<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v3.5.0</code> with:</p>
 <pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh | sh
 </code></pre>
-<p>At this documentation snapshot, publication is pending. An unavailable bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
+<p>The <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0">v3.5.0 release</a> includes all four platform bundles and their checksums. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
 <p>The default installation prefix is <code>~/.local/share/silicon</code>. Add its <code>bin</code> directory to your shell's <code>PATH</code>:</p>
 <pre><code class="language-sh">export PATH=&quot;$HOME/.local/share/silicon/bin:$PATH&quot;
 </code></pre>
@@ -37,7 +37,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
-<p>The target matrix covers macOS and Linux on ARM64 and x86-64. Windows is not a supported target. Release bundles are built and tested on macOS 15 and Ubuntu 24.04; older operating systems and other Linux distributions are not verified by that matrix. Linux bundles use glibc. Release CI builds each target; a local test on one architecture does not verify the other three.</p>
+<p>The target matrix covers macOS and Linux on ARM64 and x86-64. Windows is not a supported target. Release bundles are built and tested on macOS 15 and Ubuntu 24.04; older operating systems and other Linux distributions are not verified by that matrix. The Linux binaries require glibc 2.39 or newer. Release CI builds each target; a local test on one architecture does not verify the other three.</p>
 <p>The binary installation needs <code>curl</code>, <code>tar</code>, and a SHA-256 verifier (<code>sha256sum</code> or <code>shasum</code>). Downloads use HTTPS. Before activation, the installer checks the bundle checksum, required members, version marker, and whether the interpreter and Omni daemon can execute. A complete release includes:</p>
 <table>
 <thead>
@@ -741,7 +741,7 @@ APP unhook
 </tr>
 <tr>
 <td>Release bundle unavailable</td>
-<td>Confirm that the requested release was actually published with complete assets. At this snapshot public publication is pending; use the source-install path for development.</td>
+<td>Check access to GitHub and the requested version's release assets. Use the versioned command above or the source-install path for development.</td>
 </tr>
 <tr>
 <td>Checksum mismatch or missing binary</td>
@@ -977,7 +977,7 @@ APP unhook
 </tr>
 <tr>
 <td>Stable-version selection</td>
-<td><code>update::tests::only_newer_stable_releases_are_candidates</code>; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in the test copy.</td>
+<td><code>update::tests::only_newer_stable_releases_are_candidates</code>; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in that test copy. Separately, the public installed binary successfully queried live GitHub HTTPS metadata and correctly reported 3.5.0 as current.</td>
 </tr>
 <tr>
 <td>End-to-end protocol and lifecycle</td>
@@ -989,7 +989,11 @@ APP unhook
 </tr>
 <tr>
 <td>Complete public release</td>
-<td>Complete macOS ARM64 source/package installations and installed-bundle E2E passed. GitHub checks passed on Linux and macOS. The four-platform release workflow and public asset publication remain pending.</td>
+<td><a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0">v3.5.0</a> is published from <code>3ac2922</code>. <a href="https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34344276712">All four native CI jobs</a> passed interpreter checks, complete-bundle E2E, CLI execution, and IAM discovery. Downloaded archives match the CI artifacts, exact payload inventory, tagged installer/notices, checksums, and GitHub asset digests.</td>
+</tr>
+<tr>
+<td>Public one-line installation</td>
+<td>The published <code>curl .../v3.5.0/install.sh \| sh</code> path installed into a fresh macOS ARM64 prefix with all source/mirror overrides removed. All 30 payload files matched the verified CI bundle; the public installed interpreter passed the full protocol E2E.</td>
 </tr>
 <tr>
 <td>Live documentation domain</td>
@@ -1034,12 +1038,14 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <p>The complete source install and packaged install were tested in isolated prefixes. All 16 payload executables/wrappers were present, pinned Omni and Caddy versions matched, six application discovery commands returned IDs, and the installed bundle passed the protocol E2E. Package extraction and relocation preserved payload bytes, notices, wrapper behavior, and installation metadata. This is separate from live app authentication and from the four-platform release build.</p>
 <h3 id="publishing-the-guide">Publishing the guide</h3>
 <p>The static guide is live at <a href="https://docs.teamofsilicons.com">docs.teamofsilicons.com</a>, hosted by the <code>silicon-docs</code> Vercel project. DNS verification added a TXT challenge and the <code>docs</code> CNAME; a before/after comparison confirmed that all 55 existing DNS records remained unchanged. The domain returned HTTP 200 with verified TLS, and Chrome displayed the published page. Mobile navigation, the installation copy button, and desktop layout were checked. The deployment uploads public documentation assets; template homes, Rust build output, and local environment files are excluded.</p>
-<p>GitHub's branch checks passed on both Ubuntu and macOS. The first complete implementation commit is <code>3bfd07e</code> on <code>stemcell-v3.5</code>; the supplied <code>stemcell/</code> files are unchanged. Publication of the versioned binary assets remains a separate gate.</p>
+<p>GitHub's branch checks passed on both Ubuntu and macOS. The first complete implementation commit is <code>3bfd07e</code> on <code>stemcell-v3.5</code>; the final runtime is tagged <code>v3.5.0</code> at <code>3ac2922</code>. The supplied <code>stemcell/</code> tree is byte-for-byte unchanged. The four native release jobs passed interpreter verification, installed-bundle E2E with real Omni/Caddy, CLI execution, and IAM discovery. Each resulting archive contains exactly 16 payload executables/wrappers, the version marker, installer, and license notices; no YAML or runtime state is included. All four downloaded release archives matched their native CI artifacts, and all six assets matched their checksums and GitHub digests. The release was published on 9 September 2026 at 11:35 UTC, with the pending shared IAM login issue explicitly recorded in its notes.</p>
 <p>A final failure-path review caught provider errors that can arrive before any <code>START</code> or <code>END</code>. Terminal blocked workers now fail their receipts and retire, so an update is not postponed forever by work that cannot begin. Flow sends now wait for the delivery receipt within the action, allowing <code>send.catch</code> to handle that failure and continue before the event is acknowledged. A regression using the real Omni Rust client and a controlled Unix transport checks both the failure case and successful acknowledgment before turn completion.</p>
 <p>Two lifecycle races were closed before release. A connection obtained just before disconnect must recheck its enabled state while holding the worker lock, preventing it from creating a daemon and capability after cleanup. Restart admission also counts the entire HTTP operation and heartbeat preparation, including shell evaluation and authentication. A real HTTP compilation test holds a Bash expression open, verifies that restart is refused, releases it, and verifies that restart becomes possible after the response. The final ordinary suite passed 24 tests, with the two separately exercised Caddy integration tests marked ignored.</p>
 <h3 id="tracing-the-real-application-logins">Tracing the real application logins</h3>
 <p>Briefcase, DM, Hook, Remind, Waveform, and Commit all exposed their IAM IDs and received IAM-issued short-lived tokens, then rejected the test Silicons during hosted login. Direct exchange controls made the failure precise: a test Carbon succeeded, while two test Silicons in separate owned organizations failed with <code>invalid_grant</code>. IAM's issuer deliberately creates unscoped selected-organization login grants, but its shared OAuth authority function rejected the same shape for Silicon subjects. That function also serves refresh and introspection, so changing one app or retrying a consumed token would leave the root cause intact.</p>
-<p>The prepared upstream change is one forward SQL migration plus a regression in IAM's existing protocol suite. It preserves the exact application, consent, parent session, active Silicon, organization, and membership checks while accepting the issuer's unscoped grant. On disposable PostgreSQL 16, the regression fails against the old helper and the full protocol suite passes with the fix. Another 339 ordinary IAM tests, formatting, Clippy, migration-security, and runtime-grant checks passed. The rollback function was also exercised transactionally. Hosted deployment remains pending: IAM verifies an exact migration ledger, so the API/worker image and both production/testing schemas must move together. A local CLI URL override cannot redirect token exchanges made inside already-published app servers. Hosted success will be recorded after that coordinated rollout and the six login checks actually pass.</p></section>
+<p>The prepared upstream change is one forward SQL migration plus a regression in IAM's existing protocol suite. It preserves the exact application, consent, parent session, active Silicon, organization, and membership checks while accepting the issuer's unscoped grant. On disposable PostgreSQL 16, the regression fails against the old helper and the full protocol suite passes with the fix. Another 339 ordinary IAM tests, formatting, Clippy, migration-security, and runtime-grant checks passed. The rollback function was also exercised transactionally. Hosted deployment remains pending: IAM verifies an exact migration ledger, so the API/worker image and both production/testing schemas must move together. A local CLI URL override cannot redirect token exchanges made inside already-published app servers. Hosted success will be recorded after that coordinated rollout and the six login checks actually pass.</p>
+<p>The accelerated updater check was rerun against the final runtime commit after the HTTP/heartbeat activity guards landed. Both idle and busy cases passed: the installed version changed, the process retained its PID and port, connections and YAML stayed intact, and the persistent session resumed through real Omni. The busy case held the old runtime until provider completion. This final run also rechecked release filtering, checksum failures, source/mirror override removal, and cleanup.</p>
+<p>After publication, the actual public <code>curl</code> installer was run into a fresh macOS ARM64 prefix with source-build and mirror overrides removed. It downloaded the release bundle and installed every dependency without a source build. All 30 installed payload files matched the verified native CI archive, including all 16 executables/wrappers. That public installation passed the complete real Omni/Caddy protocol E2E. Its <code>silicon update</code> command also queried GitHub's live HTTPS release metadata and correctly returned no update for the already-current 3.5.0. This checks the real transport separately from the accelerated updater's documented test seams.</p></section>
 <footer><span>Silicon 3.5 · Built in Rust · <a href="https://github.com/teamofsilicons/silicon-stemcell/tree/stemcell-v3.5">Open source, MIT</a></span><a class="page-top" href="#">Back to top ↑</a></footer>
 </main></div>
 <script>

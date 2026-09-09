@@ -18,13 +18,13 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer is designed to download a complete, versioned bundle. It does not require a Rust compiler. Once the `v3.5.0` release and its assets have been published and verified, the release-specific command is:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.5.0` with:
 
 ```sh
 curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh | sh
 ```
 
-At this documentation snapshot, publication is pending. An unavailable bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+The [v3.5.0 release](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) includes all four platform bundles and their checksums. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -41,7 +41,7 @@ curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-The target matrix covers macOS and Linux on ARM64 and x86-64. Windows is not a supported target. Release bundles are built and tested on macOS 15 and Ubuntu 24.04; older operating systems and other Linux distributions are not verified by that matrix. Linux bundles use glibc. Release CI builds each target; a local test on one architecture does not verify the other three.
+The target matrix covers macOS and Linux on ARM64 and x86-64. Windows is not a supported target. Release bundles are built and tested on macOS 15 and Ubuntu 24.04; older operating systems and other Linux distributions are not verified by that matrix. The Linux binaries require glibc 2.39 or newer. Release CI builds each target; a local test on one architecture does not verify the other three.
 
 The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum` or `shasum`). Downloads use HTTPS. Before activation, the installer checks the bundle checksum, required members, version marker, and whether the interpreter and Omni daemon can execute. A complete release includes:
 
@@ -639,7 +639,7 @@ Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic
 | Symptom | Check or action |
 | --- | --- |
 | `silicon` is not found | Add the installation prefix's `bin` to `PATH`; inspect the installer's printed path. |
-| Release bundle unavailable | Confirm that the requested release was actually published with complete assets. At this snapshot public publication is pending; use the source-install path for development. |
+| Release bundle unavailable | Check access to GitHub and the requested version's release assets. Use the versioned command above or the source-install path for development. |
 | Checksum mismatch or missing binary | Keep the current installation; investigate/re-download the release. The installer fails before selecting incomplete payloads. |
 | Port 80 cannot bind | Check for another server. On Linux, install libcap tools and let the installer grant the bundled Caddy capability. Use `serve --no-proxy` for direct development access. |
 | Interpreter did not use 1823 | Read `silicon web --no-open`, startup output, or the private daemon descriptor; it selected a lower free port. |
@@ -719,10 +719,11 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Caddy route constraints | `proxy::tests::only_local_dns_hosts_can_be_routed`. |
 | Real Caddy routing, reload rollback, child cleanup | `proxy::tests::real_caddy_routes_reload_rollback_and_child_cleanup`, run separately with real Caddy; ordinary unit runs mark it ignored. |
 | Port 80 denies non-loopback peers and spoofed forwarding headers | macOS integration test `proxy::tests::real_caddy_port_80_only_forwards_loopback_peers`, run with `SILICON_TEST_LAN_IP` and real Caddy; requires a free port 80. |
-| Stable-version selection | `update::tests::only_newer_stable_releases_are_candidates`; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in the test copy. |
+| Stable-version selection | `update::tests::only_newer_stable_releases_are_candidates`; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in that test copy. Separately, the public installed binary successfully queried live GitHub HTTPS metadata and correctly reported 3.5.0 as current. |
 | End-to-end protocol and lifecycle | `python3 tests/e2e.py`: port decrement, HTTP shape/errors, mid-turn injection, ISI environment/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, shutdown, restart restoration, disconnect, unchanged YAML bytes. |
 | Actual inference | Separate live Claude smoke result: provider `claude-code-cli`, reply `SILICON_SMOKE_OK`, final status `idle`. Recorded delivery acknowledgment 27.82 s and total time 28.07 s in this run; these are observations, not latency guarantees. |
-| Complete public release | Complete macOS ARM64 source/package installations and installed-bundle E2E passed. GitHub checks passed on Linux and macOS. The four-platform release workflow and public asset publication remain pending. |
+| Complete public release | [v3.5.0](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) is published from `3ac2922`. [All four native CI jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34344276712) passed interpreter checks, complete-bundle E2E, CLI execution, and IAM discovery. Downloaded archives match the CI artifacts, exact payload inventory, tagged installer/notices, checksums, and GitHub asset digests. |
+| Public one-line installation | The published `curl .../v3.5.0/install.sh \| sh` path installed into a fresh macOS ARM64 prefix with all source/mirror overrides removed. All 30 payload files matched the verified CI bundle; the public installed interpreter passed the full protocol E2E. |
 | Live documentation domain | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) serves the static guide over verified HTTPS on Vercel; desktop/mobile navigation and layout were checked in Chrome. |
 | Full real-app authentication | All six real CLIs passed discovery and IAM issuance; hosted login failed at a shared IAM Silicon token-exchange defect. An upstream fix passed local protocol and unit checks; deployment and successful hosted login verification are pending. |
 

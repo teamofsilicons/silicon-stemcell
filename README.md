@@ -6,7 +6,7 @@ A local Rust interpreter for `silicon.yaml`: connect Silicons, route events thro
 curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh | sh
 ```
 
-Release publication is in progress. The installer expects a complete published bundle; see [source installation](docs/GUIDE.md#build-the-complete-installation-from-source) until the release is available.
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0).
 
 The bundle includes Silicon, Caddy, IAM, Omni, DM, Briefcase, Waveform, Commit, Remind, and Hook. macOS and Linux, ARM64 and x86-64. Default prefix: `~/.local/share/silicon`.
 
