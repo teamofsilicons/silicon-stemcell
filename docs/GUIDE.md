@@ -41,7 +41,7 @@ curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-The target matrix covers macOS and Linux on ARM64 and x86-64. Windows is not a supported target. Release CI is configured to build each target; a local test on one architecture does not verify the other three.
+The target matrix covers macOS and Linux on ARM64 and x86-64. Windows is not a supported target. Release bundles are built and tested on macOS 15 and Ubuntu 24.04; older operating systems and other Linux distributions are not verified by that matrix. Linux bundles use glibc. Release CI builds each target; a local test on one architecture does not verify the other three.
 
 The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum` or `shasum`). Downloads use HTTPS. Before activation, the installer checks the bundle checksum, required members, version marker, and whether the interpreter and Omni daemon can execute. A complete release includes:
 
@@ -536,6 +536,8 @@ Application commands receive the Silicon home and the common isolated IAM home. 
 
 For test worlds, the selected IAM environment and each application's paired test environment must agree. Merely importing an application into IAM does not create the app backend's own test plane. The real app test-plane creation APIs may require an authorized production control-plane identity; do not infer test success from `iam --json` alone.
 
+During 3.5 verification, all six real apps passed discovery and IAM short-lived-token issuance, but their hosted login exchanges rejected the test Silicons. This was traced to IAM's shared OAuth subject-authority function rejecting the unscoped Silicon grants that its issuer creates. A two-file upstream fix passes the database protocol regression and 339 IAM unit tests locally. Shared IAM deployment and successful hosted app logins remain pending at this snapshot; changing the interpreter's token arguments cannot repair that server-side rejection.
+
 ### Webhook expectations
 
 An app listed in `webhook` must support:
@@ -722,7 +724,7 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Actual inference | Separate live Claude smoke result: provider `claude-code-cli`, reply `SILICON_SMOKE_OK`, final status `idle`. Recorded delivery acknowledgment 27.82 s and total time 28.07 s in this run; these are observations, not latency guarantees. |
 | Complete public release | Complete macOS ARM64 source/package installations and installed-bundle E2E passed. GitHub checks passed on Linux and macOS. The four-platform release workflow and public asset publication remain pending. |
 | Live documentation domain | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) serves the static guide over verified HTTPS on Vercel; desktop/mobile navigation and layout were checked in Chrome. |
-| Full real-app authentication | Separate isolated integration work is pending. Successful `iam --json` discovery is only one prerequisite. |
+| Full real-app authentication | All six real CLIs passed discovery and IAM issuance; hosted login failed at a shared IAM Silicon token-exchange defect. An upstream fix passed local protocol and unit checks; deployment and successful hosted login verification are pending. |
 
 Reproducible development commands:
 
