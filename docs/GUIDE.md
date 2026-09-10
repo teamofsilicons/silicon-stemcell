@@ -763,6 +763,15 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 
 Source references for maintainers: `src/config.rs`, `src/eval.rs`, `src/flow.rs`, `src/runtime.rs`, `src/auth.rs`, `src/state.rs`, `src/server.rs`, `src/proxy.rs`, `src/cli.rs`, `src/update.rs`, `src/dashboard.html`, `install.sh`, `.github/workflows/release.yml`, and `tests/e2e.py`. The specification is `UNDERSTANDING.md`; the preserved fixture is `stemcell/silicon/silicon.yaml`.
 
+To verify complete bundles on all four native platforms before a release, dispatch the existing release workflow from a branch containing it, with an exact source commit:
+
+```sh
+gh workflow run release.yml --repo teamofsilicons/silicon-stemcell \
+  --ref BRANCH -f tag=COMMIT_SHA -f build_only=true
+```
+
+Despite the historical input name `tag`, build-only mode accepts a source revision. It validates the installer against the source version, runs the same native builds and installed-bundle E2E checks, and uploads CI artifacts. It skips the draft-release job and does not create a Git tag. Normal release mode still requires an existing `vX.Y.Z` tag matching both the source and installer.
+
 ### Maintaining the documentation
 
 The source is `docs/GUIDE.md`, `docs/DIARY.md`, and `docs/shell.html`. With Python Markdown installed, run `python3 docs/render.py` and commit the updated `docs/site/index.html`. Vercel serves that committed static output; it does not build or upload the interpreter, template homes, or local state.
