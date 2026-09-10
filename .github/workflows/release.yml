@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing vX.Y.Z tag to build
+        description: Existing tag or source revision to build
         required: true
+      build_only:
+        description: Validate and upload bundles without creating a draft release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,6 +34,7 @@ jobs:
     timeout-minutes: 120
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      BUILD_ONLY: ${{ inputs.build_only }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/build-target
       RUSTUP_TOOLCHAIN: 1.98.1
     steps:
@@ -37,12 +42,13 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
-      - name: Validate the tag and source version
+      - name: Validate the source version and release tag
         run: |
           python3 - <<'PY'
           import os, pathlib, re, tomllib
           version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
-          assert os.environ['RELEASE_TAG'] == f'v{version}', 'release tag must match Cargo.toml'
+          if os.environ.get('BUILD_ONLY') != 'true':
+              assert os.environ['RELEASE_TAG'] == f'v{version}', 'release tag must match Cargo.toml'
           default = re.search(r'version=\$\{SILICON_VERSION:-(.+?)\}', pathlib.Path('install.sh').read_text()).group(1)
           assert default == f'v{version}', 'installer default must match the release version'
           PY
@@ -57,7 +63,6 @@ jobs:
         env:
           SILICON_PREFIX: ${{ runner.temp }}/silicon-bundle
           SILICON_SOURCE_DIR: ${{ github.workspace }}
-          SILICON_VERSION: ${{ env.RELEASE_TAG }}
         run: sh install.sh
       - name: Exercise the installed bundle with the real Omni daemon and Caddy
         env:
@@ -75,6 +80,7 @@ jobs:
           for binary in commit-native remind-native; do
             "$RUNNER_TEMP/silicon-bundle/lib/silicon/current/bin/$binary" --help >/dev/null
           done
+          "$BUNDLE_BIN/commit" logout --help >/dev/null
           "$BUNDLE_BIN/omnid" --version
           "$BUNDLE_BIN/caddy" version
       - name: Verify required IAM application discovery contracts
@@ -109,6 +115,7 @@ jobs:
           if-no-files-found: error
 
   draft:
+    if: ${{ !inputs.build_only }}
     needs: build
     runs-on: ubuntu-24.04
     permissions:

@@ -509,7 +509,8 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 .iter()
                 .find(|(id, c)| {
                     id.as_str() == target
-                        || c.cfg.path == Path::new(target).canonicalize().unwrap_or_default()
+                        || (Path::new(target).is_absolute()
+                            && c.cfg.path == Path::new(target).canonicalize().unwrap_or_default())
                 })
                 .map(|(id, _)| id.clone())
                 .ok_or_else(|| anyhow!("unknown silicon: {target}"))?;
@@ -540,7 +541,10 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         "event" => app
             .runtime
             .event(text(args, "silicon")?, args["event"].clone()),
-        "sessions" => sessions(&app.runtime, text(args, "silicon")?, args),
+        "sessions" => {
+            let connected = app.runtime.get(text(args, "silicon")?)?;
+            sessions(&app.runtime, &connected, args)
+        }
         "show" => app.runtime.show(
             text(args, "silicon")?,
             text(args, "isi")?,
@@ -569,13 +573,16 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         "new-session" => {
             let id = text(args, "silicon")?;
             let isi = text(args, "isi")?;
-            let current = app.runtime.show(id, isi, args["current_id"].as_str())?;
-            let caller = crate::runtime::Caller {
-                silicon: id.to_owned(),
-                isi: isi.to_owned(),
-                session: serde_json::from_value(current["session"]["session_id"].clone())?,
-            };
-            Ok(json!(app.runtime.new_session(
+            let connected = app.runtime.get(id)?;
+            let current =
+                app.runtime
+                    .show_connected(&connected, isi, args["current_id"].as_str())?;
+            let caller = app.runtime.session_caller(
+                &connected,
+                serde_json::from_value(current["session"]["session_id"].clone())?,
+            )?;
+            Ok(json!(app.runtime.new_session_connected(
+                &connected,
                 &caller,
                 &serde_json::from_value::<NewSession>(args.clone())?
             )?))
@@ -622,14 +629,16 @@ fn update_proxy(app: &App) -> Result<()> {
 fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value) -> Result<Value> {
     let args = &body["args"];
     let action = text(body, "action")?;
+    let connected = app.runtime.caller_connection(caller)?;
     if ["send", "sessions", "show", "end"].contains(&action) {
-        app.runtime.authorize_target(caller, text(args, "isi")?)?;
+        app.runtime
+            .authorize_target(&connected, caller, text(args, "isi")?)?;
     }
     match action {
         "send" => {
             let options: SendOptions = serde_json::from_value(args.clone())?;
-            let sent = app.runtime.send(
-                &caller.silicon,
+            let sent = app.runtime.send_connected(
+                &connected,
                 Some(caller),
                 text(args, "isi")?,
                 text(args, "message")?,
@@ -638,27 +647,28 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             )?;
             Ok(json!({"session":sent.session,"delivery_id":sent.id}))
         }
-        "sessions" => sessions(&app.runtime, &caller.silicon, args),
+        "sessions" => sessions(&app.runtime, &connected, args),
         "show" => app
             .runtime
-            .show(&caller.silicon, text(args, "isi")?, args["id"].as_str()),
+            .show_connected(&connected, text(args, "isi")?, args["id"].as_str()),
         "end" => {
             app.runtime
-                .end(&caller.silicon, text(args, "isi")?, args["id"].as_str())?;
+                .end_connected(&connected, text(args, "isi")?, args["id"].as_str())?;
             Ok(json!({"ended":true}))
         }
-        "new-session" => Ok(json!(app.runtime.new_session(
+        "new-session" => Ok(json!(app.runtime.new_session_connected(
+            &connected,
             caller,
             &serde_json::from_value::<NewSession>(args.clone())?
         )?)),
         "auth-setup" => {
-            let c = app.runtime.get(&caller.silicon)?;
+            let c = &connected;
             Ok(
                 json!({"app_id":auth::setup(&c.cfg.home,&caller.silicon,c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?)?}),
             )
         }
         "auth-remove" => {
-            let c = app.runtime.get(&caller.silicon)?;
+            let c = &connected;
             auth::remove(&c.cfg.home, text(args, "app")?)?;
             Ok(json!({"removed":true}))
         }
@@ -666,9 +676,13 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
     }
 }
 
-fn sessions(runtime: &Runtime, silicon: &str, args: &Value) -> Result<Value> {
+fn sessions(
+    runtime: &Runtime,
+    connected: &crate::runtime::Connected,
+    args: &Value,
+) -> Result<Value> {
     let archived = args["archived"].as_bool().unwrap_or(false);
-    let records = json!(runtime.list(silicon, text(args, "isi")?, archived)?);
+    let records = json!(runtime.list_connected(connected, text(args, "isi")?, archived)?);
     if !archived {
         return Ok(records);
     }
@@ -678,7 +692,6 @@ fn sessions(runtime: &Runtime, silicon: &str, args: &Value) -> Result<Value> {
         serde_json::from_value(args["filters"].clone())
             .context("archive filters must be a list of strings")?
     };
-    let connected = runtime.get(silicon)?;
     let timezone = args["timezone"]
         .as_str()
         .unwrap_or(connected.cfg.silicon.timezone.as_deref().unwrap());

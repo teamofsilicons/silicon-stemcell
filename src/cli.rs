@@ -257,6 +257,15 @@ pub fn silicon() -> Result<()> {
         SiliconCommand::Disconnect {
             target: Some(target),
         } => {
+            let target = if target.contains(':') && !target.contains('/') {
+                target
+            } else {
+                Path::new(&target)
+                    .canonicalize()
+                    .with_context(|| format!("resolve disconnect YAML path {target:?}"))?
+                    .to_string_lossy()
+                    .into_owned()
+            };
             let value = server::call(
                 &server::daemon(false)?,
                 "disconnect",

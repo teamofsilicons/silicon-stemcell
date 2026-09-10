@@ -131,6 +131,11 @@ isi:
     primary_send_mode: global
     session_type: ephemeral
     dna: {{assemble: [], next_refresh: 30min}}
+  ephemeral_session:
+    model: fast
+    primary_send_mode: session
+    session_type: ephemeral
+    dna: {{assemble: [], next_refresh: 30min}}
   restricted:
     model: fast
     primary_send_mode: global
@@ -152,9 +157,10 @@ isi:
       cooldown_minutes: 3s
       suggestion_message: '! printf "suggest %s" "$ISI"'
 access:
-  source: [target, ephemeral, pulse]
+  source: [target, ephemeral, ephemeral_session, pulse]
   target: [source]
   ephemeral: [source]
+  ephemeral_session: [source]
   restricted: []
   pulse: [source]
 flow:
@@ -166,18 +172,25 @@ flow:
       message: '{{var.payload.message}}'
   - log:
       message: 'flow finished {{request.type}}'
+  - if:
+      condition: '{{request.type == "ephemeral"}}'
+      then:
+        - send:
+            isi: ephemeral_session
+            session_id: '{{request.data.session_id}}'
+            message: '{{request.data.message}}'
 ''')
     original = config.read_bytes()
     binary = binary_dir / "silicon"
-    def cli(*args, ok=True, child_env=env):
-        out = subprocess.run([str(binary), *args], env=child_env, capture_output=True, text=True, timeout=35)
+    def cli(*args, ok=True, child_env=env, cwd=None):
+        out = subprocess.run([str(binary), *args], env=child_env, cwd=cwd, capture_output=True, text=True, timeout=35)
         assert (out.returncode == 0) == ok, out.stdout + out.stderr
         return out.stdout
     occupied = socket.socket()
     occupied.bind(("127.0.0.1", 1823))
     occupied.listen()
     log = (work / "server.log").open("w")
-    process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, stdout=log, stderr=log)
+    process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, cwd=home, stdout=log, stderr=log)
     try:
         def started():
             assert process.poll() is None, (work / "server.log").read_text()
@@ -206,6 +219,23 @@ flow:
         cli("connect", str(config))
         assert "e2e:local" in cli("ls", "*:local")
         assert len(control("list")) == 1
+        other_home = work / "other home"
+        other_home.mkdir()
+        other_config = other_home / "silicon.yaml"
+        other_config.write_text(original.decode().replace("id: e2e:local", "id: path:local").replace(json.dumps(str(home)), json.dumps(str(other_home))))
+        cli("connect", "./silicon.yaml", cwd=other_home)
+        assert {row["id"] for row in control("list")} == {"e2e:local", "path:local"}
+        missing_home = work / "missing"
+        missing_home.mkdir()
+        cli("disconnect", "./silicon.yaml", cwd=missing_home, ok=False)
+        post("/control", {"action": "disconnect", "args": {"target": "./silicon.yaml"}}, daemon["token"], status=400)
+        assert {row["id"] for row in control("list")} == {"e2e:local", "path:local"}
+        cli("disconnect", "./silicon.yaml", cwd=other_home)
+        assert [row["id"] for row in control("list")] == ["e2e:local"]
+        cli("connect", "./silicon.yaml", cwd=other_home)
+        (other_home / "alias.yaml").symlink_to("silicon.yaml")
+        cli("disconnect", "./alias.yaml", cwd=other_home)
+        assert [row["id"] for row in control("list")] == ["e2e:local"]
         post("/control", {"action": "list", "args": {}}, status=401)
         post("/", {"type": "ping", "data": [], "metadata": {}}, host="e2e.local.localhost", status=400)
         post("/", {"type": "ping", "data": {}, "metadata": {}}, host="other.local.localhost", status=404)
@@ -230,6 +260,15 @@ flow:
             assert (result.returncode == 0) == ok, result.stdout + result.stderr
             return result.stdout
         si("isi", "send", "restricted", "forbidden", ok=False)
+        si("isi", "send", "ephemeral_session", "missing title", "--id", "untitled", "--new", ok=False)
+        post("/control", {"action": "send", "args": {"silicon": "e2e:local", "isi": "ephemeral_session", "id": "untitled", "new": True, "message": "missing title"}}, daemon["token"], status=400)
+        assert not control("sessions", silicon="e2e:local", isi="ephemeral_session")
+        post("/", {"type": "ephemeral", "data": {"session_id": "flow-job", "message": "hold ephemeral"}, "metadata": {}}, host="e2e.local.localhost")
+        ephemeral_session = control("show", silicon="e2e:local", isi="ephemeral_session", id="flow-job")["session"]
+        assert ephemeral_session["title"] == "flow-job" and ephemeral_session["status"] == "running"
+        si("isi", "send", "ephemeral_session", "follow-up", "--id", "flow-job")
+        si("isi", "send", "ephemeral_session", "finish", "--id", "flow-job")
+        eventually(lambda: not control("sessions", silicon="e2e:local", isi="ephemeral_session"))
         si("isi", "send", "target", "missing", "--id", "missing", ok=False)
         si("isi", "send", "target", "hold target", "--id", "job", "--new", "--title", "A job")
         assert control("sessions", silicon="e2e:local", isi="target")[0]["id"] == "job"
@@ -332,7 +371,7 @@ flow:
         assert process.returncode == 0, (work / "server.log").read_text()
         assert not (state / "daemon.json").exists()
         assert config.read_bytes() == original
-        process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, stdout=log, stderr=log)
+        process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, cwd=home, stdout=log, stderr=log)
         daemon = eventually(started)
         base = f'http://127.0.0.1:{daemon["port"]}'
         assert len(control("list")) == 1
@@ -353,7 +392,7 @@ flow:
         process.wait(timeout=15)
         assert process.returncode == 0, (work / "server.log").read_text()
         assert not (state / "daemon.json").exists()
-        print("E2E passed: port fallback, HTTP validation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
+        print("E2E passed: port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
     finally:
         if process.poll() is None:
             process.terminate()

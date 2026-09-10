@@ -27,6 +27,7 @@ pub struct Caller {
     pub silicon: String,
     pub isi: String,
     pub session: Uuid,
+    worker: Weak<Worker>,
 }
 
 #[derive(Default, Clone, Deserialize)]
@@ -125,6 +126,7 @@ impl Drop for Activity<'_> {
 
 pub struct Connected {
     pub cfg: Config,
+    generation: Uuid,
     workers: Mutex<BTreeMap<Uuid, Arc<Worker>>>,
     pub enabled: AtomicBool,
 }
@@ -205,6 +207,7 @@ impl Runtime {
             id,
             Arc::new(Connected {
                 cfg,
+                generation: Uuid::new_v4(),
                 workers: Mutex::new(BTreeMap::new()),
                 enabled: AtomicBool::new(true),
             }),
@@ -269,6 +272,30 @@ impl Runtime {
             .ok_or_else(|| anyhow!("silicon is not connected: {id}"))
     }
 
+    pub(crate) fn caller_connection(&self, caller: &Caller) -> Result<Arc<Connected>> {
+        let worker = caller
+            .worker
+            .upgrade()
+            .ok_or_else(|| anyhow!("ISI session ended"))?;
+        let connected = worker
+            .connected
+            .upgrade()
+            .ok_or_else(|| anyhow!("silicon disconnected"))?;
+        if worker.stopped.load(Ordering::SeqCst) || !connected.enabled.load(Ordering::SeqCst) {
+            bail!("ISI capability belongs to an ended session or disconnected silicon");
+        }
+        Ok(connected)
+    }
+
+    pub(crate) fn session_caller(&self, connected: &Connected, session: Uuid) -> Result<Caller> {
+        let workers = connected.workers.lock().unwrap();
+        let worker = workers
+            .get(&session)
+            .ok_or_else(|| anyhow!("current session not found"))?;
+        self.caller(&worker.capability)
+            .ok_or_else(|| anyhow!("current session ended"))
+    }
+
     pub fn event(self: &Arc<Self>, id: &str, request: Value) -> Result<Value> {
         let _activity = self.activity()?;
         if !request.get("type").is_some_and(Value::is_string)
@@ -291,10 +318,11 @@ impl Runtime {
             |target, message, session| {
                 let options = SendOptions {
                     id: session.map(str::to_owned),
+                    title: session.map(str::to_owned),
                     new: true,
                     ..Default::default()
                 };
-                self.send(id, None, target, message, &options, false)?
+                self.send_connected(&connected, None, target, message, &options, false)?
                     .wait_started()
             },
         )?;
@@ -310,11 +338,23 @@ impl Runtime {
         options: &SendOptions,
         control: bool,
     ) -> Result<Sent> {
-        let _activity = self.activity()?;
         let connected = self.get(id)?;
+        self.send_connected(&connected, caller, target, message, options, control)
+    }
+
+    pub(crate) fn send_connected(
+        self: &Arc<Self>,
+        connected: &Arc<Connected>,
+        caller: Option<&Caller>,
+        target: &str,
+        message: &str,
+        options: &SendOptions,
+        control: bool,
+    ) -> Result<Sent> {
+        let _activity = self.activity()?;
         if let Some(caller) = caller {
-            if caller.silicon != id {
-                bail!("cannot send across silicons");
+            if !Arc::ptr_eq(connected, &self.caller_connection(caller)?) {
+                bail!("ISI capability belongs to another silicon connection");
             }
             if !(options.archived && caller.isi == target)
                 && !connected
@@ -333,7 +373,7 @@ impl Runtime {
         {
             bail!("session id must contain 1–1024 bytes");
         }
-        let worker = self.worker(&connected, target, options)?;
+        let worker = self.worker(connected, target, options)?;
         worker.send(message, caller.cloned(), control)
     }
 
@@ -401,7 +441,7 @@ impl Runtime {
                 }
             }
         } else {
-            if by_session && options.title.is_none() && !options.new {
+            if by_session && options.title.is_none() {
                 bail!("new ephemeral session requires --title");
             }
             Session::new(
@@ -444,6 +484,7 @@ impl Runtime {
                 silicon: connected.cfg.silicon.id.clone().unwrap(),
                 isi: target.into(),
                 session: session_id,
+                worker: Arc::downgrade(&worker),
             },
         );
         workers.insert(session_id, worker.clone());
@@ -452,6 +493,18 @@ impl Runtime {
 
     pub fn list(&self, id: &str, target: &str, archived: bool) -> Result<Vec<Session>> {
         let connected = self.get(id)?;
+        self.list_connected(&connected, target, archived)
+    }
+
+    pub(crate) fn list_connected(
+        &self,
+        connected: &Connected,
+        target: &str,
+        archived: bool,
+    ) -> Result<Vec<Session>> {
+        if !connected.enabled.load(Ordering::SeqCst) {
+            bail!("silicon disconnected");
+        }
         if !connected.cfg.isi.contains_key(target) {
             bail!("unknown isi: {target}");
         }
@@ -475,9 +528,18 @@ impl Runtime {
 
     pub fn show(&self, id: &str, target: &str, session: Option<&str>) -> Result<Value> {
         let connected = self.get(id)?;
-        let mut records = self.list(id, target, false)?;
+        self.show_connected(&connected, target, session)
+    }
+
+    pub(crate) fn show_connected(
+        &self,
+        connected: &Connected,
+        target: &str,
+        session: Option<&str>,
+    ) -> Result<Value> {
+        let mut records = self.list_connected(connected, target, false)?;
         if session.is_some() {
-            records.extend(self.list(id, target, true)?);
+            records.extend(self.list_connected(connected, target, true)?);
         }
         let record = records
             .iter()
@@ -500,8 +562,17 @@ impl Runtime {
     }
 
     pub fn end(&self, id: &str, target: &str, session: Option<&str>) -> Result<()> {
-        let _activity = self.activity()?;
         let connected = self.get(id)?;
+        self.end_connected(&connected, target, session)
+    }
+
+    pub(crate) fn end_connected(
+        &self,
+        connected: &Connected,
+        target: &str,
+        session: Option<&str>,
+    ) -> Result<()> {
+        let _activity = self.activity()?;
         if !connected.cfg.isi.contains_key(target) {
             bail!("unknown isi: {target}");
         }
@@ -517,6 +588,9 @@ impl Runtime {
             // A restored session can be ended without initializing a provider. Keep
             // creation out of this disk transition so no worker restores the old record.
             let workers = connected.workers.lock().unwrap();
+            if !connected.enabled.load(Ordering::SeqCst) {
+                bail!("silicon disconnected");
+            }
             for mut record in state::sessions(&connected.cfg.home, target, false)? {
                 if matches(&record) && !workers.contains_key(&record.session_id) {
                     record.archive(&connected.cfg.home, None, None, None)?;
@@ -531,6 +605,9 @@ impl Runtime {
         };
         for worker in loaded {
             let mut client = worker.client.lock().unwrap();
+            if !connected.enabled.load(Ordering::SeqCst) || worker.stopped.load(Ordering::SeqCst) {
+                bail!("silicon disconnected or session ended");
+            }
             {
                 let mut state = worker.state.lock().unwrap();
                 if !matches(&state.record) {
@@ -552,14 +629,20 @@ impl Runtime {
     }
 
     pub fn new_session(self: &Arc<Self>, caller: &Caller, options: &NewSession) -> Result<Session> {
+        let connected = self.caller_connection(caller)?;
+        self.new_session_connected(&connected, caller, options)
+    }
+
+    pub(crate) fn new_session_connected(
+        self: &Arc<Self>,
+        connected: &Arc<Connected>,
+        caller: &Caller,
+        options: &NewSession,
+    ) -> Result<Session> {
         let _activity = self.activity()?;
-        let connected = self.get(&caller.silicon)?;
-        let worker = connected
-            .workers
-            .lock()
-            .unwrap()
-            .get(&caller.session)
-            .cloned()
+        let worker = caller
+            .worker
+            .upgrade()
             .ok_or_else(|| anyhow!("current session not found"))?;
         let record = worker.state.lock().unwrap().record.clone();
         if record.ephemeral {
@@ -577,6 +660,9 @@ impl Runtime {
         {
             // Serialize archive names and re-entry before releasing the current session address.
             let _workers = connected.workers.lock().unwrap();
+            if !connected.enabled.load(Ordering::SeqCst) || worker.stopped.load(Ordering::SeqCst) {
+                bail!("silicon disconnected");
+            }
             let mut current = worker.state.lock().unwrap();
             if current.record.archived_at.is_some() {
                 bail!("the current session is already archived");
@@ -598,7 +684,7 @@ impl Runtime {
         let by_session =
             connected.cfg.isi[&caller.isi].primary_send_mode.as_deref() == Some("session");
         let next = self.worker(
-            &connected,
+            connected,
             &caller.isi,
             &SendOptions {
                 id: by_session.then_some(record.id),
@@ -618,12 +704,18 @@ impl Runtime {
         Ok(new_record.record.clone())
     }
 
-    pub fn authorize_target(&self, caller: &Caller, target: &str) -> Result<()> {
-        let connected = self.get(&caller.silicon)?;
+    pub(crate) fn authorize_target(
+        &self,
+        connected: &Connected,
+        caller: &Caller,
+        target: &str,
+    ) -> Result<()> {
         if caller.isi != target
-            && !connected.cfg.access[&caller.isi]
-                .iter()
-                .any(|n| n == target)
+            && !connected
+                .cfg
+                .access
+                .get(&caller.isi)
+                .is_some_and(|targets| targets.iter().any(|n| n == target))
         {
             bail!("{} cannot access {target}", caller.isi);
         }
@@ -633,7 +725,7 @@ impl Runtime {
     pub fn start_scheduler(self: &Arc<Self>) {
         let runtime = Arc::downgrade(self);
         thread::spawn(move || {
-            let mut deadlines: HashMap<(String, String), Instant> = HashMap::new();
+            let mut deadlines: HashMap<(Uuid, String), Instant> = HashMap::new();
             loop {
                 thread::sleep(Duration::from_millis(250));
                 let Some(runtime) = runtime.upgrade() else {
@@ -651,12 +743,15 @@ impl Runtime {
                     .collect();
                 let mut active = std::collections::HashSet::new();
                 for (id, connected) in connections {
+                    if !connected.enabled.load(Ordering::SeqCst) {
+                        continue;
+                    }
                     for (name, isi) in &connected.cfg.isi {
                         let Some(heartbeat) = &isi.heartbeat else {
                             continue;
                         };
                         let targets = if isi.primary_send_mode.as_deref() == Some("session") {
-                            match runtime.list(&id, name, false) {
+                            match runtime.list_connected(&connected, name, false) {
                                 Ok(records) => {
                                     records.into_iter().map(|record| Some(record.id)).collect()
                                 }
@@ -678,7 +773,7 @@ impl Runtime {
                                 .as_ref()
                                 .map(|s| format!("{name}:{s}"))
                                 .unwrap_or_else(|| name.clone());
-                            let key = (id.clone(), address.clone());
+                            let key = (connected.generation, address.clone());
                             active.insert(key.clone());
                             let now = Instant::now();
                             let due = deadlines.get(&key).is_some_and(|d| now >= *d);
@@ -712,6 +807,9 @@ impl Runtime {
                             thread::spawn(move || {
                                 let result = (|| -> Result<()> {
                                     let _activity = runtime.activity()?;
+                                    if !connected.enabled.load(Ordering::SeqCst) {
+                                        bail!("silicon disconnected");
+                                    }
                                     let cfg = &connected.cfg;
                                     auth::ensure_all(
                                         &cfg.home,
@@ -729,8 +827,8 @@ impl Runtime {
                                         &cfg.home,
                                         &address,
                                     )?;
-                                    runtime.send(
-                                        &id,
+                                    runtime.send_connected(
+                                        &connected,
                                         None,
                                         &name,
                                         &message,
@@ -1196,12 +1294,7 @@ impl Worker {
                 for dispatch in finished {
                     let result = if reply_to_caller {
                         if let Some(origin) = dispatch.origin.as_ref() {
-                            let target = connected
-                                .workers
-                                .lock()
-                                .unwrap()
-                                .get(&origin.session)
-                                .cloned();
+                            let target = origin.worker.upgrade();
                             if let Some(target) = target {
                                 target
                                     .send(&format!("{name} completed:\n{reply}"), None, true)
@@ -1631,6 +1724,196 @@ flow: []
             id,
             receipt,
         }
+    }
+
+    fn transport(worker: &Arc<Worker>) -> thread::JoinHandle<Vec<String>> {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let (client, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        *worker.client.lock().unwrap() = Some(Client::from_stream(client).unwrap());
+        let worker = worker.clone();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let mut messages = Vec::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let stopped = request["op"] == "stop";
+                assert!(stopped || request["op"] == "send");
+                writeln!(
+                    daemon,
+                    "{}",
+                    json!({"id":request["id"], "ok":true,
+                    "result":if stopped {json!({"stopped":true})} else {json!({"accepted":true})}})
+                )
+                .unwrap();
+                if stopped {
+                    return messages;
+                }
+                let message = request["text"].as_str().unwrap();
+                messages.push(message.to_owned());
+                worker
+                    .on_event(Event::new(Event::START).saying(message), false, 0)
+                    .unwrap();
+            }
+        })
+    }
+
+    fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if ready() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn reconnect_keeps_blocked_event_and_heartbeat_work_out_of_the_replacement() {
+        for heartbeat in [false, true] {
+            let (old_home, runtime, first, _worker) = worker(false);
+            let mut cfg = first.cfg.clone();
+            runtime.disconnect("test:org").unwrap();
+            let message =
+                "! touch started; while ! test -f release; do sleep 0.01; done; printf old-message";
+            if heartbeat {
+                cfg.isi.get_mut("a").unwrap().heartbeat = Some(serde_yaml::to_value(json!({
+                    "next":"! if test -f scheduled; then printf 30min; else touch scheduled; printf 0.01s; fi",
+                    "message":message
+                })).unwrap());
+            } else {
+                cfg.flow = serde_yaml::to_value(json!([
+                    {"send":{"isi":"a", "message":message, "catch":[{"log":{"message":"caught: {error}"}}]}},
+                    {"log":{"message":"continued"}}
+                ])).unwrap();
+            }
+            runtime.connect(cfg.clone()).unwrap();
+            let old = runtime.get("test:org").unwrap();
+            let event = if heartbeat {
+                runtime.start_scheduler();
+                None
+            } else {
+                let runtime = runtime.clone();
+                Some(thread::spawn(move || {
+                    runtime.event("test:org", json!({"type":"test", "data":{}, "metadata":{}}))
+                }))
+            };
+            let started = wait_until(|| old_home.path().join("started").exists());
+            runtime.disconnect("test:org").unwrap();
+            let new_home = tempfile::tempdir().unwrap();
+            cfg.home = new_home.path().to_owned();
+            cfg.path = cfg.home.join("silicon.yaml");
+            if heartbeat {
+                cfg.isi.get_mut("a").unwrap().heartbeat = Some(
+                    serde_yaml::to_value(json!({
+                        "next":"! touch new-schedule; printf 30min", "message":"new-message"
+                    }))
+                    .unwrap(),
+                );
+            }
+            runtime.connect(cfg).unwrap();
+            let replacement = runtime.get("test:org").unwrap();
+            let worker = runtime
+                .worker(&replacement, "a", &SendOptions::default())
+                .unwrap();
+            let transport = transport(&worker);
+            let scheduled =
+                !heartbeat || wait_until(|| new_home.path().join("new-schedule").exists());
+            // Release Bash before assertions, including when deadline isolation regresses.
+            fs::write(old_home.path().join("release"), "").unwrap();
+            let event_result = event.map(|event| event.join().unwrap());
+            let finished = wait_until(|| runtime.activities.load(Ordering::SeqCst) == 0);
+            runtime.shutdown();
+            let messages = transport.join().unwrap();
+            assert!(started, "work did not reach the blocking Bash command");
+            assert!(
+                scheduled,
+                "replacement inherited the old heartbeat deadline"
+            );
+            assert!(finished, "old task did not finish");
+            assert_ne!(old.generation, replacement.generation);
+            assert!(
+                messages.is_empty(),
+                "old work reached replacement: {messages:?}"
+            );
+            if let Some(result) = event_result {
+                assert_eq!(result.unwrap()["status"], "ok");
+            }
+            let log = fs::read_to_string(old_home.path().join(".silicon/silicon.log")).unwrap();
+            assert!(log.contains("silicon disconnected"));
+            if !heartbeat {
+                assert!(log.find("[caught:").unwrap() < log.find("[continued]").unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn captured_caller_expires_when_its_worker_or_connection_is_replaced() {
+        let (_dir, runtime, connected, worker) = worker(false);
+        let caller = runtime.caller(&worker.capability).unwrap();
+        assert!(runtime.caller_connection(&caller).is_ok());
+        worker.stop(None).unwrap();
+        let replacement = runtime
+            .worker(&connected, "a", &SendOptions::default())
+            .unwrap();
+        assert_eq!(replacement.session_id, caller.session);
+        assert!(runtime.caller_connection(&caller).is_err());
+        let fresh = runtime.caller(&replacement.capability).unwrap();
+        assert!(runtime.caller_connection(&fresh).is_ok());
+        runtime.disconnect("test:org").unwrap();
+        runtime.connect(connected.cfg.clone()).unwrap();
+        let reconnected = runtime.get("test:org").unwrap();
+        let resumed = runtime
+            .worker(&reconnected, "a", &SendOptions::default())
+            .unwrap();
+        assert_eq!(resumed.session_id, caller.session);
+        assert!(runtime.caller_connection(&caller).is_err());
+        assert!(runtime.caller_connection(&fresh).is_err());
+        assert!(runtime
+            .caller_connection(&runtime.caller(&resumed.capability).unwrap())
+            .is_ok());
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn session_ephemeral_creation_requires_title_even_with_new_but_active_sends_do_not() {
+        let (_dir, runtime, original, _worker) = worker(false);
+        let mut cfg = original.cfg.clone();
+        runtime.disconnect("test:org").unwrap();
+        let isi = cfg.isi.get_mut("a").unwrap();
+        isi.primary_send_mode = Some("session".into());
+        isi.session_type = Some("ephemeral".into());
+        runtime.connect(cfg).unwrap();
+        let connected = runtime.get("test:org").unwrap();
+        let mut options = SendOptions {
+            id: Some("job".into()),
+            new: true,
+            ..Default::default()
+        };
+        assert!(runtime
+            .worker(&connected, "a", &options)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("--title"));
+        options.title = Some("Job title".into());
+        let worker = runtime.worker(&connected, "a", &options).unwrap();
+        options.title = None;
+        options.new = false;
+        assert!(Arc::ptr_eq(
+            &worker,
+            &runtime.worker(&connected, "a", &options).unwrap()
+        ));
+        runtime.shutdown();
     }
 
     #[test]

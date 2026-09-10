@@ -51,7 +51,7 @@ jobs:
                           body = caddy_body if name == 'caddy' and caddy_body else b'#!/bin/sh\necho test-binary\n'
                           entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
                           archive.addfile(entry, io.BytesIO(body))
-                      body = b'v3.5.0\n'
+                      body = b'v3.5.1\n'
                       entry = tarfile.TarInfo('VERSION'); entry.size = len(body)
                       archive.addfile(entry, io.BytesIO(body))
                       body = installer.read_bytes()
@@ -124,7 +124,23 @@ jobs:
               for name in ['commit', 'remind']:
                   (dependencies / name).write_text('#!/usr/bin/env python3\nimport json,os,sys\nprint(json.dumps({"args":sys.argv[1:],"api":os.environ.get("COMMIT_API_URL")}))\n')
               cargo = mocks / 'cargo'
-              cargo.write_text('#!/bin/sh\nset -eu\nwhile [ "$#" -gt 0 ]; do\n if [ "$1" = --root ]; then dest=$2; shift 2; else shift; fi\ndone\nmkdir -p "$dest/bin"\nfor name in silicon si; do printf "#!/bin/sh\\nexit 0\\n" > "$dest/bin/$name"; chmod 755 "$dest/bin/$name"; done\n')
+              cargo.write_text('''#!/usr/bin/env python3
+          import pathlib, sys
+          args = sys.argv[1:]
+          dest = pathlib.Path(args[args.index('--root') + 1]) / 'bin'
+          names = ['silicon', 'si']
+          if '--git' in args:
+              assert args[args.index('--git') + 1] == 'https://github.com/teamofsilicons/silicon-commit'
+              assert args[args.index('--rev') + 1] == '3fe18128282bf65c1f62595ed01e65ec467dba28'
+              assert args[args.index('--bin') + 1] == 'commit'
+              assert args[-1] == 'silicon-commit-cli' and '--locked' in args and '--force' in args
+              names = ['commit']
+          dest.mkdir(parents=True, exist_ok=True)
+          for name in names:
+              path = dest / name
+              path.write_text('#!/bin/sh\\nexit 0\\n')
+              path.chmod(0o755)
+          ''')
               cargo.chmod(0o755)
               env.update(SILICON_SOURCE_DIR=str(source), SILICON_DEPENDENCY_BIN_DIR=str(dependencies))
               install(True)
@@ -150,6 +166,12 @@ jobs:
                   path = state / name; path.write_text('{}')
                   assert probe(prefix / 'bin/commit')['api'] is None
                   path.unlink()
+              old = current.readlink()
+              (dependencies / 'commit').write_text('#!/bin/sh\nif [ "$*" = "--no-update logout --help" ]; then exit 2; fi\nexit 0\n')
+              install(False); assert current.readlink() == old
+              (dependencies / 'commit').unlink()
+              install(True); assert current.readlink() != old
+              assert (current / 'bin/commit-native').is_file()
               old = current.readlink()
               (dependencies / 'hook').unlink()
               install(False); assert current.readlink() == old

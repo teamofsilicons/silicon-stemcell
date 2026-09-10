@@ -22,9 +22,9 @@ These notices cover the top-level distributed applications. Source links and ver
 - Source: https://github.com/teamofsilicons/silicon-waveform/tree/fb9a95bf5d9084ee0827f4d961b4019bcadf59e9
 - Files: waveform-LICENSE.txt
 
-## commit (silicon-commit-cli 0.1.0)
+## commit (silicon-commit-cli 0.1.0, Git revision 3fe1812)
 - Declared license: MIT
-- Source: https://github.com/teamofsilicons/silicon-commit/tree/06c15dd894a0567e333337d6ada28270b46bdc14
+- Source: https://github.com/teamofsilicons/silicon-commit/tree/3fe18128282bf65c1f62595ed01e65ec467dba28
 - Files: commit-NOTICE.txt
 
 ## remind (silicon-remind-cli 0.1.2)

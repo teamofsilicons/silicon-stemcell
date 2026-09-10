@@ -7,7 +7,7 @@ set -eu
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
 
-version=${SILICON_VERSION:-v3.5.0}
+version=${SILICON_VERSION:-v3.5.1}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -16,6 +16,7 @@ source_dir=${SILICON_SOURCE_DIR:-}
 git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
 omni_rev=d52f5416cd33b363554d2300b5603dc0b6c43545
+commit_rev=3fe18128282bf65c1f62595ed01e65ec467dba28
 commands='silicon si omnid silicon-omni omni so caddy iam dm briefcase waveform commit remind hook'
 binaries="$commands commit-native remind-native"
 notices='LICENSE LICENSES/README.md LICENSES/iam-LICENSE.txt LICENSES/dm-NOTICE.txt LICENSES/briefcase-LICENSE.txt LICENSES/waveform-LICENSE.txt LICENSES/commit-NOTICE.txt LICENSES/remind-LICENSE.txt LICENSES/hook-NOTICE.txt LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'
@@ -209,7 +210,11 @@ if [ -n "$source_dir" ]; then
     install_crate dm silicon-dm-cli 0.3.0
     install_crate briefcase briefcase-cli 0.2.4
     install_crate waveform waveform-cli 0.1.0
-    install_crate commit silicon-commit-cli 0.1.0
+    if ! copy_dependency commit; then
+        cargo install --locked --force --root "$stage/payload" --git https://github.com/teamofsilicons/silicon-commit --rev "$commit_rev" --bin commit silicon-commit-cli ||
+            fail "required Commit binary could not be built at $commit_rev"
+    fi
+    "$stage/payload/bin/commit" --no-update logout --help >/dev/null || fail 'required Commit logout command is unavailable'
     install_crate remind silicon-remind-cli 0.1.2
     install_crate hook silicon-hook-cli 0.2.0
     wrap_managed_apps
