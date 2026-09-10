@@ -26,6 +26,8 @@ curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/
 
 The [v3.5.0 release](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) includes all four platform bundles and their checksums. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
+The current source prepares **3.5.1**, which is not published. It fixes relative-path disconnection, stale work crossing a disconnect/reconnect, and missing titles on new session-mode ephemeral work. Its complete source installation also pins Commit's merged logout fix. The public command above still installs 3.5.0; use the source-build instructions below to test the candidate.
+
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
 ```sh
@@ -80,7 +82,9 @@ Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and depend
 
 `SILICON_GIT_REV` is an alternative to `SILICON_SOURCE_DIR`: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.
 
-For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. `CARGO_TARGET_DIR` can reuse a compilation directory.
+For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy `commit-native` as `commit` and `remind-native` as `remind` into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. `CARGO_TARGET_DIR` can reuse a compilation directory.
+
+The 3.5.1 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and public Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -148,6 +152,8 @@ silicon web
 `connect` starts the interpreter if necessary, compiles the file, checks managed application authentication, adds routing, registers configured webhooks, and records the connection. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
 
 The local identity is the canonical YAML path. The global identity is `silicon.id`. Moving a file changes its local identity. Editing a connected file does not live-reload it. Disconnect and reconnect to apply changes; restart restoration also recompiles the saved path. The interpreter never rewrites the file for you.
+
+In the 3.5.1 candidate, `silicon disconnect ./silicon.yaml` resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.
 
 Send an event through the Silicon's host:
 
@@ -462,6 +468,8 @@ Addressing and retention are separate choices:
 
 For ephemeral work, an automatic reply goes back to the ISI session that invoked it through `si`, if that caller still exists. An external event or management send has no calling ISI to receive this reply; inspect logs or progress instead. A global ephemeral call always starts independent work, while a session-addressed ephemeral call can address its currently running ID.
 
+The 3.5.1 candidate requires a title when creating session-mode ephemeral work even with `--new`. Existing running work accepts a titleless follow-up. A flow has no title field, so its automatic creation uses `session_id` as the title.
+
 Persistent sessions have both a logical `id` and an immutable Omni `session_id` UUID. The UUID is used for on-disk filenames. An archive name is data, not a filesystem path.
 
 ### Archive and start a successor
@@ -538,9 +546,9 @@ For test worlds, the selected IAM environment and each application's paired test
 
 Initial 3.5 verification exposed an IAM defect: the issuer created unscoped Silicon grants that its shared OAuth subject-authority function rejected. [IAM PR #19](https://github.com/teamofsilicons/silicon-iam/pull/19) fixed that function and is now merged and live at `b5b5537`. On 10 September, the unchanged public 3.5.0 bundle successfully authenticated all six apps in the retained production organization. Briefcase, DM, Hook, Remind, and Waveform also completed logout and reported unauthenticated afterward.
 
-Commit has two separate remaining integration issues. Its published 0.1.0 CLI has no logout command; the candidate in [Commit PR #1](https://github.com/teamofsilicons/silicon-commit/pull/1) passes production logout through the unchanged interpreter, including checks that previous access tokens become inactive. This CLI candidate is not included in the public 3.5.0 bundle.
+Commit's original published 0.1.0 CLI has no logout command. [Commit PR #1](https://github.com/teamofsilicons/silicon-commit/pull/1) is merged, and its CLI passes production and hosted testing logout through the unchanged interpreter, including checks that previous access tokens become inactive. The 3.5.1 source installer pins this merged revision; the public 3.5.0 bundle still contains the original CLI.
 
-In the paired testing environments, the other five apps pass login and logout, but Commit's hosted backend uses its production IAM application credential with the testing environment key. Its login fails with HTTP 401; the exact same token exchanges successfully directly with IAM using the paired test-app credential. [Commit PR #2](https://github.com/teamofsilicons/silicon-commit/pull/2) stores and selects the encrypted test-app credential. A local backend candidate, using a different dummy global credential, passed login, a protected todos read, logout, and previous-token inactivity against the existing real IAM test environment. Its database regression covers creation, owner/manager pairing, rejected credentials, encrypted storage, and all five session handlers. The hosted backend remains unchanged; existing environments need explicit credential pairing after the backend fix and migration are deployed.
+All six paired hosted testing environments now pass login. [Commit PR #2](https://github.com/teamofsilicons/silicon-commit/pull/2), merged and externally deployed as `cbe3cd1`, stores and selects the encrypted imported IAM test-app credential. The retained Commit sandbox was paired through its production-owner API; its version advanced from 1 to 2 while both linked environment keys were preserved. The unchanged public interpreter and corrected Commit CLI then passed login, authenticated status, a protected todos read, logout, and previous-token inactivity. The other five apps passed login/logout with their released CLIs. Existing unpaired Commit environments still require their owner or authorized manager to supply the matching imported app credential.
 
 Separate Silicon homes isolate application state, but an application's local relay may also need a distinct TCP port. A DM testing login saved valid credentials and then failed because a production-test relay still occupied its port. A retry with a separate available relay port passed; the owned test relays were stopped afterward.
 
@@ -720,6 +728,9 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Suggestion thresholds/cooldown and archived worker retirement | `runtime::tests::suggestions_require_new_messages_and_cooldown_and_archived_workers_retire`; timed protocol E2E checks per-session heartbeats and suggestions. |
 | Disconnect still removes capabilities after app cleanup failure | `runtime::tests::disconnect_unhook_failure_still_removes_connection_and_capabilities`. |
 | A stale connection cannot recreate workers after disconnect | `runtime::tests::stale_disconnected_connection_cannot_create_workers_or_capabilities`. |
+| Delayed work cannot reach a replacement connection | `runtime::tests::reconnect_keeps_blocked_event_and_heartbeat_work_out_of_the_replacement` holds actual Bash work across reconnect, checks flow catches, and verifies a fresh heartbeat deadline. |
+| Restored UUIDs cannot revive an old ISI capability | `runtime::tests::captured_caller_expires_when_its_worker_or_connection_is_replaced`; the shared request boundary checks the captured worker. |
+| New ephemeral session titles and caller-relative disconnection | `runtime::tests::session_ephemeral_creation_requires_title_even_with_new_but_active_sends_do_not`; `tests/e2e.py` covers internal/control rejection, automatic flow creation, multiple working directories, missing files, and symlinks. |
 | Archive timestamps and safe physical identity | `state::tests::archive_keeps_original_time_and_safe_disk_identity`; E2E verifies both persistent rollover modes and restart restoration. |
 | IAM issuance/isolation/secret handling contract | `auth::tests::application_tokens_are_iam_issued_isolated_and_never_logged` uses controlled CLI fixtures. This is not evidence that all six real apps have authenticated successfully. |
 | Caddy route constraints | `proxy::tests::only_local_dns_hosts_can_be_routed`. |
@@ -731,7 +742,7 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Complete public release | [v3.5.0](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) is published from `3ac2922`. [All four native CI jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34344276712) passed interpreter checks, complete-bundle E2E, CLI execution, and IAM discovery. Downloaded archives match the CI artifacts, exact payload inventory, tagged installer/notices, checksums, and GitHub asset digests. |
 | Public one-line installation | The published installation command was run into a fresh macOS ARM64 prefix with all source/mirror overrides removed. All 30 payload files matched the verified CI bundle; the public installed interpreter passed the full protocol E2E. |
 | Live documentation domain | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) serves the static guide over verified HTTPS on Vercel; desktop/mobile navigation and layout were checked in Chrome. |
-| Full real-app authentication | After IAM PR #19 went live, the released 3.5.0 bundle passed all six production logins and five logout cycles. Five apps passed the hosted testing login/logout cycle. Commit CLI PR #1 passes production logout; backend PR #2 plus that CLI passes a local-backend cycle against real testing IAM, including a protected read and previous-token revocation. Both fixes are merged; the CLI remains unpublished and the backend remains undeployed at this snapshot. |
+| Full real-app authentication | The released 3.5.0 interpreter passed all six production and hosted testing logins. Five released app CLIs passed logout in both environments. Commit's merged CLI fix also passed both cycles, including a hosted protected read and previous-token revocation after its backend fix went live and the retained sandbox was paired. The corrected CLI is pinned for the 3.5.1 source candidate; it is absent from the public 3.5.0 bundle. |
 
 Reproducible development commands:
 

@@ -75,6 +75,7 @@ jobs:
           for binary in commit-native remind-native; do
             "$RUNNER_TEMP/silicon-bundle/lib/silicon/current/bin/$binary" --help >/dev/null
           done
+          "$BUNDLE_BIN/commit" logout --help >/dev/null
           "$BUNDLE_BIN/omnid" --version
           "$BUNDLE_BIN/caddy" version
       - name: Verify required IAM application discovery contracts

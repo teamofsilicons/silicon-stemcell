@@ -8,6 +8,8 @@ curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/
 
 [Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0).
 
+This branch prepares unpublished 3.5.1 with reconnect/disconnect fixes and Commit logout. See the [source installation guide](docs/GUIDE.md#build-the-complete-installation-from-source) to test it; the command above installs public 3.5.0.
+
 The bundle includes Silicon, Caddy, IAM, Omni, DM, Briefcase, Waveform, Commit, Remind, and Hook. macOS and Linux, ARM64 and x86-64. Default prefix: `~/.local/share/silicon`.
 
 ```sh

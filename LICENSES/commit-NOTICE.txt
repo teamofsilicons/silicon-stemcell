@@ -1,23 +1,16 @@
-silicon-commit-cli 0.1.0
+silicon-commit-cli 0.1.0 (Git revision 3fe18128282bf65c1f62595ed01e65ec467dba28)
 Declared license: MIT
-Source: https://github.com/teamofsilicons/silicon-commit/tree/06c15dd894a0567e333337d6ada28270b46bdc14
+Source: https://github.com/teamofsilicons/silicon-commit/tree/3fe18128282bf65c1f62595ed01e65ec467dba28
 
-No LICENSE, COPYING, or NOTICE file was present in the published crate or at the root of the pinned upstream repository. This notice records the upstream metadata without adding or changing its license terms.
+No LICENSE, COPYING, or NOTICE file was present at the root of the pinned upstream repository. This notice records the upstream metadata without adding or changing its license terms.
 
-Package metadata:
+Package metadata from cli/Cargo.toml at the pinned Git revision:
 {
   "edition": "2024",
   "name": "silicon-commit-cli",
   "version": "0.1.0",
-  "build": false,
-  "autolib": false,
-  "autobins": false,
-  "autoexamples": false,
-  "autotests": false,
-  "autobenches": false,
   "description": "Command-line client for Silicon Commit",
   "readme": "README.md",
   "license": "MIT",
-  "repository": "https://github.com/teamofsilicons/silicon-commit",
-  "resolver": "2"
+  "repository": "https://github.com/teamofsilicons/silicon-commit"
 }
