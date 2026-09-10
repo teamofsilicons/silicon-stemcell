@@ -1,14 +1,14 @@
-# Silicon 3.5
+# Silicon 3.5.1
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route events through CEL flows, run ISIs with Silicon Omni, and manage their sessions and IAM applications.
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.1/install.sh | sh
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0).
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.1).
 
-This branch prepares unpublished 3.5.1 with reconnect/disconnect fixes and Commit logout. See the [source installation guide](docs/GUIDE.md#build-the-complete-installation-from-source) to test it; the command above installs public 3.5.0.
+Version 3.5.1 keeps delayed work and ISI capabilities tied to their original connection, resolves disconnect paths from your terminal's working directory, enforces titles for new session-mode ephemeral work, and includes Commit logout.
 
 The bundle includes Silicon, Caddy, IAM, Omni, DM, Briefcase, Waveform, Commit, Remind, and Hook. macOS and Linux, ARM64 and x86-64. Default prefix: `~/.local/share/silicon`.
 

@@ -1,4 +1,4 @@
-# Silicon 3.5
+# Silicon 3.5.1
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -18,15 +18,15 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.5.0` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.5.1` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.1/install.sh | sh
 ```
 
-The [v3.5.0 release](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) includes all four platform bundles and their checksums. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the four platform bundles and their checksums on the [v3.5.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.1). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
-The current source prepares **3.5.1**, which is not published. It fixes relative-path disconnection, stale work crossing a disconnect/reconnect, and missing titles on new session-mode ephemeral work. Its complete source installation also pins Commit's merged logout fix. The candidate has passed [complete native bundle checks on all four supported targets](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34453877850). The public command above still installs 3.5.0; use the source-build instructions below to test the candidate.
+**3.5.1** fixes relative-path disconnection, stale work crossing a disconnect/reconnect, and missing titles on new session-mode ephemeral work. Its bundle also includes Commit's merged logout fix. The complete bundles passed [native checks on all four supported targets](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34453877850).
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -39,7 +39,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -49,14 +49,14 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 3.5.0 |
+| `silicon`, `si` | Interpreter and internal CLI, 3.5.1 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
 | `iam` | `silicon-iam-cli` 1.4.1 |
 | `dm` | `silicon-dm-cli` 0.3.0 |
 | `briefcase` | `briefcase-cli` 0.2.4 |
 | `waveform` | `waveform-cli` 0.1.0 |
-| `commit` | `silicon-commit-cli` 0.1.0, through a managed wrapper |
+| `commit` | `silicon-commit-cli` 0.1.0 at Git revision `3fe1812`, through a managed wrapper |
 | `remind` | `silicon-remind-cli` 0.1.2, through a managed wrapper |
 | `hook` | `silicon-hook-cli` 0.2.0 |
 
@@ -84,7 +84,7 @@ Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and depend
 
 For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy `commit-native` as `commit` and `remind-native` as `remind` into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
-The 3.5.1 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and public Silicon 3.5.0 bundle do not include this command.
+The 3.5.1 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -153,7 +153,7 @@ silicon web
 
 The local identity is the canonical YAML path. The global identity is `silicon.id`. Moving a file changes its local identity. Editing a connected file does not live-reload it. Disconnect and reconnect to apply changes; restart restoration also recompiles the saved path. The interpreter never rewrites the file for you.
 
-In the 3.5.1 candidate, `silicon disconnect ./silicon.yaml` resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.
+`silicon disconnect ./silicon.yaml` resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.
 
 Send an event through the Silicon's host:
 
@@ -468,7 +468,7 @@ Addressing and retention are separate choices:
 
 For ephemeral work, an automatic reply goes back to the ISI session that invoked it through `si`, if that caller still exists. An external event or management send has no calling ISI to receive this reply; inspect logs or progress instead. A global ephemeral call always starts independent work, while a session-addressed ephemeral call can address its currently running ID.
 
-The 3.5.1 candidate requires a title when creating session-mode ephemeral work even with `--new`. Existing running work accepts a titleless follow-up. A flow has no title field, so its automatic creation uses `session_id` as the title.
+Creating session-mode ephemeral work requires a title even with `--new`. Existing running work accepts a titleless follow-up. A flow has no title field, so its automatic creation uses `session_id` as the title.
 
 Persistent sessions have both a logical `id` and an immutable Omni `session_id` UUID. The UUID is used for on-disk filenames. An archive name is data, not a filesystem path.
 
@@ -546,7 +546,7 @@ For test worlds, the selected IAM environment and each application's paired test
 
 Initial 3.5 verification exposed an IAM defect: the issuer created unscoped Silicon grants that its shared OAuth subject-authority function rejected. [IAM PR #19](https://github.com/teamofsilicons/silicon-iam/pull/19) fixed that function and is now merged and live at `b5b5537`. On 10 September, the unchanged public 3.5.0 bundle successfully authenticated all six apps in the retained production organization. Briefcase, DM, Hook, Remind, and Waveform also completed logout and reported unauthenticated afterward.
 
-Commit's original published 0.1.0 CLI has no logout command. [Commit PR #1](https://github.com/teamofsilicons/silicon-commit/pull/1) is merged, and its CLI passes production and hosted testing logout through the unchanged interpreter, including checks that previous access tokens become inactive. The 3.5.1 source installer pins this merged revision; the public 3.5.0 bundle still contains the original CLI.
+Commit's original published 0.1.0 CLI has no logout command. [Commit PR #1](https://github.com/teamofsilicons/silicon-commit/pull/1) is merged, and its CLI passes production and hosted testing logout through the unchanged interpreter, including checks that previous access tokens become inactive. The 3.5.1 bundle includes this merged revision; the 3.5.0 bundle contains the original CLI.
 
 All six paired hosted testing environments now pass login. [Commit PR #2](https://github.com/teamofsilicons/silicon-commit/pull/2), merged and externally deployed as `cbe3cd1`, stores and selects the encrypted imported IAM test-app credential. The retained Commit sandbox was paired through its production-owner API; its version advanced from 1 to 2 while both linked environment keys were preserved. The unchanged public interpreter and corrected Commit CLI then passed login, authenticated status, a protected todos read, logout, and previous-token inactivity. The other five apps passed login/logout with their released CLIs. Existing unpaired Commit environments still require their owner or authorized manager to supply the matching imported app credential.
 
@@ -702,7 +702,7 @@ Correct a separate copy for your deployment. Compilation can report expression s
 
 ## Verification and requirement-to-evidence map
 
-The current library suite completed with 24 passing tests and two Caddy-dependent tests excluded from the ordinary test run. `cargo clippy --all-targets -- -D warnings` passed. The ignored Caddy tests are explicit integration checks, not automatically verified by `cargo test` alone.
+The current library suite completed with 27 passing tests. `cargo clippy --all-targets -- -D warnings` passed. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
 
 The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated `claude-code-cli` provider returned `SILICON_SMOKE_OK` and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.
 
@@ -736,16 +736,16 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Caddy route constraints | `proxy::tests::only_local_dns_hosts_can_be_routed`. |
 | Real Caddy routing, reload rollback, child cleanup | `proxy::tests::real_caddy_routes_reload_rollback_and_child_cleanup`, run separately with real Caddy; ordinary unit runs mark it ignored. |
 | Port 80 denies non-loopback peers and spoofed forwarding headers | macOS integration test `proxy::tests::real_caddy_port_80_only_forwards_loopback_peers`, run with `SILICON_TEST_LAN_IP` and real Caddy; requires a free port 80. |
-| Stable-version selection | `update::tests::only_newer_stable_releases_are_candidates`; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in that test copy. Separately, the public installed binary successfully queried live GitHub HTTPS metadata and correctly reported 3.5.0 as current. |
+| Stable-version selection | `update::tests::only_newer_stable_releases_are_candidates`; isolated complete-bundle update checks cover rejection, activation, idle restart, busy restart, and resuming the same persistent UUID. Metadata transport and the hour-long wait are replaced only in that test copy. A separate 3.5.0 public-install check queried live GitHub HTTPS metadata and correctly reported that then-current version. |
 | End-to-end protocol and lifecycle | `python3 tests/e2e.py`: port decrement, HTTP shape/errors, mid-turn injection, ISI environment/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, shutdown, restart restoration, disconnect, unchanged YAML bytes. |
 | Actual inference | Separate live Claude smoke result: provider `claude-code-cli`, reply `SILICON_SMOKE_OK`, final status `idle`. Recorded delivery acknowledgment 27.82 s and total time 28.07 s in this run; these are observations, not latency guarantees. |
-| Complete public release | [v3.5.0](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) is published from `3ac2922`. [All four native CI jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34344276712) passed interpreter checks, complete-bundle E2E, CLI execution, and IAM discovery. Downloaded archives match the CI artifacts, exact payload inventory, tagged installer/notices, checksums, and GitHub asset digests. |
-| Public one-line installation | The published installation command was run into a fresh macOS ARM64 prefix with all source/mirror overrides removed. All 30 payload files matched the verified CI bundle; the public installed interpreter passed the full protocol E2E. |
-| 3.5.1 candidate native bundles | [Build-only CI](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34453877850) built exact source `f3131299ea01613b8585ba9389fb1ad6abf8e140` on all four supported targets. Every job passed formatting, tests, Clippy, complete source installation, real Omni/Caddy E2E, CLI execution including Commit logout help, six IAM application-discovery checks, packaging, and artifact upload. The draft-release job was skipped. |
-| 3.5.1 candidate artifact contents | All four downloaded artifact ZIPs matched GitHub's SHA-256 digests. Each bundle contained the expected 30 regular payload files, required executable modes and native architectures, the 3.5.1 version marker, and exact source installer and notices. No Silicon YAML or runtime state was included. |
-| 3.5.1 candidate binary installation | The actual macOS ARM64 CI archive was installed from a local HTTPS test endpoint into an isolated prefix with Cargo absent from `PATH`. All 30 payload files matched the archive byte for byte; Silicon 3.5.1 and Commit logout help were verified. This did not publish a release. |
-| Live documentation domain | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) serves the static guide over verified HTTPS on Vercel; desktop/mobile navigation and layout were checked in Chrome. The current candidate documentation in this checkout has not been deployed. |
-| Full real-app authentication | The released 3.5.0 interpreter passed all six production and hosted testing logins. Five released app CLIs passed logout in both environments. Commit's merged CLI fix also passed both cycles, including a hosted protected read and previous-token revocation after its backend fix went live and the retained sandbox was paired. The corrected CLI is pinned for the 3.5.1 source candidate; it is absent from the public 3.5.0 bundle. |
+| 3.5.0 public release | [v3.5.0](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.0) was published from `3ac2922`. [All four native CI jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34344276712) passed interpreter checks, complete-bundle E2E, CLI execution, and IAM discovery. Downloaded archives matched the CI artifacts, exact payload inventory, tagged installer/notices, checksums, and GitHub asset digests. |
+| 3.5.0 public one-line installation | The published installation command was run into a fresh macOS ARM64 prefix with all source/mirror overrides removed. All 30 payload files matched the verified CI bundle; the public installed interpreter passed the full protocol E2E. |
+| 3.5.1 native bundles | [Build-only CI](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34453877850) built exact source `f3131299ea01613b8585ba9389fb1ad6abf8e140` on all four supported targets. Every job passed formatting, tests, Clippy, complete source installation, real Omni/Caddy E2E, CLI execution including Commit logout help, six IAM application-discovery checks, packaging, and artifact upload. The draft-release job was skipped. |
+| 3.5.1 artifact contents | All four downloaded artifact ZIPs matched GitHub's SHA-256 digests. Each bundle contained the expected 30 regular payload files, required executable modes and native architectures, the 3.5.1 version marker, and exact source installer and notices. No Silicon YAML or runtime state was included. |
+| 3.5.1 binary installation from local HTTPS | The actual macOS ARM64 CI archive was installed from a local HTTPS test endpoint into an isolated prefix with Cargo absent from `PATH`. All 30 payload files matched the archive byte for byte; Silicon 3.5.1 and Commit logout help were verified. |
+| Documentation hosting for 3.5.0 | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) served the static guide over verified HTTPS on Vercel; desktop/mobile navigation and layout were checked in Chrome. |
+| Full real-app authentication | The released 3.5.0 interpreter passed all six production and hosted testing logins. Five released app CLIs passed logout in both environments. Commit's merged CLI fix also passed both cycles, including a hosted protected read and previous-token revocation after its backend fix went live and the retained sandbox was paired. The corrected CLI is included in the 3.5.1 bundle; it is absent from the 3.5.0 bundle. |
 
 Reproducible development commands:
 
