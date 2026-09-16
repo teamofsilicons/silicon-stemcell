@@ -3,6 +3,8 @@ set -eu
 payload=$1
 expected=$2
 version=$3
+windows_powershell=$4
+windows_opener=$5
 case "$version" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo 'Invalid Silicon version' >&2; exit 2 ;; esac
 case "$version" in *[!a-zA-Z0-9._-]*) exit 2 ;; esac
 actual=$(sha256sum "$payload/runtime.tar.gz" | cut -d' ' -f1)
@@ -55,6 +57,15 @@ ln -s "releases/$version-$expected" "$runtime/current.new"
 chown -h silicon:silicon "$runtime/current.new"
 mv -fT "$runtime/current.new" "$runtime/current"
 install -m 755 "$payload/launch.sh" /opt/silicon/launch
+printf '%s\n' "$windows_powershell" > /opt/silicon/windows-powershell
+printf '%s\n' "$windows_opener" > /opt/silicon/windows-opener
+cat > /usr/local/bin/xdg-open <<'BROWSER'
+#!/bin/sh
+set -eu
+[ "$#" = 1 ] || exit 2
+exec "$(cat /opt/silicon/windows-powershell)" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cat /opt/silicon/windows-opener)" -Url "$1"
+BROWSER
+chmod 755 /usr/local/bin/xdg-open
 printf '[user]\ndefault=silicon\n[interop]\nappendWindowsPath=false\n' > /etc/wsl.conf
 printf 'export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.local/bin:$PATH"\nexport SILICON_WSL=1\n' > /etc/profile.d/silicon.sh
 printf '%s\n' "$version" > /opt/silicon/windows-version

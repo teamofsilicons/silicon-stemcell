@@ -111,7 +111,10 @@ try {
     $linuxPayload = & $wsl --distribution Silicon --user root --exec wslpath -u $PayloadRoot
     if ($LASTEXITCODE -ne 0) { throw 'Cannot translate the Windows payload path into WSL.' }
     $linuxPayload = "$linuxPayload".Trim()
-    & $wsl --distribution Silicon --user root --exec sh "$linuxPayload/provision.sh" $linuxPayload $runtimeHash $Version
+    $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $linuxPowerShell = (& $wsl --distribution Silicon --user root --exec wslpath -u $windowsPowerShell).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate the Windows browser bridge.' }
+    & $wsl --distribution Silicon --user root --exec sh "$linuxPayload/provision.sh" $linuxPayload $runtimeHash $Version $linuxPowerShell (Join-Path $PayloadRoot 'open-url.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'Silicon WSL provisioning failed. Existing projects were not moved.' }
     $activated = $true
     if (!$NoPath) {

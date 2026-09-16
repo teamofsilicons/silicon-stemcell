@@ -2,7 +2,7 @@
 
 Honeycomb publication is currently blocked by its IAM registration requirements for this local-only interpreter. [The external issue ledger](EXTERNAL-BUGS.md#local-interpreter-publication-requires-unsupported-iam-permissions) records the reproduced error. These steps prepare a reviewable package; they do not claim that `tos>silicon` exists in the catalog or is publicly installable.
 
-Download the six verified GitHub release archives and their `SHA256SUMS` into one directory. With Python 3.12 or newer, prepare the package:
+Download the six verified GitHub release archives and their `SHA256SUMS` into one directory. Run preparation and packing on Linux, macOS, or inside WSL with Python 3.12 or newer. Native Windows extraction does not preserve the Unix executable permissions required by the package. Prepare it with:
 
 ```sh
 python3 scripts/prepare_honeycomb.py \

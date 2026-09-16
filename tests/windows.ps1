@@ -81,6 +81,13 @@ flow: []
             Start-Sleep -Milliseconds 250
         }
         if (!$ready) { throw 'Native daemon did not become ready.' }
+        $dashboard = & $exe --json web | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'Native dashboard URL lookup failed.' }
+        $address = [Uri]$dashboard.url
+        $page = Invoke-WebRequest ($address.GetLeftPart([UriPartial]::Path))
+        if ($page.StatusCode -ne 200) { throw 'Windows could not reach the WSL2 dashboard.' }
+        & $exe web
+        if ($LASTEXITCODE -ne 0) { throw 'Windows browser bridge failed.' }
         $connected = & $exe --json connect silicon.yaml | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $connected.connection.id -ne 'windows-test:tos') { throw 'Native connect failed.' }
         & $exe ping windows-test:tos

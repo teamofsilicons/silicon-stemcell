@@ -16,3 +16,7 @@ docs/shell.html
 
 IAM.md
 .DS_Store
+
+windows/
+scripts/
+install.ps1

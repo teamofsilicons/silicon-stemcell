@@ -16,7 +16,7 @@ Copy-Item $LinuxArchive "$stage/runtime.tar.gz"
 [IO.File]::WriteAllText("$stage/RUNTIME.sha256", (Get-FileHash $LinuxArchive -Algorithm SHA256).Hash.ToLowerInvariant() + "`n")
 [IO.File]::WriteAllText("$stage/VERSION", "v$version`n")
 Copy-Item "$source/install.ps1" $stage
-Copy-Item "$PSScriptRoot/launch.sh", "$PSScriptRoot/provision.sh", "$source/LICENSE" $stage
+Copy-Item "$PSScriptRoot/launch.sh", "$PSScriptRoot/provision.sh", "$PSScriptRoot/open-url.ps1", "$source/LICENSE" $stage
 Copy-Item "$source/LICENSES" $stage -Recurse
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Compress-Archive -Path "$stage/*" -DestinationPath "$OutputDirectory/silicon-$target.zip" -Force

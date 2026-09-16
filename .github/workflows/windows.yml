@@ -70,7 +70,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native launcher tests failed' }
           cargo clippy --manifest-path windows/launcher/Cargo.toml --locked --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
-          foreach ($path in @('install.ps1', 'windows/package.ps1', 'tests/windows.ps1')) {
+          foreach ($path in @('install.ps1', 'windows/package.ps1', 'windows/open-url.ps1', 'tests/windows.ps1')) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors) { throw ($errors | Out-String) }

@@ -101,6 +101,8 @@ silicon web
 
 Windows data remains accessible: `C:\Users\You\Documents` is `/mnt/c/Users/You/Documents`, and `D:\Projects` is `/mnt/d/Projects`. Reads and writes affect the actual Windows files and respect Windows permissions. Put explicit paths to that data in your scripts as needed. Portable Bash and bundled CLI commands can use the same YAML on all platforms; macOS-specific tools and options still need alternatives inside the scripts.
 
+The Linux runtime keeps the managed Unix installation layout. If a later update replaces Caddy and needs to renew its port-80 capability, rerun the Windows installer; it performs that provisioning inside the dedicated distribution.
+
 Windows ARM64 is a preview until an actual ARM64 WSL2 end-to-end run is available. Hosted ARM runners can test the native launcher, and Linux ARM64 has its own native runtime checks, but those do not establish the complete Windows ARM64 installation path. Windows x64 release validation includes the real WSL2 installation and interpreter integration checks. See the release evidence for completed results.
 
 ### Migrating from 3.6.x
