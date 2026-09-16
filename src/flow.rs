@@ -160,8 +160,11 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     self.run(&expanded)
                 })();
                 if let Err(error) = result {
-                    crate::log_line(
+                    crate::log_line_scoped(
                         self.home,
+                        self.env["_connection"]
+                            .as_str()
+                            .and_then(|id| id.parse().ok()),
                         "error",
                         self.origin,
                         &format!("flow expression: {error:#}"),
@@ -179,7 +182,15 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
             if name != "if" {
                 chain = None;
             }
-            crate::log_line(self.home, "flow", self.origin, name)?;
+            crate::log_line_scoped(
+                self.home,
+                self.env["_connection"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok()),
+                "flow",
+                self.origin,
+                name,
+            )?;
             match self.step(name, body) {
                 Ok(matched) if name == "if" => {
                     chain = Some(chain.unwrap_or(false) || matched);
@@ -195,8 +206,11 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     if name == "if" {
                         chain = Some(chain.unwrap_or(false));
                     }
-                    crate::log_line(
+                    crate::log_line_scoped(
                         self.home,
+                        self.env["_connection"]
+                            .as_str()
+                            .and_then(|id| id.parse().ok()),
                         "error",
                         self.origin,
                         &format!("{name}: {error:#}"),
@@ -263,15 +277,21 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     bail!("send target/session must not be empty");
                 }
                 (self.send)(&target, &message, session.as_deref())?;
-                crate::log_line(
+                crate::log_line_scoped(
                     self.home,
+                    self.env["_connection"]
+                        .as_str()
+                        .and_then(|id| id.parse().ok()),
                     "send",
                     self.origin,
                     &format!("{target}: {message}"),
                 )?;
             }
-            "log" => crate::log_line(
+            "log" => crate::log_line_scoped(
                 self.home,
+                self.env["_connection"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok()),
                 "runtime",
                 self.origin,
                 &self.field(map, "message")?,

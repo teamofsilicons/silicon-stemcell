@@ -1,4 +1,5 @@
 /target/
+/backend/target/
 /.vercel/
 **/__pycache__/
 .vercel

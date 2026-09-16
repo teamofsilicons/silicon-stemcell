@@ -63,6 +63,8 @@ jobs:
         env:
           SILICON_PREFIX: ${{ runner.temp }}/silicon-bundle
           SILICON_SOURCE_DIR: ${{ github.workspace }}
+          SILICON_INTERPRETER_TABLE_KEY: ${{ secrets.SILICON_INTERPRETER_TABLE_KEY }}
+          SILICON_RUNTIME_TABLE_KEY: ${{ secrets.SILICON_RUNTIME_TABLE_KEY }}
         run: sh install.sh
       - name: Exercise the installed bundle with the real Omni daemon and Caddy
         env:
@@ -74,7 +76,7 @@ jobs:
         env:
           BUNDLE_BIN: ${{ runner.temp }}/silicon-bundle/bin
         run: |
-          for binary in silicon si silicon-omni omni so iam dm briefcase waveform commit remind hook; do
+          for binary in silicon si silicon-omni omni so iam dm briefcase waveform commit remind hook honeycomb spacestation; do
             "$BUNDLE_BIN/$binary" --help >/dev/null
           done
           for binary in commit-native remind-native; do
@@ -134,5 +136,5 @@ jobs:
         run: |
           cd dist
           sha256sum silicon-*.tar.gz install.sh > SHA256SUMS
-          printf '%s\n' 'Complete Rust interpreter bundle: silicon, si, Omni, Caddy, IAM, DM, Briefcase, Waveform, Commit, Remind, and Hook.' 'Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.' > release-notes.md
+          printf '%s\n' 'Complete Rust interpreter bundle: silicon, si, Omni, Caddy, IAM, DM, Briefcase, Waveform, Commit, Remind, Hook, Honeycomb, and Space Station.' 'Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.' > release-notes.md
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz install.sh SHA256SUMS

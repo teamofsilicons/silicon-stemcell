@@ -144,6 +144,9 @@ pub fn start(runtime: &Arc<Runtime>, ready: Arc<AtomicBool>) {
                 continue;
             }
             next = Instant::now() + Duration::from_secs(3600);
+            if !crate::settings::load().is_ok_and(|s| s.auto_update) {
+                continue;
+            }
             match install(true) {
                 Ok(Some(_)) => {
                     eprintln!("new release installed; waiting for active work before restarting");

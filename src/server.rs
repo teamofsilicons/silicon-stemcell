@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -249,6 +249,7 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
     };
     state::write_json(&dir.join("daemon.json"), &daemon)?;
     runtime.start_scheduler();
+    crate::realtime::start(&runtime);
     let app = Arc::new(App {
         runtime: runtime.clone(),
         daemon,
@@ -326,6 +327,24 @@ fn handle(app: Arc<App>, mut request: Request) {
         .next()
         .unwrap_or("")
         .to_owned();
+    if request.method() == &Method::Get && path == "/ping" {
+        let online = app
+            .runtime
+            .silicons
+            .read()
+            .unwrap()
+            .values()
+            .find(|c| descriptor(&c.cfg).host == host)
+            .filter(|c| c.enabled.load(Ordering::SeqCst))
+            .map(|c| descriptor(&c.cfg).id);
+        let status = if online.is_some() { 200 } else { 404 };
+        respond(
+            request,
+            status,
+            json!({"online":online.is_some(),"silicon":online,"timestamp":chrono::Utc::now().to_rfc3339()}),
+        );
+        return;
+    }
     if request.method() == &Method::Get
         && path == "/"
         && (host == "silicon.localhost" || host == "127.0.0.1")
@@ -405,6 +424,9 @@ fn handle(app: Arc<App>, mut request: Request) {
             return;
         }
     };
+    if path == "/control" || path == "/si" {
+        crate::telemetry::interpreter("daemon", "request", json!({"path":path,"body":body}));
+    }
     let result = if path == "/control" {
         control(&app, &body)
     } else if let Some(caller) = caller {
@@ -450,6 +472,27 @@ fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
 fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
     let args = &body["args"];
     match text(body, "action")? {
+        "settings" => Ok(json!(crate::settings::load()?)),
+        "settings-set" => {
+            let _guard = app.mutation.lock().unwrap();
+            Ok(json!(crate::settings::set(
+                text(args, "key")?,
+                args["enabled"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow!("enabled must be boolean"))?
+            )?))
+        }
+        "silicon-ping" => {
+            let id = text(args, "silicon")?;
+            Ok(
+                json!({"silicon":id,"online":app.runtime.get(id).is_ok(),"timestamp":chrono::Utc::now().to_rfc3339()}),
+            )
+        }
+        "configuration" => Ok(crate::realtime::configuration(
+            &app.runtime.get(text(args, "silicon")?)?.cfg,
+        )),
+        "install" => crate::apps::install(text(args, "app_id")?),
+        "uninstall" => crate::apps::uninstall(text(args, "app_id")?),
         "ping" => Ok(json!({"version":env!("CARGO_PKG_VERSION"),"pid":app.daemon.pid})),
         "compile" => {
             let cfg = compile(text(args, "yaml")?)?;
@@ -468,15 +511,29 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             let cfg = compile(text(args, "yaml")?)?;
             let connection = descriptor(&cfg);
             let warnings = cfg.warnings.clone();
-            app.runtime.connect(cfg)?;
+            let log = cfg.home.join(".silicon/silicon.log");
+            let start = fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+            if let Err(error) = app.runtime.connect(cfg) {
+                bail!(
+                    "{error:#}\n{}",
+                    connection_progress(&log, start)?.join("\n")
+                );
+            }
             let result = (|| -> Result<()> {
                 update_proxy(app)?;
                 let connected = app.runtime.get(&connection.id)?;
-                for command in &connected.cfg.silicon.webhook {
+                for command in &connected.cfg.silicon.hooked_apps() {
                     auth::webhook(
                         &connected.cfg.home,
                         command,
                         &format!("http://{}", connection.host),
+                    )?;
+                    crate::log_line_scoped(
+                        &connected.cfg.home,
+                        Some(connected.cfg.generation),
+                        "webhook",
+                        command,
+                        "registered",
                     )?;
                 }
                 state::write_json(
@@ -496,7 +553,9 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 let _ = update_proxy(app);
                 return Err(error);
             }
-            Ok(json!({"connection":connection,"warnings":warnings}))
+            Ok(
+                json!({"connection":connection,"warnings":warnings,"progress":connection_progress(&log,start)?}),
+            )
         }
         "disconnect" => {
             let _guard = app.mutation.lock().unwrap();
@@ -595,7 +654,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         "auth-setup" => {
             let c = app.runtime.get(text(args, "silicon")?)?;
             Ok(
-                json!({"app_id":auth::setup(&c.cfg.home,c.cfg.silicon.id.as_deref().unwrap(),c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?)?}),
+                json!({"app_id":auth::setup_scoped(&c.cfg.home,c.cfg.silicon.id.as_deref().unwrap(),c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?,c.cfg.generation)?}),
             )
         }
         "auth-remove" => {
@@ -609,6 +668,17 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         }
         _ => bail!("unknown control action"),
     }
+}
+
+fn connection_progress(path: &Path, start: u64) -> Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text.lines().map(str::to_owned).collect())
 }
 
 fn update_proxy(app: &App) -> Result<()> {
@@ -664,7 +734,7 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
         "auth-setup" => {
             let c = &connected;
             Ok(
-                json!({"app_id":auth::setup(&c.cfg.home,&caller.silicon,c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?)?}),
+                json!({"app_id":auth::setup_scoped(&c.cfg.home,&caller.silicon,c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?,c.cfg.generation)?}),
             )
         }
         "auth-remove" => {

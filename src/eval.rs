@@ -240,8 +240,27 @@ fn interpolate(source: &str, env: &Json) -> Result<String> {
 #[derive(Clone, Copy)]
 enum Mode {
     Text,
+    Secret,
     Dna,
     AppCommand,
+    Setup,
+}
+
+fn redact(message: &str, env: &Json) -> String {
+    let secrets = [
+        &env["silicon"]["token"],
+        &env["silicon"]["space_station"]["table_key"],
+    ]
+    .into_iter()
+    .filter_map(Json::as_str)
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    crate::telemetry::redact_text(message, &secrets)
+}
+
+fn log(env: &Json, home: &Path, kind: &str, isi: &str, message: &str) -> Result<()> {
+    let generation = env["_connection"].as_str().and_then(|id| id.parse().ok());
+    crate::log_line_scoped(home, generation, kind, isi, &redact(message, env))
 }
 
 fn candidate_source(source: &str, mode: Mode) -> Result<(String, bool)> {
@@ -284,12 +303,49 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
         .strip_prefix('!')
         .filter(|_| !quoted && source.starts_with('!'))
     {
+        let kind = if matches!(mode, Mode::Setup) {
+            "setup"
+        } else {
+            "command"
+        };
+        // Compile runs before runtime redaction is registered and may interpolate credentials.
+        let compile_time = env["silicon"].get("token").is_some();
+        log(
+            env,
+            home,
+            kind,
+            isi,
+            &format!(
+                "running: {}",
+                if matches!(mode, Mode::Secret) {
+                    "[credential expression]"
+                } else if compile_time {
+                    "[compile-time expression]"
+                } else {
+                    command.trim_start()
+                }
+            ),
+        )?;
         let output = crate::command("bash", home)
             .arg("-c")
             .arg(command.trim_start())
             .env("ISI", isi)
             .output()
             .context("could not start Bash")?;
+        if matches!(mode, Mode::Setup) {
+            for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+                for line in String::from_utf8_lossy(bytes).lines() {
+                    log(env, home, "setup", stream, line)?;
+                }
+            }
+        }
+        log(
+            env,
+            home,
+            kind,
+            isi,
+            &format!("finished: {}", output.status),
+        )?;
         if !output.status.success() {
             bail!(
                 "Bash exited with {}: {}",
@@ -309,22 +365,50 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
 }
 
 fn run(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Result<String> {
-    let mut errors = Vec::new();
-    for source in fallbacks(source, mode)? {
-        match candidate(source, env, home, isi, mode) {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                let message = format!("evaluation failed: {error:#}");
-                crate::log_line(home, "error", isi, &message)?;
-                errors.push(message);
+    let result = (|| {
+        let mut errors = Vec::new();
+        for source in fallbacks(source, mode)? {
+            match candidate(source, env, home, isi, mode) {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    let message = if matches!(mode, Mode::Secret) {
+                        "credential expression evaluation failed".to_owned()
+                    } else {
+                        redact(&format!("evaluation failed: {error:#}"), env)
+                    };
+                    log(env, home, "error", isi, &message)?;
+                    errors.push(message);
+                }
             }
         }
-    }
-    bail!("all evaluation candidates failed: {}", errors.join("; "))
+        bail!("all evaluation candidates failed: {}", errors.join("; "))
+    })();
+    result.map_err(|error| {
+        if matches!(mode, Mode::Secret) {
+            anyhow!("credential expression evaluation failed")
+        } else {
+            anyhow!(redact(&format!("{error:#}"), env))
+        }
+    })
 }
 
 pub fn evaluate(source: &str, env: &Json, home: &Path, isi: &str) -> Result<String> {
     run(source, env, home, isi, Mode::Text)
+}
+
+/// Credential sources, parser errors, and Bash stderr never enter diagnostics.
+pub fn evaluate_secret(source: &str, env: &Json, home: &Path, isi: &str) -> Result<String> {
+    run(source, env, home, isi, Mode::Secret)
+}
+
+/// Setup is deferred until connect; preserve shared CEL/Bash/fallback semantics.
+pub fn setup(source: &str, env: &Json, home: &Path) -> Result<()> {
+    let source = if source.trim_start().starts_with('!') {
+        source.to_owned()
+    } else {
+        format!("! {source}")
+    };
+    run(&source, env, home, "interpreter", Mode::Setup).map(|_| ())
 }
 
 /// DNA candidates are paths by default; quoted fallbacks are literal prompt text.
@@ -398,6 +482,10 @@ pub fn validate_template(source: &str) -> Result<()> {
 
 pub fn validate_app_command(source: &str) -> Result<()> {
     validate_template_mode(source, Mode::AppCommand)
+}
+
+pub fn validate_secret(value: &Yaml) -> Result<()> {
+    validate(value).map_err(|_| anyhow!("invalid credential expression syntax"))
 }
 
 fn validate_template_mode(source: &str, mode: Mode) -> Result<()> {
@@ -558,5 +646,76 @@ mod tests {
         assert!(!dir.path().join("should-not-run").exists());
         assert!(app_command("{missing.command} !>> {error}", &env, dir.path()).is_err());
         assert!(app_command("dm 'unclosed", &env, dir.path()).is_err());
+    }
+
+    #[test]
+    fn credential_expressions_and_compile_diagnostics_do_not_disclose_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = json!({"silicon": {"token": "private-token-value",
+            "space_station": {"table_key": "private-table-value"}}});
+        let log_path = dir.path().join(".silicon/silicon.log");
+        assert_eq!(
+            evaluate_secret(
+                "! printf new-private-credential",
+                &env,
+                dir.path(),
+                "interpreter"
+            )
+            .unwrap(),
+            "new-private-credential"
+        );
+        for source in [
+            "! printf new-private-credential >&2; exit 1",
+            "{missing['new-private-credential']}",
+            "{new-private-credential + }",
+            "new-private-credential !>>",
+        ] {
+            let error = evaluate_secret(source, &env, dir.path(), "interpreter").unwrap_err();
+            assert_eq!(error.to_string(), "credential expression evaluation failed");
+        }
+        assert_eq!(
+            evaluate_secret(
+                "! false !>> ! printf fallback-private-credential",
+                &env,
+                dir.path(),
+                "interpreter"
+            )
+            .unwrap(),
+            "fallback-private-credential"
+        );
+        for source in [
+            "! printf '{silicon.token}' >&2; exit 1",
+            "! printf '{silicon.space_station.table_key}' >&2; exit 1",
+            "{to_json(silicon.token)}",
+        ] {
+            let error = format!(
+                "{:#}",
+                evaluate(source, &env, dir.path(), "interpreter").unwrap_err()
+            );
+            assert!(!error.contains("private-token-value"), "{error}");
+            assert!(!error.contains("private-table-value"), "{error}");
+        }
+        let logs = fs::read_to_string(log_path).unwrap();
+        for secret in [
+            "private-token-value",
+            "private-table-value",
+            "new-private-credential",
+            "fallback-private-credential",
+        ] {
+            assert!(!logs.contains(secret), "{logs}");
+        }
+        assert!(logs.contains("running: [compile-time expression]"));
+        assert!(logs.contains("running: [credential expression]"));
+        assert!(logs.contains("finished:"));
+        evaluate(
+            "! printf runtime-visible",
+            &json!({"silicon": {}}),
+            dir.path(),
+            "worker",
+        )
+        .unwrap();
+        assert!(fs::read_to_string(dir.path().join(".silicon/silicon.log"))
+            .unwrap()
+            .contains("running: printf runtime-visible"));
     }
 }

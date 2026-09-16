@@ -103,7 +103,7 @@ def main():
     state.mkdir()
     registry = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Registry)
     threading.Thread(target=registry.serve_forever, daemon=True).start()
-    env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0")
+    env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0", SILICON_TELEMETRY="0", SILICON_REALTIME="0")
     assert shutil.which(env.get("OMNI_DAEMON", "omnid"), path=env["PATH"]), "set OMNI_DAEMON to the real Omni daemon"
     assert shutil.which(env.get("SILICON_CADDY", "caddy"), path=env["PATH"]), "set SILICON_CADDY to real Caddy"
     config = home / "silicon.yaml"
@@ -113,6 +113,8 @@ def main():
   timezone: Asia/Kolkata
   SILICON_HOME: {json.dumps(str(home))}
   inference_providers: [claude-code-cli]
+  setup:
+    - '! printf "setup-out\\n"; printf "setup-err\\n" >&2; printf x >> setup-count'
 isi:
   source:
     model: fast
@@ -216,7 +218,21 @@ flow:
         def control(action, **args):
             return post("/control", {"action": action, "args": args}, daemon["token"])
         cli("compile", str(config))
-        cli("connect", str(config))
+        assert not (home / "setup-count").exists(), "compile must not run setup"
+        result = cli("connect", str(config))
+        assert "setup-out" in result and "setup-err" in result, result
+        assert (home / "setup-count").read_text() == "x", "setup must run once per connection"
+        assert json.loads(cli("ping", "e2e:local"))["online"]
+        assert not json.loads(cli("ping", "missing:local"))["online"]
+        assert "isolated-e2e-token" not in cli("config", "e2e:local")
+        assert json.loads(cli("settings", "set", "telemetry", "--off"))["telemetry"] is False
+        assert control("settings")["auto_update"] is True
+        assert json.loads(cli("settings", "get", "telemetry")) is False
+        cli("settings", "set", "unknown", "--off", ok=False)
+        report = json.loads(cli("bug-report", "--title", "test", "--body", "repro", "--pr", "https://github.com/teamofsilicons/silicon-stemcell/pull/1", "--dry-run"))
+        assert "Fix PR:" in report["body"]
+        request = urllib.request.Request(base + "/ping", headers={"Host":"e2e.local.localhost"})
+        assert json.loads(urllib.request.urlopen(request).read())["online"]
         assert "e2e:local" in cli("ls", "*:local")
         assert len(control("list")) == 1
         other_home = work / "other home"
@@ -392,7 +408,7 @@ flow:
         process.wait(timeout=15)
         assert process.returncode == 0, (work / "server.log").read_text()
         assert not (state / "daemon.json").exists()
-        print("E2E passed: port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
+        print("E2E passed: setup output/exactly-once, settings, redacted configuration, local ping, bug report preview, port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
     finally:
         if process.poll() is None:
             process.terminate()

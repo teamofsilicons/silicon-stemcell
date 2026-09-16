@@ -23,10 +23,12 @@ create a local listening url ({lsid}.{orgid}.localhost) for this silicon and map
 
 for the items in webhooks, run `app webhook "{lsid}.{orgid}.localhost"`
 
+show the output of all scripts inside setup, tell when each app is installed and logged in, and when webhooks are setup.
+
 disconnect:
-`silicon disconnect {path to yaml}`
-`silicon disconnect` shows a list of silicons connected (silicon id) and asks to run the next command
-`silicon disconnect {sid}` disconnect a silicon id
+`silicon disconnect {path to yaml}` stops & disconnect a silicon
+`silicon disconnect` shows a list of silicons connected (silicon id + yaml path) and asks to run the next command
+`silicon disconnect {sid}` stops & disconnect a silicon
 
 list:
 `silicon ls` lists all connected silicons
@@ -34,6 +36,12 @@ list:
 
 logs:
 `silicon logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
+
+install honeycomb apps
+`silicon install appid` installs the app from honeycomb for this distribution
+
+uninstall
+`silicon uninstall appid`
 
 
 Events:
@@ -84,9 +92,13 @@ silicon:
     token                   silicon token, used for authentication
     timezone                timezone silicon operates in
     SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
+    space_station           optional; for telemetry
+        table_name          space station table name
+        table_key           space station table key
     inference_providers     omni supported inference providers
-    login                   optional; list of shell app commands to iam apps, automatically logged in
-    webhook                 optional; list of app commands to register webhook
+    setup                   optional; list of shell command that is run once during connecting silicon
+    apps                    optional; list of iam apps, automatically logged in using silicon token
+    webhooks                optional; list of iam apps to register for webhook
 
 inference_providers can take in either a list of inference providers that omni supports.
 it can take - all-available-providers
@@ -102,12 +114,16 @@ now, ideally all-available-providers should already have claude code cli, but la
 move from top to bottom, and add / remove from the group.
 if only all-available-providers is written, use the native option instead of computing.
 
-check if the app's follow iam auth methods.
-`app iam --json` -> extract app_id -> generate a short lived auth token for this app_id -> `app auth token "..."` -> check -> `app auth status --json` and check authenticated: true
+apps mentioned inside `apps` & `webhooks` should be automatically installed from honeycomb & logged in using iam cli.
+
+app's follow iam auth methods.
+`app iam --json` -> extract app_id -> generate a short lived auth token for this app_id -> `app login "..."` -> check -> `app login status --json` and check authenticated: true
 
 apps themselves manage access & refresh tokens.
-any isi can login to an app assisted by `si setup auth app_command` cli
+any isi can login to an app assisted by `si setup auth app_id` cli
 before heartbeats & new sessions, all auths are checked and authenticated if needed.
+
+when disconnecting a silicon, run unhook for all iam apps that had webhooks running.
 
 isi:
 each isi is run on its own terminal with 2 env variables: SILICON_HOME & ISI
@@ -130,6 +146,17 @@ if isi has primary send mode global, its just the isi name, if it is session, th
 
 
 dna assemble is a list & accepts file location reletive to SILICON_HOME, a bash script with pwd SILICON_HOME and ISI. & fallbacks using !>>
+
+dna assemble:
+```txt
+{assemble item1 verbaitim (eg: ! ./contacts.sh !>> "You have no contacts")}
+{expression computed / file contents / ...}
+
+
+{assemble item2 verbaitim (eg: ! ./contacts.sh !>> "You have no contacts")}
+{expression computed / file contents / ...}
+...
+```
 
 there is no default heartbeat or new_session_suggestion for isi with an undefined one.
 
@@ -290,6 +317,21 @@ session & emphemeral:
 never starts a new session. --id is always passed when creating a new isi of this kind.
 
 
+# telemetry
+upload all runtime logs & session logs & commands run & interpretter logs & webhook requests to space station
+all things are uploaded to tos's space station that is bundled in. attach proper metadata about which isi, which silicon id, etc.
+users can optionally pass their own space station table keys for specific silicon they want telemetry for. all logs for that silicon should be uploaded to both tos and user's space station table.
+
+tables:
+- one for interpretter logs, webhooks, clis, daemons, etc
+- one for silicon runtime logs (silicon inputs from webhooks, flow logs, and session logs for all isi)
+- one for backend
+- one for frontend (docs)
+
+for all tos telemetry, users should be able to turn it all off with
+`silicon settings set telemetry --off` <- this does not turn off user set space station telemetry
+
+^ have an entire settings page that can we worked with with various other configurations.
 
 
 # silicon prompt
@@ -299,6 +341,16 @@ the si cli commands it has access to (very minimal, --help can always be used to
 treat --help as the primary docs and disclosure of how to use different commands.
 this prompt is very minimal & only intended for the isi to do internal stuff.
 
+# realtime updates
+anyone from the org should be able to subscribe to updates from the silicon. for this, live stream updates for all ISI to the backend, where carbons can subscribe and see. this should be possible over the api via OBO. all of this done on web sockets.
+
+Read up on honeycomb how to setup OBO. make that web pub & sub an app on honeycomb. sign up the silicon using iam cli and silicon id & token.
+
+for one time questions, like the configurations of this silicon (isi, flow, models, dna, etc etc), make it like a call that can be made to know those details.
+
+these are read-only updates. nothing is written at this time.
+
+also, introduce a way to do ping pong with a silicon locally to know if its online or offline. pass that as part of updates as well.
 
 # codebase
 this is a rust project with as much in rust as possible. for all iam apps use their cli.

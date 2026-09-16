@@ -1,7 +1,7 @@
 use crate::{
     auth,
     config::Config,
-    eval, flow, log_line,
+    eval, flow, log_line_scoped,
     state::{self, Session},
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -126,7 +126,7 @@ impl Drop for Activity<'_> {
 
 pub struct Connected {
     pub cfg: Config,
-    generation: Uuid,
+    pub(crate) generation: Uuid,
     workers: Mutex<BTreeMap<Uuid, Arc<Worker>>>,
     pub enabled: AtomicBool,
 }
@@ -170,7 +170,7 @@ impl Runtime {
         })
     }
 
-    pub fn connect(self: &Arc<Self>, cfg: Config) -> Result<()> {
+    pub fn connect(self: &Arc<Self>, mut cfg: Config) -> Result<()> {
         let _activity = self.activity()?;
         let id = cfg
             .silicon
@@ -191,14 +191,31 @@ impl Runtime {
             }
         }
         state::private_dir(&cfg.home.join(".silicon"))?;
-        auth::ensure_all(
+        cfg.generation = Uuid::new_v4();
+        crate::telemetry::register(&cfg);
+        let preparation = (|| -> Result<()> {
+            for (index, script) in cfg.silicon.setup.iter().enumerate() {
+                eval::setup(script, &environment(&cfg), &cfg.home).with_context(|| {
+                    format!("silicon.setup[{index}] failed; connection was not started")
+                })?;
+            }
+            auth::ensure_all_scoped(
+                &cfg.home,
+                &id,
+                cfg.silicon.token.as_deref().unwrap_or_default(),
+                &cfg.silicon.managed_apps(),
+                cfg.generation,
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = preparation {
+            let message = crate::telemetry::redact(&cfg.home, &format!("{error:#}"));
+            crate::telemetry::unregister(&cfg.home);
+            bail!("{message}");
+        }
+        log_line_scoped(
             &cfg.home,
-            &id,
-            cfg.silicon.token.as_deref().unwrap_or_default(),
-            &cfg.silicon.login,
-        )?;
-        log_line(
-            &cfg.home,
+            Some(cfg.generation),
             "runtime",
             "interpreter",
             &format!("connected {id}"),
@@ -206,8 +223,8 @@ impl Runtime {
         self.silicons.write().unwrap().insert(
             id,
             Arc::new(Connected {
+                generation: cfg.generation,
                 cfg,
-                generation: Uuid::new_v4(),
                 workers: Mutex::new(BTreeMap::new()),
                 enabled: AtomicBool::new(true),
             }),
@@ -238,21 +255,23 @@ impl Runtime {
                 errors.push(error.to_string());
             }
         }
-        for app in &connected.cfg.silicon.webhook {
+        for app in &connected.cfg.silicon.hooked_apps() {
             if let Err(error) = auth::unhook(&connected.cfg.home, app) {
                 errors.push(error.to_string());
             }
         }
         self.callers.write().unwrap().retain(|_, c| c.silicon != id);
         self.silicons.write().unwrap().remove(id);
-        if let Err(error) = log_line(
+        if let Err(error) = log_line_scoped(
             &connected.cfg.home,
+            Some(connected.cfg.generation),
             "runtime",
             "interpreter",
             "disconnected",
         ) {
             errors.push(error.to_string());
         }
+        crate::telemetry::unregister(&connected.cfg.home);
         if !errors.is_empty() {
             bail!("{}", errors.join("; "));
         }
@@ -307,7 +326,13 @@ impl Runtime {
         let connected = self.get(id)?;
         let event_id = Uuid::new_v4();
         let cfg = &connected.cfg;
-        log_line(&cfg.home, "event", "webhook", &request.to_string())?;
+        log_line_scoped(
+            &cfg.home,
+            Some(cfg.generation),
+            "event",
+            "webhook",
+            &request.to_string(),
+        )?;
         let mut env = environment(cfg);
         env["request"] = request;
         flow::execute(
@@ -756,8 +781,9 @@ impl Runtime {
                                     records.into_iter().map(|record| Some(record.id)).collect()
                                 }
                                 Err(error) => {
-                                    let _ = log_line(
+                                    let _ = log_line_scoped(
                                         &connected.cfg.home,
+                                        Some(connected.cfg.generation),
                                         "error",
                                         name,
                                         &format!("heartbeat sessions: {error:#}"),
@@ -783,8 +809,9 @@ impl Runtime {
                                         deadlines.insert(key, now + next);
                                     }
                                     Err(error) => {
-                                        let _ = log_line(
+                                        let _ = log_line_scoped(
                                             &connected.cfg.home,
+                                            Some(connected.cfg.generation),
                                             "error",
                                             &address,
                                             &format!("heartbeat schedule: {error:#}"),
@@ -811,11 +838,12 @@ impl Runtime {
                                         bail!("silicon disconnected");
                                     }
                                     let cfg = &connected.cfg;
-                                    auth::ensure_all(
+                                    auth::ensure_all_scoped(
                                         &cfg.home,
                                         &id,
                                         cfg.silicon.token.as_deref().unwrap(),
-                                        &cfg.silicon.login,
+                                        &cfg.silicon.managed_apps(),
+                                        cfg.generation,
                                     )?;
                                     let source =
                                         heartbeat["message"].as_str().ok_or_else(|| {
@@ -841,8 +869,9 @@ impl Runtime {
                                     Ok(())
                                 })();
                                 if let Err(error) = result {
-                                    let _ = log_line(
+                                    let _ = log_line_scoped(
                                         &connected.cfg.home,
+                                        Some(connected.cfg.generation),
                                         "error",
                                         &address,
                                         &format!("heartbeat: {error:#}"),
@@ -869,7 +898,13 @@ impl Runtime {
                 .collect();
             for worker in workers {
                 if let Err(e) = worker.stop(None) {
-                    let _ = log_line(&connected.cfg.home, "error", "shutdown", &e.to_string());
+                    let _ = log_line_scoped(
+                        &connected.cfg.home,
+                        Some(connected.cfg.generation),
+                        "error",
+                        "shutdown",
+                        &e.to_string(),
+                    );
                 }
             }
         }
@@ -919,11 +954,12 @@ impl Worker {
             .ok_or_else(|| anyhow!("interpreter stopped"))?;
         let cfg = &connected.cfg;
         let record = self.state.lock().unwrap().record.clone();
-        auth::ensure_all(
+        auth::ensure_all_scoped(
             &cfg.home,
             cfg.silicon.id.as_deref().unwrap(),
             cfg.silicon.token.as_deref().unwrap(),
-            &cfg.silicon.login,
+            &cfg.silicon.managed_apps(),
+            cfg.generation,
         )?;
         let omni_home = cfg
             .home
@@ -1072,15 +1108,22 @@ impl Worker {
         }
         if let Err(error) = state.record.save(&connected.cfg.home) {
             // Accepted work keeps running even if metadata persistence fails; the caller sees the failure.
-            log_line(
+            log_line_scoped(
                 &connected.cfg.home,
+                Some(connected.cfg.generation),
                 "error",
                 &state.record.isi,
                 &format!("session state write failed: {error}"),
             )?;
             return Err(error);
         }
-        log_line(&connected.cfg.home, "send", &state.record.isi, message)?;
+        log_line_scoped(
+            &connected.cfg.home,
+            Some(connected.cfg.generation),
+            "send",
+            &state.record.isi,
+            message,
+        )?;
         let sent = Sent {
             session: state.record.clone(),
             id,
@@ -1091,8 +1134,9 @@ impl Worker {
         drop(client);
         if !control {
             if let Err(error) = self.suggest_session() {
-                log_line(
+                log_line_scoped(
                     &connected.cfg.home,
+                    Some(connected.cfg.generation),
                     "error",
                     &name,
                     &format!("new session suggestion: {error:#}"),
@@ -1167,7 +1211,13 @@ impl Worker {
             }
             return Err(error);
         }
-        log_line(&connected.cfg.home, "suggestion", &address, &message)?;
+        log_line_scoped(
+            &connected.cfg.home,
+            Some(connected.cfg.generation),
+            "suggestion",
+            &address,
+            &message,
+        )?;
         Ok(())
     }
 
@@ -1209,8 +1259,9 @@ impl Worker {
             .ok_or_else(|| anyhow!("silicon disconnected"))?;
         let cfg = &connected.cfg;
         let mut state = self.state.lock().unwrap();
-        log_line(
+        log_line_scoped(
             &cfg.home,
+            Some(cfg.generation),
             &event.event_type,
             &state.record.isi,
             &serde_json::to_string(&event)?,
@@ -1309,8 +1360,9 @@ impl Worker {
                         Ok(())
                     };
                     if let Err(error) = result {
-                        log_line(
+                        log_line_scoped(
                             &cfg.home,
+                            Some(cfg.generation),
                             "error",
                             &name,
                             &format!("ephemeral reply: {error}"),
@@ -1329,8 +1381,9 @@ impl Worker {
         // A failed listener cannot be reused; remove it so a later send restores a fresh worker.
         if let Err(error) = self.stop(Some(message.into())) {
             if let Some(connected) = self.connected.upgrade() {
-                let _ = log_line(
+                let _ = log_line_scoped(
                     &connected.cfg.home,
+                    Some(connected.cfg.generation),
                     "error",
                     "worker cleanup",
                     &format!("{message}; {error:#}"),
@@ -1397,8 +1450,13 @@ impl Worker {
                 errors.push(error.to_string());
             }
             if let Some(error) = error.as_deref() {
-                if let Err(error) = log_line(&connected.cfg.home, "error", &state.record.isi, error)
-                {
+                if let Err(error) = log_line_scoped(
+                    &connected.cfg.home,
+                    Some(connected.cfg.generation),
+                    "error",
+                    &state.record.isi,
+                    error,
+                ) {
                     errors.push(error.to_string());
                 }
             }
@@ -1493,8 +1551,9 @@ impl Worker {
             })();
             if let Err(error) = result {
                 if let Some(connected) = worker.connected.upgrade() {
-                    let _ = log_line(
+                    let _ = log_line_scoped(
                         &connected.cfg.home,
+                        Some(connected.cfg.generation),
                         "error",
                         "dna",
                         &format!("DNA refresh: {error:#}"),
@@ -1560,7 +1619,13 @@ fn suggestion_due(
 pub fn environment(cfg: &Config) -> Value {
     let mut silicon = serde_json::to_value(&cfg.silicon).unwrap();
     silicon.as_object_mut().unwrap().remove("token");
-    json!({"silicon":silicon,"isi":cfg.isi,"access":cfg.access,"request":{},"var":{}})
+    if let Some(station) = silicon
+        .get_mut("space_station")
+        .and_then(Value::as_object_mut)
+    {
+        station.remove("table_key");
+    }
+    json!({"_connection":cfg.generation,"silicon":silicon,"isi":cfg.isi,"access":cfg.access,"request":{},"var":{}})
 }
 
 fn assemble_dna(cfg: &Config, isi: &str, address: &str) -> Result<String> {
@@ -1577,9 +1642,10 @@ fn assemble_dna(cfg: &Config, isi: &str, address: &str) -> Result<String> {
                 .ok_or_else(|| anyhow!("DNA item must be a string"))?;
             let text = eval::dna(source, &environment(cfg), &cfg.home, address);
             match text {
-                Ok(text) => parts.push(text),
-                Err(error) => log_line(
+                Ok(text) => parts.push(format!("{source}\n{text}")),
+                Err(error) => log_line_scoped(
                     &cfg.home,
+                    Some(cfg.generation),
                     "error",
                     address,
                     &format!("DNA entry skipped: {error}"),
@@ -1595,7 +1661,7 @@ fn assemble_dna(cfg: &Config, isi: &str, address: &str) -> Result<String> {
         })
         .collect();
     parts.push(format!("You are {address}. SILICON_HOME is {}. Allowed ISIs: {}.\nUse `si isi send NAME MESSAGE`{}; `si isi --help`, `si session --help`, `si auth --help` explain the available commands.", cfg.home.display(), allowed.join(", "), if allowed.is_empty() { "" } else { " (session targets require --id)" }));
-    Ok(parts.join("\n\n"))
+    Ok(parts.join("\n\n\n"))
 }
 
 fn interval(value: &serde_yaml::Value, cfg: &Config, isi: &str) -> Result<Duration> {
@@ -1675,6 +1741,72 @@ fn select_providers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_setup_logs_both_streams_redacts_errors_and_never_connects() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg: Config = serde_yaml::from_str(
+            r#"
+silicon:
+  id: test:org
+  token: private-setup-credential
+  timezone: UTC
+  setup:
+    - '! printf "setup output"; printf "private-setup-credential" >&2; exit 9'
+isi: {a: {model: fast, primary_send_mode: global, session_type: persistent}}
+access: {a: []}
+flow: []
+"#,
+        )
+        .unwrap();
+        cfg.home = dir.path().to_owned();
+        let runtime = Runtime::new("http://127.0.0.1:1823".into());
+        let error = runtime.connect(cfg).unwrap_err().to_string();
+        assert!(error.contains("setup[0]") && error.contains("9"));
+        assert!(!error.contains("private-setup-credential"));
+        assert!(runtime.get("test:org").is_err());
+        let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(log.contains("[stdout]") && log.contains("[stderr]"));
+        assert!(log.contains("setup output") && !log.contains("private-setup-credential"));
+        assert_eq!(
+            crate::telemetry::redact(dir.path(), "private-setup-credential"),
+            "[redacted]"
+        );
+    }
+
+    #[test]
+    fn dna_includes_verbatim_sources_before_contents_and_skips_failed_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("prompt.md"), "file contents").unwrap();
+        let mut cfg: Config = serde_yaml::from_str(
+            r#"
+silicon: {id: 'test:org', token: test, timezone: UTC}
+isi:
+  a:
+    model: fast
+    primary_send_mode: session
+    session_type: persistent
+    dna:
+      assemble:
+        - prompt.md
+        - '! printf "$ISI"'
+        - 'absent.md !>> "No contacts"'
+        - absent.md
+access: {a: []}
+flow: []
+"#,
+        )
+        .unwrap();
+        cfg.home = dir.path().to_owned();
+        let prompt = assemble_dna(&cfg, "a", "a:job").unwrap();
+        assert!(prompt.starts_with("prompt.md\nfile contents\n\n\n! printf \"$ISI\"\na:job\n\n\nabsent.md !>> \"No contacts\"\nNo contacts\n\n\nYou are a:job."));
+        assert_eq!(prompt.matches("absent.md").count(), 1);
+        assert!(
+            std::fs::read_to_string(dir.path().join(".silicon/silicon.log"))
+                .unwrap()
+                .contains("DNA entry skipped")
+        );
+    }
 
     fn worker(ephemeral: bool) -> (tempfile::TempDir, Arc<Runtime>, Arc<Connected>, Arc<Worker>) {
         worker_with_flow(ephemeral, serde_yaml::Value::Sequence(Vec::new()))
@@ -2168,7 +2300,22 @@ flow: []
         let mut cfg = connected.cfg.clone();
         runtime.disconnect("test:org").unwrap();
         assert!(first.stopped.load(Ordering::SeqCst));
-        cfg.silicon.webhook = vec!["silicon-runtime-test-missing-app".into()];
+        use std::os::unix::fs::PermissionsExt;
+        let app = cfg.home.join("unhook-failure-app");
+        std::fs::write(
+            &app,
+            r#"#!/bin/sh
+case "$*" in
+  'iam --json') echo '{"app_id":"test>app"}' ;;
+  'login status --json') echo '{"authenticated":true}' ;;
+  unhook) exit 1 ;;
+  *) exit 2 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o700)).unwrap();
+        cfg.silicon.webhook = vec![shell_words::quote(&app.to_string_lossy()).into_owned()];
         runtime.connect(cfg).unwrap();
         let connected = runtime.get("test:org").unwrap();
         let second = runtime

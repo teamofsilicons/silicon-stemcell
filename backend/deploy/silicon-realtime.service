@@ -1,0 +1,25 @@
+[Unit]
+Description=Silicon read-only realtime relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=silicon-realtime
+Group=silicon-realtime
+WorkingDirectory=/var/lib/silicon-realtime
+EnvironmentFile=/etc/silicon-realtime/runtime.env
+ExecStart=/opt/silicon-realtime/current/silicon-realtime
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/silicon-realtime
+MemoryMax=384M
+CPUWeight=10
+TasksMax=128
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

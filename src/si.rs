@@ -1,3 +1,5 @@
 fn main() -> anyhow::Result<()> {
-    silicon::cli::si()
+    let result = silicon::cli::si();
+    silicon::telemetry::flush();
+    result
 }

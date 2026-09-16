@@ -6,8 +6,11 @@ import re
 import markdown
 
 root = Path(__file__).resolve().parent
-guide = (root / "GUIDE.md").read_text().split("## What runs", 1)[1]
-source = "## What runs" + guide
+guide = (root / "GUIDE.md").read_text().split("\n## ", 1)[1]
+source = "## " + guide
+issues = root / "EXTERNAL-BUGS.md"
+if issues.exists():
+    source += "\n\n## External dependency issues\n\n" + issues.read_text().split("\n\n", 1)[1]
 source += "\n\n## Implementation diary\n\n" + (root / "DIARY.md").read_text().split("\n\n", 1)[1]
 renderer = markdown.Markdown(extensions=["fenced_code", "tables", "toc"])
 body = renderer.convert(source)

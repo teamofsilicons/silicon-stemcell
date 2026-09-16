@@ -34,6 +34,18 @@ struct SiliconCli {
 }
 #[derive(Subcommand)]
 enum SiliconCommand {
+    /// Discover the IAM application used by the hosted realtime service.
+    Iam,
+    /// Log in to hosted realtime with an IAM short-lived token, or inspect status.
+    Login { token_or_status: String },
+    /// Revoke the stored hosted realtime session.
+    Logout,
+    /// Watch read-only realtime events for a Silicon in your organization.
+    Watch {
+        silicon: String,
+        #[arg(long)]
+        org: Option<String>,
+    },
     /// Validate all configuration and flow expressions without connecting.
     Compile { yaml: PathBuf },
     /// Compile and connect a silicon.yaml; start the interpreter if needed.
@@ -60,6 +72,33 @@ enum SiliconCommand {
     Stop,
     /// Install a newer stable GitHub release into a managed bundle installation.
     Update,
+    /// Install an app for this system through Honeycomb, for example 'tos>dm'.
+    Install { app_id: String },
+    /// Remove a Honeycomb-managed app from this home.
+    Uninstall { app_id: String },
+    /// Inspect or change persistent interpreter settings. Changes apply while running.
+    Settings {
+        #[command(subcommand)]
+        command: Option<SettingsCommand>,
+    },
+    /// Check whether a Silicon is connected without sending it a message.
+    Ping { silicon: String },
+    /// Read a connected Silicon's configuration with credentials redacted.
+    Config { silicon: String },
+    /// Source, documentation, dependency, and protocol details.
+    Info,
+    /// Submit a reproducible GitHub bug report, optionally linking a fix PR. Requires gh login.
+    BugReport {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        body: String,
+        #[arg(long)]
+        pr: Option<String>,
+        /// Show the report without submitting it.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Open the local dashboard with this user's interpreter credential.
     Web {
         #[arg(long)]
@@ -103,6 +142,19 @@ enum LogsCommand {
         no_follow: bool,
     },
 }
+#[derive(Subcommand)]
+enum SettingsCommand {
+    /// Read all settings, or one of telemetry, auto_update, realtime.
+    Get { key: Option<String> },
+    /// Toggle telemetry, auto_update, or realtime. Example: settings set telemetry --off.
+    Set {
+        key: String,
+        #[arg(long, conflicts_with = "off", required_unless_present = "off")]
+        on: bool,
+        #[arg(long, conflicts_with = "on", required_unless_present = "on")]
+        off: bool,
+    },
+}
 #[derive(Parser)]
 #[command(
     name = "si",
@@ -118,6 +170,11 @@ struct SiCli {
 }
 #[derive(Subcommand)]
 enum SiCommand {
+    /// Set up an IAM application; alias for `si auth setup APP`.
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Authenticate IAM applications without exposing the Silicon token.
     Auth {
         #[command(subcommand)]
@@ -133,6 +190,11 @@ enum SiCommand {
         #[command(subcommand)]
         command: SessionCommand,
     },
+}
+#[derive(Subcommand)]
+enum SetupCommand {
+    /// Authenticate an IAM app ID without exposing the Silicon token.
+    Auth { app: String },
 }
 #[derive(Subcommand)]
 enum AuthCommand {
@@ -229,6 +291,18 @@ enum SessionCommand {
 pub fn silicon() -> Result<()> {
     let cli = SiliconCli::parse();
     match cli.command.unwrap_or(SiliconCommand::Ls { pattern: None }) {
+        SiliconCommand::Iam => print_json(
+            &json!({"app_id":crate::realtime::APP_ID,"protocol":1,"backend":crate::realtime::BACKEND}),
+        )?,
+        SiliconCommand::Login { token_or_status } => print_json(&if token_or_status == "status" {
+            crate::realtime_cli::login_status()?
+        } else {
+            crate::realtime_cli::login(&token_or_status)?
+        })?,
+        SiliconCommand::Logout => print_json(&crate::realtime_cli::logout()?)?,
+        SiliconCommand::Watch { silicon, org } => {
+            crate::realtime_cli::watch(&silicon, org.as_deref())?
+        }
         SiliconCommand::Compile { yaml } => {
             let cfg = server::compile(yaml)?;
             if cli.json {
@@ -247,6 +321,14 @@ pub fn silicon() -> Result<()> {
                 print_json(&value)?;
             } else {
                 warnings(&value["warnings"]);
+                for line in value["progress"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    println!("{line}");
+                }
                 println!(
                     "connected {} at http://{}",
                     field(&value["connection"], "id")?,
@@ -352,6 +434,70 @@ pub fn silicon() -> Result<()> {
                 println!("opened Silicon dashboard");
             }
         }
+        SiliconCommand::Install { app_id } => print_json(&crate::apps::install(&app_id)?)?,
+        SiliconCommand::Uninstall { app_id } => print_json(&crate::apps::uninstall(&app_id)?)?,
+        SiliconCommand::Settings { command } => {
+            let value = match command {
+                Some(SettingsCommand::Set { key, on, .. }) => {
+                    if let Ok(daemon) = server::daemon(false) {
+                        server::call(&daemon, "settings-set", json!({"key":key,"enabled":on}))?
+                    } else {
+                        json!(crate::settings::set(&key, on)?)
+                    }
+                }
+                Some(SettingsCommand::Get { key: Some(key) }) => json!(crate::settings::load()?)
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("unknown setting {key:?}; use silicon settings"))?,
+                _ => json!(crate::settings::load()?),
+            };
+            print_json(&value)?;
+        }
+        SiliconCommand::Ping { silicon } => {
+            public_action("silicon-ping", &silicon, json!({}), true)?
+        }
+        SiliconCommand::Config { silicon } => {
+            public_action("configuration", &silicon, json!({}), true)?
+        }
+        SiliconCommand::Info => {
+            print_json(&json!({"version":env!("CARGO_PKG_VERSION"),"protocol":1,
+            "source":"https://github.com/teamofsilicons/silicon-stemcell",
+            "docs":"https://docs.teamofsilicons.com", "rust_package":"silicon",
+            "dependencies":["silicon-omni","iam","honeycomb","space-station","caddy"],
+            "bugs":"https://github.com/teamofsilicons/silicon-stemcell/issues"}))?
+        }
+        SiliconCommand::BugReport {
+            title,
+            body,
+            pr,
+            dry_run,
+        } => {
+            let body = format!(
+                "{body}\n\nSilicon version: {}{}",
+                env!("CARGO_PKG_VERSION"),
+                pr.map(|p| format!("\nFix PR: {p}")).unwrap_or_default()
+            );
+            if dry_run {
+                print_json(&json!({"title":title,"body":body}))?;
+            } else {
+                let status = std::process::Command::new("gh")
+                    .args([
+                        "issue",
+                        "create",
+                        "--repo",
+                        "teamofsilicons/silicon-stemcell",
+                        "--title",
+                        &title,
+                        "--body",
+                        &body,
+                    ])
+                    .status()
+                    .context("GitHub CLI required; install gh and run gh auth login")?;
+                if !status.success() {
+                    bail!("GitHub rejected the bug report ({status}); check gh auth status");
+                }
+            }
+        }
         SiliconCommand::Send { silicon, send } => {
             public_action("send", &silicon, send.value(), cli.json)?
         }
@@ -392,6 +538,9 @@ pub fn si() -> Result<()> {
         return Ok(());
     };
     let (action, args) = match command {
+        SiCommand::Setup {
+            command: SetupCommand::Auth { app },
+        } => ("auth-setup", json!({"app":app})),
         SiCommand::Auth {
             command: AuthCommand::Setup { app },
         } => ("auth-setup", json!({"app":app})),

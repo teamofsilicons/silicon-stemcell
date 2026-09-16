@@ -35,7 +35,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, io, os, pathlib, platform, subprocess, tarfile, tempfile
           installer = pathlib.Path('install.sh').resolve()
-          commands = 'silicon si omnid silicon-omni omni so caddy iam dm briefcase waveform commit remind hook'.split()
+          commands = 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook'.split()
           binaries = commands + ['commit-native', 'remind-native']
           notices = ['LICENSE'] + ['LICENSES/' + p.name for p in sorted(pathlib.Path('LICENSES').iterdir()) if p.is_file()]
           targets = {('Darwin', 'arm64'): 'aarch64-apple-darwin', ('Linux', 'x86_64'): 'x86_64-unknown-linux-gnu'}
@@ -51,7 +51,7 @@ jobs:
                           body = caddy_body if name == 'caddy' and caddy_body else b'#!/bin/sh\necho test-binary\n'
                           entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
                           archive.addfile(entry, io.BytesIO(body))
-                      body = b'v3.5.1\n'
+                      body = b'v3.6.0\n'
                       entry = tarfile.TarInfo('VERSION'); entry.size = len(body)
                       archive.addfile(entry, io.BytesIO(body))
                       body = installer.read_bytes()
@@ -108,6 +108,8 @@ jobs:
               (downloads / 'SHA256SUMS').write_text(f'{"0" * 64}  {asset}\n')
               install(False); assert current.readlink() == old
               bundle('hook'); install(False); assert current.readlink() == old
+              bundle('honeycomb'); install(False); assert current.readlink() == old
+              bundle('spacestation'); install(False); assert current.readlink() == old
               bundle('commit-native'); install(False); assert current.readlink() == old
               bundle('LICENSE'); install(False); assert current.readlink() == old
               bundle(); install(True); assert current.readlink() != old
@@ -123,6 +125,24 @@ jobs:
                   path = dependencies / name; path.write_text('#!/bin/sh\nexit 0\n'); path.chmod(0o755)
               for name in ['commit', 'remind']:
                   (dependencies / name).write_text('#!/usr/bin/env python3\nimport json,os,sys\nprint(json.dumps({"args":sys.argv[1:],"api":os.environ.get("COMMIT_API_URL")}))\n')
+              (dependencies / 'honeycomb').write_text('''#!/usr/bin/env python3
+          import json, os, pathlib, sys
+          args = sys.argv[1:]
+          home = pathlib.Path(os.environ.get('SILICON_HOME', '.'))
+          if args == ['--version']: print('honeycomb 0.2.0')
+          elif args == ['config', 'set', 'auto_update', 'false', '--json']:
+              assert home.name == 'honeycomb-home'
+              print('{"saved":true}')
+          else:
+              assert args == ['install', 'tos>spacestation', '--version', '0.1.3', '--alias', 'spacestation=silicon-bundled-spacestation', '--json']
+              if os.environ.get('MOCK_HONEYCOMB_FAIL') == '1': sys.exit(1)
+              package = home / '.honeycomb/dir/contexts/fixture/packages/spacestation'
+              package.parent.mkdir(parents=True, exist_ok=True)
+              package.write_text('#!/bin/sh\\necho spacestation-0.1.3\\n'); package.chmod(0o755)
+              launcher = package.parent.parent / 'bin/silicon-bundled-spacestation'
+              launcher.parent.mkdir(parents=True, exist_ok=True); launcher.symlink_to(package)
+              print(json.dumps({'status':'installed','bin_directory':str(launcher.parent)}))
+          ''')
               cargo = mocks / 'cargo'
               cargo.write_text('''#!/usr/bin/env python3
           import pathlib, sys
@@ -144,6 +164,12 @@ jobs:
               cargo.chmod(0o755)
               env.update(SILICON_SOURCE_DIR=str(source), SILICON_DEPENDENCY_BIN_DIR=str(dependencies))
               install(True)
+              assert (current / 'bin/spacestation').read_text() == '#!/bin/sh\necho spacestation-0.1.3\n'
+              assert not (current / 'bin/spacestation').is_symlink()
+              assert not (current / '.honeycomb').exists()
+              old = current.readlink()
+              env['MOCK_HONEYCOMB_FAIL'] = '1'; install(False); assert current.readlink() == old
+              env.pop('MOCK_HONEYCOMB_FAIL')
               import json
               app_home = root / 'wrapper home'; app_home.mkdir()
               env['SILICON_HOME'] = str(app_home); env.pop('COMMIT_API_URL', None)
@@ -217,3 +243,10 @@ jobs:
                   assert profile.read_text() == text
           print('installer checks passed')
           PY
+      - name: Check hosted realtime service
+        run: |
+          cargo fmt --manifest-path backend/Cargo.toml --all -- --check
+          cargo test --manifest-path backend/Cargo.toml --locked
+          cargo clippy --manifest-path backend/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Check documentation telemetry gateway
+        run: node --test tests/telemetry.test.cjs

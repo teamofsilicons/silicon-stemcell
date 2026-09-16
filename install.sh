@@ -7,7 +7,7 @@ set -eu
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
 
-version=${SILICON_VERSION:-v3.5.1}
+version=${SILICON_VERSION:-v3.6.0}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -17,9 +17,9 @@ git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
 omni_rev=d52f5416cd33b363554d2300b5603dc0b6c43545
 commit_rev=3fe18128282bf65c1f62595ed01e65ec467dba28
-commands='silicon si omnid silicon-omni omni so caddy iam dm briefcase waveform commit remind hook'
+commands='silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook'
 binaries="$commands commit-native remind-native"
-notices='LICENSE LICENSES/README.md LICENSES/iam-LICENSE.txt LICENSES/dm-NOTICE.txt LICENSES/briefcase-LICENSE.txt LICENSES/waveform-LICENSE.txt LICENSES/commit-NOTICE.txt LICENSES/remind-LICENSE.txt LICENSES/hook-NOTICE.txt LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'
+notices='LICENSE LICENSES/README.md LICENSES/iam-LICENSE.txt LICENSES/dm-NOTICE.txt LICENSES/briefcase-LICENSE.txt LICENSES/waveform-LICENSE.txt LICENSES/commit-NOTICE.txt LICENSES/remind-LICENSE.txt LICENSES/hook-NOTICE.txt LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt LICENSES/honeycomb-LICENSE.txt LICENSES/spacestation-LICENSE.txt'
 
 case "$version" in ''|*[!A-Za-z0-9._-]*) fail 'SILICON_VERSION must be a release tag, without slashes' ;; esac
 case "$repository" in ''|*[!A-Za-z0-9._/-]*) fail 'invalid SILICON_REPOSITORY' ;; esac
@@ -31,10 +31,10 @@ fi
 
 system=$(uname -s)
 case "$system/$(uname -m)" in
-    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64 ;;
-    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64 ;;
-    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64 ;;
-    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64 ;;
+    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64; honeycomb_target=macos-aarch64 ;;
+    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64; honeycomb_target=macos-x86_64 ;;
+    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64; honeycomb_target=linux-x86_64 ;;
+    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64; honeycomb_target=linux-aarch64 ;;
     *) fail 'supported systems are macOS and Linux on x86-64 or ARM64' ;;
 esac
 
@@ -122,6 +122,31 @@ install_crate() {
     fi
 }
 
+install_honeycomb_dependencies() {
+    if ! copy_dependency honeycomb; then
+        honeycomb_asset="honeycomb-$honeycomb_target.tar.gz"
+        honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/download/v0.2.0
+        say "downloading Honeycomb 0.2.0 for $honeycomb_target"
+        download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz" || fail 'could not download Honeycomb 0.2.0'
+        download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256" || fail 'could not download Honeycomb checksum'
+        verify 256 "$stage/honeycomb.sha256" "$honeycomb_asset" "$stage/honeycomb.tar.gz"
+        tar -xOzf "$stage/honeycomb.tar.gz" honeycomb > "$stage/payload/bin/honeycomb" || fail 'Honeycomb release has no executable'
+        chmod 755 "$stage/payload/bin/honeycomb"
+    fi
+    # Anonymous public package installation. Never borrow the user's IAM/Honeycomb session.
+    honeycomb_home="$stage/honeycomb-home"
+    mkdir -p "$honeycomb_home"
+    SILICON_HOME="$honeycomb_home" HONEYCOMB_API_URL=https://backend.honeycomb.teamofsilicons.com "$stage/payload/bin/honeycomb" config set auto_update false --json >/dev/null || fail 'could not configure isolated Honeycomb installer'
+    say 'installing Space Station 0.1.3 through Honeycomb'
+    SILICON_HOME="$honeycomb_home" HONEYCOMB_API_URL=https://backend.honeycomb.teamofsilicons.com "$stage/payload/bin/honeycomb" install 'tos>spacestation' --version 0.1.3 --alias spacestation=silicon-bundled-spacestation --json || fail 'Honeycomb could not install the public Space Station package'
+    # The published package is one self-contained native executable. Copy its bytes,
+    # never its absolute Honeycomb launcher, into the relocatable release payload.
+    set -- "$honeycomb_home"/.honeycomb/dir/contexts/*/bin/silicon-bundled-spacestation
+    [ "$#" -eq 1 ] && [ -x "$1" ] || fail 'Honeycomb did not install exactly one Space Station launcher'
+    cp -L "$1" "$stage/payload/bin/spacestation" || fail 'could not copy Honeycomb Space Station executable'
+    "$stage/payload/bin/spacestation" --version || fail 'Space Station binary cannot run on this system'
+}
+
 wrap_managed_apps() {
     for app in commit remind; do
         mv "$stage/payload/bin/$app" "$stage/payload/bin/$app-native"
@@ -206,7 +231,8 @@ if [ -n "$source_dir" ]; then
                 fail "required Omni binary $binary could not be built at $omni_rev"
         fi
     done
-    install_crate iam silicon-iam-cli 1.4.1
+    install_crate iam silicon-iam-cli 1.9.0
+    install_honeycomb_dependencies
     install_crate dm silicon-dm-cli 0.3.0
     install_crate briefcase briefcase-cli 0.2.4
     install_crate waveform waveform-cli 0.1.0
@@ -263,6 +289,8 @@ for notice in $notices; do
 done
 "$stage/payload/bin/silicon" --version >/dev/null || fail 'interpreter binary cannot run on this system'
 "$stage/payload/bin/omnid" --version >/dev/null || fail 'Omni daemon binary cannot run on this system'
+"$stage/payload/bin/honeycomb" --version >/dev/null || fail 'Honeycomb binary cannot run on this system'
+"$stage/payload/bin/spacestation" --version >/dev/null || fail 'Space Station binary cannot run on this system'
 printf '%s\n' "$prefix" > "$stage/payload/PREFIX"
 configure_caddy_port
 

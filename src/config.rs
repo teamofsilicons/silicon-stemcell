@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as Json};
 use serde_yaml::{Mapping, Number, Value as Yaml};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fmt, fs,
     path::{Path, PathBuf},
 };
@@ -22,9 +22,47 @@ pub struct Silicon {
     #[serde(default)]
     pub inference_providers: Yaml,
     #[serde(default)]
+    pub setup: Vec<String>,
+    #[serde(default)]
+    pub apps: Vec<String>,
+    #[serde(default)]
+    pub webhooks: Vec<String>,
+    pub space_station: Option<SpaceStation>,
+    #[serde(default)]
     pub login: Vec<String>,
     #[serde(default)]
     pub webhook: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpaceStation {
+    pub table_name: String,
+    pub table_key: String,
+}
+
+impl Silicon {
+    pub fn managed_apps(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.apps
+            .iter()
+            .chain(&self.login)
+            .chain(&self.webhooks)
+            .chain(&self.webhook)
+            .filter(|app| seen.insert(*app))
+            .cloned()
+            .collect()
+    }
+
+    pub fn hooked_apps(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.webhooks
+            .iter()
+            .chain(&self.webhook)
+            .filter(|app| seen.insert(*app))
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -53,6 +91,8 @@ pub struct Config {
     pub home: PathBuf,
     #[serde(skip)]
     pub warnings: Vec<String>,
+    #[serde(skip)]
+    pub generation: uuid::Uuid,
 }
 
 impl Config {
@@ -94,7 +134,20 @@ impl Config {
         evaluate_provider_values(&mut document["silicon"]["inference_providers"], &env, &home)?;
         env["silicon"]["inference_providers"] =
             serde_json::to_value(&document["silicon"]["inference_providers"])?;
-        for key in ["login", "webhook"] {
+        if document["silicon"]["space_station"].is_mapping() {
+            for key in ["table_name", "table_key"] {
+                evaluate_field(
+                    &mut document["silicon"]["space_station"],
+                    key,
+                    &env,
+                    &home,
+                    "interpreter",
+                )?;
+            }
+            env["silicon"]["space_station"] =
+                serde_json::to_value(&document["silicon"]["space_station"])?;
+        }
+        for key in ["apps", "webhooks", "login", "webhook"] {
             if let Some(commands) = document["silicon"][key].as_sequence_mut() {
                 for (index, command) in commands.iter_mut().enumerate() {
                     *command = Yaml::String(
@@ -160,6 +213,44 @@ impl Config {
             .parse::<Tz>()
             .context("silicon.timezone must be an IANA timezone")?;
         validate_providers(&self.silicon.inference_providers)?;
+        for (name, apps) in [
+            ("apps", &self.silicon.apps),
+            ("webhooks", &self.silicon.webhooks),
+        ] {
+            let mut seen = HashSet::new();
+            for app in apps {
+                if !app.split_once('>').is_some_and(|(org, app)| {
+                    [org, app].iter().all(|part| {
+                        (1..=64).contains(&part.len())
+                            && part.as_bytes()[0].is_ascii_alphanumeric()
+                            && part
+                                .bytes()
+                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    })
+                }) {
+                    bail!("silicon.{name} entries must be IAM app IDs, e.g. tos>dm");
+                }
+                if !seen.insert(app) {
+                    bail!("silicon.{name} repeats {app}");
+                }
+            }
+        }
+        for source in &self.silicon.setup {
+            if source.trim().trim_start_matches('!').trim().is_empty() || source.contains('\0') {
+                bail!("silicon.setup entries must be nonempty shell commands without NUL bytes");
+            }
+        }
+        if let Some(station) = &self.silicon.space_station {
+            for (name, value) in [
+                ("table_name", &station.table_name),
+                ("table_key", &station.table_key),
+            ] {
+                required(
+                    &Some(value.clone()),
+                    &format!("silicon.space_station.{name}"),
+                )?;
+            }
+        }
         for (name, commands) in [
             ("login", &self.silicon.login),
             ("webhook", &self.silicon.webhook),
@@ -250,11 +341,46 @@ impl Config {
 }
 
 fn validate_expressions(document: &Yaml) -> Result<()> {
+    fields(document, "config", &["silicon", "isi", "access", "flow"])?;
     for (key, value) in document.as_mapping().unwrap() {
         crate::eval::validate(key)?;
         if key.as_str() == Some("silicon") {
+            fields(
+                value,
+                "silicon",
+                &[
+                    "id",
+                    "token",
+                    "timezone",
+                    "SILICON_HOME",
+                    "inference_providers",
+                    "setup",
+                    "apps",
+                    "webhooks",
+                    "space_station",
+                    "login",
+                    "webhook",
+                ],
+            )?;
+            if !value["space_station"].is_null() {
+                fields(
+                    &value["space_station"],
+                    "silicon.space_station",
+                    &["table_name", "table_key"],
+                )?;
+            }
             let mut silicon = value.clone();
-            for key in ["login", "webhook"] {
+            if let Some(token) = silicon.as_mapping_mut().and_then(|map| map.remove("token")) {
+                crate::eval::validate_secret(&token).context("silicon.token")?;
+            }
+            if let Some(table_key) = silicon["space_station"]
+                .as_mapping_mut()
+                .and_then(|map| map.remove("table_key"))
+            {
+                crate::eval::validate_secret(&table_key)
+                    .context("silicon.space_station.table_key")?;
+            }
+            for key in ["setup", "apps", "webhooks", "login", "webhook"] {
                 if let Some(commands) = silicon
                     .as_mapping_mut()
                     .and_then(|map| map.remove(Yaml::String(key.into())))
@@ -266,8 +392,12 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                         let command = command
                             .as_str()
                             .ok_or_else(|| anyhow!("silicon.{key}[{index}] must be a string"))?;
-                        crate::eval::validate_app_command(command)
-                            .with_context(|| format!("silicon.{key}[{index}]"))?;
+                        (if key == "setup" {
+                            crate::eval::validate_template(command)
+                        } else {
+                            crate::eval::validate_app_command(command)
+                        })
+                        .with_context(|| format!("silicon.{key}[{index}]"))?;
                     }
                 }
             }
@@ -282,8 +412,12 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
 fn evaluate_field(object: &mut Yaml, key: &str, env: &Json, home: &Path, isi: &str) -> Result<()> {
     if let Some(source) = object[key].as_str() {
         object[key] = Yaml::String(
-            crate::eval::evaluate(source, env, home, isi)
-                .with_context(|| format!("evaluate {isi}.{key}"))?,
+            (if matches!(key, "token" | "table_key") {
+                crate::eval::evaluate_secret(source, env, home, isi)
+            } else {
+                crate::eval::evaluate(source, env, home, isi)
+            })
+            .with_context(|| format!("evaluate {isi}.{key}"))?,
         );
     }
     Ok(())
@@ -909,7 +1043,11 @@ mod tests {
         let mut warnings = Vec::new();
         let config = parse_document(source, &mut warnings).unwrap();
         assert_eq!(config["silicon"]["SILICON_HOME"].as_str(), Some("! pwd"));
-        assert_eq!(config["silicon"]["login"][0].as_str(), Some("! dm"));
+        assert_eq!(config["silicon"]["apps"][0].as_str(), Some("tos>dm"));
+        assert_eq!(
+            config["silicon"]["setup"][0].as_str(),
+            Some("! ./install_python.sh")
+        );
         assert_eq!(
             config["isi"]["intuit"]["dna"]["assemble"][2].as_str(),
             Some("! ./contacts.sh !>> \"You have no contacts\"")
@@ -1059,5 +1197,181 @@ mod tests {
             ]
         );
         assert!(!temp.path().join("app-was-invoked").exists());
+    }
+
+    #[test]
+    fn setup_is_deferred_and_app_ids_and_telemetry_are_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("silicon.yaml");
+        let source = r#"silicon:
+  id: test:org
+  token: token
+  timezone: UTC
+  SILICON_HOME: ! pwd
+  inference_providers: [all-available-providers]
+  setup:
+    - ! touch must-not-exist; printf '{silicon.id}'
+    - printf 'plain shell command'
+  apps: ['tos>{"dm"}', tos>hook]
+  webhooks: [tos>hook, tos>remind]
+  login: [legacy-app]
+  webhook: [legacy-app]
+  space_station:
+    table_name: 'events-{silicon.id}'
+    table_key: test-key
+isi:
+  worker:
+    model: code
+    primary_send_mode: global
+    session_type: persistent
+    dna: {assemble: [], next_refresh: 30min}
+access: {worker: []}
+flow: []
+"#;
+        fs::write(&path, source).unwrap();
+        for _ in 0..2 {
+            let cfg = Config::load(&path).unwrap();
+            assert_eq!(
+                cfg.silicon.setup[0],
+                "! touch must-not-exist; printf '{silicon.id}'"
+            );
+            assert_eq!(cfg.silicon.setup[1], "printf 'plain shell command'");
+            assert_eq!(cfg.silicon.apps, ["tos>dm", "tos>hook"]);
+            assert_eq!(
+                cfg.silicon.managed_apps(),
+                ["tos>dm", "tos>hook", "legacy-app", "tos>remind"]
+            );
+            assert_eq!(
+                cfg.silicon.hooked_apps(),
+                ["tos>hook", "tos>remind", "legacy-app"]
+            );
+            let station = cfg.silicon.space_station.unwrap();
+            assert_eq!(station.table_name, "events-test:org");
+            assert_eq!(station.table_key, "test-key");
+            assert!(!temp.path().join("must-not-exist").exists());
+            assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        }
+        for invalid in [
+            "tos>dm>bad",
+            "tos>DM",
+            "tos>bad_app",
+            "tos>bad.app",
+            "tos>-dm",
+            "tos>",
+            "dm",
+            "'! touch must-not-exist'",
+            "tos>dm, tos>dm",
+        ] {
+            fs::write(&path, source.replace("'tos>{\"dm\"}', tos>hook", invalid)).unwrap();
+            assert!(
+                Config::load(&path).is_err(),
+                "accepted invalid app {invalid}"
+            );
+            assert!(!temp.path().join("must-not-exist").exists());
+        }
+        for invalid in [
+            source.replace("table_key: test-key", "table_key: ''"),
+            source.replace("table_key: test-key", "table_key: ..."),
+            source.replace("table_key: test-key", "table_key: test-key\n    unknown: nope"),
+            source.replace("table_key: test-key", "table_key: test-key\n    table_key: duplicate"),
+            source.replace("apps: ['tos>{\"dm\"}', tos>hook]", "apps: [12]"),
+            source.replace("setup:\n    - ! touch must-not-exist; printf '{silicon.id}'\n    - printf 'plain shell command'", "setup: [true]"),
+            source.replace("printf 'plain shell command'", "!"),
+        ] {
+            fs::write(&path, invalid).unwrap();
+            assert!(Config::load(&path).is_err());
+        }
+        // Reject schema and all deferred expression errors before compile-time Bash.
+        for invalid in [
+            source.replace("  apps:", "  typo:"),
+            source.replace("printf 'plain shell command'", "! printf '{invalid + }'"),
+        ] {
+            fs::write(
+                &path,
+                invalid.replace(
+                    "SILICON_HOME: ! pwd",
+                    "SILICON_HOME: ! touch must-not-exist; pwd",
+                ),
+            )
+            .unwrap();
+            assert!(Config::load(&path).is_err());
+            assert!(!temp.path().join("must-not-exist").exists());
+        }
+    }
+
+    #[test]
+    fn compilation_never_logs_credential_expressions_or_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("silicon.yaml");
+        let source = r#"silicon:
+  id: test:org
+  token: "! printf compile-private-token"
+  timezone: UTC
+  SILICON_HOME: ! pwd
+  inference_providers: [all-available-providers]
+  space_station:
+    table_name: events
+    table_key: "! printf compile-private-key"
+isi:
+  worker:
+    model: code
+    primary_send_mode: global
+    session_type: persistent
+    dna: {assemble: [], next_refresh: 30min}
+access: {worker: []}
+flow: []
+"#;
+        fs::write(&path, source).unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(
+            config.silicon.token.as_deref(),
+            Some("compile-private-token")
+        );
+        assert_eq!(
+            config.silicon.space_station.unwrap().table_key,
+            "compile-private-key"
+        );
+        assert!(config.generation.is_nil());
+        for invalid in [
+            source.replace(
+                "printf compile-private-token",
+                "printf compile-private-token >&2; exit 1",
+            ),
+            source.replace(
+                "printf compile-private-key",
+                "printf compile-private-key >&2; exit 1",
+            ),
+            source.replace(
+                "! printf compile-private-token",
+                "{missing['compile-private-token']}",
+            ),
+            source.replace(
+                "! printf compile-private-key",
+                "{missing['compile-private-key']}",
+            ),
+            source.replace(
+                "! printf compile-private-token",
+                "{'compile-private-token' + }",
+            ),
+            source.replace("! printf compile-private-key", "{'compile-private-key' + }"),
+            source.replace(
+                "model: code",
+                "model: \"! printf '{silicon.token}' >&2; exit 1\"",
+            ),
+            source.replace(
+                "model: code",
+                "model: \"! printf '{silicon.space_station.table_key}' >&2; exit 1\"",
+            ),
+        ] {
+            fs::write(&path, invalid).unwrap();
+            let error = format!("{:#}", Config::load(&path).unwrap_err());
+            assert!(!error.contains("compile-private-token"), "{error}");
+            assert!(!error.contains("compile-private-key"), "{error}");
+        }
+        let logs = fs::read_to_string(temp.path().join(".silicon/silicon.log")).unwrap();
+        assert!(!logs.contains("compile-private-token"), "{logs}");
+        assert!(!logs.contains("compile-private-key"), "{logs}");
+        assert!(logs.contains("running: [compile-time expression]"));
+        assert!(logs.contains("running: [credential expression]"));
     }
 }

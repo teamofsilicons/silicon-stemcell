@@ -1,6 +1,15 @@
-# Silicon 3.5.1
+# Silicon 3.6.0
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
+
+## Start here
+
+1. [Install Silicon and its dependencies](#installation) with the one-line command below.
+2. [Create your first Silicon](#first-silicon) in a new directory, with your own IAM identity and token.
+3. Run `silicon compile PATH`, then `silicon connect PATH`. Connection output shows setup results, app installation and authentication, and webhook registration.
+4. Use `silicon web` for the dashboard or `silicon --help` for the command tree.
+
+For configuration details, read the [field reference](#configuration-reference). To integrate an application, follow the [IAM contract](#iam-application-contract). To build clients, use the [HTTP interface](#local-dashboard-and-http-interface) and [organization live updates](#organization-live-updates). Source and contribution details are in [development and compatibility](#development-and-compatibility).
 
 ## What runs on your machine
 
@@ -18,15 +27,15 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.5.1` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.6.0` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.1/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.0/install.sh | sh
 ```
 
-Find the four platform bundles and their checksums on the [v3.5.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.1). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the four platform bundles and their checksums on the [v3.6.0 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.0). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
-**3.5.1** fixes relative-path disconnection, stale work crossing a disconnect/reconnect, and missing titles on new session-mode ephemeral work. Its bundle also includes Commit's merged logout fix. The complete bundles passed [native checks on all four supported targets](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/34453877850).
+**3.6.0** adds setup scripts, Honeycomb app installation, canonical IAM IDs, DNA source attribution, telemetry controls, and read-only organization live updates. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -39,7 +48,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.5.1/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.0/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -49,10 +58,12 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 3.5.1 |
+| `silicon`, `si` | Interpreter and internal CLI, 3.6.0 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
-| `iam` | `silicon-iam-cli` 1.4.1 |
+| `iam` | `silicon-iam-cli` 1.9.0 |
+| `honeycomb` | Honeycomb 0.2.0 |
+| `spacestation` | Space Station 0.1.3 from Honeycomb package `tos>spacestation` |
 | `dm` | `silicon-dm-cli` 0.3.0 |
 | `briefcase` | `briefcase-cli` 0.2.4 |
 | `waveform` | `waveform-cli` 0.1.0 |
@@ -61,6 +72,8 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | `hook` | `silicon-hook-cli` 0.2.0 |
 
 The Commit and Remind wrappers suppress their independent update checks. Their underlying binaries are shipped as `commit-native` and `remind-native` inside the release. For a fresh Commit home with no explicit backend override or existing saved configuration, the wrapper selects `https://backend.commit.teamofsilicons.com`. It preserves an existing configuration or explicit `COMMIT_API_URL`.
+
+Release construction obtains Space Station through the real Honeycomb package installer in an isolated anonymous home. It copies the verified native executable into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station `windows run` and `windows tool` features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.
 
 The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.
 
@@ -78,13 +91,13 @@ From this repository's root:
 SILICON_SOURCE_DIR="$PWD" sh install.sh
 ```
 
-Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and every required application, and downloads verified Caddy. Caddy's upstream checksum file uses SHA-512.
+Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and required Cargo applications, downloads verified Caddy and Honeycomb, and installs Space Station through Honeycomb. Caddy's upstream checksum file uses SHA-512.
 
 `SILICON_GIT_REV` is an alternative to `SILICON_SOURCE_DIR`: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.
 
-For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy `commit-native` as `commit` and `remind-native` as `remind` into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. `CARGO_TARGET_DIR` can reuse a compilation directory.
+For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy `commit-native` as `commit` and `remind-native` as `remind` into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. Space Station is still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
-The 3.5.1 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
+The 3.6.0 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -116,6 +129,10 @@ silicon:
   SILICON_HOME: ! pwd
   inference_providers:
     - all-available-providers
+  setup:
+    - ! mkdir -p workspace
+  apps: []
+  webhooks: []
 
 isi:
   assistant:
@@ -136,7 +153,7 @@ flow:
       message: '{request.data.message}'
 ```
 
-No application login is configured in this example. Add application commands when the corresponding Silicon identity and application permissions are ready. `token` remains required even if the first test does not use an IAM application.
+Setup creates a workspace directory on each connection; `mkdir -p` is safe to repeat. No application login is configured in this example. Add application IDs under `apps` and `webhooks` when the corresponding Silicon identity and application permissions are ready. Add the optional `space_station` fields shown below only after creating your table and obtaining its key. `token` remains required even if the first test does not use an IAM application.
 
 ```sh
 silicon compile /absolute/path/to/silicon.yaml
@@ -147,9 +164,9 @@ silicon show assistant:my-org assistant
 silicon web
 ```
 
-`compile` validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including `SILICON_HOME`, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. Provider startup, application authentication, and runtime request values have their own checks later.
+`compile` validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including `SILICON_HOME`, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. `setup`, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.
 
-`connect` starts the interpreter if necessary, compiles the file, checks managed application authentication, adds routing, registers configured webhooks, and records the connection. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
+`connect` starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, registers configured webhooks, and records the connection. Its output identifies the progress of each stage. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
 
 The local identity is the canonical YAML path. The global identity is `silicon.id`. Moving a file changes its local identity. Editing a connected file does not live-reload it. Disconnect and reconnect to apply changes; restart restoration also recompiles the saved path. The interpreter never rewrites the file for you.
 
@@ -179,8 +196,12 @@ The four required top-level keys are `silicon`, `isi`, `access`, and `flow`. Unk
 | `timezone` | Required IANA timezone, such as `UTC`, `Asia/Kolkata`, or `America/Los_Angeles`. |
 | `SILICON_HOME` | Required existing directory, or an expression producing one. Relative paths resolve against the YAML file's directory. The final path is canonicalized. |
 | `inference_providers` | Required nonempty list of provider names, `all-available-providers`, exclusions, or nested lists. |
-| `login` | Optional list of deferred IAM application commands. |
-| `webhook` | Optional list of application commands that support `webhook URL` and `unhook`. |
+| `setup` | Optional ordered list of shell commands. Runs once during each connection attempt; compilation validates expressions without running these commands. |
+| `apps` | Optional list of Honeycomb IAM application IDs, such as `tos>dm`. Installed when needed and authenticated for this Silicon. |
+| `webhooks` | Optional list of Honeycomb IAM application IDs that support `webhook URL` and `unhook`. These apps also join installation and authentication checks. |
+| `space_station` | Optional object with nonempty `table_name` and `table_key` for a user-owned telemetry destination. This destination remains enabled when TOS telemetry is turned off. |
+| `login` | Legacy list of deferred IAM application commands; retained for existing configurations. |
+| `webhook` | Legacy list of application commands supporting `webhook URL` and `unhook`. |
 
 `SILICON_HOME: ! pwd` runs `pwd` with the YAML's parent directory as its working directory. Once home is resolved, later compile-time commands and runtime scripts use that home. Compile-time fields are evaluated once per compilation, not on every incoming event.
 
@@ -193,7 +214,27 @@ inference_providers:
   - [claude-code-cli]
 ```
 
-A single `all-available-providers` entry uses Omni's native selection. Explicit names are checked against Omni's installed/authenticated providers when a session initializes. An empty final selection is an error. This version does not implement extra named groups such as `open-weight-models` unless Omni exposes that exact name as a provider.
+A single `all-available-providers` entry uses Omni's native selection. Explicit names are checked against Omni's installed/authenticated providers when a session initializes. An empty final selection is an error. Extra named groups such as `open-weight-models` are not expanded unless Omni exposes that exact name as a provider.
+
+Use canonical application IDs in new files:
+
+```yaml
+setup:
+  - ! mkdir -p workspace
+apps:
+  - tos>dm
+  - tos>briefcase
+webhooks:
+  - tos>dm
+  - tos>hook
+space_station:
+  table_name: my-silicon-events
+  table_key: REPLACE_WITH_YOUR_TABLE_KEY
+```
+
+Each application ID has exactly one `>` separating its organization and app. Each part is 1–64 lowercase ASCII letters, digits, or hyphens, beginning with a letter or digit. Duplicate IDs within one list are errors. An app may appear in both `apps` and `webhooks`; the interpreter combines the lists with the legacy fields without repeating the same entry.
+
+Setup commands run from `SILICON_HOME` with `ISI=interpreter`. A leading `!` is accepted; the first command may also be ordinary shell text. Each shell fallback must have its own `!`; a quoted fallback is literal text. CEL is evaluated before Bash. Command stdout and stderr are captured in the connection log after each command finishes. Setup is connection work, so reconnecting runs it again. Make commands safe to repeat. Setup does not run during `silicon compile`, before each message, or on every DNA refresh. An exhausted fallback chain aborts the connection; completed shell side effects are not rolled back.
 
 `login` and `webhook` contain executable names and arguments, not shell programs to run while compiling:
 
@@ -263,7 +304,18 @@ dna:
 
 `learn.sh` without `!` is a file to read. `! ./learn.sh` executes it. Quoted fallback text inside the scalar is literal prompt content; ordinary YAML quotes around a path are only YAML syntax.
 
-An exhausted DNA fallback is logged and that assembly entry is skipped. Other entries continue. The interpreter appends a small instruction footer identifying the current ISI, its home, allowed ISI targets and their addressing modes, and the relevant `si --help` entry points. Names outside that ISI's access list are not included in this footer.
+Each successful entry includes its original scalar text on one line, followed by the evaluated contents. Entries are separated by blank lines, so the ISI can see the source of its instructions:
+
+```text
+silicon.md
+Contents of silicon.md
+
+
+! ./contacts.sh !>> "No contacts are available."
+No contacts are available.
+```
+
+The original entry is preserved even when a later fallback supplies its contents. An exhausted DNA fallback is logged and that assembly entry is skipped. Other entries continue. The interpreter appends a small instruction footer identifying the current ISI, its home, allowed ISI targets and their addressing modes, and the relevant `si --help` entry points. Names outside that ISI's access list are not included in this footer.
 
 ### `access`
 
@@ -289,7 +341,7 @@ The runtime CEL environment contains:
 | Name | Value |
 | --- | --- |
 | `request` | The event JSON for this flow invocation. |
-| `silicon` | Compiled Silicon settings, with the Silicon token removed at runtime. |
+| `silicon` | Compiled Silicon settings, with the Silicon token and Space Station table key removed at runtime. |
 | `isi` | The configured ISI map. |
 | `access` | The configured access map. |
 | `var` | Variables created during this flow; starts empty for each event. |
@@ -415,9 +467,21 @@ silicon serve
 silicon serve --port 1810 --no-proxy
 silicon stop
 silicon update
+silicon install 'tos>dm'
+silicon uninstall 'tos>dm'
+silicon ping assistant:my-org
+silicon config assistant:my-org
+silicon settings get
+silicon info
 ```
 
 Without a command, `silicon` lists connections. `silicon list` is an alias for `silicon ls`. Quote globs so your shell does not expand them. `disconnect` without a target lists choices and prints the command to use; it does not disconnect everything.
+
+Quote Honeycomb IDs because `>` is a shell redirection operator. `install` and `uninstall` operate on Honeycomb-managed applications. `ping` checks the local interpreter's connection without prompting a model. `config` returns the connected configuration with credentials redacted. `info` returns version, protocol, source, documentation, and dependency details.
+
+Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Resolution first checks a matching installed CLI and verifies its `iam --json` app ID, then uses the interpreter's Honeycomb installation map, including renamed commands. Missing packages are installed through Honeycomb with isolated app authentication. Honeycomb keeps package and authentication state beneath `<home>/.silicon/packages`, with its own `auto_update` disabled so Silicon's bundle updater owns dependency versions. Personal Honeycomb settings and registries are not changed; a matching command already on `PATH` can still be reused after identity verification. Application login credentials remain under the original Silicon home. Installing an already available native command with the matching IAM app ID returns `already_available` without replacing it.
+
+Commands are exposed through owned links under `<home>/.silicon/bin`; the interpreter adds those to its command environment. `uninstall` removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured `apps`/`webhooks` entries before reconnecting if you do not want an application installed again.
 
 `serve` stays in the foreground and is useful with a process manager. `connect` normally starts it automatically. `--no-proxy` is a development mode with direct localhost access and no Caddy aliases. This release does not install a login item, launch agent, or systemd service. After a reboot, use `silicon serve` or `silicon connect` to start the interpreter again.
 
@@ -435,6 +499,7 @@ silicon end assistant:my-org worker.terminal --id build-17
 ### Internal commands
 
 ```sh
+si auth setup 'tos>dm'
 si auth setup dm
 si auth setup 'hook --profile work'
 si auth remove dm
@@ -504,7 +569,7 @@ Bare `--archived` selects the previous 72 hours. With explicit filters, the sear
 
 The interpreter owns orchestration of authentication. IAM issues short-lived application tokens. Each app exchanges and stores its own access/refresh tokens and maintains them afterward.
 
-Configured login apps are checked on connection, before a new ISI session initializes, and before heartbeats. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override an app still listed in `silicon.login`; that configured app can be authenticated again at the next boundary.
+Applications from `apps`, `webhooks`, and the legacy `login`/`webhook` fields are checked on connection, before a new ISI session initializes, and before heartbeats. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next boundary.
 
 The supported discovery contract is:
 
@@ -517,8 +582,8 @@ It must succeed and return a JSON object with a nonempty string `app_id`, for ex
 The interpreter probes status in this order:
 
 ```sh
-APP auth status --json
 APP login status --json
+APP auth status --json
 ```
 
 One must provide a boolean `authenticated`. A false state can be reported with a nonzero exit code. A true state must also have a successful exit status. Invalid JSON, an absent boolean, or a transport error must not masquerade as successful authentication.
@@ -529,11 +594,11 @@ When authentication is needed, Silicon invokes IAM with its own identity:
 iam --output json --org ORG silicon-login --sid LOCAL:ORG --stk SILICON_TOKEN --app-id APP_ID --grant-org ORG
 ```
 
-IAM must return `slt` and a positive `expires_in` of at most 120 seconds. Only IAM receives the long-lived Silicon credential. Depending on the working status contract, the interpreter then invokes exactly one of:
+For IAM versions that expose the flag, Silicon adds `--approve-scopes` after detecting support in local command help. IAM must return `slt` and a positive `expires_in` of at most 120 seconds. Only IAM receives the long-lived Silicon credential. Depending on the working status contract, the interpreter then invokes exactly one of:
 
 ```text
-APP auth token SLT
 APP login SLT
+APP auth token SLT
 ```
 
 It checks that the app reports `authenticated: true` afterward. It does not retry a different login spelling with the same potentially consumed one-use token. Captured token-bearing stdout/stderr is not forwarded to the Silicon log or exposed in the CLI result.
@@ -554,7 +619,7 @@ Separate Silicon homes isolate application state, but an application's local rel
 
 ### Webhook expectations
 
-An app listed in `webhook` must support:
+An app listed in `webhooks` or legacy `webhook` must support:
 
 ```text
 APP webhook http://LOCAL.ORG.localhost
@@ -564,6 +629,47 @@ APP unhook
 Registration happens after the Silicon route is added. A failed registration rolls back the connection and route as far as cleanup permits. Disconnect attempts every configured unhook and removes the Silicon and ISI capabilities even if one app reports an unhook error; it returns the cleanup error so the remaining app state can be investigated.
 
 Apps should deliver the required event shape as JSON and consider the request acknowledged only on a successful response. They own upstream signature verification, session renewal, transport/retry policy, and any app-local relay. The local interpreter does not independently verify each app's remote webhook signature or require the Silicon token on the loopback event endpoint.
+
+An application daemon should maintain one server websocket per machine and subscribe on that connection for all registered Silicons. `SILICON_HOME` scopes credentials and per-Silicon state; `ISI` is optional context for messages and diagnostics. Applications must work when `ISI` is absent. Registration and authentication are separate capabilities: expose webhook commands only when the app proactively delivers events.
+
+## Settings and telemetry
+
+Settings apply to the interpreter and are stored in `settings.json` beneath its state directory. All three settings default to enabled:
+
+```sh
+silicon settings get
+silicon settings get telemetry
+silicon settings set telemetry --off
+silicon settings set telemetry --on
+silicon settings set auto_update --off
+silicon settings set realtime --off
+```
+
+| Setting | Controls |
+| --- | --- |
+| `telemetry` | TOS-owned Space Station telemetry from this installation. |
+| `auto_update` | The interpreter's hourly stable-release check and automatic bundle activation. |
+| `realtime` | Publishing organization-readable live updates to the remote relay. |
+
+`SILICON_TELEMETRY=0` and `SILICON_AUTO_UPDATE=0` also disable their corresponding interpreter features. App CLIs may have their own telemetry and update settings; these are documented by each app's `--help`.
+
+TOS telemetry uses separate destinations for interpreter/CLI/daemon activity, Silicon runtime and session activity, the realtime backend, and the documentation frontend. Events include the source, operation, timestamp, version, Silicon identity, ISI context where applicable, and diagnostic context. Silicon inputs, flow logs, provider/session events, and tool or command information can be included. Telemetry records diagnostic activity; it does not replace durable session history or local logs. Space Station queues records durably. A short-lived CLI command waits at most 100 ms during flush and may exit with records still queued; the running interpreter's client drains that queue, so delivery need not be immediate.
+
+To also send one Silicon's activity to your own Space Station table, add:
+
+```yaml
+silicon:
+  # ...the other required fields...
+  space_station:
+    table_name: assistant-events
+    table_key: REPLACE_WITH_YOUR_TABLE_KEY
+```
+
+`table_key` authorizes ingestion; `table_name` identifies the configured destination. `silicon settings set telemetry --off` disables TOS telemetry and keeps this explicitly configured destination active. Remove `space_station` and reconnect to stop the user destination. The Space Station Rust client handles buffering, its local spool, delivery, and retries. When Space Station itself is a managed app, the interpreter supplies its required organization during login.
+
+The interpreter removes Silicon tokens and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events and logs. Compile-time Bash logs its start and exit status with the command body omitted, because runtime redaction is not yet registered. Credential expressions also omit their source and stderr from parser and evaluation errors. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.
+
+The documentation website has its own **Share documentation usage with TOS** checkbox in the footer. Its preference is saved in that browser's local storage and is independent of local interpreter settings. The page submits telemetry to its same-origin `/api/telemetry` endpoint; the destination credential stays on the server.
 
 ## Files, storage, and logs
 
@@ -575,9 +681,15 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 | Interpreter `connections.json` | Saved connection identities, YAML paths, home paths, and hosts. |
 | Interpreter `daemon.log` | Background interpreter stdout/stderr, including restoration/update failures. |
 | Interpreter `updates.log` | Bundle installer output for updates. |
+| Interpreter `settings.json` | Telemetry, automatic-update, and realtime publishing preferences. |
+| Interpreter `space-station/` | Space Station client state and durable telemetry spool. |
 | Interpreter `caddy/` | Owned Caddy configuration, logs, data, and storage. |
 | `<SILICON_HOME>/.silicon/silicon.log` | Append-only Silicon event, flow, send, runtime, error, and provider log. |
 | `.silicon/auth-apps.json` | Commands for configured/dynamically managed application authentication. |
+| `.silicon/bin/` | Owned command links for applications installed through Honeycomb. |
+| `.silicon/packages/` | Private Honeycomb package/authentication state, with independent Honeycomb updates disabled. |
+| `.silicon/realtime.json` | Private app tokens and refresh state for the realtime relay. |
+| `.silicon/realtime-reader.json` | Private login and refresh state for the read-only `silicon watch` client. |
 | `.silicon/sessions/active/<isi>/<UUID>.json` | Durable active persistent-session records. |
 | `.silicon/sessions/archived/<isi>/<UUID>.json` | Archive metadata. |
 | `.silicon/sessions/events/<UUID>.jsonl` | Persistent-session provider events. |
@@ -621,6 +733,73 @@ Requests require `Content-Type: application/json` and are limited to 16 MiB. Cro
 | 413 | Body over 16 MiB or a failed body read. |
 | 415 | Missing/incorrect JSON content type. |
 | 503 | Interpreter stopping or restarting. |
+
+## Organization live updates
+
+Silicon Realtime is a read-only relay at `https://realtime.teamofsilicons.com`, registered in IAM and Honeycomb as `tos>silicon-realtime`. It lets an authenticated member of the selected organization inspect an online Silicon's configuration and subscribe to its activity. It exposes no send, shell, settings, or session-write operation.
+
+The interpreter uses the Silicon's identity to obtain an app-scoped IAM token. It multiplexes all connected Silicons over one publisher websocket at `/v1/publish`, with independent authorization for every registration. Remote relay failures do not block local flows, sessions, or webhook acknowledgments. `silicon settings set realtime --off` stops publishing; TOS telemetry and realtime publishing have separate settings.
+
+### Sign in and watch from the CLI
+
+The installed `silicon` command also acts as the hosted service's IAM application:
+
+```sh
+silicon iam --json
+iam login --app-id 'tos>silicon-realtime' --grant-org ORG --approve-scopes --json
+silicon login SLT_FROM_IAM
+silicon login status --json
+silicon watch assistant:my-org --org my-org
+silicon logout
+```
+
+Use the `slt` returned by IAM for `silicon login`. `watch` receives read-only live updates; it cannot send instructions to the Silicon. The local `silicon config SID` and `silicon ping SID` commands still inspect the running local interpreter. The HTTPS API below supports remote configuration reads and application integrations.
+
+Reader credentials are stored privately in `$SILICON_HOME/.silicon/realtime-reader.json`, or under `$HOME` when `SILICON_HOME` is unset. They are bound to the relay address and IAM testing context. `login status` checks current authority with the service and refreshes expiring tokens. `logout` revokes the session before deleting credentials; failed revocation retains them for retry. `watch` prints one JSON event per line, refreshes credentials as needed, and reconnects with a fresh ticket after an interruption. Its `--org` option may be omitted because the organization is already part of `local-id:org-id`; an explicitly different organization is rejected. Press Ctrl-C to stop watching.
+
+IAM currently has a confirmed consent-issuance failure when selecting a different owned organization for this app: it returns HTTP 500 before issuing the token. Same-organization access passed production and testing verification. See the [external issue ledger](#external-dependency-issues) for the reproduction; Silicon does not bypass IAM authorization.
+
+### Read configuration
+
+A Carbon can obtain a short-lived token through IAM:
+
+```sh
+iam login --app-id 'tos>silicon-realtime' --grant-org ORG --approve-scopes --json
+```
+
+Exchange its `slt` at `POST /v1/auth/token` using JSON `{"slt":"...","idempotency_key":"A_FRESH_UUID"}`. The response supplies IAM access and refresh tokens. Refresh using the same endpoint with `{"refresh_token":"...","idempotency_key":"A_FRESH_UUID"}`. Persist and reuse the original idempotency key when retrying an uncertain exchange; choose a new key for a new exchange.
+
+Read the selected Silicon using the app access token:
+
+```sh
+curl --fail-with-body https://realtime.teamofsilicons.com/v1/config \
+  -H "Authorization: Bearer $REALTIME_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"org_id":"my-org","silicon":"assistant:my-org"}'
+```
+
+The response contains `silicon`, `online`, and `configuration`. Configuration includes ISIs, models, DNA, access, and flow with credential values redacted. When the Silicon is offline, `configuration` is `null`. An organization mismatch, wrong audience, expired token, or inactive membership is rejected. Production and IAM testing environments remain separate.
+
+### Subscribe to events
+
+1. Send the same authenticated JSON body to `POST /v1/subscribe`.
+2. Read `ticket` and `websocket_path` from the response. The single-use ticket expires after 30 seconds.
+3. Open `wss://realtime.teamofsilicons.com/v1/subscribe` and send `{"ticket":"..."}` as the first JSON frame. Tokens and tickets are not placed in query strings.
+4. Consume the initial `snapshot`, then `event`, `presence`, and possible `gap` messages. Reauthorize when the subscription expires.
+
+A snapshot has the shape `{"type":"snapshot","data":{"silicon":"assistant:my-org","online":true,"configuration":{...}}}`. Event and presence messages contain `type`, `silicon`, `timestamp`, and `data`. Presence data contains `online`; activity data identifies its source and ISI. The publisher performs ping/pong checks, and a registration without a recent heartbeat becomes offline after 45 seconds. `silicon ping SID` separately checks the local connection.
+
+Direct subscriptions last at most 30 minutes and are rechecked against IAM every 15 seconds. A consumer can use websocket ping/pong but cannot send operations to the Silicon. The relay retains no disk history. Its bounded live channel can report `gap` when a consumer falls behind; fetch a new snapshot and resume. Local logs and session history remain the durable record.
+
+### On-behalf-of access
+
+An application acting for a Carbon or Silicon can use IAM OBO instead of holding that user's direct realtime token. The registered capabilities are `silicon.configuration.read` and `silicon.events.subscribe`.
+
+Use `iam app obo exchange --help` to obtain a proof for the exact target request. Send `X-OBO-Proof: PROOF` to `POST /v1/obo/config` or `POST /v1/obo/subscribe` with the same `org_id` and `silicon` body. IAM verification binds the single-use proof to the HTTP method, endpoint path, and SHA-256 of the exact body bytes. Do not reformat the JSON between proof generation and transmission. An uncertain consumed proof requires a new authorization attempt.
+
+An OBO subscription follows the same ticket and websocket flow, but its authorization lasts at most 60 seconds; obtain a fresh proof and subscribe again to continue. OBO never expands the selected organization's access or grants write operations.
+
+For local development, `SILICON_REALTIME_URL` selects an HTTPS relay URL; HTTP is allowed only for loopback. `SILICON_REALTIME=0` disables publishing. `SILICON_REALTIME_TEST_CONTEXT` may point to a private JSON file containing the imported test `app_id`, `app_secret`, and `iam_test_key`. Use a paired IAM test environment and isolated Silicon home; do not reuse production credentials in that file.
 
 ## Security and lifecycle boundaries
 
@@ -675,7 +854,12 @@ Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic
 | App discovery/status fails | Verify `APP iam --json` and one supported status form in the same Silicon home. Update an incompatible app. |
 | IAM cannot mint the SLT | Check the Silicon ID/token, app ID, permissions, and isolated IAM environment configuration. A personal Carbon login is not a substitute. |
 | App rejected the SLT | Fix the app/test-plane issue and start authentication again; the old one-use SLT may already be consumed. |
-| Removed app logs in again | Remove its entry from your own `silicon.login` configuration if it should no longer be managed, then reconnect. |
+| Removed app logs in again | Remove its entry from `apps`, `webhooks`, and any legacy `login`/`webhook` fields if it should no longer be managed, then reconnect. |
+| Setup failed | Read the reported `silicon.setup` index and captured output. Each shell fallback needs `!`; completed shell effects remain even when connection fails. |
+| Honeycomb cannot resolve a configured app | Check the quoted `org>app` ID, CLI discovery, package availability for this platform, and the selected IAM organization. |
+| Space Station asks for an organization | Use the bundled CLI and supply `--org ORG` or `SPACE_STATION_ORG` when invoking it directly; see the upstream issue ledger. |
+| Remote Silicon appears offline | Check the local `silicon ping SID`, realtime setting, relay connection, and IAM organization. Remote presence can lag a disconnected publisher by up to 45 seconds. |
+| Live subscription reports a gap | Fetch the current snapshot and resubscribe as needed. The relay does not replay event history. |
 | Disconnect reports cleanup errors | The Silicon/capabilities are removed; inspect the named app's unhook state and Caddy/interpreter logs. |
 | Startup skipped a saved connection | Confirm the saved YAML path still exists, compiles, and can authenticate its managed apps. |
 | Automatic update did not restart yet | Inspect update logs and active work. Restart waits until the interpreter can safely stop admitting work. |
@@ -689,30 +873,86 @@ Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state
 
 `stemcell/silicon/silicon.yaml` is deliberately preserved as the supplied source of intent. It is not a ready-to-connect configuration. Its current issues include:
 
-- `silicon.id` and `silicon.token` are `...` placeholders.
+- `silicon.id`, `silicon.token`, and the optional Space Station fields are `...` placeholders.
 - Several CEL interpolations contain text such as `your time` inside the expression without valid CEL syntax.
 - It contains Python-style `is not None`, which must be expressed in CEL in a user's own configuration.
 - It refers to `convert_time` and `make_readable`, which are not registered helpers.
-- It refers to missing scripts/files including `contacts.sh`, `tools.sh`, `team.sh`, `time_delay.sh`, and `learn.sh`. The repository has `CONTACTS.md`, `tools.md`, and `learn.md`; those names do not make the scripts exist automatically.
+- It refers to missing scripts/files including `install_python.sh`, `contacts.sh`, `tools.sh`, `team.sh`, `time_delay.sh`, and `learn.sh`. The repository has `CONTACTS.md`, `tools.md`, and `learn.md`; those names do not make the scripts exist automatically.
 - Some suggestion messages still show old command forms. Current rollover uses `si session new --archive-current-session --id ... --title ... --description ...`.
 - It mixes canonical settings with `sticky` and `archive_on_end`. The compatibility mappings above describe their actual meaning.
 - Its repeated flow `if` keys and one unambiguously misplaced `var` field block are normalized by the dialect parser with warnings. Prefer an explicit step list and correct indentation in new files.
 
 Correct a separate copy for your deployment. Compilation can report expression syntax before reaching the placeholder checks because syntax validation runs before any compile-time shell command. The absence of one particular placeholder error does not make the reference configuration valid.
 
+## Development and compatibility
+
+The repository contains the Rust interpreter and internal CLI under `src/`, a separate Rust realtime service under `backend/`, integration checks under `tests/`, and this documentation under `docs/`. [The source on main](https://github.com/teamofsilicons/silicon-stemcell/tree/main), `silicon info`, and the command tree are the starting points for contributors. The `stemcell/` tree is reference material and is excluded from installation; tests create separate homes instead of rewriting it.
+
+### Application integration checklist
+
+An IAM app must expose `iam --json`, a short-lived-token login command, and a machine-readable authentication status. It owns refresh and access tokens, stores state beneath `SILICON_HOME`, treats `ISI` as optional context, and must not ask the interpreter or an ISI for a long-lived Carbon credential. Proactive apps additionally expose `webhook URL` and `unhook`, deliver the documented event envelope, and share one server connection across their local Silicon subscriptions. Commands should explain their purpose and failure cause through a navigable `--help` tree.
+
+Keep development and testing on the production authentication paths. An imported IAM test application must be paired with the app backend's test environment; a valid discovery response does not prove that login works. Add a consumer contract check that discovers the app, logs in with a real issued short-lived token, verifies authenticated status, exercises a protected read, removes authentication, and verifies the previous token can no longer be used. Never publish test secrets or local credential state.
+
+### Contract versions
+
+| Consumer or dependency | Contract in Silicon 3.6.0 |
+| --- | --- |
+| Existing 3.5 configurations | `login`, `webhook`, `sticky`, and `archive_on_end` remain accepted. Conflicting mode settings are errors; canonical names are preferred. |
+| IAM application discovery | JSON `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
+| Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM 1.9.0 is bundled; `--approve-scopes` is used only when its CLI exposes support. |
+| Inference | Omni's pinned Rust/client-daemon contract at `d52f5416cd33b363554d2300b5603dc0b6c43545`. |
+| Local interpreter API | Protocol `1`, reported by `silicon info`; protected `POST /control` and `POST /si`. |
+| Realtime API | `/v1` routes; selected-organization IAM authority, audience checking, and single-use OBO request proofs. |
+| Honeycomb / Space Station | Honeycomb 0.2.0 and native Space Station CLI 0.1.3 in the distribution. Interpreter telemetry uses the pinned Space Station Rust package. |
+
+This release makes additive changes and keeps the legacy paths above. No retirement date is set for those configuration or authentication spellings. A future removal or incompatible wire change must publish a migration and use a new contract version. The current checks negotiate CLI capabilities through command help and discovery; there is no general automatic upgrade negotiation between arbitrary client versions.
+
+### Reporting a bug
+
+Include the version from `silicon info`, the smallest configuration that reproduces the behavior, the exact command, expected and actual results, and sanitized logs. A fix PR is welcome but is optional:
+
+```sh
+silicon bug-report --title 'Short description' \
+  --body 'Version, reproduction, expected result, actual result, and sanitized logs' \
+  --pr https://github.com/teamofsilicons/silicon-stemcell/pull/123 \
+  --dry-run
+```
+
+The dry run prints the report. Remove `--dry-run` to submit it to this repository using an authenticated `gh` CLI. `--pr` may be omitted. The command adds the Silicon version to the body. Do not include tokens, table keys, or credential files. Confirmed upstream defects are tracked in the [external dependency issue ledger](#external-dependency-issues) with their reproduction and impact.
+
+### Telemetry and relay development
+
+Release builds provide the TOS interpreter and runtime table keys using `SILICON_INTERPRETER_TABLE_KEY` and `SILICON_RUNTIME_TABLE_KEY` at build time. Environment values with the same names override those defaults for a controlled deployment. Backend and documentation ingestion have separate destinations. Table credentials are supplied through deployment secrets and are never placed in website JavaScript. The documentation sends to `/api/telemetry`; its server forwards permitted events to Space Station.
+
+Use `SILICON_HONEYCOMB` to select a particular Honeycomb executable for an integration test. Realtime URL and isolated IAM testing context overrides are described in the live-update section. Use temporary homes and dedicated state directories for tests so personal IAM state, app credentials, and existing connections remain independent.
+
 ## Verification and requirement-to-evidence map
 
-The current library suite completed with 27 passing tests. `cargo clippy --all-targets -- -D warnings` passed. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
+The 3.6.0 configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. The release record below distinguishes new checks from historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
+
+The recorded 3.6.0 local interpreter run passed 40 tests, with two Caddy integration tests explicitly ignored in that run; Clippy passed with warnings denied. The full protocol E2E passed with real Omni and Caddy, including the new 3.6 checks. Four credential-focused regressions also passed, including the two new compile-diagnostic tests. The documentation telemetry endpoint passed its Node regression. Installer regressions covered the new required binaries, Honeycomb failure retaining the existing release, and copying the native Space Station executable rather than a machine-specific launcher. Chrome layout checks covered desktop and a 390-pixel mobile viewport, including mobile navigation; all 59 internal documentation anchors resolved after the final content update.
 
 The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated `claude-code-cli` provider returned `SILICON_SMOKE_OK` and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.
 
 | Requirement | Evidence and scope |
 | --- | --- |
+| Real Space Station installation and auth | Honeycomb 0.2.0 anonymously installed public `tos>spacestation` 0.1.3 into a clean home. A separate freshly created Silicon home with no saved organization then passed real IAM SLT exchange, canonical-ID login, exact Silicon identity/org checks, logout, and false authenticated status against the retained production test identity. |
+| Runnable documentation examples | The complete First Silicon example and a version combining all new fields both compiled in isolated homes. Setup stayed deferred and each YAML file remained unchanged; connecting requires the reader's real IAM and table credentials. |
 | Required schema, canonical home, legacy mode mapping | `config::tests::load_resolves_home_and_validates_template_and_modes`; also checks full syntax before Bash and interval/message validation. |
+| Deferred setup, canonical app IDs, telemetry schema, and unchanged source | `config::tests::setup_is_deferred_and_app_ids_and_telemetry_are_validated`; four configuration tests passed locally during 3.6.0 implementation. |
+| DNA source attribution, computed contents, and failed-entry skipping | `runtime::tests::dna_includes_verbatim_sources_before_contents_and_skips_failed_entries` passed locally. |
 | Preserve source flow order and shell notation | `config::tests::parser_keeps_shell_commands_and_order_without_rewriting_templates`; includes duplicate-key rejection, inline bang diagnostics, and multiline quoted preservation. |
 | Deferred login/webhook command evaluation | `config::tests::load_expands_deferred_app_commands_without_invoking_them`; a real executable fixture remains uninvoked during compilation, including quoted paths/arguments. |
 | CEL helpers, nested braces, JSON structures | `eval::tests::real_cel_nested_templates_helpers_and_failures`. |
 | Bash, DNA, fallback ordering and context | `eval::tests::bash_fallbacks_and_dna_share_environment_without_losing_quoted_separators`. |
+| Credential expressions and compile diagnostics stay private | `config::tests::compilation_never_logs_credential_expressions_or_errors` and `eval::tests::credential_expressions_and_compile_diagnostics_do_not_disclose_secrets` exercise real Bash, stderr failures, malformed CEL, fallback errors, and interpolated credentials. Runtime command logging remains available. |
+| A Silicon's Space Station destination works with TOS telemetry disabled | A live interpreter connection with vendor telemetry disabled wrote one runtime event to its configured user table; an actual table query verified the event and redacted token. |
+| Documentation telemetry reaches its separate destination | The Vercel preview's real `/api/telemetry` accepted one event, and an actual `silicondocs` table query found the `release_smoke` row with version `3.6.0`. |
+| TOS interpreter telemetry queues and drains | A standalone CLI queued its event durably; starting an isolated interpreter drained it and a daemon event. An actual `siliconinterpreter` table query found both records. |
+| Hosted readonly relay and IAM boundary | The deployed HTTPS/WSS service passed a real production-IAM check for identity/organization denial, redacted configuration, single-use subscriber tickets, ISI event delivery, ping/pong, operation rejection, and offline presence after disconnect. `backend/tests/live.mjs` reproduces the test using a private fixture. Backend tests and Clippy passed separately. |
+| Hosted OBO and IAM testing boundary | The deployed relay and a real IAM testing environment passed exact-body OBO configuration/subscription proofs, proof replay rejection with HTTP 401, isolated Carbon/Silicon authorization, and websocket checks. Production and testing were exercised separately. |
+| Installed reader and automatic interpreter publishing | The compiled `silicon` CLI passed real SLT login, authenticated status, watch, logout, and unauthenticated status. An actual interpreter automatically enrolled its Silicon with IAM, connected, processed a local webhook through flow, and delivered the activity through public WSS to the compiled watcher. |
 | App command quotes, CEL, fallback scope, no compile-time invocation | `eval::tests::app_commands_preserve_argv_and_use_fallbacks_without_running_commands`. |
 | Ordered matching conditions, catches, scoped errors | `flow::tests::flows_keep_json_variables_run_all_matching_ifs_scope_catches_and_continue`. |
 | Syntax validation of unselected branches | `flow::tests::compile_rejects_invalid_unselected_branches_and_malformed_steps`. |
@@ -766,7 +1006,7 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 
 `SILICON_TEST_BIN_DIR` can select a built/installed interpreter directory for the E2E. It expects a real Omni daemon and real Caddy on `PATH` or through the overrides. It uses a free/available local test setup, creates its own YAML outside the template directories, and verifies that YAML's bytes remain unchanged. The LAN Caddy test additionally requires `SILICON_TEST_LAN_IP` set to this machine's non-loopback IPv4 address and port 80 available.
 
-Source references for maintainers: `src/config.rs`, `src/eval.rs`, `src/flow.rs`, `src/runtime.rs`, `src/auth.rs`, `src/state.rs`, `src/server.rs`, `src/proxy.rs`, `src/cli.rs`, `src/update.rs`, `src/dashboard.html`, `install.sh`, `.github/workflows/release.yml`, and `tests/e2e.py`. The specification is `UNDERSTANDING.md`; the preserved fixture is `stemcell/silicon/silicon.yaml`.
+Source references for maintainers: `src/apps.rs`, `src/settings.rs`, `src/telemetry.rs`, `src/realtime.rs`, `backend/src/main.rs`, `src/config.rs`, `src/eval.rs`, `src/flow.rs`, `src/runtime.rs`, `src/auth.rs`, `src/state.rs`, `src/server.rs`, `src/proxy.rs`, `src/cli.rs`, `src/update.rs`, `src/dashboard.html`, `install.sh`, `.github/workflows/release.yml`, and `tests/e2e.py`. The specification is `UNDERSTANDING.md`; the preserved fixture is `stemcell/silicon/silicon.yaml`.
 
 To verify complete bundles on all four native platforms before a release, dispatch the existing release workflow from a branch containing it, with an exact source commit:
 
@@ -779,4 +1019,4 @@ Despite the historical input name `tag`, build-only mode accepts a source revisi
 
 ### Maintaining the documentation
 
-The source is `docs/GUIDE.md`, `docs/DIARY.md`, and `docs/shell.html`. With Python Markdown installed, run `python3 docs/render.py` and commit the updated `docs/site/index.html`. Vercel serves that committed static output; it does not build or upload the interpreter, template homes, or local state.
+The source is `docs/GUIDE.md`, `docs/DIARY.md`, `docs/EXTERNAL-BUGS.md`, and `docs/shell.html`. With Python Markdown installed, run `python3 docs/render.py` and commit the updated `docs/site/index.html`. An isolated alternative is `uv run --with markdown==3.8.2 python docs/render.py`. Vercel serves the committed static output and the telemetry API; it does not build or upload the interpreter, template homes, or local state.

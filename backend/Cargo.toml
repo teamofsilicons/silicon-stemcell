@@ -1,0 +1,23 @@
+[package]
+name = "silicon-realtime"
+version = "1.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+chrono = "0.4"
+
+hmac = "0.12"
+
+space-station = { git = "https://github.com/teamofsilicons/space-station", rev = "b308faf88784b5ea6d657878b7419383b3eb7601" }
+
+[dev-dependencies]
+tokio-tungstenite = "0.29"
+futures-util = "0.3"

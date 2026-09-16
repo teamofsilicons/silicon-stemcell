@@ -2,9 +2,9 @@
 
 These notices cover the top-level distributed applications. Source links and versions identify the upstream distributions used by this bundle. Transitive dependencies retain their own licenses.
 
-## iam (silicon-iam-cli 1.4.1)
+## iam (silicon-iam-cli 1.9.0)
 - Declared license: Apache-2.0
-- Source: https://github.com/teamofsilicons/silicon-iam/tree/e19d3c73a41325f1c80de5515d2d9e3528384de7
+- Source: https://github.com/teamofsilicons/silicon-iam/tree/a169881998e939749e10bd6c1a3ad3f3d9ade771
 - Files: iam-LICENSE.txt
 
 ## dm (silicon-dm-cli 0.3.0)
@@ -47,3 +47,15 @@ These notices cover the top-level distributed applications. Source links and ver
 - Source: https://github.com/caddyserver/caddy/tree/v2.11.4
 - Files: caddy-LICENSE.txt, caddy-AUTHORS.txt
 - The upstream release tree contains no NOTICE file.
+
+## Honeycomb 0.2.0
+- Declared license: MIT
+- Source: https://github.com/teamofsilicons/silicon-honeycomb/tree/v0.2.0
+- File: honeycomb-LICENSE.txt
+
+## Space Station 0.1.3 (Honeycomb-managed package)
+- Declared license: MIT
+- Source: https://github.com/teamofsilicons/space-station/tree/3045cf8
+- Distribution: Honeycomb `tos>spacestation`, release 0.1.3
+- Package SHA-256: `4798af7601153e6ced3d02c9e7a918a8c0ab37c3e5cbe515c0aa470e31960859`
+- File: spacestation-LICENSE.txt

@@ -4,20 +4,26 @@ silicon:
   timezone: America/Los_Angeles
   SILICON_HOME: ! pwd
 
+  space_station:
+    table_name: ...
+    table_key: ...
+
   inference_providers:
     - all-available-providers
+
+  setup:
+    - ! ./install_python.sh
   
-  login:
-    - ! dm
-    - ! briefcase
-    - ! waveform
-    - ! commit
-    - ! remind
-    - ! hook
+  apps:
+    - tos>dm
+    - tos>briefcase
+    - tos>hook
+    - tos>browser
+    - tos>waveform
   
-  webhook:
-    - ! dm
-    - ! hook
+  webhooks:
+    - tos>hook
+    - tos>dm
 
 
 isi:
@@ -259,5 +265,3 @@ flow:
           isi: intuit
           message: '{var.event}'
 
-  
-# errors

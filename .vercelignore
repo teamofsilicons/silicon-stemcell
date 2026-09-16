@@ -13,3 +13,7 @@ UNDERSTANDING.md
 docs/*.md
 docs/*.py
 docs/shell.html
+
+backend/
+IAM.md
+.DS_Store

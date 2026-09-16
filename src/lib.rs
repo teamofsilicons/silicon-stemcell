@@ -1,12 +1,17 @@
+pub mod apps;
 pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod eval;
 pub mod flow;
 pub mod proxy;
+pub mod realtime;
+pub mod realtime_cli;
 pub mod runtime;
 pub mod server;
+pub mod settings;
 pub mod state;
+pub mod telemetry;
 pub mod update;
 
 use anyhow::Result;
@@ -29,11 +34,37 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
         .env("SILICON_IAM_AUTO_UPDATE", "false")
         .env("BRIEFCASE_AUTO_UPDATE", "0")
         .env("WAVEFORM_AUTO_UPDATE", "0")
+        .env("SPACE_STATION_UPDATE", "0")
         .env("SILICON_HOOK_AUTO_UPDATE", "0");
+    if let Ok(path) = std::env::join_paths(std::iter::once(home.join(".silicon/bin")).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    )) {
+        command.env("PATH", path);
+    }
+    if settings::load().is_ok_and(|s| !s.telemetry)
+        || std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0")
+    {
+        command
+            .env("IAM_TELEMETRY", "off")
+            .env("HONEYCOMB_TELEMETRY", "0")
+            .env("SPACE_STATION_TELEMETRY", "0");
+    }
     command
 }
 
 pub fn log_line(home: &Path, kind: &str, origin: &str, message: &str) -> Result<()> {
+    log_line_scoped(home, None, kind, origin, message)
+}
+
+pub fn log_line_scoped(
+    home: &Path,
+    generation: Option<uuid::Uuid>,
+    kind: &str,
+    origin: &str,
+    message: &str,
+) -> Result<()> {
+    let message = telemetry::redact(home, message);
+    let origin = telemetry::redact(home, origin);
     let _guard = LOG_LOCK.lock().unwrap();
     state::private_dir(&home.join(".silicon"))?;
     let line = format!(
@@ -47,5 +78,14 @@ pub fn log_line(home: &Path, kind: &str, origin: &str, message: &str) -> Result<
         .mode(0o600)
         .open(home.join(".silicon/silicon.log"))?
         .write_all(line.as_bytes())?;
+    drop(_guard);
+    telemetry::record_scoped(home, generation, kind, &origin, &message);
+    if let Some(generation) = generation {
+        realtime::publish(
+            home,
+            generation,
+            serde_json::json!({"type":kind,"origin":origin,"timestamp":Utc::now().to_rfc3339(),"message":message}),
+        );
+    }
     Ok(())
 }

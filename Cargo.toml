@@ -1,6 +1,6 @@
 [package]
 name = "silicon"
-version = "3.5.1"
+version = "3.6.0"
 edition = "2021"
 description = "Silicon interpreter and CLI"
 license = "MIT"
@@ -22,6 +22,8 @@ shell-words = "1"
 libc = "0.2"
 signal-hook = "0.3"
 ureq = { version = "3", features = ["json"] }
+space-station = { git = "https://github.com/teamofsilicons/space-station", rev = "b308faf88784b5ea6d657878b7419383b3eb7601" }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 tempfile = "3"
