@@ -93,11 +93,14 @@ jobs:
           BRIEFCASE_AUTO_UPDATE: '0'
           WAVEFORM_AUTO_UPDATE: '0'
           SILICON_HOOK_AUTO_UPDATE: '0'
+          SPACE_STATION_UPDATE: '0'
         run: |
           mkdir -p "$SILICON_HOME"
+          "$BUNDLE_BIN/honeycomb" config set auto_update false --json >/dev/null
+          "$BUNDLE_BIN/dm" updates disable >/dev/null
           python3 - <<'PY'
           import json, os, pathlib, subprocess
-          for app in ['dm', 'briefcase', 'waveform', 'commit', 'remind', 'hook']:
+          for app in ['silicon', 'honeycomb', 'spacestation', 'dm', 'briefcase', 'waveform', 'commit', 'remind', 'hook']:
               result = subprocess.run([str(pathlib.Path(os.environ['BUNDLE_BIN']) / app), 'iam', '--json'], capture_output=True, text=True, cwd=os.environ['SILICON_HOME'], timeout=30)
               assert result.returncode == 0, f'{app} IAM discovery failed ({result.returncode}): {result.stderr}'
               info = json.loads(result.stdout)

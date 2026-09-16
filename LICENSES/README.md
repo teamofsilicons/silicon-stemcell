@@ -7,14 +7,14 @@ These notices cover the top-level distributed applications. Source links and ver
 - Source: https://github.com/teamofsilicons/silicon-iam/tree/a169881998e939749e10bd6c1a3ad3f3d9ade771
 - Files: iam-LICENSE.txt
 
-## dm (silicon-dm-cli 0.3.0)
+## dm (silicon-dm-cli 0.7.0)
 - Declared license: LicenseRef-Proprietary
-- Source: https://github.com/teamofsilicons/silicon-dm/tree/782a28a52b6a15250a9748f4c346b8479bc75c2b
+- Source: https://github.com/teamofsilicons/silicon-dm/tree/396df5a76f8bc9dea163d807638e8eac972ba8c0
 - Files: dm-NOTICE.txt
 
-## briefcase (briefcase-cli 0.2.4)
+## briefcase (briefcase-cli 1.1.0)
 - Declared license: Apache-2.0
-- Source: https://github.com/teamofsilicons/silicon-briefcase/tree/c22f545b80a524b56660e5fcbb104e9fe15f703d
+- Source: https://github.com/teamofsilicons/silicon-briefcase/tree/951d6ba09e8cb14b5c79eab043aab0a2c70ba7bf
 - Files: briefcase-LICENSE.txt
 
 ## waveform (waveform-cli 0.1.0)

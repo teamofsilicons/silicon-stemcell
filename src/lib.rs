@@ -47,6 +47,8 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
         command
             .env("IAM_TELEMETRY", "off")
             .env("HONEYCOMB_TELEMETRY", "0")
+            .env("DM_TELEMETRY_ENABLED", "false")
+            .env("BRIEFCASE_TELEMETRY", "0")
             .env("SPACE_STATION_TELEMETRY", "0");
     }
     command

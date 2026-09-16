@@ -64,8 +64,8 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | `iam` | `silicon-iam-cli` 1.9.0 |
 | `honeycomb` | Honeycomb 0.2.0 |
 | `spacestation` | Space Station 0.1.3 from Honeycomb package `tos>spacestation` |
-| `dm` | `silicon-dm-cli` 0.3.0 |
-| `briefcase` | `briefcase-cli` 0.2.4 |
+| `dm` | `silicon-dm-cli` 0.7.0 |
+| `briefcase` | `briefcase-cli` 1.1.0 |
 | `waveform` | `waveform-cli` 0.1.0 |
 | `commit` | `silicon-commit-cli` 0.1.0 at Git revision `3fe1812`, through a managed wrapper |
 | `remind` | `silicon-remind-cli` 0.1.2, through a managed wrapper |
@@ -938,6 +938,8 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Requirement | Evidence and scope |
 | --- | --- |
 | Real Space Station installation and auth | Honeycomb 0.2.0 anonymously installed public `tos>spacestation` 0.1.3 into a clean home. A separate freshly created Silicon home with no saved organization then passed real IAM SLT exchange, canonical-ID login, exact Silicon identity/org checks, logout, and false authenticated status against the retained production test identity. |
+| DM's published replacement matches the live API | The native discovery gate rejected DM 0.3.0's old response-envelope parsing. Published DM 0.7.0 then passed fresh-home IAM issuance, interpreter login, exact identity/org, webhook registration/removal, logout, and final unauthenticated status; the dependency pin and notice were updated. |
+| Briefcase's published replacement matches the live contract | Published Briefcase 1.1.0 reported matching client, server, and contract versions and discovered `tos>briefcase`. Real IAM SLT login returned the correct Silicon identity/org; authenticated status, logout, and final unauthenticated status passed without content writes. The pin replaces the incompatible 0.2.4 client. |
 | Runnable documentation examples | The complete First Silicon example and a version combining all new fields both compiled in isolated homes. Setup stayed deferred and each YAML file remained unchanged; connecting requires the reader's real IAM and table credentials. |
 | Required schema, canonical home, legacy mode mapping | `config::tests::load_resolves_home_and_validates_template_and_modes`; also checks full syntax before Bash and interval/message validation. |
 | Deferred setup, canonical app IDs, telemetry schema, and unchanged source | `config::tests::setup_is_deferred_and_app_ids_and_telemetry_are_validated`; four configuration tests passed locally during 3.6.0 implementation. |

@@ -233,8 +233,8 @@ if [ -n "$source_dir" ]; then
     done
     install_crate iam silicon-iam-cli 1.9.0
     install_honeycomb_dependencies
-    install_crate dm silicon-dm-cli 0.3.0
-    install_crate briefcase briefcase-cli 0.2.4
+    install_crate dm silicon-dm-cli 0.7.0
+    install_crate briefcase briefcase-cli 1.1.0
     install_crate waveform waveform-cli 0.1.0
     if ! copy_dependency commit; then
         cargo install --locked --force --root "$stage/payload" --git https://github.com/teamofsilicons/silicon-commit --rev "$commit_rev" --bin commit silicon-commit-cli ||
