@@ -13,4 +13,4 @@ This ledger records confirmed upstream issues, their impact on Silicon, and the 
 | Commit CLI 0.1.0 from crates.io | No logout command despite a backend revocation API. | Resolved by [Commit PR #1](https://github.com/teamofsilicons/silicon-commit/pull/1). The Silicon distribution pins the fixed revision `3fe18128282bf65c1f62595ed01e65ec467dba28`. |
 | Commit hosted testing environments | The backend selected a testing environment while retaining the production app credential. | Resolved by [Commit PR #2](https://github.com/teamofsilicons/silicon-commit/pull/2). Existing unpaired testing environments still require pairing through the owner-authorized API. |
 
-The [implementation diary](#implementation-diary) records the original reproductions and subsequent verification. The IAM and Commit fixes are historical compatibility context; they are not new modifications made for the 3.6.0 release.
+The [implementation diary](#implementation-diary) records the original reproductions and subsequent verification. The IAM and Commit fixes are historical compatibility context; they are not new modifications made for the 3.6.1 release.

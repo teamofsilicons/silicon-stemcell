@@ -1,4 +1,4 @@
-# Silicon 3.6.0
+# Silicon 3.6.1
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -27,15 +27,15 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.6.0` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v3.6.1` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.1/install.sh | sh
 ```
 
-Find the four platform bundles and their checksums on the [v3.6.0 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.0). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the four platform bundles and their checksums on the [v3.6.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.1). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
-**3.6.0** adds setup scripts, Honeycomb app installation, canonical IAM IDs, DNA source attribution, telemetry controls, and read-only organization live updates. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
+**3.6.1** adds setup scripts, Honeycomb app installation, canonical IAM IDs, DNA source attribution, telemetry controls, and read-only organization live updates. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -48,7 +48,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -58,7 +58,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 3.6.0 |
+| `silicon`, `si` | Interpreter and internal CLI, 3.6.1 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
 | `iam` | `silicon-iam-cli` 1.9.0 |
@@ -97,7 +97,7 @@ Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and depend
 
 For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy `commit-native` as `commit` and `remind-native` as `remind` into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. Space Station is still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
-The 3.6.0 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
+The 3.6.1 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -896,7 +896,7 @@ Keep development and testing on the production authentication paths. An imported
 
 ### Contract versions
 
-| Consumer or dependency | Contract in Silicon 3.6.0 |
+| Consumer or dependency | Contract in Silicon 3.6.1 |
 | --- | --- |
 | Existing 3.5 configurations | `login`, `webhook`, `sticky`, and `archive_on_end` remain accepted. Conflicting mode settings are errors; canonical names are preferred. |
 | IAM application discovery | JSON `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
@@ -929,7 +929,7 @@ Use `SILICON_HONEYCOMB` to select a particular Honeycomb executable for an integ
 
 ## Verification and requirement-to-evidence map
 
-The 3.6.0 configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. The release record below distinguishes new checks from historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
+The 3.6-series configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. Version 3.6.1 carries the verified dependency corrections after the unpublished 3.6.0 candidate failed its release discovery gate; the original tag remains immutable. The release record below distinguishes candidate checks from completed publication and historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
 
 The recorded 3.6.0 local interpreter run passed 40 tests, with two Caddy integration tests explicitly ignored in that run; Clippy passed with warnings denied. The full protocol E2E passed with real Omni and Caddy, including the new 3.6 checks. Four credential-focused regressions also passed, including the two new compile-diagnostic tests. The documentation telemetry endpoint passed its Node regression. Installer regressions covered the new required binaries, Honeycomb failure retaining the existing release, and copying the native Space Station executable rather than a machine-specific launcher. Chrome layout checks covered desktop and a 390-pixel mobile viewport, including mobile navigation; all 59 internal documentation anchors resolved after the final content update.
 
