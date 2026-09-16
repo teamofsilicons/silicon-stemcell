@@ -53,12 +53,15 @@ $lockPath = Join-Path $controlDirectory '.install-lock'
 try { $installerLock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
 catch { throw 'Another Silicon installer is running. Wait for it to finish, then retry.' }
 $originalWslEnv = $env:WSLENV
+$originalConsoleEncoding = [Console]::OutputEncoding
 $env:WSLENV = ''
 $temporary = Join-Path $Prefix ('.install-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $temporary | Out-Null
 $createdDistro = $false
 $activated = $false
 try {
+    # Linux commands return UTF-8, including paths with non-ASCII user names.
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    New-Item -ItemType Directory -Path $temporary | Out-Null
     if (!$PayloadRoot) {
         $asset = "silicon-$target.zip"
         $base = "https://github.com/teamofsilicons/silicon-stemcell/releases/download/$Version"
@@ -141,4 +144,5 @@ try {
     }
     $installerLock.Dispose()
     $env:WSLENV = $originalWslEnv
+    [Console]::OutputEncoding = $originalConsoleEncoding
 }

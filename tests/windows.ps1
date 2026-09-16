@@ -23,6 +23,9 @@ try {
         if ($PayloadRoot -notin $userPath) { throw 'Public installer did not add its commands to the user PATH.' }
     } else {
         if (!$PayloadRoot) { throw 'Pass PayloadRoot or ReleaseTag.' }
+        $unicodePayload = Join-Path $env:RUNNER_TEMP 'Silicon payload Ω with spaces'
+        Copy-Item -LiteralPath $PayloadRoot -Destination $unicodePayload -Recurse
+        $PayloadRoot = $unicodePayload
         & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$source/install.ps1" -PayloadRoot $PayloadRoot -NoPath
         if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 provisioning failed.' }
     }
