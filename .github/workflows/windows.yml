@@ -87,6 +87,16 @@ jobs:
         shell: pwsh
         run: |
           'ARM64 native PE build/tests passed. Full WSL2 E2E requires physical Windows ARM64 hardware; this hosted runner lacks nested virtualization. ARM64 is preview until the separate runtime test passes.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Retain isolated runtime failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-diagnostics-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/windows-diagnostics.tar.gz
+            ${{ runner.temp }}/windows-native-daemon.log
+            ${{ runner.temp }}/windows-native-daemon.err
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.target }}

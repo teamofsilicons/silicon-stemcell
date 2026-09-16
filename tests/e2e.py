@@ -149,7 +149,7 @@ isi:
     session_type: persistent
     dna:
       assemble:
-        - '! printf "%s\\n" "$ISI" >> "$SILICON_HOME/dna-assemblies"; if test -f "$SILICON_HOME/slow-refresh"; then touch "$SILICON_HOME/refresh-started"; sleep 3; fi; printf "pulse DNA for %s" "$ISI"'
+        - '! printf "%s\\n" "$ISI" >> "$SILICON_HOME/dna-assemblies"; if test -f "$SILICON_HOME/slow-refresh"; then touch "$SILICON_HOME/refresh-started"; while ! test -f "$SILICON_HOME/refresh-release"; do sleep 0.05; done; touch "$SILICON_HOME/refresh-finished"; fi; printf "pulse DNA for %s" "$ISI"'
       next_refresh: '! printf "%s\\n" "$ISI" >> "$SILICON_HOME/dna-deadlines"; cat "$SILICON_HOME/dna-interval"'
     heartbeat:
       next: '! printf "%s\\n" "$ISI" >> "$SILICON_HOME/heartbeat-deadlines"; printf 0.5s'
@@ -313,15 +313,26 @@ flow:
 
         si("isi", "send", "pulse", "hold pulse", "--id", "alpha", "--new")
         eventually(lambda: messages("pulse:alpha", "hold pulse"))
+        event_log = home / ".silicon/sessions/events" / f"{session('pulse', 'alpha')['session_id']}.jsonl"
+        def injected_during_refresh():
+            # The UI's last-100-events window can evict an injection while this
+            # deliberately busy provider keeps streaming. Inspect durable events.
+            complete_lines = event_log.read_bytes().split(b"\n")[:-1]
+            return any(event.get("type") == "injected" and event.get("text") == "during refresh"
+                       for event in (json.loads(line) for line in complete_lines))
         (home / "slow-refresh").touch()
-        eventually(lambda: (home / "refresh-started").exists())
-        (home / "dna-interval").write_text("30s")
-        start = time.monotonic()
-        si("isi", "send", "pulse", "during refresh", "--id", "alpha")
-        eventually(lambda: any(event["type"] == "injected" and event["text"] == "during refresh" for event in control("show", silicon="e2e:local", isi="pulse", id="alpha")["events"]), timeout=2)
-        assert time.monotonic() - start < 2.5, "DNA shell blocked model event processing"
+        try:
+            eventually(lambda: (home / "refresh-started").exists())
+            (home / "dna-interval").write_text("30s")
+            si("isi", "send", "pulse", "during refresh", "--id", "alpha")
+            eventually(injected_during_refresh)
+            assert not (home / "refresh-finished").exists(), "DNA gate opened before the injection was observed"
+        finally:
+            # Release a blocked shell even when an assertion fails, before daemon cleanup.
+            (home / "slow-refresh").unlink(missing_ok=True)
+            (home / "refresh-release").touch()
+        eventually(lambda: (home / "refresh-finished").exists())
         eventually(lambda: len(lines("dna-deadlines")) >= 2)
-        (home / "slow-refresh").unlink()
         assemblies = len(lines("dna-assemblies"))
         time.sleep(1)
         assert len(lines("dna-assemblies")) == assemblies, "next_refresh was not reevaluated after assembly"

@@ -41,7 +41,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare tests on Linux FS.' }
     # Real Omni/Caddy, flow, setup, sessions, heartbeats, HTTP, restart and cleanup.
     & $wsl -d Silicon -u silicon --cd /home/silicon/qa-source --exec env SILICON_WSL=1 SILICON_TELEMETRY=0 SILICON_AUTO_UPDATE=0 SILICON_TEST_BIN_DIR=/home/silicon/.local/share/silicon/bin OMNI_DAEMON=/home/silicon/.local/share/silicon/bin/omnid SILICON_CADDY=/home/silicon/.local/share/silicon/bin/caddy python3 tests/e2e.py
-    if ($LASTEXITCODE -ne 0) { throw 'Real WSL2 interpreter + Omni + Caddy E2E failed.' }
+    if ($LASTEXITCODE -ne 0) {
+        $diagnostics = Join-Path $env:RUNNER_TEMP 'windows-diagnostics.tar.gz'
+        $linuxDiagnostics = (& $wsl -d Silicon -u silicon --exec wslpath -u $diagnostics).Trim()
+        & $wsl -d Silicon -u silicon --exec sh -ec 'find /home/silicon/silicon-interpreter-testing -type f \( -name server.log -o -name silicon.log -o -name provider-messages.jsonl -o -path "*/.silicon/sessions/events/*.jsonl" -o -name "dna-*" -o -name "refresh-*" \) -print0 | tar --null -T - -czf "$1"' sh $linuxDiagnostics
+        throw 'Real WSL2 interpreter + Omni + Caddy E2E failed; available diagnostics were retained.'
+    }
     # The actual PE entry points, quoted arguments, Unicode, pipes and exit codes.
     $env:SILICON_HOME = '/home/silicon/native project Ω'
     & $wsl -d Silicon -u silicon --exec mkdir -p $env:SILICON_HOME
