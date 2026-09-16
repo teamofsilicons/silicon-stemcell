@@ -41,10 +41,16 @@ with tempfile.TemporaryDirectory() as temp:
     pack.prepare(root, root / "package", "4.0.0")
     manifest = json.loads((root / "package/honeycomb.yaml").read_text())
     assert set(manifest["targets"]) == set(pack.TARGETS)
-    assert set(manifest["bin"]) == set(pack.COMMANDS)
+    assert set(manifest["bin"]) == {"silicon", "si"}
+    for target, definition in manifest["targets"].items():
+        assert set(definition["executables"]) == {"silicon", "si"}
+        for command in pack.COMMANDS:
+            relative = f"{command}.exe" if target.startswith("windows-") else f"bin/{command}"
+            assert (root / "package" / definition["root"] / relative).is_file()
     assert (root / "package/targets/windows-aarch64/runtime.tar.gz").read_bytes() == payload["runtime.tar.gz"]
     if binary := os.environ.get("HONEYCOMB_TEST_BIN"):
-        env = dict(os.environ, SILICON_HOME=str(root / "honeycomb-home"), HONEYCOMB_TELEMETRY="0")
+        env = dict(os.environ, SILICON_HOME=str(root / "honeycomb-home"),
+                   HONEYCOMB_TELEMETRY="0", HONEYCOMB_AUTO_UPDATE="0")
         def honeycomb(*args):
             result = subprocess.run([binary, *map(str, args), "--json"], env=env,
                                     capture_output=True, text=True, check=True)

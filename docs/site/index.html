@@ -71,44 +71,44 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </tr>
 <tr>
 <td><code>iam</code></td>
-<td><code>silicon-iam-cli</code> 1.9.0</td>
+<td>Honeycomb <code>tos&gt;iam</code> 1.11.0</td>
 </tr>
 <tr>
 <td><code>honeycomb</code></td>
-<td>Honeycomb 0.2.0</td>
+<td>Honeycomb 0.2.3</td>
 </tr>
 <tr>
 <td><code>spacestation</code></td>
-<td>Space Station 0.1.3 from Honeycomb package <code>tos&gt;spacestation</code></td>
+<td>Honeycomb <code>tos&gt;spacestation</code> 0.1.4</td>
 </tr>
 <tr>
 <td><code>dm</code></td>
-<td><code>silicon-dm-cli</code> 0.7.0</td>
+<td>Honeycomb <code>tos&gt;dm</code> 0.7.0</td>
 </tr>
 <tr>
 <td><code>briefcase</code></td>
-<td><code>briefcase-cli</code> 1.1.0</td>
+<td>Honeycomb <code>tos&gt;briefcase</code> 1.1.0</td>
 </tr>
 <tr>
 <td><code>waveform</code></td>
-<td><code>waveform-cli</code> 0.1.0</td>
+<td>Honeycomb <code>tos&gt;waveform</code> 0.1.2</td>
 </tr>
 <tr>
 <td><code>commit</code></td>
-<td><code>silicon-commit-cli</code> 0.1.0 at Git revision <code>3fe1812</code>, through a managed wrapper</td>
+<td>Honeycomb <code>tos&gt;commit</code> 0.2.0, through a managed wrapper</td>
 </tr>
 <tr>
 <td><code>remind</code></td>
-<td><code>silicon-remind-cli</code> 0.1.2, through a managed wrapper</td>
+<td>Honeycomb <code>tos&gt;remind</code> 0.2.0, through a managed wrapper</td>
 </tr>
 <tr>
 <td><code>hook</code></td>
-<td><code>silicon-hook-cli</code> 0.2.0</td>
+<td>Honeycomb <code>tos&gt;hook</code> 0.6.0</td>
 </tr>
 </tbody>
 </table>
 <p>The Commit and Remind wrappers suppress their independent update checks. Their underlying binaries are shipped as <code>commit-native</code> and <code>remind-native</code> inside the release. For a fresh Commit home with no explicit backend override or existing saved configuration, the wrapper selects <code>https://backend.commit.teamofsilicons.com</code>. It preserves an existing configuration or explicit <code>COMMIT_API_URL</code>.</p>
-<p>Release construction obtains Space Station through the real Honeycomb package installer in an isolated anonymous home. It copies the verified native executable into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station <code>windows run</code> and <code>windows tool</code> features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.</p>
+<p>Release construction obtains all eight application CLIs through Honeycomb in an isolated anonymous home, with its automatic updates disabled. These are the latest public catalog versions verified on 17 September 2026. It copies their verified native executables into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station <code>windows run</code> and <code>windows tool</code> features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.</p>
 <p>The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.</p>
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>In PowerShell:</p>
@@ -122,7 +122,7 @@ silicon web
 </code></pre>
 <p><code>SILICON_HOME: ! pwd</code> continues to mean the YAML's directory. Setup commands, relative executables, DNA scripts, application CLIs, and ISI sessions execute from that home. The launcher translates explicit Windows paths into WSL paths, but it never rewrites or silently moves your YAML. A configuration or home on a Windows drive is rejected because private credential modes and Unix socket semantics require Linux storage.</p>
 <p>Windows data remains accessible: <code>C:\Users\You\Documents</code> is <code>/mnt/c/Users/You/Documents</code>, and <code>D:\Projects</code> is <code>/mnt/d/Projects</code>. Reads and writes affect the actual Windows files and respect Windows permissions. Put explicit paths to that data in your scripts as needed. Portable Bash and bundled CLI commands can use the same YAML on all platforms; macOS-specific tools and options still need alternatives inside the scripts.</p>
-<p>The Linux runtime keeps the managed Unix installation layout. If a later update replaces Caddy and needs to renew its port-80 capability, rerun the Windows installer; it performs that provisioning inside the dedicated distribution.</p>
+<p>The Linux runtime keeps the managed Unix installation layout. Its updater updates the Linux bundle; rerun the Windows installer to update the Windows launchers and browser bridge. If a later update replaces Caddy and needs to renew its port-80 capability, rerun the Windows installer; it performs that provisioning inside the dedicated distribution.</p>
 <p>Windows ARM64 is a preview until an actual ARM64 WSL2 end-to-end run is available. Hosted ARM runners can test the native launcher, and Linux ARM64 has its own native runtime checks, but those do not establish the complete Windows ARM64 installation path. Windows x64 release validation includes the real WSL2 installation and interpreter integration checks. See the release evidence for completed results.</p>
 <h3 id="migrating-from-36x">Migrating from 3.6.x</h3>
 <p>Version 4 removes the remote <code>login</code>, <code>logout</code>, and <code>watch</code> commands and the <code>realtime</code> setting. Use local <code>silicon logs</code>, <code>silicon config</code>, and <code>silicon ping</code>. Saved Silicon configurations, sessions, and managed-app authentication are retained. The interpreter no longer connects to the retired relay.</p>
@@ -145,10 +145,10 @@ silicon serve
 <p>From this repository's root:</p>
 <pre><code class="language-sh">SILICON_SOURCE_DIR=&quot;$PWD&quot; sh install.sh
 </code></pre>
-<p>Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and required Cargo applications, downloads verified Caddy and Honeycomb, and installs Space Station through Honeycomb. Caddy's upstream checksum file uses SHA-512.</p>
+<p>Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and Omni, downloads verified Caddy and Honeycomb, and installs the eight application CLIs through Honeycomb. Caddy's upstream checksum file uses SHA-512.</p>
 <p><code>SILICON_GIT_REV</code> is an alternative to <code>SILICON_SOURCE_DIR</code>: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.</p>
-<p>For controlled builds, <code>SILICON_DEPENDENCY_BIN_DIR</code> can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy <code>commit-native</code> as <code>commit</code> and <code>remind-native</code> as <code>remind</code> into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. Space Station is still obtained through Honeycomb. <code>CARGO_TARGET_DIR</code> can reuse a compilation directory.</p>
-<p>The 4.0.0 source installer pins Commit to Git revision <code>3fe18128282bf65c1f62595ed01e65ec467dba28</code>, whose CLI still identifies itself as 0.1.0. It verifies that <code>logout</code> is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.</p>
+<p>For controlled builds, <code>SILICON_DEPENDENCY_BIN_DIR</code> can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. <code>CARGO_TARGET_DIR</code> can reuse a compilation directory.</p>
+<p>The 4.0.0 installer obtains Commit 0.2.0 from Honeycomb and verifies that <code>logout</code> is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.</p>
 <p>For a developer build of only the interpreter and internal CLI:</p>
 <pre><code class="language-sh">cargo build --locked
 ./target/debug/silicon --help
@@ -1061,7 +1061,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Authentication</td>
-<td>Primary <code>login</code> / <code>login status --json</code>; legacy <code>auth token</code> / <code>auth status --json</code> remains supported. IAM 1.9.0 is bundled; <code>--approve-scopes</code> is used only when its CLI exposes support.</td>
+<td>Primary <code>login</code> / <code>login status --json</code>; legacy <code>auth token</code> / <code>auth status --json</code> remains supported. IAM 1.11.0 is bundled; <code>--approve-scopes</code> is used only when its CLI exposes support.</td>
 </tr>
 <tr>
 <td>Inference</td>
@@ -1073,7 +1073,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Honeycomb / Space Station</td>
-<td>Honeycomb 0.2.0 and native Space Station CLI 0.1.3 in the distribution. Interpreter telemetry uses the pinned Space Station Rust package.</td>
+<td>Honeycomb 0.2.3 and native Space Station CLI 0.1.4 in the distribution. Interpreter telemetry uses the pinned Space Station Rust package.</td>
 </tr>
 </tbody>
 </table>
@@ -1366,7 +1366,7 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <tr>
 <td>Honeycomb CLI 0.2.0</td>
 <td>Automatic updates have no per-process environment opt-out. In a fresh Honeycomb home, directly running bundled <code>honeycomb iam --json</code> replaced the managed command link with a native 0.2.2 executable; a later Silicon installation correctly rejected that unmanaged path.</td>
-<td>Silicon runs package operations with a private Honeycomb home under <code>&lt;home&gt;/.silicon/packages</code> and explicitly configures <code>auto_update=false</code>. Installer construction does the same in its scratch home. Personal Honeycomb state is preserved, and Silicon-driven operations retain pinned binaries. Before using the bundled Honeycomb directly, run <code>honeycomb config set auto_update false --json</code> for that Honeycomb home. The direct-CLI self-update defect remains upstream; no upstream patch was made. Managed-home and installer regressions passed.</td>
+<td>Honeycomb 0.2.3 adds the supported <code>HONEYCOMB_AUTO_UPDATE=0</code> override. Silicon 4 sets it for child commands and anonymous dependency installation; existing private package-state isolation is retained. The distribution now bundles 0.2.3. This records the original 0.2.0 failure; no upstream code was changed in this task. Managed-home and installer regressions passed.</td>
 </tr>
 <tr>
 <td>IAM cross-organization SLT consent</td>
@@ -1381,7 +1381,7 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <tr>
 <td>Commit CLI 0.1.0 from crates.io</td>
 <td>No logout command despite a backend revocation API.</td>
-<td>Resolved by <a href="https://github.com/teamofsilicons/silicon-commit/pull/1">Commit PR #1</a>. The Silicon distribution pins the fixed revision <code>3fe18128282bf65c1f62595ed01e65ec467dba28</code>.</td>
+<td>Resolved by <a href="https://github.com/teamofsilicons/silicon-commit/pull/1">Commit PR #1</a>. The original fix was revision <code>3fe18128282bf65c1f62595ed01e65ec467dba28</code>; Silicon 4 now obtains Commit 0.2.0 from Honeycomb and verifies its logout command.</td>
 </tr>
 <tr>
 <td>Commit hosted testing environments</td>
@@ -1405,17 +1405,25 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
   --obo-endpoints '[]' --webhook-scope updates --json
 </code></pre>
 <p>Expected: remove all data permissions for an application that no longer needs them. Actual: <code>validation_failed</code>, <code>app_scope: must declare 1-100 unique permissions</code>; IAM request <code>01a0ab66-f98a-7ba2-be98-796ed5216097</code>. The equivalent Honeycomb update returned exit code 0 with a <strong>pending</strong>, rejected-by-IAM configuration, not a successful activation (operation <code>f7a3704d-486a-4b73-ae53-1919f137b6f9</code>, request <code>01a0ab66-baa1-75fb-9370-892aec9c1ac8</code>). Callers must inspect operation state, not only the CLI exit code.</p>
+<p>A 17 September source check of Honeycomb 0.2.3 and IAM 1.11.0 still found mandatory webhook fields and the one-permission minimum; the newer application releases do not remove this publication constraint.</p>
 <p>Publishing this interpreter therefore requires upstream support for a standalone local CLI with zero IAM permissions and no authentication backend. No unnecessary scope, fake webhook, or replacement hosted authentication service was added. The six-target archive can be prepared independently; Windows entries are native launchers requiring WSL2, and do not claim a native Windows interpreter runtime. See <a href="https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/HONEYCOMB.md">Honeycomb packaging instructions</a>. An archive passing validation is not evidence of registration, public review, or publication.</p>
 <h3 id="retired-realtime-app-still-requires-an-iam-operator-to-delete-its-record">Retired realtime app still requires an IAM operator to delete its record</h3>
 <p>Honeycomb exposes configuration, release, publication, and reconciliation operations, but no app deletion or retirement operation. IAM's documented terminal deletion endpoint, <code>POST /api/v1/admin/applications/{app_id}/decisions</code> with <code>decision: "delete"</code>, requires platform-administrator authority, all application administration capabilities, and verified-channel step-up. The signed-in owning-organization administrator received HTTP 403 from the read-only platform inventory endpoint (request <code>01a0ab65-e9a2-7540-8cd2-93f6d25cee85</code>). Organization administration does not grant platform administration, and no access-control workaround was attempted.</p>
 <p>The supported cleanup completed on 16 September 2026: <code>tos&gt;silicon-realtime</code> was renamed <strong>Silicon Realtime (retired)</strong> at Honeycomb revision 3 / IAM revision 14; its OBO endpoints and external scopes were removed, membership access was removed, and its webhook subscription was reduced to updates only. The mandatory <code>self.identity.read</code> scope remains because IAM rejects removing the final scope. The record remains private and IAM-verified; this is a retired registration, not a deleted or platform-disabled app. All 23 retained access/refresh tokens received successful revocation responses and subsequently introspected as inactive. The two dedicated realtime test environments, <code>01a0aae6-4422-7543-a548-00dfaef436be</code> and <code>01a0aaf6-daa6-7c31-a124-12e0add582b7</code>, are deleted with their normal 30-day recovery window.</p>
 <p>An authorized IAM platform operator must apply terminal deletion to <code>tos&gt;silicon-realtime</code> (application UUID <code>01a0aae0-60b7-7462-9c06-854ccbd6baf7</code>) and then reconcile its Honeycomb record. The owning-organization session cannot perform that final operation.</p>
 <p>One production test Silicon created for realtime verification remains to be removed. IAM requires a fresh email verification code for that action. During cleanup, Chrome reported that another extension interface was blocking automation, so the code could not be retrieved and the pending prompt was cancelled. Retry removal when browser access is available; this is a temporary cleanup blocker, not a permanent IAM limitation. The exact test identity and cleanup details remain in private task records.</p>
+<h3 id="iam-honeycomb-binary-license-differs-from-its-cli-source-license">IAM Honeycomb binary license differs from its CLI source license</h3>
+<p>The public Honeycomb package <code>tos&gt;iam</code> 1.11.0 (archive SHA-256 <code>0e662f15d9b0d1b18346a15f65f349d12dc959e3115031bcae6ce9777cee374f</code>) includes the same proprietary <code>LICENSE</code> in all six target directories. It requires a separate written agreement with Team of Silicons for use or redistribution. The <a href="https://github.com/teamofsilicons/silicon-iam/blob/c79508255244f0d9390c765ce9f92b95228e0353/crates/cli/LICENSE">CLI source license</a> and adjacent Cargo metadata instead specify Apache-2.0. Extracting <code>targets/macos-aarch64/LICENSE</code> from the published archive reproduces the mismatch; that file's SHA-256 is <code>2efea1dc6d5f696b7bf76bcd58efc01344d8949f780e0fcf021d654e450a4290</code>.</p>
+<p>Silicon preserves the actual package license in <code>LICENSES/iam-LICENSE.txt</code> and records the differing source terms in <code>LICENSES/README.md</code>. The package is not described as Apache-only, and no upstream license or package was modified. The upstream publisher must reconcile the intended source and binary terms.</p>
 </section><section class="chapter"><h2 id="implementation-diary">Implementation diary</h2>
-<p>9–16 September 2026 · implementation diary</p>
-<h3 id="16-september-preparing-400">16 September: preparing 4.0.0</h3>
-<p>The requested scope is the local Silicon interpreter, with Windows delivered through WSL2. The hosted realtime publisher, reader commands, backend source, and remote service are being removed. Local ping, configuration inspection, the dashboard, managed applications, and Space Station telemetry remain. Version 4 is a major release because it removes the remote login/watch interface. Windows and publication checks will be recorded here as they complete. The reduced interpreter passed 36 unit tests, formatting, Clippy, and the full real Omni/Caddy end-to-end suite locally; two Caddy-specific unit tests remain separate from that suite. The hosted Windows probe ran WSL2 successfully on x64. Its ARM64 runner could not install WSL, so ARM64 runtime validation is explicitly incomplete.</p>
+<p>9–17 September 2026 · implementation diary</p>
+<h3 id="1617-september-preparing-400">16–17 September: preparing 4.0.0</h3>
+<p>The requested scope is the local Silicon interpreter, with Windows delivered through WSL2. The hosted realtime publisher, reader commands, backend source, and remote service were removed. Local ping, configuration inspection, the dashboard, managed applications, and Space Station telemetry remain. Version 4 is a major release because it removes the remote login/watch interface. Windows and publication checks will be recorded here as they complete. The reduced interpreter passed 36 unit tests, formatting, Clippy, and the full real Omni/Caddy end-to-end suite locally; two Caddy-specific unit tests remain separate from that suite. The hosted Windows probe ran WSL2 successfully on x64. Its ARM64 runner could not install WSL, so ARM64 runtime validation is explicitly incomplete.</p>
 <p>The dedicated realtime AWS stack, systemd service and runtime files, artifact bucket and its versions, runtime secret, ACM certificate, and backend telemetry table were deleted. Both the service and certificate-validation DNS records return authoritative NXDOMAIN. The shared Space Station host, service, and load balancer remain intact; the existing service PID was unchanged. IAM/Honeycomb retirement and publication constraints are recorded in the external issue ledger.</p>
+<p>The native Windows x64 launcher and actual WSL2 distribution passed the full real Omni/Caddy protocol suite, followed by native command checks for Unicode and quoted arguments, UNC paths, piped input, exit codes, persistent settings, connection lifecycle, redacted configuration, and Windows access to the local dashboard. The browser bridge opened the dashboard from <code>silicon web</code>. Both Windows architectures built their PE launchers and passed native unit tests; ARM64 WSL2 execution remains unverified. The first WSL run caught Windows checkout line endings in the Linux provisioning script; repository attributes now preserve LF for shell and Python files. <a href="https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35134808415">The successful integration run</a> used the initial Linux runtime; the final runtime and PowerShell 5.1 installer checks follow separately.</p>
+<p>The user requested the latest application CLIs during testing. Anonymous Honeycomb downloads verified IAM 1.11.0, Space Station 0.1.4, DM 0.7.0, Briefcase 1.1.0, Waveform 0.1.2, Commit 0.2.0, Remind 0.2.0, and Hook 0.6.0, with matching native headers on all 32 Unix payloads. Honeycomb 0.2.3 is the current bootstrap release; Omni 0.7.2 and Caddy 2.11.4 remain current. The installer now obtains all eight application binaries through Honeycomb instead of mixing older crate and Git builds. A complete isolated local installation succeeded with those versions. Their published licenses and exact archive hashes are retained in the dependency notices.</p>
+<p>Honeycomb packaging now exports only <code>silicon</code> and <code>si</code>, keeping the remaining tools private so a fresh installation does not collide with Honeycomb itself. Both interpreter entry points discover their versioned sibling bundle directory before starting threads, with duplicate paths removed and each Silicon home retaining command priority. A real native subprocess test checks discovery through the public symlink, private dependencies, working directory, home overrides, update suppression, and rejection of an unmarked directory.</p>
+<p>The refreshed Windows run exposed an unbounded heartbeat backlog: a periodic tick could start another operation while the previous one still held the same session's provider connection. Slow WSL storage made that queue delay foreground commands and DNA updates. The scheduler now permits one heartbeat per connection generation and session, coalescing missed ticks while other sessions continue. Its regression blocks one provider RPC over multiple ticks, confirms independent-session progress, then confirms foreground delivery and complete draining. The final local checks passed 38 unit tests and the bundle-path integration test, with the two separately exercised Caddy tests omitted from the ordinary suite; formatting and Clippy passed. A fresh six-target release build will validate the combined changes.</p>
 <h3 id="16-september-implementing-360">16 September: implementing 3.6.0</h3>
 <p>The updated specification introduces explicit connection setup, canonical Honeycomb application IDs, a user Space Station destination, source-attributed DNA, persistent settings, and read-only organization updates. The preserved reference YAML now includes <code>setup</code>, <code>apps</code>, <code>webhooks</code>, and <code>space_station</code>. The interpreter accepts those fields while retaining the existing command-based authentication fields and legacy ISI mode mappings.</p>
 <p>Compilation validates deferred expressions without invoking setup or application commands. Setup runs only when connecting, with stdout and stderr recorded; an exhausted fallback prevents the connection from starting. Application lists combine authentication and webhook requirements, resolve installed commands by verified IAM identity, and install missing packages through Honeycomb. Space Station's native CLI is acquired through a real Honeycomb package installation when constructing the distribution.</p>

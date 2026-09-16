@@ -16,7 +16,6 @@ source_dir=${SILICON_SOURCE_DIR:-}
 git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
 omni_rev=d52f5416cd33b363554d2300b5603dc0b6c43545
-commit_rev=3fe18128282bf65c1f62595ed01e65ec467dba28
 commands='silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook'
 binaries="$commands commit-native remind-native"
 notices='LICENSE LICENSES/README.md LICENSES/iam-LICENSE.txt LICENSES/dm-NOTICE.txt LICENSES/briefcase-LICENSE.txt LICENSES/waveform-LICENSE.txt LICENSES/commit-NOTICE.txt LICENSES/remind-LICENSE.txt LICENSES/hook-NOTICE.txt LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt LICENSES/honeycomb-LICENSE.txt LICENSES/spacestation-LICENSE.txt'
@@ -114,20 +113,12 @@ copy_dependency() {
     cp "$dependency_bins/$1" "$stage/payload/bin/$1"
 }
 
-install_crate() {
-    if ! copy_dependency "$1"; then
-        say "building required dependency $1 ($2 $3)"
-        cargo install --locked --force --root "$stage/payload" --version "$3" --bin "$1" "$2" ||
-            fail "required dependency $1 could not be installed from verified crate $2 $3"
-    fi
-}
-
 install_honeycomb_dependencies() {
     if ! copy_dependency honeycomb; then
         honeycomb_asset="honeycomb-$honeycomb_target.tar.gz"
-        honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/download/v0.2.0
-        say "downloading Honeycomb 0.2.0 for $honeycomb_target"
-        download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz" || fail 'could not download Honeycomb 0.2.0'
+        honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/download/v0.2.3
+        say "downloading Honeycomb 0.2.3 for $honeycomb_target"
+        download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz" || fail 'could not download Honeycomb 0.2.3'
         download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256" || fail 'could not download Honeycomb checksum'
         verify 256 "$stage/honeycomb.sha256" "$honeycomb_asset" "$stage/honeycomb.tar.gz"
         tar -xOzf "$stage/honeycomb.tar.gz" honeycomb > "$stage/payload/bin/honeycomb" || fail 'Honeycomb release has no executable'
@@ -136,15 +127,24 @@ install_honeycomb_dependencies() {
     # Anonymous public package installation. Never borrow the user's IAM/Honeycomb session.
     honeycomb_home="$stage/honeycomb-home"
     mkdir -p "$honeycomb_home"
-    SILICON_HOME="$honeycomb_home" HONEYCOMB_API_URL=https://backend.honeycomb.teamofsilicons.com "$stage/payload/bin/honeycomb" config set auto_update false --json >/dev/null || fail 'could not configure isolated Honeycomb installer'
-    say 'installing Space Station 0.1.3 through Honeycomb'
-    SILICON_HOME="$honeycomb_home" HONEYCOMB_API_URL=https://backend.honeycomb.teamofsilicons.com "$stage/payload/bin/honeycomb" install 'tos>spacestation' --version 0.1.3 --alias spacestation=silicon-bundled-spacestation --json || fail 'Honeycomb could not install the public Space Station package'
-    # The published package is one self-contained native executable. Copy its bytes,
-    # never its absolute Honeycomb launcher, into the relocatable release payload.
-    set -- "$honeycomb_home"/.honeycomb/dir/contexts/*/bin/silicon-bundled-spacestation
-    [ "$#" -eq 1 ] && [ -x "$1" ] || fail 'Honeycomb did not install exactly one Space Station launcher'
-    cp -L "$1" "$stage/payload/bin/spacestation" || fail 'could not copy Honeycomb Space Station executable'
-    "$stage/payload/bin/spacestation" --version || fail 'Space Station binary cannot run on this system'
+    while read -r binary app_id app_version; do
+        say "installing $app_id $app_version through Honeycomb"
+        SILICON_HOME="$honeycomb_home" HONEYCOMB_AUTO_UPDATE=0 HONEYCOMB_API_URL=https://backend.honeycomb.teamofsilicons.com "$stage/payload/bin/honeycomb" install "$app_id" --version "$app_version" --alias "$binary=silicon-bundled-$binary" --json || fail "Honeycomb could not install $app_id $app_version"
+        # These verified packages each contain one self-contained executable.
+        # Copy its bytes, never the machine-specific Honeycomb launcher.
+        set -- "$honeycomb_home"/.honeycomb/dir/contexts/*/bin/"silicon-bundled-$binary"
+        [ "$#" -eq 1 ] && [ -x "$1" ] || fail "Honeycomb did not install exactly one $binary launcher"
+        cp -L "$1" "$stage/payload/bin/$binary" || fail "could not copy Honeycomb $binary executable"
+    done <<'APPS'
+iam tos>iam 1.11.0
+spacestation tos>spacestation 0.1.4
+dm tos>dm 0.7.0
+briefcase tos>briefcase 1.1.0
+waveform tos>waveform 0.1.2
+commit tos>commit 0.2.0
+remind tos>remind 0.2.0
+hook tos>hook 0.6.0
+APPS
 }
 
 wrap_managed_apps() {
@@ -231,18 +231,8 @@ if [ -n "$source_dir" ]; then
                 fail "required Omni binary $binary could not be built at $omni_rev"
         fi
     done
-    install_crate iam silicon-iam-cli 1.9.0
     install_honeycomb_dependencies
-    install_crate dm silicon-dm-cli 0.7.0
-    install_crate briefcase briefcase-cli 1.1.0
-    install_crate waveform waveform-cli 0.1.0
-    if ! copy_dependency commit; then
-        cargo install --locked --force --root "$stage/payload" --git https://github.com/teamofsilicons/silicon-commit --rev "$commit_rev" --bin commit silicon-commit-cli ||
-            fail "required Commit binary could not be built at $commit_rev"
-    fi
     "$stage/payload/bin/commit" --no-update logout --help >/dev/null || fail 'required Commit logout command is unavailable'
-    install_crate remind silicon-remind-cli 0.1.2
-    install_crate hook silicon-hook-cli 0.2.0
     wrap_managed_apps
     if ! copy_dependency caddy; then
         caddy_asset="caddy_2.11.4_${caddy_platform}.tar.gz"

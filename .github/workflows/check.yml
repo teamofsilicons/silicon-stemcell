@@ -129,17 +129,21 @@ jobs:
           import json, os, pathlib, sys
           args = sys.argv[1:]
           home = pathlib.Path(os.environ.get('SILICON_HOME', '.'))
-          if args == ['--version']: print('honeycomb 0.2.0')
-          elif args == ['config', 'set', 'auto_update', 'false', '--json']:
-              assert home.name == 'honeycomb-home'
-              print('{"saved":true}')
+          if args == ['--version']: print('honeycomb 0.2.3')
           else:
-              assert args == ['install', 'tos>spacestation', '--version', '0.1.3', '--alias', 'spacestation=silicon-bundled-spacestation', '--json']
-              if os.environ.get('MOCK_HONEYCOMB_FAIL') == '1': sys.exit(1)
-              package = home / '.honeycomb/dir/contexts/fixture/packages/spacestation'
+              assert home.name == 'honeycomb-home' and os.environ['HONEYCOMB_AUTO_UPDATE'] == '0'
+              versions = dict(iam='1.11.0', spacestation='0.1.4', dm='0.7.0', briefcase='1.1.0', waveform='0.1.2', commit='0.2.0', remind='0.2.0', hook='0.6.0')
+              binary = args[1].removeprefix('tos>')
+              assert args == ['install', 'tos>' + binary, '--version', versions[binary], '--alias', binary + '=silicon-bundled-' + binary, '--json']
+              if os.environ.get('MOCK_HONEYCOMB_FAIL') == '1' or os.environ.get('MOCK_HONEYCOMB_FAIL_BINARY') == binary: sys.exit(1)
+              package = home / ('.honeycomb/dir/contexts/fixture/packages/' + binary)
               package.parent.mkdir(parents=True, exist_ok=True)
-              package.write_text('#!/bin/sh\\necho spacestation-0.1.3\\n'); package.chmod(0o755)
-              launcher = package.parent.parent / 'bin/silicon-bundled-spacestation'
+              if binary in ['commit', 'remind']:
+                  package.write_text('#!/usr/bin/env python3\\nimport json,os,sys\\nif os.environ.get("MOCK_OLD_COMMIT") == "1" and sys.argv[1:] == ["--no-update", "logout", "--help"]: sys.exit(2)\\nprint(json.dumps({"args":sys.argv[1:],"api":os.environ.get("COMMIT_API_URL")}))\\n')
+              else:
+                  package.write_text('#!/bin/sh\\necho ' + binary + '-' + versions[binary] + '\\n')
+              package.chmod(0o755)
+              launcher = package.parent.parent / ('bin/silicon-bundled-' + binary)
               launcher.parent.mkdir(parents=True, exist_ok=True); launcher.symlink_to(package)
               print(json.dumps({'status':'installed','bin_directory':str(launcher.parent)}))
           ''')
@@ -149,12 +153,7 @@ jobs:
           args = sys.argv[1:]
           dest = pathlib.Path(args[args.index('--root') + 1]) / 'bin'
           names = ['silicon', 'si']
-          if '--git' in args:
-              assert args[args.index('--git') + 1] == 'https://github.com/teamofsilicons/silicon-commit'
-              assert args[args.index('--rev') + 1] == '3fe18128282bf65c1f62595ed01e65ec467dba28'
-              assert args[args.index('--bin') + 1] == 'commit'
-              assert args[-1] == 'silicon-commit-cli' and '--locked' in args and '--force' in args
-              names = ['commit']
+          assert '--git' not in args, 'application CLIs must come from Honeycomb'
           dest.mkdir(parents=True, exist_ok=True)
           for name in names:
               path = dest / name
@@ -164,7 +163,7 @@ jobs:
               cargo.chmod(0o755)
               env.update(SILICON_SOURCE_DIR=str(source), SILICON_DEPENDENCY_BIN_DIR=str(dependencies))
               install(True)
-              assert (current / 'bin/spacestation').read_text() == '#!/bin/sh\necho spacestation-0.1.3\n'
+              assert (current / 'bin/spacestation').read_text() == '#!/bin/sh\necho spacestation-0.1.4\n'
               assert not (current / 'bin/spacestation').is_symlink()
               assert not (current / '.honeycomb').exists()
               old = current.readlink()
@@ -193,14 +192,15 @@ jobs:
                   assert probe(prefix / 'bin/commit')['api'] is None
                   path.unlink()
               old = current.readlink()
-              (dependencies / 'commit').write_text('#!/bin/sh\nif [ "$*" = "--no-update logout --help" ]; then exit 2; fi\nexit 0\n')
+              env['MOCK_OLD_COMMIT'] = '1'
               install(False); assert current.readlink() == old
-              (dependencies / 'commit').unlink()
+              env.pop('MOCK_OLD_COMMIT')
               install(True); assert current.readlink() != old
               assert (current / 'bin/commit-native').is_file()
               old = current.readlink()
-              (dependencies / 'hook').unlink()
+              env['MOCK_HONEYCOMB_FAIL_BINARY'] = 'hook'
               install(False); assert current.readlink() == old
+              env.pop('MOCK_HONEYCOMB_FAIL_BINARY')
               env.pop('SILICON_SOURCE_DIR'); env.pop('SILICON_DEPENDENCY_BIN_DIR')
               prefix = root / 'linux-prefix'
               env.update(SILICON_PREFIX=str(prefix), MOCK_SYSTEM='Linux', MOCK_ARCH='x86_64', MOCK_PORT_START='1024')

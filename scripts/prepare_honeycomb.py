@@ -36,7 +36,7 @@ def prepare(artifacts, output, version):
         root = Path(temp) / "package"
         root.mkdir()
         manifest = {"format_version": 1, "app_id": "tos>silicon", "version": version,
-                    "bin": {command: command for command in COMMANDS}, "targets": {}}
+                    "bin": {command: command for command in ("silicon", "si")}, "targets": {}}
         expanded = 0
         for target, rust_target in TARGETS.items():
             windows = target.startswith("windows-")
@@ -84,7 +84,9 @@ def prepare(artifacts, output, version):
                     raise ValueError(f"Missing executable: {target}/{relative}")
                 if not windows and not executable.stat().st_mode & 0o111:
                     raise ValueError(f"Nonexecutable Unix command: {target}/{relative}")
-            manifest["targets"][target] = {"root": f"targets/{target}", "executables": executables}
+            manifest["targets"][target] = {"root": f"targets/{target}",
+                                            "executables": {command: executables[command]
+                                                            for command in manifest["bin"]}}
         # JSON is a YAML subset and avoids a packaging-only YAML dependency.
         (root / "honeycomb.yaml").write_text(json.dumps(manifest, indent=2) + "\n")
         shutil.move(str(root), output)

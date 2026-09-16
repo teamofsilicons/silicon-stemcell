@@ -22,6 +22,27 @@ use std::sync::Mutex;
 
 static LOG_LOCK: Mutex<()> = Mutex::new(());
 
+/// Call at process startup, before starting threads, so private bundle tools are discoverable.
+pub fn init_bundle_path() -> Result<()> {
+    let executable = std::env::current_exe()?.canonicalize()?;
+    if let Some(bin) = executable.parent() {
+        if bin.parent().is_some_and(|root| {
+            std::fs::read_to_string(root.join("VERSION")).is_ok_and(|version| {
+                version.trim().trim_start_matches('v') == env!("CARGO_PKG_VERSION")
+            })
+        }) {
+            let path = std::env::join_paths(
+                std::iter::once(bin.to_path_buf()).chain(
+                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                        .filter(|path| path != bin),
+                ),
+            )?;
+            std::env::set_var("PATH", path);
+        }
+    }
+    Ok(())
+}
+
 /// Every tool process uses the Silicon's app state; the bundled interpreter owns updates.
 pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std::process::Command {
     let mut command = std::process::Command::new(program);
@@ -30,6 +51,7 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
         .env("SILICON_HOME", home)
         .env("SILICON_IAM_HOME", home.join(".silicon-iam"))
         .env("SILICON_IAM_AUTO_UPDATE", "false")
+        .env("HONEYCOMB_AUTO_UPDATE", "0")
         .env("BRIEFCASE_AUTO_UPDATE", "0")
         .env("WAVEFORM_AUTO_UPDATE", "0")
         .env("SPACE_STATION_UPDATE", "0")

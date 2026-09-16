@@ -1,16 +1,16 @@
-silicon-commit-cli 0.1.0 (Git revision 3fe18128282bf65c1f62595ed01e65ec467dba28)
-Declared license: MIT
-Source: https://github.com/teamofsilicons/silicon-commit/tree/3fe18128282bf65c1f62595ed01e65ec467dba28
+Published Honeycomb package: tos>commit 0.2.0
+Package SHA-256: dbe42813a163a31be1cfe2c75cd0faf846a06e1116af45c5b0aa61b3478d5396
+Upstream declared license: MIT
+Metadata source: https://github.com/teamofsilicons/silicon-commit/blob/90531eaccafa8c96415949d28d0adec5d3ec4d25/cli/Cargo.toml
 
-No LICENSE, COPYING, or NOTICE file was present at the root of the pinned upstream repository. This notice records the upstream metadata without adding or changing its license terms.
+The Honeycomb archive contains no LICENSE, COPYING, or NOTICE file and does not identify a source build commit. The upstream repository at the reference above also contains no LICENSE, COPYING, or NOTICE file. This notice records the reference source metadata without adding or changing license terms or asserting exact binary build provenance.
 
-Package metadata from cli/Cargo.toml at the pinned Git revision:
+Reference CLI package metadata:
 {
-  "edition": "2024",
   "name": "silicon-commit-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "edition": "2024",
   "description": "Command-line client for Silicon Commit",
-  "readme": "README.md",
   "license": "MIT",
   "repository": "https://github.com/teamofsilicons/silicon-commit"
 }

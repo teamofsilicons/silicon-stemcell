@@ -63,19 +63,19 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | `silicon`, `si` | Interpreter and internal CLI, 4.0.0 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
-| `iam` | `silicon-iam-cli` 1.9.0 |
-| `honeycomb` | Honeycomb 0.2.0 |
-| `spacestation` | Space Station 0.1.3 from Honeycomb package `tos>spacestation` |
-| `dm` | `silicon-dm-cli` 0.7.0 |
-| `briefcase` | `briefcase-cli` 1.1.0 |
-| `waveform` | `waveform-cli` 0.1.0 |
-| `commit` | `silicon-commit-cli` 0.1.0 at Git revision `3fe1812`, through a managed wrapper |
-| `remind` | `silicon-remind-cli` 0.1.2, through a managed wrapper |
-| `hook` | `silicon-hook-cli` 0.2.0 |
+| `iam` | Honeycomb `tos>iam` 1.11.0 |
+| `honeycomb` | Honeycomb 0.2.3 |
+| `spacestation` | Honeycomb `tos>spacestation` 0.1.4 |
+| `dm` | Honeycomb `tos>dm` 0.7.0 |
+| `briefcase` | Honeycomb `tos>briefcase` 1.1.0 |
+| `waveform` | Honeycomb `tos>waveform` 0.1.2 |
+| `commit` | Honeycomb `tos>commit` 0.2.0, through a managed wrapper |
+| `remind` | Honeycomb `tos>remind` 0.2.0, through a managed wrapper |
+| `hook` | Honeycomb `tos>hook` 0.6.0 |
 
 The Commit and Remind wrappers suppress their independent update checks. Their underlying binaries are shipped as `commit-native` and `remind-native` inside the release. For a fresh Commit home with no explicit backend override or existing saved configuration, the wrapper selects `https://backend.commit.teamofsilicons.com`. It preserves an existing configuration or explicit `COMMIT_API_URL`.
 
-Release construction obtains Space Station through the real Honeycomb package installer in an isolated anonymous home. It copies the verified native executable into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station `windows run` and `windows tool` features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.
+Release construction obtains all eight application CLIs through Honeycomb in an isolated anonymous home, with its automatic updates disabled. These are the latest public catalog versions verified on 17 September 2026. It copies their verified native executables into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station `windows run` and `windows tool` features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.
 
 The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.
 
@@ -101,7 +101,7 @@ silicon web
 
 Windows data remains accessible: `C:\Users\You\Documents` is `/mnt/c/Users/You/Documents`, and `D:\Projects` is `/mnt/d/Projects`. Reads and writes affect the actual Windows files and respect Windows permissions. Put explicit paths to that data in your scripts as needed. Portable Bash and bundled CLI commands can use the same YAML on all platforms; macOS-specific tools and options still need alternatives inside the scripts.
 
-The Linux runtime keeps the managed Unix installation layout. If a later update replaces Caddy and needs to renew its port-80 capability, rerun the Windows installer; it performs that provisioning inside the dedicated distribution.
+The Linux runtime keeps the managed Unix installation layout. Its updater updates the Linux bundle; rerun the Windows installer to update the Windows launchers and browser bridge. If a later update replaces Caddy and needs to renew its port-80 capability, rerun the Windows installer; it performs that provisioning inside the dedicated distribution.
 
 Windows ARM64 is a preview until an actual ARM64 WSL2 end-to-end run is available. Hosted ARM runners can test the native launcher, and Linux ARM64 has its own native runtime checks, but those do not establish the complete Windows ARM64 installation path. Windows x64 release validation includes the real WSL2 installation and interpreter integration checks. See the release evidence for completed results.
 
@@ -144,13 +144,13 @@ From this repository's root:
 SILICON_SOURCE_DIR="$PWD" sh install.sh
 ```
 
-Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and required Cargo applications, downloads verified Caddy and Honeycomb, and installs Space Station through Honeycomb. Caddy's upstream checksum file uses SHA-512.
+Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and Omni, downloads verified Caddy and Honeycomb, and installs the eight application CLIs through Honeycomb. Caddy's upstream checksum file uses SHA-512.
 
 `SILICON_GIT_REV` is an alternative to `SILICON_SOURCE_DIR`: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.
 
-For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply already-built, trusted dependency executables. Supply native application binaries: when reusing a managed bundle, copy `commit-native` as `commit` and `remind-native` as `remind` into that dependency directory. The installer creates their wrappers itself. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source. Space Station is still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
+For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
-The 4.0.0 source installer pins Commit to Git revision `3fe18128282bf65c1f62595ed01e65ec467dba28`, whose CLI still identifies itself as 0.1.0. It verifies that `logout` is available before activation, including when reusing a local dependency binary. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
+The 4.0.0 installer obtains Commit 0.2.0 from Honeycomb and verifies that `logout` is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -880,10 +880,10 @@ Keep development and testing on the production authentication paths. An imported
 | --- | --- |
 | Existing 3.5 configurations | `login`, `webhook`, `sticky`, and `archive_on_end` remain accepted. Conflicting mode settings are errors; canonical names are preferred. |
 | IAM application discovery | JSON `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
-| Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM 1.9.0 is bundled; `--approve-scopes` is used only when its CLI exposes support. |
+| Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM 1.11.0 is bundled; `--approve-scopes` is used only when its CLI exposes support. |
 | Inference | Omni's pinned Rust/client-daemon contract at `d52f5416cd33b363554d2300b5603dc0b6c43545`. |
 | Local interpreter API | Protocol `1`, reported by `silicon info`; protected `POST /control` and `POST /si`. |
-| Honeycomb / Space Station | Honeycomb 0.2.0 and native Space Station CLI 0.1.3 in the distribution. Interpreter telemetry uses the pinned Space Station Rust package. |
+| Honeycomb / Space Station | Honeycomb 0.2.3 and native Space Station CLI 0.1.4 in the distribution. Interpreter telemetry uses the pinned Space Station Rust package. |
 
 This release makes additive changes and keeps the legacy paths above. No retirement date is set for those configuration or authentication spellings. A future removal or incompatible wire change must publish a migration and use a new contract version. The current checks negotiate CLI capabilities through command help and discovery; there is no general automatic upgrade negotiation between arbitrary client versions.
 

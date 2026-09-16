@@ -1,4 +1,5 @@
 fn main() -> anyhow::Result<()> {
+    silicon::init_bundle_path()?;
     silicon::telemetry::interpreter(
         "cli",
         "invoked",
