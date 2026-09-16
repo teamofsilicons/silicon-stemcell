@@ -58,6 +58,8 @@ The corrected `v3.6.1` candidate is tagged at `3f604bb1d99c2060b70377f6f8afe9269
 
 Unauthenticated HEAD requests to all six canonical public asset URLs returned HTTP 200 and the expected Content-Length. The production documentation deployment served the exact rendered 3.6.1 HTML at [docs.teamofsilicons.com](https://docs.teamofsilicons.com), with the correct public installer link and migration instructions. Its live telemetry gateway returned HTTP 202 and accepted the verification event. The documentation follow-up preserves the immutable runtime tag and records the completed installation and deployment receipts.
 
+The subsequent Honeycomb public-review request for `tos>silicon-realtime` revision 1 was rejected with HTTP 409 `revision_conflict`, requiring a valid CLI release and IAM private activation. No review request was accepted. The app remained active/private with no latest CLI release. Honeycomb requires six native targets, including both Windows architectures, while Silicon publishes four Unix targets. The external ledger records this publication constraint separately from runtime defects; the GitHub release, documentation, and realtime backend remain public and live.
+
 The historical entries below describe the earlier 3.5 releases.
 
 ### 9–10 September: Silicon 3.5

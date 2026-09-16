@@ -1,6 +1,6 @@
 # External dependency issues
 
-This ledger records confirmed upstream issues, their impact on Silicon, and the upstream evidence. It is separate from interpreter defects and from deployment or authentication prerequisites. New findings belong here with a reproducible command, affected version, expected and actual behavior, and a link to an upstream issue or fix when available.
+This ledger records confirmed upstream issues, their impact on Silicon, and the upstream evidence. Publication requirements are listed separately below so they are not presented as runtime defects. New findings belong here with a reproducible command, affected version, expected and actual behavior, and a link to an upstream issue or fix when available.
 
 | Component | Confirmed issue | Impact and status |
 | --- | --- | --- |
@@ -14,3 +14,15 @@ This ledger records confirmed upstream issues, their impact on Silicon, and the 
 | Commit hosted testing environments | The backend selected a testing environment while retaining the production app credential. | Resolved by [Commit PR #2](https://github.com/teamofsilicons/silicon-commit/pull/2). Existing unpaired testing environments still require pairing through the owner-authorized API. |
 
 The [implementation diary](#implementation-diary) records the original reproductions and subsequent verification. The IAM and Commit fixes are historical compatibility context; they are not new modifications made for the 3.6.1 release.
+
+### Honeycomb publication requirements
+
+Honeycomb rejected this public-review request for `tos>silicon-realtime`:
+
+```sh
+honeycomb publication request 'tos>silicon-realtime' --revision 1 --message 'Request public review' --json
+```
+
+The expected result was a review request. The CLI exited 1 with HTTP 409 `revision_conflict`: “Upload a valid CLI release and wait for IAM private activation before requesting publication.” No request was accepted, and the publication queue remained empty. The app was active but private at revision 1, with IAM revision 8, effective revision 1, and no latest CLI release.
+
+This is a publication compatibility constraint, not a confirmed runtime defect. Honeycomb requires six native targets, including Windows ARM64 and x86-64; Silicon currently ships four Unix targets and makes no Windows support claim. The public GitHub release, documentation, and hosted realtime backend remain available. No Honeycomb code or policy was changed.
