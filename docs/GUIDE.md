@@ -37,6 +37,8 @@ Find the four platform bundles and their checksums on the [v3.6.1 release page](
 
 **3.6.1** adds setup scripts, Honeycomb app installation, canonical IAM IDs, DNA source attribution, telemetry controls, and read-only organization live updates. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
+**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 3.6.1. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
+
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
 ```sh
@@ -76,6 +78,27 @@ The Commit and Remind wrappers suppress their independent update checks. Their u
 Release construction obtains Space Station through the real Honeycomb package installer in an isolated anonymous home. It copies the verified native executable into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station `windows run` and `windows tool` features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.
 
 The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.
+
+### Upgrading from 3.5.x
+
+The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
+
+When you are ready to restart, stop the old interpreter and rerun the **3.6.1 public installer into the same prefix**:
+
+```sh
+silicon stop
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.1/install.sh | sh
+silicon serve
+```
+
+Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter and restores its saved connections. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
+
+```sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.1/install.sh \
+  | SILICON_PREFIX="$HOME/tools/silicon" sh
+```
+
+Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 3.6.1. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.
 
 ### Linux and port 80
 
@@ -931,12 +954,15 @@ Use `SILICON_HONEYCOMB` to select a particular Honeycomb executable for an integ
 
 The 3.6-series configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. Version 3.6.1 carries the verified dependency corrections after the unpublished 3.6.0 candidate failed its release discovery gate; the original tag remains immutable. The release record below distinguishes candidate checks from completed publication and historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
 
-The recorded 3.6.0 local interpreter run passed 40 tests, with two Caddy integration tests explicitly ignored in that run; Clippy passed with warnings denied. The full protocol E2E passed with real Omni and Caddy, including the new 3.6 checks. Four credential-focused regressions also passed, including the two new compile-diagnostic tests. The documentation telemetry endpoint passed its Node regression. Installer regressions covered the new required binaries, Honeycomb failure retaining the existing release, and copying the native Space Station executable rather than a machine-specific launcher. Chrome layout checks covered desktop and a 390-pixel mobile viewport, including mobile navigation; all 59 internal documentation anchors resolved after the final content update.
+The recorded 3.6.0 local interpreter run passed 40 tests, with two Caddy integration tests explicitly ignored in that run; Clippy passed with warnings denied. The full protocol E2E passed with real Omni and Caddy, including the new 3.6 checks. Four credential-focused regressions also passed, including the two new compile-diagnostic tests. The documentation telemetry endpoint passed its Node regression. Installer regressions covered the new required binaries, Honeycomb failure retaining the existing release, and copying the native Space Station executable rather than a machine-specific launcher. Chrome layout checks covered desktop and a 390-pixel mobile viewport, including mobile navigation; all 60 internal documentation anchors resolved after the migration update.
 
 The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated `claude-code-cli` provider returned `SILICON_SMOKE_OK` and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.
 
 | Requirement | Evidence and scope |
 | --- | --- |
+| 3.6.1 public release | [Version 3.6.1](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.1) was published as the latest stable release on 16 September at 17:19:29 UTC from `3f604bb1d99c2060b70377f6f8afe92693264475`. [All four native jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35124053286) and [source checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35124052640) passed. All six asset sizes/digests and five checksum entries matched; each native archive contained the expected 34 payload files, architecture, installer, notices, and version. |
+| 3.6.1 public installation and migration repair | The exact public curl installer passed in a fresh macOS ARM64 prefix. Reinstalling the same version repaired missing Honeycomb/Space Station executables, links, and notices while preserving a marker YAML. All 34 installed payload files matched the native CI archive, both dependency commands ran, and the public installed bundle passed the full real Omni/Caddy E2E. |
+| 3.6.1 production documentation | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) served the exact rendered 3.6.1 HTML, installer link, and migration instructions. Its production telemetry gateway returned HTTP 202 and accepted the verification event. |
 | Real Space Station installation and auth | Honeycomb 0.2.0 anonymously installed public `tos>spacestation` 0.1.3 into a clean home. A separate freshly created Silicon home with no saved organization then passed real IAM SLT exchange, canonical-ID login, exact Silicon identity/org checks, logout, and false authenticated status against the retained production test identity. |
 | DM's published replacement matches the live API | The native discovery gate rejected DM 0.3.0's old response-envelope parsing. Published DM 0.7.0 then passed fresh-home IAM issuance, interpreter login, exact identity/org, webhook registration/removal, logout, and final unauthenticated status; the dependency pin and notice were updated. |
 | Briefcase's published replacement matches the live contract | Published Briefcase 1.1.0 reported matching client, server, and contract versions and discovered `tos>briefcase`. Real IAM SLT login returned the correct Silicon identity/org; authenticated status, logout, and final unauthenticated status passed without content writes. The pin replaces the incompatible 0.2.4 client. |

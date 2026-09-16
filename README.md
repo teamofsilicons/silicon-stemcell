@@ -8,6 +8,8 @@ curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/
 
 [Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.1).
 
+**Upgrading from 3.5.x:** rerun the installer above once into your existing installation prefix, even if `silicon --version` already reports 3.6.1. The old updater cannot add Honeycomb and Space Station. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
+
 Version 3.6.1 adds connection setup scripts, Honeycomb application installation, canonical IAM app IDs, DNA source attribution, Space Station telemetry, settings, and organization-scoped live updates.
 
 The installer sets up Silicon, Caddy, IAM, Omni, Honeycomb, DM, Briefcase, Waveform, Commit, Remind, Hook, and Space Station. macOS and Linux, ARM64 and x86-64. Default prefix: `~/.local/share/silicon`.
