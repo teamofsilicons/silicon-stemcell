@@ -816,6 +816,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configuration_redacts_credentials_and_their_interpolated_copies() {
+        let cfg: Config = serde_json::from_value(json!({
+            "silicon": {
+                "id": "test:org", "token": "private-silicon-value", "timezone": "UTC",
+                "SILICON_HOME": "/home/silicon/project", "inference_providers": [],
+                "space_station": {"table_name": "activity", "table_key": "private-table-value"}
+            },
+            "isi": {"worker": {"model": "fast", "dna": {
+                "assemble": ["token=private-silicon-value key=private-table-value"]
+            }}},
+            "access": {}, "flow": [{"value": "private-table-value/private-silicon-value"}]
+        }))
+        .unwrap();
+        let snapshot = configuration(&cfg);
+        assert_eq!(snapshot["silicon"]["token"], "[redacted]");
+        assert_eq!(
+            snapshot["silicon"]["space_station"]["table_key"],
+            "[redacted]"
+        );
+        assert_eq!(
+            snapshot["isi"]["worker"]["dna"]["assemble"][0],
+            "token=[redacted] key=[redacted]"
+        );
+        assert_eq!(snapshot["flow"][0]["value"], "[redacted]/[redacted]");
+        assert_eq!(
+            snapshot["silicon"]["space_station"]["table_name"],
+            "activity"
+        );
+        assert_eq!(snapshot["isi"]["worker"]["model"], "fast");
+        assert_eq!(cfg.silicon.token.as_deref(), Some("private-silicon-value"));
+    }
+
+    #[test]
     fn http_compile_blocks_restart_until_its_shell_and_response_finish() {
         let home = tempfile::tempdir().unwrap();
         let yaml = home.path().join("silicon.yaml");

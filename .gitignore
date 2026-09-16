@@ -1,5 +1,5 @@
 /target/
-/backend/target/
+/windows/launcher/target/
 /.vercel/
 **/__pycache__/
 .vercel

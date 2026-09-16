@@ -79,6 +79,30 @@ Release construction obtains Space Station through the real Honeycomb package in
 
 The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.
 
+### Windows installation and project files
+
+In PowerShell:
+
+```powershell
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.ps1 | iex
+```
+
+Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux interpreter and application bundle used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
+
+Keep each project, its YAML, and its `SILICON_HOME` inside the distribution's Linux filesystem. Open `\\wsl.localhost\Silicon\home\silicon` in File Explorer and copy or create your project folder there. For example:
+
+```powershell
+silicon compile '\\wsl.localhost\Silicon\home\silicon\assistant\silicon.yaml'
+silicon connect '\\wsl.localhost\Silicon\home\silicon\assistant\silicon.yaml'
+silicon web
+```
+
+`SILICON_HOME: ! pwd` continues to mean the YAML's directory. Setup commands, relative executables, DNA scripts, application CLIs, and ISI sessions execute from that home. The launcher translates explicit Windows paths into WSL paths, but it never rewrites or silently moves your YAML. A configuration or home on a Windows drive is rejected because private credential modes and Unix socket semantics require Linux storage.
+
+Windows data remains accessible: `C:\Users\You\Documents` is `/mnt/c/Users/You/Documents`, and `D:\Projects` is `/mnt/d/Projects`. Reads and writes affect the actual Windows files and respect Windows permissions. Put explicit paths to that data in your scripts as needed. Portable Bash and bundled CLI commands can use the same YAML on all platforms; macOS-specific tools and options still need alternatives inside the scripts.
+
+Windows ARM64 is a preview until an actual ARM64 WSL2 end-to-end run is available. Hosted ARM runners can test the native launcher, and Linux ARM64 has its own native runtime checks, but those do not establish the complete Windows ARM64 installation path. Windows x64 release validation includes the real WSL2 installation and interpreter integration checks. See the release evidence for completed results.
+
 ### Migrating from 3.6.x
 
 Version 4 removes the remote `login`, `logout`, and `watch` commands and the `realtime` setting. Use local `silicon logs`, `silicon config`, and `silicon ping`. Saved Silicon configurations, sessions, and managed-app authentication are retained. The interpreter no longer connects to the retired relay.

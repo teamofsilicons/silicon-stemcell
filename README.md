@@ -20,7 +20,7 @@ irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/
 
 Version 4 focuses on the local interpreter. It retains setup scripts, Honeycomb app installation, canonical IAM IDs, DNA source attribution, Space Station telemetry, local ping, logs, and the dashboard. The hosted realtime service and remote login/watch commands have been removed.
 
-The installer sets up Silicon, Caddy, IAM, Omni, Honeycomb, DM, Briefcase, Waveform, Commit, Remind, Hook, and Space Station. macOS, Linux, and Windows on ARM64 and x86-64. Windows uses WSL2; first setup may require administrator access and a restart. The Unix default prefix is `~/.local/share/silicon`.
+The installer sets up Silicon, Caddy, IAM, Omni, Honeycomb, DM, Briefcase, Waveform, Commit, Remind, Hook, and Space Station. macOS, Linux, and Windows on ARM64 and x86-64. Windows uses WSL2; first setup may require administrator access and a restart. Windows ARM64 is a preview pending a full runtime test on ARM64 Windows hardware. The Unix default prefix is `~/.local/share/silicon`.
 
 ```sh
 silicon compile /path/to/silicon.yaml

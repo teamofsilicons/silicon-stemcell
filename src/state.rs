@@ -8,9 +8,39 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub fn private_dir(path: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
+        validate_wsl_filesystem(path)?;
+    }
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
+}
+
+/// Check the actual filesystem before creating state, following existing symlinks.
+#[cfg(target_os = "linux")]
+pub(crate) fn validate_wsl_filesystem(path: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let absolute = std::path::absolute(path)?;
+    let mut probe = absolute.as_path();
+    loop {
+        let name = std::ffi::CString::new(probe.as_os_str().as_bytes())?;
+        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        if unsafe { libc::statfs(name.as_ptr(), filesystem.as_mut_ptr()) } == 0 {
+            if unsafe { filesystem.assume_init() }.f_type != libc::EXT4_SUPER_MAGIC {
+                bail!("Windows WSL installation requires configuration and private state inside the Silicon distribution's Linux filesystem; copy your project to /home/silicon first. Windows data files remain accessible through /mnt/c and other mounted drives");
+            }
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error).context("inspect WSL configuration filesystem");
+        }
+        probe = probe
+            .parent()
+            .ok_or(error)
+            .context("find WSL configuration filesystem")?;
+    }
 }
 
 pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -162,6 +192,37 @@ pub fn sessions(home: &Path, isi: &str, archived: bool) -> Result<Vec<Session>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wsl_state_rejects_a_redirected_parent_before_writing() {
+        // Isolate SILICON_WSL from other tests in this process.
+        if std::env::var_os("SILICON_WSL_STATE_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "state::tests::wsl_state_rejects_a_redirected_parent_before_writing",
+                ])
+                .env("SILICON_WSL", "1")
+                .env("SILICON_WSL_STATE_TEST", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let alias = directory.path().join(".silicon");
+        std::os::unix::fs::symlink("/proc", &alias).unwrap();
+        let path = alias.join(format!("silicon-state-{}/credentials.json", Uuid::new_v4()));
+        let error = write_json(&path, &serde_json::json!({"secret": "private"}))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("copy your project to /home/silicon"),
+            "{error}"
+        );
+        assert!(!path.exists());
+    }
+
     #[test]
     fn archive_keeps_original_time_and_safe_disk_identity() {
         let dir = tempfile::tempdir().unwrap();

@@ -4,7 +4,9 @@
 
 ### 16 September: preparing 4.0.0
 
-The requested scope is the local Silicon interpreter, with Windows delivered through WSL2. The hosted realtime publisher, reader commands, backend source, and remote service are being removed. Local ping, configuration inspection, the dashboard, managed applications, and Space Station telemetry remain. Version 4 is a major release because it removes the remote login/watch interface. Windows and publication checks will be recorded here as they complete.
+The requested scope is the local Silicon interpreter, with Windows delivered through WSL2. The hosted realtime publisher, reader commands, backend source, and remote service are being removed. Local ping, configuration inspection, the dashboard, managed applications, and Space Station telemetry remain. Version 4 is a major release because it removes the remote login/watch interface. Windows and publication checks will be recorded here as they complete. The reduced interpreter passed 36 unit tests, formatting, Clippy, and the full real Omni/Caddy end-to-end suite locally; two Caddy-specific unit tests remain separate from that suite. The hosted Windows probe ran WSL2 successfully on x64. Its ARM64 runner could not install WSL, so ARM64 runtime validation is explicitly incomplete.
+
+The dedicated realtime AWS stack, systemd service and runtime files, artifact bucket and its versions, runtime secret, ACM certificate, and backend telemetry table were deleted. Both the service and certificate-validation DNS records return authoritative NXDOMAIN. The shared Space Station host, service, and load balancer remain intact; the existing service PID was unchanged. IAM/Honeycomb retirement and publication constraints are recorded in the external issue ledger.
 
 ### 16 September: implementing 3.6.0
 

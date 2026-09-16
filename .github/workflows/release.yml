@@ -51,6 +51,8 @@ jobs:
               assert os.environ['RELEASE_TAG'] == f'v{version}', 'release tag must match Cargo.toml'
           default = re.search(r'version=\$\{SILICON_VERSION:-(.+?)\}', pathlib.Path('install.sh').read_text()).group(1)
           assert default == f'v{version}', 'installer default must match the release version'
+          assert tomllib.loads(pathlib.Path('windows/launcher/Cargo.toml').read_text())['package']['version'] == version
+          assert f"[string]$Version = 'v{version}'" in pathlib.Path('install.ps1').read_text()
           PY
       - name: Install Rust
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
@@ -119,9 +121,19 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  windows:
+    needs: build
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/windows.yml
+    with:
+      bundle_run_id: ${{ format('{0}', github.run_id) }}
+      source_ref: ${{ inputs.tag || github.ref_name }}
+
   draft:
     if: ${{ !inputs.build_only }}
-    needs: build
+    needs: [build, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -138,6 +150,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           cd dist
-          sha256sum silicon-*.tar.gz install.sh > SHA256SUMS
-          printf '%s\n' 'Complete Rust interpreter bundle: silicon, si, Omni, Caddy, IAM, DM, Briefcase, Waveform, Commit, Remind, Hook, Honeycomb, and Space Station.' 'Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.' > release-notes.md
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz install.sh SHA256SUMS
+          sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
+          printf '%s\n' 'Complete Rust interpreter bundle: silicon, si, Omni, Caddy, IAM, DM, Briefcase, Waveform, Commit, Remind, Hook, Honeycomb, and Space Station.' 'Windows x64 uses WSL2 and passes the real runtime suite. Windows ARM64 is preview: native launcher and Linux ARM64 tests pass, but physical Windows ARM64 WSL2 E2E is not yet verified.' 'Windows requires WSL2 and hardware virtualization. Restart and resume installation if Windows requests it. YAML and credentials stay on the Linux filesystem; /mnt/c accesses Windows data.' 'Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.' > release-notes.md
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

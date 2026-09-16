@@ -1,0 +1,115 @@
+name: Windows WSL2 bundles
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_run_id:
+        description: Unix release run containing same-source Linux bundles
+        required: true
+      source_ref:
+        description: Exact source revision to check out
+        required: true
+      test_arm_runtime:
+        description: Run WSL2 E2E on an available physical Windows ARM64 runner
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      bundle_run_id:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: true
+      test_arm_runtime:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            linux_target: x86_64-unknown-linux-gnu
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            linux_target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - name: Install pinned Rust compiler and checks
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ matrix.linux_target }}
+          path: linux-bundle
+          run-id: ${{ inputs.bundle_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify native launcher and PowerShell syntax
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path windows/launcher/Cargo.toml --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed' }
+          cargo test --manifest-path windows/launcher/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Native launcher tests failed' }
+          cargo clippy --manifest-path windows/launcher/Cargo.toml --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          foreach ($path in @('install.ps1', 'windows/package.ps1', 'tests/windows.ps1')) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { throw ($errors | Out-String) }
+          }
+      - name: Package matching Linux runtime and native Windows entry points
+        shell: pwsh
+        run: ./windows/package.ps1 -LinuxArchive "$PWD/linux-bundle/silicon-${{ matrix.linux_target }}.tar.gz" -OutputDirectory "$PWD/dist"
+      - name: Real WSL2 runtime and native launcher E2E
+        if: matrix.runner == 'windows-2025'
+        shell: pwsh
+        run: ./tests/windows.ps1 -PayloadRoot "$env:RUNNER_TEMP/silicon-${{ matrix.target }}"
+      - name: Record ARM64 runtime test boundary
+        if: matrix.runner == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          'ARM64 native PE build/tests passed. Full WSL2 E2E requires physical Windows ARM64 hardware; this hosted runner lacks nested virtualization. ARM64 is preview until the separate runtime test passes.' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  arm-runtime:
+    if: inputs.test_arm_runtime
+    needs: build
+    runs-on: [self-hosted, Windows, ARM64, silicon-wsl2]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: aarch64-pc-windows-msvc
+          path: windows-bundle
+      - name: Full native ARM64 WSL2 E2E
+        shell: pwsh
+        run: |
+          $payload = Join-Path $env:RUNNER_TEMP 'silicon-arm64-test'
+          Expand-Archive windows-bundle/silicon-aarch64-pc-windows-msvc.zip $payload
+          ./tests/windows.ps1 -PayloadRoot $payload

@@ -25,4 +25,28 @@ honeycomb publication request 'tos>silicon-realtime' --revision 1 --message 'Req
 
 The expected result was a review request. The CLI exited 1 with HTTP 409 `revision_conflict`: “Upload a valid CLI release and wait for IAM private activation before requesting publication.” No request was accepted, and the publication queue remained empty. The app was active but private at revision 1, with IAM revision 8, effective revision 1, and no latest CLI release.
 
-This is a publication compatibility constraint, not a confirmed runtime defect. Honeycomb requires six native targets, including Windows ARM64 and x86-64; Silicon currently ships four Unix targets and makes no Windows support claim. The public GitHub release, documentation, and hosted realtime backend remain available. No Honeycomb code or policy was changed.
+This was a publication compatibility constraint, not a confirmed runtime defect. Honeycomb requires six target payloads, including Windows ARM64 and x86-64; Silicon 3.6.1 shipped four Unix targets. The realtime service was subsequently retired during 4.0.0 preparation, as described below. No Honeycomb code or policy was changed.
+
+### Local interpreter publication requires unsupported IAM permissions
+
+The local interpreter does not need its own user login, IAM data permissions, delegated endpoints, or hosted authentication service. Its intended Honeycomb identity is `tos>silicon`; the live catalog returned 404 for that identifier during 4.0.0 preparation, and no placeholder application was registered.
+
+Honeycomb 0.2.0's [registration contract](https://github.com/teamofsilicons/silicon-honeycomb/blob/eaf1b726675b26a9b9cca82c976b894e25006183/crates/core/src/model.rs) requires an HTTPS webhook receiver, a signing secret of at least 32 characters, and a nonempty webhook category. Its schema permits an empty IAM scope list, but the hosted IAM service rejects it. The following authorized reduction on the retiring app reproduced the incompatibility:
+
+```sh
+iam app update 'tos>silicon-realtime' \
+  --app-scope '{"iam":[],"external":[]}' \
+  --obo-endpoints '[]' --webhook-scope updates --json
+```
+
+Expected: remove all data permissions for an application that no longer needs them. Actual: `validation_failed`, `app_scope: must declare 1-100 unique permissions`; IAM request `01a0ab66-f98a-7ba2-be98-796ed5216097`. The equivalent Honeycomb update returned exit code 0 with a **pending**, rejected-by-IAM configuration, not a successful activation (operation `f7a3704d-486a-4b73-ae53-1919f137b6f9`, request `01a0ab66-baa1-75fb-9370-892aec9c1ac8`). Callers must inspect operation state, not only the CLI exit code.
+
+Publishing this interpreter therefore requires upstream support for a standalone local CLI with zero IAM permissions and no authentication backend. No unnecessary scope, fake webhook, or replacement hosted authentication service was added. The six-target archive can be prepared independently; Windows entries are native launchers requiring WSL2, and do not claim a native Windows interpreter runtime. See [Honeycomb packaging instructions](https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/HONEYCOMB.md). An archive passing validation is not evidence of registration, public review, or publication.
+
+### Retired realtime app still requires an IAM operator to delete its record
+
+Honeycomb exposes configuration, release, publication, and reconciliation operations, but no app deletion or retirement operation. IAM's documented terminal deletion endpoint, `POST /api/v1/admin/applications/{app_id}/decisions` with `decision: "delete"`, requires platform-administrator authority, all application administration capabilities, and verified-channel step-up. The signed-in owning-organization administrator received HTTP 403 from the read-only platform inventory endpoint (request `01a0ab65-e9a2-7540-8cd2-93f6d25cee85`). Organization administration does not grant platform administration, and no access-control workaround was attempted.
+
+The supported cleanup completed on 16 September 2026: `tos>silicon-realtime` was renamed **Silicon Realtime (retired)** at Honeycomb revision 3 / IAM revision 14; its OBO endpoints and external scopes were removed, membership access was removed, and its webhook subscription was reduced to updates only. The mandatory `self.identity.read` scope remains because IAM rejects removing the final scope. The record remains private and IAM-verified; this is a retired registration, not a deleted or platform-disabled app. All 23 retained access/refresh tokens received successful revocation responses and subsequently introspected as inactive. The two dedicated realtime test environments, `01a0aae6-4422-7543-a548-00dfaef436be` and `01a0aaf6-daa6-7c31-a124-12e0add582b7`, are deleted with their normal 30-day recovery window.
+
+An authorized IAM platform operator must apply terminal deletion to `tos>silicon-realtime` (application UUID `01a0aae0-60b7-7462-9c06-854ccbd6baf7`) and then reconcile its Honeycomb record. The owning-organization session cannot perform that final operation.
