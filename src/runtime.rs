@@ -751,6 +751,7 @@ impl Runtime {
         let runtime = Arc::downgrade(self);
         thread::spawn(move || {
             let mut deadlines: HashMap<(Uuid, String), Instant> = HashMap::new();
+            let mut in_flight: HashMap<(Uuid, String), Weak<()>> = HashMap::new();
             loop {
                 thread::sleep(Duration::from_millis(250));
                 let Some(runtime) = runtime.upgrade() else {
@@ -806,7 +807,7 @@ impl Runtime {
                             if !deadlines.contains_key(&key) || due {
                                 match interval(&heartbeat["next"], &connected.cfg, &address) {
                                     Ok(next) => {
-                                        deadlines.insert(key, now + next);
+                                        deadlines.insert(key.clone(), now + next);
                                     }
                                     Err(error) => {
                                         let _ = log_line_scoped(
@@ -824,6 +825,16 @@ impl Runtime {
                             if !due {
                                 continue;
                             }
+                            // A slow provider must not accumulate periodic sends behind its client
+                            // lock. Missed ticks coalesce; other sessions keep their own schedule.
+                            if in_flight
+                                .get(&key)
+                                .is_some_and(|job| job.strong_count() > 0)
+                            {
+                                continue;
+                            }
+                            let heartbeat_job = Arc::new(());
+                            in_flight.insert(key, Arc::downgrade(&heartbeat_job));
                             let (runtime, connected, id, name, heartbeat) = (
                                 runtime.clone(),
                                 connected.clone(),
@@ -832,6 +843,7 @@ impl Runtime {
                                 heartbeat.clone(),
                             );
                             thread::spawn(move || {
+                                let _heartbeat_job = heartbeat_job;
                                 let result = (|| -> Result<()> {
                                     let _activity = runtime.activity()?;
                                     if !connected.enabled.load(Ordering::SeqCst) {
@@ -882,6 +894,7 @@ impl Runtime {
                     }
                 }
                 deadlines.retain(|key, _| active.contains(key));
+                in_flight.retain(|key, job| active.contains(key) || job.strong_count() > 0);
             }
         });
     }
@@ -1907,6 +1920,122 @@ flow: []
             }
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn slow_heartbeat_coalesces_ticks_without_blocking_other_sessions() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+
+        let (home, runtime, original, _) = worker(false);
+        let mut cfg = original.cfg.clone();
+        runtime.disconnect("test:org").unwrap();
+        let isi = cfg.isi.get_mut("a").unwrap();
+        isi.primary_send_mode = Some("session".into());
+        isi.heartbeat = Some(serde_yaml::to_value(json!({
+            "next": "! value=$(cat heartbeat-interval); if [ \"$value\" = 30min ]; then touch long-interval; fi; printf %s \"$value\"",
+            "message": "! printf '%s\\n' \"$ISI\" >> heartbeat-started; printf heartbeat"
+        })).unwrap());
+        fs::write(home.path().join("heartbeat-interval"), "0.01s").unwrap();
+        runtime.connect(cfg).unwrap();
+        let connected = runtime.get("test:org").unwrap();
+        let options = |id: &str| SendOptions {
+            id: Some(id.into()),
+            new: true,
+            ..Default::default()
+        };
+        let slow = runtime.worker(&connected, "a", &options("slow")).unwrap();
+        let fast = runtime.worker(&connected, "a", &options("fast")).unwrap();
+        let fast_transport = transport(&fast);
+        let (client, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        *slow.client.lock().unwrap() = Some(Client::from_stream(client).unwrap());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let slow_worker = slow.clone();
+        let slow_transport = thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let mut blocked_once = false;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let stopped = request["op"] == "stop";
+                if !blocked_once && request["text"] == "heartbeat" {
+                    blocked_once = true;
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }
+                writeln!(
+                    daemon,
+                    "{}",
+                    json!({"id":request["id"], "ok":true,
+                    "result":if stopped {json!({"stopped":true})} else {json!({"accepted":true})}})
+                )
+                .unwrap();
+                if stopped {
+                    break;
+                }
+                slow_worker
+                    .on_event(
+                        Event::new(Event::START).saying(request["text"].as_str().unwrap()),
+                        false,
+                        0,
+                    )
+                    .unwrap();
+            }
+        });
+        runtime.start_scheduler();
+        let started = started_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        let calls = || {
+            fs::read_to_string(home.path().join("heartbeat-started"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        // Keep one Omni RPC blocked over several real scheduler ticks. The fast
+        // session proves the scheduler continues processing those ticks.
+        let fast_progressed = wait_until(|| calls().iter().filter(|s| *s == "a:fast").count() >= 3);
+        let slow_calls = calls().iter().filter(|s| *s == "a:slow").count();
+        fs::write(home.path().join("heartbeat-interval"), "30min").unwrap();
+        let rescheduled = wait_until(|| home.path().join("long-interval").exists());
+        let foreground = runtime.clone();
+        let (sent_tx, sent_rx) = mpsc::channel();
+        let sending = thread::spawn(move || {
+            let result = foreground
+                .send(
+                    "test:org",
+                    None,
+                    "a",
+                    "foreground",
+                    &SendOptions {
+                        id: Some("slow".into()),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .and_then(|sent| sent.wait_started());
+            sent_tx.send(result).unwrap();
+        });
+        // Release before assertions so a regression cannot strand the blocked RPC.
+        release_tx.send(()).unwrap();
+        let foreground_finished = sent_rx.recv_timeout(Duration::from_secs(5));
+        let drained = wait_until(|| runtime.activities.load(Ordering::SeqCst) == 0);
+        runtime.shutdown();
+        sending.join().unwrap();
+        slow_transport.join().unwrap();
+        fast_transport.join().unwrap();
+        assert!(started && fast_progressed && rescheduled);
+        assert_eq!(slow_calls, 1, "slow heartbeat accumulated overlapping work");
+        assert!(
+            foreground_finished.unwrap().is_ok(),
+            "foreground send was starved"
+        );
+        assert!(drained, "heartbeat work remained queued");
     }
 
     #[test]
