@@ -128,6 +128,16 @@ try {
         & $wsl --terminate Silicon
         if ($LASTEXITCODE -ne 0) { throw 'Silicon was installed, but WSL could not reload its non-root default user. Restart Windows before using this distribution.' }
     }
+    # WSL2 registers PE execution at VM startup. Ubuntu package upgrades can
+    # remove it, and reloading only this distribution does not restart that VM.
+    & $wsl --distribution Silicon --user silicon --exec sh "$linuxPayload/interop.sh" check $linuxPowerShell
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'Checking Windows executable interoperability after Linux package updates...'
+        & $wsl --distribution Silicon --user root --exec sh "$linuxPayload/interop.sh" repair
+        if ($LASTEXITCODE -ne 0) { throw 'Windows interoperability could not be restored. Check Windows/WSL policy, then rerun this installer.' }
+        & $wsl --distribution Silicon --user silicon --exec sh "$linuxPayload/interop.sh" check $linuxPowerShell
+        if ($LASTEXITCODE -ne 0) { throw 'WSL cannot launch Windows applications. Check Windows/WSL policy, then rerun this installer.' }
+    }
     if (!$NoPath) {
         $previous = [Environment]::GetEnvironmentVariable('Path', 'User')
         $entries = @($previous -split ';' | Where-Object { $_ -and $_ -notlike "$Prefix\releases\*" -and $_ -ne $PayloadRoot })

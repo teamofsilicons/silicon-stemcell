@@ -36,6 +36,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Fresh distribution inherited Windows executable paths.' }
     $uid = & $wsl -d Silicon -u silicon --exec id -u
     if ($LASTEXITCODE -ne 0 -or "$uid".Trim() -eq '0') { throw 'Runtime user must not be root.' }
+    # Exercise real Windows PE execution after package upgrades and distro reload.
+    $linuxPowerShell = (& $wsl -d Silicon -u silicon --exec wslpath -u $powershell).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate native PowerShell for interop test.' }
+    $interop = & $wsl -d Silicon -u silicon --exec $linuxPowerShell -NoLogo -NoProfile -NonInteractive -Command 'Write-Output silicon-interop-ok; exit 7'
+    if ($LASTEXITCODE -ne 7 -or "$interop".Trim() -ne 'silicon-interop-ok') { throw 'WSL Windows interoperability did not preserve output and exit status.' }
     $linuxSource = (& $wsl -d Silicon -u silicon --exec wslpath -u $source).Trim()
     & $wsl -d Silicon -u silicon --exec sh -ec 'mkdir -p /home/silicon/qa-source/tests; cp "$1/tests/e2e.py" /home/silicon/qa-source/tests/e2e.py' sh $linuxSource
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare tests on Linux FS.' }

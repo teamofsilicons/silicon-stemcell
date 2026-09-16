@@ -253,4 +253,4 @@ jobs:
           cargo test --manifest-path windows/launcher/Cargo.toml --locked
           cargo clippy --manifest-path windows/launcher/Cargo.toml --locked --all-targets -- -D warnings
           bash -n windows/launch.sh
-          sh -n windows/provision.sh
+          sh -n windows/provision.sh windows/interop.sh

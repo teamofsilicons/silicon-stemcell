@@ -72,7 +72,13 @@ set -eu
 exec "$(cat /opt/silicon/windows-powershell)" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cat /opt/silicon/windows-opener)" -Url "$1"
 BROWSER
 chmod 755 /usr/local/bin/xdg-open
-printf '[user]\ndefault=silicon\n[interop]\nappendWindowsPath=false\n' > /etc/wsl.conf
+# Keep Ubuntu's binfmt service aware of WSL's native PE interpreter. Without
+# this registration, a package upgrade/service stop can remove VM-wide interop.
+mkdir -p /etc/binfmt.d
+if [ ! -e /etc/binfmt.d/WSLInterop.conf ]; then
+    printf ':WSLInterop:M::MZ::/init:FP\n' > /etc/binfmt.d/WSLInterop.conf
+fi
+printf '[user]\ndefault=silicon\n[interop]\nenabled=true\nappendWindowsPath=false\n' > /etc/wsl.conf
 printf 'export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.local/bin:$PATH"\nexport SILICON_WSL=1\n' > /etc/profile.d/silicon.sh
 printf '%s\n' "$version" > /opt/silicon/windows-version
 printf 'Silicon %s installed. Project home: /home/silicon; Windows files: /mnt/c.\n' "$version"
