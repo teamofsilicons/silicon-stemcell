@@ -1,0 +1,41 @@
+name: Probe Windows WSL2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: amd64
+            sha256: 2a790896740b14d637dbdc583cce1ba081ac53b9e9cdb46dc09a2f73abbd9934
+          - runner: windows-11-arm
+            arch: arm64
+            sha256: e113b8c49af3ab49b992b8e29550fc921e689f211abc338176f8243786173a32
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Inspect virtualization and initialize WSL2
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Processor | Select-Object Name, VirtualizationFirmwareEnabled, SecondLevelAddressTranslationExtensions, VMMonitorModeExtensions
+          wsl.exe --version
+          wsl.exe --install --no-distribution --web-download
+          if ($LASTEXITCODE -notin @(0, 3010)) { throw 'WSL installation failed' }
+          $rootfs = Join-Path $env:RUNNER_TEMP 'ubuntu.tar.gz'
+          Invoke-WebRequest 'https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/ubuntu-noble-wsl-${{ matrix.arch }}-24.04lts.rootfs.tar.gz' -OutFile $rootfs
+          if ((Get-FileHash $rootfs -Algorithm SHA256).Hash.ToLower() -ne '${{ matrix.sha256 }}') { throw 'Ubuntu rootfs checksum mismatch' }
+          wsl.exe --import Silicon-Probe (Join-Path $env:RUNNER_TEMP 'silicon-wsl') $rootfs --version 2
+          if ($LASTEXITCODE -ne 0) { throw 'This runner cannot import a WSL2 distribution' }
+          try {
+            wsl.exe --distribution Silicon-Probe --user root --exec sh -ec 'uname -a; test "$(stat -f -c %T /)" = ext2/ext3; printf runtime-ok'
+            if ($LASTEXITCODE -ne 0) { throw 'WSL2 did not execute successfully' }
+          } finally {
+            wsl.exe --unregister Silicon-Probe
+          }
