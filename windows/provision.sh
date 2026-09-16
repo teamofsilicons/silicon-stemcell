@@ -53,9 +53,12 @@ for binary in silicon si omnid silicon-omni omni so caddy iam honeycomb spacesta
     [ -L "$path" ] || ln -s "../lib/silicon/current/bin/$binary" "$path"
 done
 chown silicon:silicon /home/silicon/.local /home/silicon/.local/share "$prefix" "$prefix/bin" "$prefix/lib" "$runtime" "$runtime/releases"
-ln -s "releases/$version-$expected" "$runtime/current.new"
-chown -h silicon:silicon "$runtime/current.new"
-mv -fT "$runtime/current.new" "$runtime/current"
+next="$runtime/current.new.$$"
+ln -s "releases/$version-$expected" "$next"
+trap 'rm -f "$next"' EXIT HUP INT TERM
+chown -h silicon:silicon "$next"
+mv -fT "$next" "$runtime/current"
+trap - EXIT HUP INT TERM
 install -m 755 "$payload/launch.sh" /opt/silicon/launch
 printf '%s\n' "$windows_powershell" > /opt/silicon/windows-powershell
 printf '%s\n' "$windows_opener" > /opt/silicon/windows-opener

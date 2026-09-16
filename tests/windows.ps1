@@ -1,16 +1,36 @@
-param([Parameter(Mandatory)][string]$PayloadRoot)
+param([string]$PayloadRoot, [string]$ReleaseTag)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $source = Split-Path $PSScriptRoot
 $wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
 $existing = ((& $wsl --list --quiet) -replace [char]0, '')
 if ('Silicon' -in @($existing | ForEach-Object { $_.Trim() })) { throw 'Tests require a fresh machine without a Silicon WSL distribution.' }
-$exe = Join-Path $PayloadRoot 'silicon.exe'
+$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $env:SILICON_TELEMETRY = '0'
 $env:SILICON_AUTO_UPDATE = '0'
 $env:SILICON_INTERPRETER_HOME = '/home/silicon/native-cli-state'
 try {
-    & "$source/install.ps1" -PayloadRoot $PayloadRoot -NoPath
+    if ($ReleaseTag) {
+        if ($ReleaseTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag.' }
+        $oneLiner = "irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/$ReleaseTag/install.ps1 | iex"
+        & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command $oneLiner
+        if ($LASTEXITCODE -ne 0) { throw 'Actual public PowerShell 5.1 installer failed.' }
+        $prefix = Join-Path $env:LOCALAPPDATA 'Silicon\releases'
+        $installed = @(Get-ChildItem $prefix -Directory)
+        if ($installed.Count -ne 1) { throw 'Public installer did not activate exactly one release.' }
+        $PayloadRoot = $installed[0].FullName
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+        if ($PayloadRoot -notin $userPath) { throw 'Public installer did not add its commands to the user PATH.' }
+    } else {
+        if (!$PayloadRoot) { throw 'Pass PayloadRoot or ReleaseTag.' }
+        & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$source/install.ps1" -PayloadRoot $PayloadRoot -NoPath
+        if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 provisioning failed.' }
+    }
+    $exe = Join-Path $PayloadRoot 'silicon.exe'
+    $defaultUser = & $wsl -d Silicon --exec whoami
+    if ($LASTEXITCODE -ne 0 -or "$defaultUser".Trim() -ne 'silicon') { throw 'Fresh distribution did not apply the non-root default user.' }
+    & $wsl -d Silicon --exec sh -ec 'case ":$PATH:" in *:/mnt/*) exit 1 ;; esac'
+    if ($LASTEXITCODE -ne 0) { throw 'Fresh distribution inherited Windows executable paths.' }
     $uid = & $wsl -d Silicon -u silicon --exec id -u
     if ($LASTEXITCODE -ne 0 -or "$uid".Trim() -eq '0') { throw 'Runtime user must not be root.' }
     $linuxSource = (& $wsl -d Silicon -u silicon --exec wslpath -u $source).Trim()

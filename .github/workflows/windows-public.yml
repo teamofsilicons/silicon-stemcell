@@ -1,0 +1,45 @@
+name: Verify public Windows install
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable release tag
+        required: true
+      test_arm_runtime:
+        description: Also use an available physical Windows ARM64 self-hosted runner
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  x64:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Actual public installer and runtime through Windows PowerShell 5.1
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: ./tests/windows.ps1 -ReleaseTag $env:RELEASE_TAG
+
+  arm64:
+    if: inputs.test_arm_runtime
+    runs-on: [self-hosted, Windows, ARM64, silicon-wsl2]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Actual public ARM64 installer and runtime
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: ./tests/windows.ps1 -ReleaseTag $env:RELEASE_TAG

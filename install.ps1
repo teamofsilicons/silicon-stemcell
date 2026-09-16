@@ -47,7 +47,9 @@ if (!$wslReady) {
     if (!$wslReady) { throw 'Windows must restart to finish enabling WSL2. Restart, then rerun the same Silicon installation command to resume. No project files or credentials were changed.' }
 }
 New-Item -ItemType Directory -Path $Prefix -Force | Out-Null
-$lockPath = Join-Path $Prefix '.install-lock'
+$controlDirectory = Join-Path $env:LOCALAPPDATA 'Silicon'
+New-Item -ItemType Directory -Path $controlDirectory -Force | Out-Null
+$lockPath = Join-Path $controlDirectory '.install-lock'
 try { $installerLock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
 catch { throw 'Another Silicon installer is running. Wait for it to finish, then retry.' }
 $originalWslEnv = $env:WSLENV
@@ -62,7 +64,9 @@ try {
         $base = "https://github.com/teamofsilicons/silicon-stemcell/releases/download/$Version"
         $zip = Join-Path $temporary $asset
         Invoke-WebRequest "$base/$asset" -OutFile $zip -UseBasicParsing
-        $sums = (Invoke-WebRequest "$base/SHA256SUMS" -UseBasicParsing).Content
+        $sumFile = Join-Path $temporary 'SHA256SUMS'
+        Invoke-WebRequest "$base/SHA256SUMS" -OutFile $sumFile -UseBasicParsing
+        $sums = Get-Content -LiteralPath $sumFile -Raw
         $checksumLines = @($sums -split "`n" | Where-Object { $_ -match ('^[a-fA-F0-9]{64}  ' + [regex]::Escape($asset) + '\s*$') })
         if ($checksumLines.Count -ne 1) { throw 'Release checksum is missing or ambiguous.' }
         $expected = $checksumLines[0].Substring(0, 64).ToLowerInvariant()
@@ -117,6 +121,10 @@ try {
     & $wsl --distribution Silicon --user root --exec sh "$linuxPayload/provision.sh" $linuxPayload $runtimeHash $Version $linuxPowerShell (Join-Path $PayloadRoot 'open-url.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'Silicon WSL provisioning failed. Existing projects were not moved.' }
     $activated = $true
+    if ($createdDistro) {
+        & $wsl --terminate Silicon
+        if ($LASTEXITCODE -ne 0) { throw 'Silicon was installed, but WSL could not reload its non-root default user. Restart Windows before using this distribution.' }
+    }
     if (!$NoPath) {
         $previous = [Environment]::GetEnvironmentVariable('Path', 'User')
         $entries = @($previous -split ';' | Where-Object { $_ -and $_ -notlike "$Prefix\releases\*" -and $_ -ne $PayloadRoot })
