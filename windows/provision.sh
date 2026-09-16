@@ -13,6 +13,9 @@ if ! id silicon >/dev/null 2>&1; then useradd --create-home --shell /bin/bash si
 chmod 700 /home/silicon
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
+# The verified rootfs is an immutable base image; apply current Ubuntu security
+# updates before running applications, while preserving existing local config.
+apt-get upgrade -y -qq --with-new-pkgs -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
 apt-get install -y -qq ca-certificates curl libcap2-bin python3 git
 prefix=/home/silicon/.local/share/silicon
 runtime="$prefix/lib/silicon"
