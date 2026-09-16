@@ -1,37 +1,12 @@
-# Preparing a Honeycomb release
+# Honeycomb supplies application dependencies
 
-Honeycomb publication is currently blocked by its IAM registration requirements for this local-only interpreter. [The external issue ledger](EXTERNAL-BUGS.md#local-interpreter-publication-requires-unsupported-iam-permissions) records the reproduced error. These steps prepare a reviewable package; they do not claim that `tos>silicon` exists in the catalog or is publicly installable.
+Silicon itself is distributed through [GitHub Releases](https://github.com/teamofsilicons/silicon-stemcell/releases) and the [Unix and Windows installers](https://docs.teamofsilicons.com/#installation). It does not need a Honeycomb listing, public-review request, or its own IAM app registration.
 
-Download the six verified GitHub release archives and their `SHA256SUMS` into one directory. Run preparation and packing on Linux, macOS, or inside WSL with Python 3.12 or newer. Native Windows extraction does not preserve the Unix executable permissions required by the package. Prepare it with:
+Honeycomb remains part of the interpreter bundle for two purposes:
 
-```sh
-python3 scripts/prepare_honeycomb.py \
-  --artifacts ./release-assets --version 4.0.0 --output ./honeycomb-package
-honeycomb validate ./honeycomb-package
-honeycomb pack ./honeycomb-package --output silicon-honeycomb-4.0.0.tar.gz
-honeycomb validate silicon-honeycomb-4.0.0.tar.gz
-```
+- Release construction downloads the published IAM, Space Station, DM, Briefcase, Waveform, Commit, Remind, and Hook CLIs through Honeycomb.
+- Configured applications can be installed into the selected Silicon home's managed package directory.
 
-The preparation script verifies every source checksum and version, rejects archive links and traversal, preserves all bundled dependencies and licenses, and generates `honeycomb.yaml`. It exports `silicon` and `si`, keeping their bundled dependencies private. On Unix, the interpreter resolves its own executable and matching `VERSION` file to add its private `bin` directory to PATH; commands installed under the selected `SILICON_HOME/.silicon/bin` retain priority. Unix executable paths are `bin/COMMAND`; Windows paths are `COMMAND.exe`. Each of the six target roots is self-contained because Honeycomb installs only the current platform's root. The Windows payload includes its matching Linux archive and requires WSL2; package validation alone does not prove Windows or WSL execution.
+Those applications keep their own IAM identities and authentication flows. The interpreter uses them on behalf of the configured Silicon identity; it does not need a separate application identity for distribution.
 
-Honeycomb permits up to 512 MiB compressed, 2 GiB expanded, and 50,000 archive entries. Its validator is the authority for the final package format. Run the packaged commands and the complete interpreter smoke test on each actual supported platform before publication. Existing `silicon` or `si` commands on PATH can cause installation collisions; use Honeycomb's documented aliases if needed. The private dependencies do not claim global command names. Private installation and collision handling remain unverified while registration is blocked; do not treat a prepared archive as an installable published product.
-
-Once upstream supports a local CLI registration without unnecessary permissions, register the actual interpreter as `tos>silicon` with an accurate WSL requirement and no realtime service. Read the current revision before uploading:
-
-```sh
-honeycomb apps get 'tos>silicon' --json
-honeycomb --idempotency-key silicon-4.0.0-upload-001 \
-  releases upload 'tos>silicon' silicon-honeycomb-4.0.0.tar.gz --revision REVISION --json
-honeycomb releases list 'tos>silicon' --json
-```
-
-Wait for the returned operation to be accepted and IAM private activation to be effective. Verify private installation and execution before requesting public review, using the latest application revision:
-
-```sh
-honeycomb --idempotency-key silicon-4.0.0-review-001 \
-  publication request 'tos>silicon' --revision REVISION \
-  --message 'Local Silicon interpreter; Windows launchers require WSL2. No hosted realtime service or application data permissions.' --json
-honeycomb publication get 'tos>silicon' --json
-```
-
-Keep the same idempotency key and bytes when retrying an uncertain upload. Changed package bytes require a new semantic version. Review acceptance, validator approval, IAM activation, and public archive access are distinct states; report publication only after the effective public state and anonymous installation both succeed.
+The earlier proposal to publish `tos>silicon` on Honeycomb was withdrawn. No application was registered, no release was uploaded, and no public-review request was submitted for that identity. The interpreter-specific Honeycomb packaging scripts and CI check were removed. The retired realtime app is separate; its remaining cleanup is recorded in the [external issue ledger](EXTERNAL-BUGS.md).

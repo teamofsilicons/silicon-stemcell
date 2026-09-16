@@ -27,9 +27,9 @@ The expected result was a review request. The CLI exited 1 with HTTP 409 `revisi
 
 This was a publication compatibility constraint, not a confirmed runtime defect. Honeycomb requires six target payloads, including Windows ARM64 and x86-64; Silicon 3.6.1 shipped four Unix targets. The realtime service was subsequently retired during 4.0.0 preparation, as described below. No Honeycomb code or policy was changed.
 
-### Local interpreter publication requires unsupported IAM permissions
+### IAM rejects removing the final app permission
 
-The local interpreter does not need its own user login, IAM data permissions, delegated endpoints, or hosted authentication service. Its intended Honeycomb identity is `tos>silicon`; the live catalog returned 404 for that identifier during 4.0.0 preparation, and no placeholder application was registered.
+Silicon is distributed through GitHub Releases and does not need its own Honeycomb or IAM app registration. The exploratory `tos>silicon` catalog publication plan was withdrawn; no application was registered. The following registration constraint is retained as historical evidence and because it limits permission removal from the retired realtime app.
 
 Honeycomb 0.2.0's [registration contract](https://github.com/teamofsilicons/silicon-honeycomb/blob/eaf1b726675b26a9b9cca82c976b894e25006183/crates/core/src/model.rs) requires an HTTPS webhook receiver, a signing secret of at least 32 characters, and a nonempty webhook category. Its schema permits an empty IAM scope list, but the hosted IAM service rejects it. The following authorized reduction on the retiring app reproduced the incompatibility:
 
@@ -43,7 +43,7 @@ Expected: remove all data permissions for an application that no longer needs th
 
 A 17 September source check of Honeycomb 0.2.3 and IAM 1.11.0 still found mandatory webhook fields and the one-permission minimum; the newer application releases do not remove this publication constraint.
 
-Publishing this interpreter therefore requires upstream support for a standalone local CLI with zero IAM permissions and no authentication backend. No unnecessary scope, fake webhook, or replacement hosted authentication service was added. The six-target archive can be prepared independently; Windows entries are native launchers requiring WSL2, and do not claim a native Windows interpreter runtime. See [Honeycomb packaging instructions](https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/HONEYCOMB.md). An archive passing validation is not evidence of registration, public review, or publication.
+This is not a Silicon release blocker. The interpreter does not need catalog publication, so no upstream registration change is required to distribute it. No unnecessary scope, fake webhook, or replacement authentication service was added. Honeycomb continues to supply application dependencies.
 
 ### Retired realtime app still requires an IAM operator to delete its record
 

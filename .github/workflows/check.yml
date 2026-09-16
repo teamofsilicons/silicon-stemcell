@@ -245,8 +245,6 @@ jobs:
           PY
       - name: Check documentation telemetry gateway
         run: node --test tests/telemetry.test.cjs
-      - name: Check portable Honeycomb package validation
-        run: python3 tests/honeycomb-package.py
       - name: Check standalone Windows launcher source
         run: |
           cargo fmt --manifest-path windows/launcher/Cargo.toml --all -- --check
