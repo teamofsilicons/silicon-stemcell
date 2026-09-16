@@ -103,7 +103,7 @@ def main():
     state.mkdir()
     registry = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Registry)
     threading.Thread(target=registry.serve_forever, daemon=True).start()
-    env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0", SILICON_TELEMETRY="0", SILICON_REALTIME="0")
+    env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0", SILICON_TELEMETRY="0")
     assert shutil.which(env.get("OMNI_DAEMON", "omnid"), path=env["PATH"]), "set OMNI_DAEMON to the real Omni daemon"
     assert shutil.which(env.get("SILICON_CADDY", "caddy"), path=env["PATH"]), "set SILICON_CADDY to real Caddy"
     config = home / "silicon.yaml"

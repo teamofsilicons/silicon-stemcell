@@ -7,7 +7,6 @@ use std::{fs, path::Path};
 pub struct Settings {
     pub telemetry: bool,
     pub auto_update: bool,
-    pub realtime: bool,
 }
 
 impl Default for Settings {
@@ -15,14 +14,21 @@ impl Default for Settings {
         Self {
             telemetry: true,
             auto_update: true,
-            realtime: true,
         }
     }
 }
 
 fn read(path: &Path) -> Result<Settings> {
     match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("invalid interpreter settings.json"),
+        Ok(bytes) => {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&bytes).context("invalid interpreter settings.json")?;
+            // Older interpreter releases persisted the retired relay preference.
+            if let Some(settings) = value.as_object_mut() {
+                settings.remove("realtime");
+            }
+            serde_json::from_value(value).context("invalid interpreter settings.json")
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(error) => Err(error.into()),
     }
@@ -38,8 +44,7 @@ pub fn set(key: &str, enabled: bool) -> Result<Settings> {
     match key {
         "telemetry" => settings.telemetry = enabled,
         "auto_update" => settings.auto_update = enabled,
-        "realtime" => settings.realtime = enabled,
-        _ => bail!("unknown setting {key:?}; expected telemetry, auto_update, or realtime"),
+        _ => bail!("unknown setting {key:?}; expected telemetry or auto_update"),
     }
     crate::state::write_json(&path, &settings)?;
     Ok(settings)
@@ -56,7 +61,14 @@ mod tests {
         fs::write(&path, r#"{"telemetry":false}"#).unwrap();
         let settings = read(&path).unwrap();
         assert!(!settings.telemetry);
-        assert!(settings.auto_update && settings.realtime);
+        assert!(settings.auto_update);
+        fs::write(&path, r#"{"telemetry":false,"realtime":true}"#).unwrap();
+        let upgraded = read(&path).unwrap();
+        assert!(!upgraded.telemetry && upgraded.auto_update);
+        assert!(serde_json::to_value(upgraded)
+            .unwrap()
+            .get("realtime")
+            .is_none());
         fs::write(&path, r#"{"telemtry":false}"#).unwrap();
         assert!(read(&path).is_err());
     }

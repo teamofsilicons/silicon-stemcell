@@ -108,6 +108,10 @@ impl Config {
         let base = path
             .parent()
             .ok_or_else(|| anyhow!("config has no parent directory"))?;
+        #[cfg(target_os = "linux")]
+        if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
+            validate_wsl_filesystem(base)?;
+        }
         let mut env = json!({"request": {}, "var": {}, "silicon": document["silicon"],
             "isi": document["isi"], "access": document["access"]});
         let home_source = document["silicon"]["SILICON_HOME"]
@@ -124,6 +128,10 @@ impl Config {
             .context("silicon.SILICON_HOME must exist")?;
         if !home.is_dir() {
             bail!("silicon.SILICON_HOME must be a directory");
+        }
+        #[cfg(target_os = "linux")]
+        if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
+            validate_wsl_filesystem(&home)?;
         }
         document["silicon"]["SILICON_HOME"] = Yaml::String(home.to_string_lossy().into_owned());
         env["silicon"]["SILICON_HOME"] = json!(home);
@@ -1033,9 +1041,36 @@ fn strip_comment(source: &str) -> &str {
     source
 }
 
+/// WSL's Windows mounts cannot supply the socket and private-state semantics we use.
+#[cfg(target_os = "linux")]
+fn validate_wsl_filesystem(path: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::statfs(name.as_ptr(), filesystem.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("inspect WSL configuration filesystem");
+    }
+    if unsafe { filesystem.assume_init() }.f_type != libc::EXT4_SUPER_MAGIC {
+        bail!("Windows WSL installation requires the YAML directory and SILICON_HOME inside the Silicon distribution's Linux filesystem; copy your project to /home/silicon first. Windows data files remain accessible through /mnt/c and other mounted drives");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wsl_rejects_non_linux_storage_even_through_a_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let alias = directory.path().join("mounted-home");
+        std::os::unix::fs::symlink("/proc", &alias).unwrap();
+        let error = validate_wsl_filesystem(&alias).unwrap_err().to_string();
+        assert!(error.contains("copy your project to /home/silicon"));
+        assert!(validate_wsl_filesystem(&directory.path().join("missing")).is_err());
+    }
 
     #[test]
     fn parser_keeps_shell_commands_and_order_without_rewriting_templates() {

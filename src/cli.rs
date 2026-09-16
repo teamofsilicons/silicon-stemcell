@@ -34,18 +34,8 @@ struct SiliconCli {
 }
 #[derive(Subcommand)]
 enum SiliconCommand {
-    /// Discover the IAM application used by the hosted realtime service.
+    /// Discover the interpreter application identity and documentation.
     Iam,
-    /// Log in to hosted realtime with an IAM short-lived token, or inspect status.
-    Login { token_or_status: String },
-    /// Revoke the stored hosted realtime session.
-    Logout,
-    /// Watch read-only realtime events for a Silicon in your organization.
-    Watch {
-        silicon: String,
-        #[arg(long)]
-        org: Option<String>,
-    },
     /// Validate all configuration and flow expressions without connecting.
     Compile { yaml: PathBuf },
     /// Compile and connect a silicon.yaml; start the interpreter if needed.
@@ -144,9 +134,9 @@ enum LogsCommand {
 }
 #[derive(Subcommand)]
 enum SettingsCommand {
-    /// Read all settings, or one of telemetry, auto_update, realtime.
+    /// Read all settings, or one of telemetry or auto_update.
     Get { key: Option<String> },
-    /// Toggle telemetry, auto_update, or realtime. Example: settings set telemetry --off.
+    /// Toggle telemetry or auto_update. Example: settings set telemetry --off.
     Set {
         key: String,
         #[arg(long, conflicts_with = "off", required_unless_present = "off")]
@@ -292,17 +282,8 @@ pub fn silicon() -> Result<()> {
     let cli = SiliconCli::parse();
     match cli.command.unwrap_or(SiliconCommand::Ls { pattern: None }) {
         SiliconCommand::Iam => print_json(
-            &json!({"app_id":crate::realtime::APP_ID,"protocol":1,"backend":crate::realtime::BACKEND}),
+            &json!({"app_id":"tos>silicon","docs_url":"https://docs.teamofsilicons.com","repository":"https://github.com/teamofsilicons/silicon-stemcell"}),
         )?,
-        SiliconCommand::Login { token_or_status } => print_json(&if token_or_status == "status" {
-            crate::realtime_cli::login_status()?
-        } else {
-            crate::realtime_cli::login(&token_or_status)?
-        })?,
-        SiliconCommand::Logout => print_json(&crate::realtime_cli::logout()?)?,
-        SiliconCommand::Watch { silicon, org } => {
-            crate::realtime_cli::watch(&silicon, org.as_deref())?
-        }
         SiliconCommand::Compile { yaml } => {
             let cfg = server::compile(yaml)?;
             if cli.json {

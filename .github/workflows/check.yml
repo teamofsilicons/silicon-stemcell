@@ -51,7 +51,7 @@ jobs:
                           body = caddy_body if name == 'caddy' and caddy_body else b'#!/bin/sh\necho test-binary\n'
                           entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
                           archive.addfile(entry, io.BytesIO(body))
-                      body = b'v3.6.1\n'
+                      body = b'v4.0.0\n'
                       entry = tarfile.TarInfo('VERSION'); entry.size = len(body)
                       archive.addfile(entry, io.BytesIO(body))
                       body = installer.read_bytes()
@@ -243,10 +243,5 @@ jobs:
                   assert profile.read_text() == text
           print('installer checks passed')
           PY
-      - name: Check hosted realtime service
-        run: |
-          cargo fmt --manifest-path backend/Cargo.toml --all -- --check
-          cargo test --manifest-path backend/Cargo.toml --locked
-          cargo clippy --manifest-path backend/Cargo.toml --locked --all-targets -- -D warnings
       - name: Check documentation telemetry gateway
         run: node --test tests/telemetry.test.cjs

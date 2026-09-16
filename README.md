@@ -1,18 +1,26 @@
-# Silicon 3.6.1
+# Silicon 4.0.0
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route events through CEL flows, run ISIs with Silicon Omni, and manage their sessions and IAM applications.
 
+macOS and Linux:
+
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v3.6.1/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh | sh
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.1).
+Windows PowerShell:
 
-**Upgrading from 3.5.x:** rerun the installer above once into your existing installation prefix, even if `silicon --version` already reports 3.6.1. The old updater cannot add Honeycomb and Space Station. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
+```powershell
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.ps1 | iex
+```
 
-Version 3.6.1 adds connection setup scripts, Honeycomb application installation, canonical IAM app IDs, DNA source attribution, Space Station telemetry, settings, and organization-scoped live updates.
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.0).
 
-The installer sets up Silicon, Caddy, IAM, Omni, Honeycomb, DM, Briefcase, Waveform, Commit, Remind, Hook, and Space Station. macOS and Linux, ARM64 and x86-64. Default prefix: `~/.local/share/silicon`.
+**Upgrading from 3.5.x:** rerun the installer above once into your existing installation prefix, even if an older update has already changed the reported version. The old updater cannot add Honeycomb and Space Station. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
+
+Version 4 focuses on the local interpreter. It retains setup scripts, Honeycomb app installation, canonical IAM IDs, DNA source attribution, Space Station telemetry, local ping, logs, and the dashboard. The hosted realtime service and remote login/watch commands have been removed.
+
+The installer sets up Silicon, Caddy, IAM, Omni, Honeycomb, DM, Briefcase, Waveform, Commit, Remind, Hook, and Space Station. macOS, Linux, and Windows on ARM64 and x86-64. Windows uses WSL2; first setup may require administrator access and a restart. The Unix default prefix is `~/.local/share/silicon`.
 
 ```sh
 silicon compile /path/to/silicon.yaml

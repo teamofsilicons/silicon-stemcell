@@ -126,7 +126,7 @@ impl Drop for Activity<'_> {
 
 pub struct Connected {
     pub cfg: Config,
-    pub(crate) generation: Uuid,
+    generation: Uuid,
     workers: Mutex<BTreeMap<Uuid, Arc<Worker>>>,
     pub enabled: AtomicBool,
 }

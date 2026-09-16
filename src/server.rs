@@ -249,7 +249,6 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
     };
     state::write_json(&dir.join("daemon.json"), &daemon)?;
     runtime.start_scheduler();
-    crate::realtime::start(&runtime);
     let app = Arc::new(App {
         runtime: runtime.clone(),
         daemon,
@@ -299,6 +298,22 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
         return Err(command.exec()).context("could not restart updated interpreter");
     }
     Ok(())
+}
+
+fn configuration(cfg: &Config) -> Value {
+    let mut value = serde_json::to_value(cfg).unwrap_or(Value::Null);
+    let mut secrets = Vec::new();
+    if let Some(token) = &cfg.silicon.token {
+        secrets.push(token.clone());
+    }
+    if let Some(key) = value
+        .pointer("/silicon/space_station/table_key")
+        .and_then(Value::as_str)
+    {
+        secrets.push(key.into());
+    }
+    crate::telemetry::redact_value(&mut value, &secrets);
+    value
 }
 
 fn header<'a>(req: &'a Request, key: &str) -> &'a str {
@@ -488,9 +503,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 json!({"silicon":id,"online":app.runtime.get(id).is_ok(),"timestamp":chrono::Utc::now().to_rfc3339()}),
             )
         }
-        "configuration" => Ok(crate::realtime::configuration(
-            &app.runtime.get(text(args, "silicon")?)?.cfg,
-        )),
+        "configuration" => Ok(configuration(&app.runtime.get(text(args, "silicon")?)?.cfg)),
         "install" => crate::apps::install(text(args, "app_id")?),
         "uninstall" => crate::apps::uninstall(text(args, "app_id")?),
         "ping" => Ok(json!({"version":env!("CARGO_PKG_VERSION"),"pid":app.daemon.pid})),

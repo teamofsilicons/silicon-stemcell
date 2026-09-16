@@ -5,8 +5,6 @@ pub mod config;
 pub mod eval;
 pub mod flow;
 pub mod proxy;
-pub mod realtime;
-pub mod realtime_cli;
 pub mod runtime;
 pub mod server;
 pub mod settings;
@@ -82,12 +80,5 @@ pub fn log_line_scoped(
         .write_all(line.as_bytes())?;
     drop(_guard);
     telemetry::record_scoped(home, generation, kind, &origin, &message);
-    if let Some(generation) = generation {
-        realtime::publish(
-            home,
-            generation,
-            serde_json::json!({"type":kind,"origin":origin,"timestamp":Utc::now().to_rfc3339(),"message":message}),
-        );
-    }
     Ok(())
 }

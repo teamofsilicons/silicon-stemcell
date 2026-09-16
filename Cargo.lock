@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "silicon"
-version = "3.6.1"
+version = "4.0.0"
 dependencies = [
  "anyhow",
  "cel-interpreter",
@@ -1242,7 +1242,6 @@ dependencies = [
  "space-station",
  "tempfile",
  "tiny_http",
- "tungstenite",
  "ureq",
  "uuid",
 ]

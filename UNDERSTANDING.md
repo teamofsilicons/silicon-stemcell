@@ -341,17 +341,6 @@ the si cli commands it has access to (very minimal, --help can always be used to
 treat --help as the primary docs and disclosure of how to use different commands.
 this prompt is very minimal & only intended for the isi to do internal stuff.
 
-# realtime updates
-anyone from the org should be able to subscribe to updates from the silicon. for this, live stream updates for all ISI to the backend, where carbons can subscribe and see. this should be possible over the api via OBO. all of this done on web sockets.
-
-Read up on honeycomb how to setup OBO. make that web pub & sub an app on honeycomb. sign up the silicon using iam cli and silicon id & token.
-
-for one time questions, like the configurations of this silicon (isi, flow, models, dna, etc etc), make it like a call that can be made to know those details.
-
-these are read-only updates. nothing is written at this time.
-
-also, introduce a way to do ping pong with a silicon locally to know if its online or offline. pass that as part of updates as well.
-
 # codebase
 this is a rust project with as much in rust as possible. for all iam apps use their cli.
 for omni, use its rust package.
@@ -366,3 +355,5 @@ i am also logged into iam cli using my personal account.
 you can create a test iam env and use it to test things.
 
 this project has 2 constriansts we are optimising: simplicity to create & use a silicon with extendibility.
+
+introduce a way to do ping pong with a silicon locally to know if its online or offline. pass that as part of updates as well.
