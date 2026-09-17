@@ -1,5 +1,18 @@
 # Building Silicon
 
+
+## 4.0.6: Independent Honeycomb applications
+
+Configured and registered canonical app IDs now install through Honeycomb on every connection with no version argument. Application executables, version selections, and update-suppressing wrappers have been removed from the interpreter bundle. Honeycomb itself is downloaded independently from its latest release with checksum verification, preserving existing update settings and services. Omni and Caddy remain runtime dependencies.
+
+The per-Silicon package registry can coexist with unrelated global commands. Existing files inside the private command directory remain protected against collisions. An old interpreter-imposed Honeycomb update preference is removed once; subsequent preferences belong to the app or user. The 48-hour authentication cache remains separate from installation.
+
+[All six platform builds](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35270308880) passed for runtime source `0116c15c31bb7564d55cff901bb008b4478fa9de`, including the real Omni/Caddy Unix suite and Windows x64 WSL2/native-command suite. Windows ARM64 remains preview pending physical ARM64 WSL2 testing. Local checks also installed IAM, DM, Briefcase, Browser, and Waveform without version arguments alongside existing global commands and verified their required CLI contracts. The reconnect regression proves installation runs again while a fresh authentication cache avoids reauthentication.
+
+Upgrading from 4.0.5 or earlier requires running the new installer once because older embedded updaters require the former bundled app inventory.
+
+[Silicon 4.0.6](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.6) was published as latest stable on 17 September 2026 at 20:53 UTC. All six archives passed version, inventory, native architecture, installer, and notice checks. All nine uploaded assets matched the verified files and GitHub’s SHA-256 digests. Transient upload failures left incomplete Windows assets; only those incomplete records were removed, and the verified Windows artifacts were uploaded from a temporary GitHub workflow, then rechecked before publication.
+
 9–17 September 2026 · implementation diary
 
 ### 17 September: verified 4.0.3 bundles
