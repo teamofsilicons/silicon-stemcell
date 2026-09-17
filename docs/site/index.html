@@ -33,20 +33,21 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>No terminal window is opened for each ISI. Each receives an independent process context, an Omni session, and the environment needed by its commands. Persistent session data survives stopping the interpreter. Global ephemeral work is discarded when it finishes.</p>
 </section><section class="chapter"><h2 id="installation">Installation</h2>
 <h3 id="public-binary-installation">Public binary installation</h3>
-<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v4.0.3</code> with:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.sh | sh
+<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v4.0.4</code> with:</p>
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.4/install.sh | sh
 </code></pre>
-<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.3">v4.0.3 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
+<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.4">v4.0.4 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
 <p>Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.</p>
+<p><strong>4.0.4</strong> caches successful automatic app-auth checks for 48 hours across reconnects and restarts. Checks run only on YAML connects and new session creation; heartbeats reuse authentication, and explicit <code>si auth setup</code> bypasses the cache.</p>
 <p><strong>4.0.3</strong> adds <code>make_readable</code> and <code>convert_time</code>, fixes the reference YAML expressions, and streams connection progress with completion checkmarks.</p>
 <p><strong>4.0.0</strong> focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.</p>
-<p><strong>Upgrading from 3.5.x requires running this complete installer once into the same prefix</strong>, even when the old updater has already changed the reported Silicon version to 4.0.3. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the <a href="#upgrading-from-35x">migration instructions</a> below before using the new package features.</p>
+<p><strong>Upgrading from 3.5.x requires running this complete installer once into the same prefix</strong>, even when the old updater has already changed the reported Silicon version to 4.0.4. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the <a href="#upgrading-from-35x">migration instructions</a> below before using the new package features.</p>
 <p>The default installation prefix is <code>~/.local/share/silicon</code>. Add its <code>bin</code> directory to your shell's <code>PATH</code>:</p>
 <pre><code class="language-sh">export PATH=&quot;$HOME/.local/share/silicon/bin:$PATH&quot;
 </code></pre>
 <p>For the default prefix, the installer adds this path once to the startup file for your detected shell. Open a new terminal, or run the printed export command in your current terminal. Set <code>SILICON_NO_PATH=1</code> to leave shell startup files alone. Custom prefixes print the path without changing startup files.</p>
 <p>To choose another dedicated prefix, set the variable on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.4/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>The target matrix covers macOS, Linux, and Windows on ARM64 and x86-64. Windows runs the Linux bundle through WSL2. Native Unix bundles target macOS 15 and Ubuntu 24.04; the Linux binaries require glibc 2.39 or newer. Platform verification is recorded in the release evidence below; testing one architecture does not verify another.</p>
@@ -61,7 +62,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <tbody>
 <tr>
 <td><code>silicon</code>, <code>si</code></td>
-<td>Interpreter and internal CLI, 4.0.3</td>
+<td>Interpreter and internal CLI, 4.0.4</td>
 </tr>
 <tr>
 <td><code>omnid</code>, <code>silicon-omni</code>, <code>omni</code>, <code>so</code></td>
@@ -114,7 +115,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.</p>
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>In PowerShell:</p>
-<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.ps1 | iex
+<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.4/install.ps1 | iex
 </code></pre>
 <p>Windows uses a native launcher and a dedicated WSL2 distribution named <code>Silicon</code>, with the same Linux interpreter and application bundle used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user <code>silicon</code>.</p>
 <p>Keep each project, its YAML, and its <code>SILICON_HOME</code> inside the distribution's Linux filesystem. Open <code>\\wsl.localhost\Silicon\home\silicon</code> in File Explorer and copy or create your project folder there. For example:</p>
@@ -130,16 +131,16 @@ silicon web
 <p>Version 4 removes the remote <code>login</code>, <code>logout</code>, and <code>watch</code> commands and the <code>realtime</code> setting. Use local <code>silicon logs</code>, <code>silicon config</code>, and <code>silicon ping</code>. Saved Silicon configurations, sessions, and managed-app authentication are retained. The interpreter no longer connects to the retired relay.</p>
 <h3 id="upgrading-from-35x">Upgrading from 3.5.x</h3>
 <p>The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new <code>install.sh</code> as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.</p>
-<p>When you are ready to restart, stop the old interpreter and rerun the <strong>4.0.3 public installer into the same prefix</strong>:</p>
+<p>When you are ready to restart, stop the old interpreter and rerun the <strong>4.0.4 public installer into the same prefix</strong>:</p>
 <pre><code class="language-sh">silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.4/install.sh | sh
 silicon serve
 </code></pre>
 <p>Skip <code>silicon stop</code> if no interpreter is running. <code>silicon serve</code> runs the new interpreter and restores its saved connections. The default command uses <code>~/.local/share/silicon</code>; if your existing installation uses another prefix, preserve it on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.4/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
-<p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 4.0.3. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
+<p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 4.0.4. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
 <h3 id="linux-and-port-80">Linux and port 80</h3>
 <p>On Linux, the installer checks whether unprivileged processes can bind port 80. If not, it grants only the bundled Caddy binary <code>cap_net_bind_service=ep</code> using <code>setcap</code>. This requires the system's libcap tools and suitable privileges; it can ask for <code>sudo</code> in an interactive terminal. Silicon itself does not need to run as root.</p>
 <p>An automatic, noninteractive update cannot prompt for privileges. When the Caddy binary is unchanged, the installer can reuse the existing capability. If a new Caddy binary needs a capability and unattended privilege is unavailable, activation fails with an explanation and leaves the current release selected. Rerun the installation or update interactively.</p>
@@ -150,7 +151,7 @@ silicon serve
 <p>Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and Omni, downloads verified Caddy and Honeycomb, and installs the eight application CLIs through Honeycomb. Caddy's upstream checksum file uses SHA-512.</p>
 <p><code>SILICON_GIT_REV</code> is an alternative to <code>SILICON_SOURCE_DIR</code>: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.</p>
 <p>For controlled builds, <code>SILICON_DEPENDENCY_BIN_DIR</code> can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. <code>CARGO_TARGET_DIR</code> can reuse a compilation directory.</p>
-<p>The 4.0.3 installer obtains Commit 0.2.0 from Honeycomb and verifies that <code>logout</code> is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.</p>
+<p>The 4.0.4 installer obtains Commit 0.2.0 from Honeycomb and verifies that <code>logout</code> is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.</p>
 <p>For a developer build of only the interpreter and internal CLI:</p>
 <pre><code class="language-sh">cargo build --locked
 ./target/debug/silicon --help
@@ -368,7 +369,7 @@ webhook:
 <h3 id="intervals-and-scheduled-work">Intervals and scheduled work</h3>
 <p>Bare numeric intervals are minutes. <code>30min</code>, <code>30m</code>, <code>10s</code>, and <code>2h</code> are also accepted. Values must be finite and positive, at most ten years. Timing expressions can use Bash, CEL, and fallbacks; the evaluated result must satisfy the same interval rules.</p>
 <p>DNA is assembled at session initialization. <code>next_refresh</code> is reevaluated after assembly and after each refresh. Refresh work runs separately from the provider event listener, so a slow DNA command does not block receipt processing. A failed refresh is logged and retried after approximately 60 seconds.</p>
-<p>Heartbeat <code>next</code> is evaluated when its schedule is created and when it becomes due. The first heartbeat waits for its configured interval. A global ISI can be started by its heartbeat. A session-addressed ISI gets independent heartbeat schedules for existing active session addresses; a heartbeat does not invent a missing session ID. App authentication is checked before delivery. Failed timing evaluations are logged and retried after approximately 60 seconds.</p>
+<p>Heartbeat <code>next</code> is evaluated when its schedule is created and when it becomes due. The first heartbeat waits for its configured interval. A global ISI can be started by its heartbeat. A session-addressed ISI gets independent heartbeat schedules for existing active session addresses; a heartbeat does not invent a missing session ID. Heartbeats do not check app authentication. If a heartbeat creates a new session, the normal session-creation check applies. Failed timing evaluations are logged and retried after approximately 60 seconds.</p>
 <p>Timers are best effort and have scheduler granularity; they are not wall-clock cron jobs. Keep interval expressions quick and deterministic enough for the desired schedule. DNA, heartbeat, and suggestion expressions inside a session-addressed ISI receive <code>ISI=name:session-id</code>.</p>
 <p>A new-session suggestion is a message, not an automatic archive. It is considered after a normal incoming message. At least <code>min_new_messages</code> new messages since the last suggestion are required, and subsequent suggestions must respect <code>cooldown_minutes</code>. Heartbeats and suggestion messages do not count toward that threshold. The first suggestion can occur as soon as the message threshold is reached; the cooldown is between suggestions. Counters belong to each session. Archived sessions do not receive these suggestions.</p>
 <h3 id="dna-assembly">DNA assembly</h3>
@@ -678,7 +679,7 @@ si isi send worker.terminal &quot;Explain the deployment decision&quot; --id com
 <p>Bare <code>--archived</code> selects the previous 72 hours. With explicit filters, the search covers all archive history. Filters intersect: a result must match every supplied date/range and text filter. Dates use <code>DD:MM:YYYY</code>; both ends of a range are inclusive. Text filters search title and description case-insensitively and support <code>*</code> and <code>?</code>. A plain keyword can match a substring. Filters apply to the archive timestamp, using the Silicon's configured timezone unless <code>--timezone IANA</code> overrides it. They do not use the invoking shell's <code>TZ</code> by default.</p>
 </section><section class="chapter"><h2 id="iam-application-contract">IAM application contract</h2>
 <p>The interpreter owns orchestration of authentication. IAM issues short-lived application tokens. Each app exchanges and stores its own access/refresh tokens and maintains them afterward.</p>
-<p>Applications from <code>apps</code>, <code>webhooks</code>, and the legacy <code>login</code>/<code>webhook</code> fields are checked on connection, before a new ISI session initializes, and before heartbeats. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with <code>si auth setup</code> are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next boundary.</p>
+<p>Applications from <code>apps</code>, <code>webhooks</code>, and the legacy <code>login</code>/<code>webhook</code> fields are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app and Silicon identity in <code>.silicon/auth-checked.json</code>, so reconnects and interpreter restarts reuse them. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit <code>si auth setup APP</code> always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with <code>si auth setup</code> are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.</p>
 <p>The supported discovery contract is:</p>
 <pre><code class="language-sh">APP iam --json
 </code></pre>

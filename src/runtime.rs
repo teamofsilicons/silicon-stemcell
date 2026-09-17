@@ -441,6 +441,7 @@ impl Runtime {
             }
         }
         let saved = state::sessions(&connected.cfg.home, target, options.archived)?;
+        let mut creating = false;
         let record = if options.archived {
             let id = options
                 .id
@@ -460,6 +461,7 @@ impl Runtime {
                     if by_session && !options.new {
                         bail!("session does not exist; pass --new to create it");
                     }
+                    creating = true;
                     Session::new(
                         target,
                         if by_session {
@@ -476,6 +478,7 @@ impl Runtime {
             if by_session && options.title.is_none() {
                 bail!("new ephemeral session requires --title");
             }
+            creating = true;
             Session::new(
                 target,
                 if by_session {
@@ -492,6 +495,15 @@ impl Runtime {
             .filter(|w| !w.stopped.load(Ordering::SeqCst))
         {
             return Ok(worker.clone());
+        }
+        if creating {
+            auth::ensure_all_scoped(
+                &connected.cfg.home,
+                connected.cfg.silicon.id.as_deref().unwrap(),
+                connected.cfg.silicon.token.as_deref().unwrap(),
+                &connected.cfg.silicon.managed_apps(),
+                connected.cfg.generation,
+            )?;
         }
         let session_id = record.session_id;
         let capability = Uuid::new_v4().to_string();
@@ -767,15 +779,10 @@ impl Runtime {
                 let Ok(_activity) = runtime.activity() else {
                     break;
                 };
-                let connections: Vec<_> = runtime
-                    .silicons
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .map(|(id, c)| (id.clone(), c.clone()))
-                    .collect();
+                let connections: Vec<_> =
+                    runtime.silicons.read().unwrap().values().cloned().collect();
                 let mut active = std::collections::HashSet::new();
-                for (id, connected) in connections {
+                for connected in connections {
                     if !connected.enabled.load(Ordering::SeqCst) {
                         continue;
                     }
@@ -842,10 +849,9 @@ impl Runtime {
                             }
                             let heartbeat_job = Arc::new(());
                             in_flight.insert(key, Arc::downgrade(&heartbeat_job));
-                            let (runtime, connected, id, name, heartbeat) = (
+                            let (runtime, connected, name, heartbeat) = (
                                 runtime.clone(),
                                 connected.clone(),
-                                id.clone(),
                                 name.clone(),
                                 heartbeat.clone(),
                             );
@@ -857,13 +863,6 @@ impl Runtime {
                                         bail!("silicon disconnected");
                                     }
                                     let cfg = &connected.cfg;
-                                    auth::ensure_all_scoped(
-                                        &cfg.home,
-                                        &id,
-                                        cfg.silicon.token.as_deref().unwrap(),
-                                        &cfg.silicon.managed_apps(),
-                                        cfg.generation,
-                                    )?;
                                     let source =
                                         heartbeat["message"].as_str().ok_or_else(|| {
                                             anyhow!("heartbeat.message must be a string")
@@ -974,13 +973,6 @@ impl Worker {
             .ok_or_else(|| anyhow!("interpreter stopped"))?;
         let cfg = &connected.cfg;
         let record = self.state.lock().unwrap().record.clone();
-        auth::ensure_all_scoped(
-            &cfg.home,
-            cfg.silicon.id.as_deref().unwrap(),
-            cfg.silicon.token.as_deref().unwrap(),
-            &cfg.silicon.managed_apps(),
-            cfg.generation,
-        )?;
         let omni_home = cfg
             .home
             .join(".silicon/omni")
@@ -1957,6 +1949,12 @@ flow: []
         };
         let slow = runtime.worker(&connected, "a", &options("slow")).unwrap();
         let fast = runtime.worker(&connected, "a", &options("fast")).unwrap();
+        // Heartbeats must deliver even when a managed app cannot be checked.
+        state::write_json(
+            &home.path().join(".silicon/auth-apps.json"),
+            &vec!["/missing-heartbeat-app"],
+        )
+        .unwrap();
         assert_eq!(runtime.list("test:org", "a", false).unwrap().len(), 2);
         let fast_transport = transport(&fast);
         let (client, mut daemon) = UnixStream::pair().unwrap();

@@ -2,6 +2,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Output, Stdio},
@@ -33,7 +34,7 @@ fn remember(home: &Path, app: &App, present: bool) -> Result<()> {
     crate::state::write_json(&home.join(".silicon/auth-apps.json"), &commands)
 }
 
-/// Configured and dynamically authenticated apps are checked at every session/heartbeat boundary.
+/// Check managed apps at connect/session creation, reusing successful checks for 48 hours.
 pub fn ensure_all(home: &Path, sid: &str, stk: &str, configured: &[String]) -> Result<()> {
     ensure_all_using(home, sid, stk, configured, None)
 }
@@ -55,6 +56,13 @@ fn ensure_all_using(
     configured: &[String],
     generation: Option<uuid::Uuid>,
 ) -> Result<()> {
+    let _guard = AUTH_LOCK.lock().unwrap();
+    let path = home.join(".silicon/auth-checked.json");
+    let mut checked: BTreeMap<String, i64> = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("invalid auth check timestamps")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(error) => return Err(error.into()),
+    };
     let mut commands = registered(home)?;
     for command in configured {
         let command = if crate::apps::valid_id(command) {
@@ -67,7 +75,18 @@ fn ensure_all_using(
         }
     }
     for command in commands {
-        setup_using_scoped(home, sid, stk, &command, Path::new("iam"), true, generation)?;
+        let key = serde_json::to_string(&(sid, &command))?;
+        let now = chrono::Utc::now().timestamp();
+        if checked
+            .get(&key)
+            .and_then(|last| now.checked_sub(*last))
+            .is_some_and(|age| (0..48 * 60 * 60).contains(&age))
+        {
+            continue;
+        }
+        setup_locked(home, sid, stk, &command, Path::new("iam"), true, generation)?;
+        checked.insert(key, chrono::Utc::now().timestamp());
+        crate::state::write_json(&path, &checked)?;
     }
     Ok(())
 }
@@ -241,7 +260,7 @@ pub fn setup_scoped(
     )
 }
 
-/// Check an application's session before a heartbeat or new ISI session.
+/// Check an application's session immediately, bypassing automatic check timestamps.
 pub fn ensure(home: &Path, sid: &str, stk: &str, app: &str) -> Result<String> {
     setup_using(home, sid, stk, app, Path::new("iam"), true)
 }
@@ -267,6 +286,18 @@ fn setup_using_scoped(
     generation: Option<uuid::Uuid>,
 ) -> Result<String> {
     let _guard = AUTH_LOCK.lock().unwrap();
+    setup_locked(home, sid, stk, command, iam, only_if_needed, generation)
+}
+
+fn setup_locked(
+    home: &Path,
+    sid: &str,
+    stk: &str,
+    command: &str,
+    iam: &Path,
+    only_if_needed: bool,
+    generation: Option<uuid::Uuid>,
+) -> Result<String> {
     let app = if crate::apps::valid_id(command) {
         let path = match crate::apps::resolve(home, command)? {
             Some(path) => {
@@ -501,6 +532,61 @@ pub fn unhook(home: &Path, command: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn automatic_checks_are_cached_per_app_and_silicon_for_48_hours() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path();
+        let app = home.join("app");
+        fs::write(
+            &app,
+            r#"#!/bin/sh
+echo "$*" >> calls
+[ ! -f fail ] || exit 1
+case "$*" in
+  'iam --json') echo '{"app_id":"test>app"}' ;;
+  'login status --json') echo '{"authenticated":true}' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )?;
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o700))?;
+        let command = app.to_str().unwrap().to_owned();
+        let configured = vec![command.clone()];
+        ensure_all(home, "silicon:test", "", &configured)?;
+        let calls = fs::read_to_string(home.join("calls"))?;
+        let path = home.join(".silicon/auth-checked.json");
+        let original = fs::read(&path)?;
+
+        // A cached check must skip even discovery, including across connection generations.
+        fs::write(home.join("fail"), "")?;
+        ensure_all_scoped(home, "silicon:test", "", &configured, uuid::Uuid::new_v4())?;
+        assert_eq!(fs::read_to_string(home.join("calls"))?, calls);
+        assert!(setup(home, "silicon:test", "", &command).is_err());
+        assert!(ensure_all(home, "other:test", "", &configured).is_err());
+        let other = home.join("other-app");
+        fs::copy(&app, &other)?;
+        assert!(ensure_all(home, "silicon:test", "", &[other.to_str().unwrap().into()]).is_err());
+        assert_eq!(fs::read(&path)?, original);
+
+        let key = serde_json::to_string(&("silicon:test", &command))?;
+        for timestamp in [
+            chrono::Utc::now().timestamp() - 48 * 60 * 60,
+            chrono::Utc::now().timestamp() + 3600,
+        ] {
+            let stale = BTreeMap::from([(key.clone(), timestamp)]);
+            crate::state::write_json(&path, &stale)?;
+            assert!(ensure_all(home, "silicon:test", "", &configured).is_err());
+            let after: BTreeMap<String, i64> = serde_json::from_slice(&fs::read(&path)?)?;
+            assert_eq!(after, stale); // Failed checks must not advance the timestamp.
+        }
+        fs::remove_file(home.join("fail"))?;
+        ensure_all(home, "silicon:test", "", &configured)?;
+        let calls = fs::read_to_string(home.join("calls"))?;
+        ensure_all(home, "silicon:test", "", &configured)?;
+        assert_eq!(fs::read_to_string(home.join("calls"))?, calls);
+        Ok(())
+    }
 
     #[test]
     fn application_tokens_are_iam_issued_isolated_and_never_logged() -> Result<()> {
