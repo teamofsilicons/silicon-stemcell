@@ -17,7 +17,10 @@ Copy-Item $LinuxArchive "$stage/runtime.tar.gz"
 [IO.File]::WriteAllText("$stage/VERSION", "v$version`n")
 Copy-Item "$source/install.ps1" $stage
 Copy-Item "$PSScriptRoot/launch.sh", "$PSScriptRoot/provision.sh", "$PSScriptRoot/interop.sh", "$PSScriptRoot/open-url.ps1", "$source/LICENSE" $stage
-Copy-Item "$source/LICENSES" $stage -Recurse
+New-Item -ItemType Directory -Path "$stage/LICENSES" -Force | Out-Null
+foreach ($notice in 'README.md omni-LICENSE.txt caddy-LICENSE.txt caddy-AUTHORS.txt'.Split(' ')) {
+    Copy-Item "$source/LICENSES/$notice" "$stage/LICENSES"
+}
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Compress-Archive -Path "$stage/*" -DestinationPath "$OutputDirectory/silicon-$target.zip" -Force
 Copy-Item "$source/install.ps1" $OutputDirectory

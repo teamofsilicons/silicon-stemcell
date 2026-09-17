@@ -2,10 +2,11 @@
 
 Silicon itself is distributed through [GitHub Releases](https://github.com/teamofsilicons/silicon-stemcell/releases) and the [Unix and Windows installers](https://docs.teamofsilicons.com/#installation). It does not need a Honeycomb listing, public-review request, or its own IAM app registration.
 
-Honeycomb remains part of the interpreter bundle for two purposes:
+Honeycomb is installed independently using its latest-release installer. Application CLIs are not copied into interpreter release bundles.
 
-- Release construction downloads the published IAM, Space Station, DM, Briefcase, Waveform, Commit, Remind, and Hook CLIs through Honeycomb.
-- Configured applications can be installed into the selected Silicon home's managed package directory.
+On every connection, Silicon runs `honeycomb install 'org>app' --json` for each configured or previously registered canonical app ID, plus `tos>iam` for token issuance. No version argument or persistent pin is written. Honeycomb selects the latest published package and handles verification and installation. Legacy explicit executable commands stay under the user's control.
+
+The package registry is isolated beneath `<SILICON_HOME>/.silicon/packages`; app credentials remain under the original Silicon home. Interpreter updates do not disable app updates or wrap app commands to suppress updates. An old interpreter-imposed `auto_update: false` setting in the private package home is removed once; later preferences are preserved. Authentication still uses the separate 48-hour check cache.
 
 Those applications keep their own IAM identities and authentication flows. The interpreter uses them on behalf of the configured Silicon identity; it does not need a separate application identity for distribution.
 

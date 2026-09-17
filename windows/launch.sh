@@ -43,4 +43,5 @@ for arg do
     fi
     args+=("$arg")
 done
-exec "$HOME/.local/share/silicon/bin/$command" "${args[@]}"
+export PATH="${SILICON_HOME:-$HOME}/.silicon/bin:$PATH"
+exec "$command" "${args[@]}"

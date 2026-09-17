@@ -1,4 +1,4 @@
-# Silicon 4.0.5
+# Silicon 4.0.6
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -27,15 +27,19 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.5` with:
+> Upgrading from 4.0.5 or earlier: rerun the 4.0.6 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
+
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.6` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.5/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh | sh
 ```
 
-Find the platform bundles and their checksums on the [v4.0.5 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.5). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the platform bundles and their checksums on the [v4.0.6 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.6). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
+
+**4.0.6** removes bundled Honeycomb app versions. Every connection installs configured apps with no version argument, and app automatic updates remain enabled according to their own settings.
 
 **4.0.5** caches successful automatic app-auth checks for 48 hours across reconnects and restarts. Checks run only on YAML connects and new session creation; heartbeats reuse authentication, and explicit `si auth setup` bypasses the cache.
 
@@ -43,7 +47,7 @@ Silicon is distributed through GitHub Releases using the installers above. It do
 
 **4.0.0** focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
-**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.5. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
+**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.6. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -56,7 +60,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.5/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -66,34 +70,23 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 4.0.5 |
+| `silicon`, `si` | Interpreter and internal CLI, 4.0.6 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
-| `iam` | Honeycomb `tos>iam` 1.11.0 |
-| `honeycomb` | Honeycomb 0.2.3 |
-| `spacestation` | Honeycomb `tos>spacestation` 0.1.4 |
-| `dm` | Honeycomb `tos>dm` 0.7.0 |
-| `briefcase` | Honeycomb `tos>briefcase` 1.1.0 |
-| `waveform` | Honeycomb `tos>waveform` 0.1.2 |
-| `commit` | Honeycomb `tos>commit` 0.2.0, through a managed wrapper |
-| `remind` | Honeycomb `tos>remind` 0.2.0, through a managed wrapper |
-| `hook` | Honeycomb `tos>hook` 0.6.1 |
 
-The Commit and Remind wrappers suppress their independent update checks. Their underlying binaries are shipped as `commit-native` and `remind-native` inside the release. For a fresh Commit home with no explicit backend override or existing saved configuration, the wrapper selects `https://backend.commit.teamofsilicons.com`. It preserves an existing configuration or explicit `COMMIT_API_URL`.
+Honeycomb is installed separately using its latest-release installer and retains its own update service. Each Silicon connection runs `honeycomb install 'org>app' --json` for configured and registered canonical app IDs and for the IAM issuer. Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.
 
-Release construction obtains all eight application CLIs through Honeycomb in an isolated anonymous home, with its automatic updates disabled. These are the latest public catalog versions verified on 17 September 2026. It copies their verified native executables into the portable bundle; Honeycomb registry files and credentials are not shipped. Public installation downloads that complete bundle, so no separate Space Station installation is required. The optional Space Station `windows run` and `windows tool` features require Node.js 22.13 or newer; interpreter telemetry and ordinary telemetry CLI commands do not require those features.
-
-The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.
+Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create an IAM identity or grant provider access.
 
 ### Windows installation and project files
 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.5/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.ps1 | iex
 ```
 
-Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux interpreter and application bundle used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
+Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Honeycomb installer used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
 
 Keep each project, its YAML, and its `SILICON_HOME` inside the distribution's Linux filesystem. Open `\\wsl.localhost\Silicon\home\silicon` in File Explorer and copy or create your project folder there. For example:
 
@@ -105,7 +98,7 @@ silicon web
 
 `SILICON_HOME: ! pwd` continues to mean the YAML's directory. Setup commands, relative executables, DNA scripts, application CLIs, and ISI sessions execute from that home. The launcher translates explicit Windows paths into WSL paths, but it never rewrites or silently moves your YAML. A configuration or home on a Windows drive is rejected because private credential modes and Unix socket semantics require Linux storage.
 
-Windows data remains accessible: `C:\Users\You\Documents` is `/mnt/c/Users/You/Documents`, and `D:\Projects` is `/mnt/d/Projects`. Reads and writes affect the actual Windows files and respect Windows permissions. Put explicit paths to that data in your scripts as needed. Portable Bash and bundled CLI commands can use the same YAML on all platforms; macOS-specific tools and options still need alternatives inside the scripts.
+Windows data remains accessible: `C:\Users\You\Documents` is `/mnt/c/Users/You/Documents`, and `D:\Projects` is `/mnt/d/Projects`. Reads and writes affect the actual Windows files and respect Windows permissions. Put explicit paths to that data in your scripts as needed. Portable Bash and installed CLI commands can use the same YAML on all platforms; macOS-specific tools and options still need alternatives inside the scripts.
 
 The Linux runtime keeps the managed Unix installation layout. Its updater updates the Linux bundle; rerun the Windows installer to update the Windows launchers and browser bridge. If a later update replaces Caddy and needs to renew its port-80 capability, rerun the Windows installer; it performs that provisioning inside the dedicated distribution.
 
@@ -119,22 +112,22 @@ Version 4 removes the remote `login`, `logout`, and `watch` commands and the `re
 
 The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
 
-When you are ready to restart, stop the old interpreter and rerun the **4.0.5 public installer into the same prefix**:
+When you are ready to restart, stop the old interpreter and rerun the **4.0.6 public installer into the same prefix**:
 
 ```sh
 silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.5/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh | sh
 silicon serve
 ```
 
 Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter and restores its saved connections. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.5/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.5. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.
+Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.6. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.
 
 ### Linux and port 80
 
@@ -150,13 +143,11 @@ From this repository's root:
 SILICON_SOURCE_DIR="$PWD" sh install.sh
 ```
 
-Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and Omni, downloads verified Caddy and Honeycomb, and installs the eight application CLIs through Honeycomb. Caddy's upstream checksum file uses SHA-512.
+Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and Omni, downloads verified Caddy, and separately installs the latest Honeycomb. Application CLIs are installed when a Silicon connects. Caddy's upstream checksum file uses SHA-512.
 
 `SILICON_GIT_REV` is an alternative to `SILICON_SOURCE_DIR`: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.
 
-For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
-
-The 4.0.5 installer obtains Commit 0.2.0 from Honeycomb and verifies that `logout` is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
+For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply trusted Omni and Caddy executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and Honeycomb is still installed independently at its latest release. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -540,7 +531,7 @@ Without a command, `silicon` lists connections. `silicon list` is an alias for `
 
 Quote Honeycomb IDs because `>` is a shell redirection operator. `install` and `uninstall` operate on Honeycomb-managed applications. `ping` checks the local interpreter's connection without prompting a model. `config` returns the connected configuration with credentials redacted. `info` returns version, protocol, source, documentation, and dependency details.
 
-Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Resolution first checks a matching installed CLI and verifies its `iam --json` app ID, then uses the interpreter's Honeycomb installation map, including renamed commands. Missing packages are installed through Honeycomb with isolated app authentication. Honeycomb keeps package and authentication state beneath `<home>/.silicon/packages`, with its own `auto_update` disabled so Silicon's bundle updater owns dependency versions. Personal Honeycomb settings and registries are not changed; a matching command already on `PATH` can still be reused after identity verification. Application login credentials remain under the original Silicon home. Installing an already available native command with the matching IAM app ID returns `already_available` without replacing it.
+Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences and removes its old forced private-home `auto_update: false` setting once. It never replaces an unrelated command on collision. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.
 
 Commands are exposed through owned links under `<home>/.silicon/bin`; the interpreter adds those to its command environment. `uninstall` removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured `apps`/`webhooks` entries before reconnecting if you do not want an application installed again.
 
@@ -809,13 +800,13 @@ Caddy updates use its dedicated private admin socket. Accepted routes are persis
 
 Managed installations check GitHub's latest stable release once per hour while the interpreter is running. The first periodic check occurs after an hour. Drafts, prereleases, malformed version tags, and versions no newer than the running interpreter are not installed.
 
-The updater uses the same embedded installer and checksum-verified complete bundle as public installation. It does not fetch a new shell script and execute it blindly, and it clears source-build/release-mirror overrides before the update install. Its logs are in the interpreter state directory's `updates.log`.
+The updater uses the same embedded installer and checksum-verified complete bundle as public installation. It clears source-build/release-mirror overrides before the update install. The installer separately invokes Honeycomb’s official latest-release installer; Honeycomb verifies its own binary download. Its logs are in the interpreter state directory's `updates.log`.
 
 After successful automatic activation, the interpreter waits for active dispatches, nested activity, and pending provider work to finish. It then closes the admission gate, stops its owned children, and executes the newly installed interpreter. Connections and durable sessions are restored from disk. Incoming work is rejected once restart begins. Continuous active work can postpone the restart.
 
 `silicon update` performs a manual check/install and reports whether a restart is required. After a manual update, use `silicon stop` followed by `silicon serve` when ready. The command reports the currently running version if there is no newer eligible release.
 
-Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic updates. Source builds remain under your control and cannot use the managed-prefix update path. The interpreter, its CLI, and bundled dependencies can change together; YAML files, memories, workspaces, archives, and application state are never part of a release payload.
+Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic updates. Source builds remain under your control and cannot use the managed-prefix update path. The interpreter, its CLI, Omni, and Caddy can change together; Honeycomb apps update independently; YAML files, memories, workspaces, archives, and application state are never part of a release payload.
 
 ## Troubleshooting
 
@@ -847,7 +838,7 @@ Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic
 | Removed app logs in again | Remove its entry from `apps`, `webhooks`, and any legacy `login`/`webhook` fields if it should no longer be managed, then reconnect. |
 | Setup failed | Read the reported `silicon.setup` index and captured output. Each shell fallback needs `!`; completed shell effects remain even when connection fails. |
 | Honeycomb cannot resolve a configured app | Check the quoted `org>app` ID, CLI discovery, package availability for this platform, and the selected IAM organization. |
-| Space Station asks for an organization | Use the bundled CLI and supply `--org ORG` or `SPACE_STATION_ORG` when invoking it directly; see the upstream issue ledger. |
+| Space Station asks for an organization | Install the CLI through Honeycomb and supply `--org ORG` or `SPACE_STATION_ORG` when invoking it directly; see the upstream issue ledger. |
 | Disconnect reports cleanup errors | The Silicon/capabilities are removed; inspect the named app's unhook state and Caddy/interpreter logs. |
 | Startup skipped a saved connection | Confirm the saved YAML path still exists, compiles, and can authenticate its managed apps. |
 | Automatic update did not restart yet | Inspect update logs and active work. Restart waits until the interpreter can safely stop admitting work. |
@@ -885,10 +876,10 @@ Keep development and testing on the production authentication paths. An imported
 | --- | --- |
 | Existing 3.5 configurations | `login`, `webhook`, `sticky`, and `archive_on_end` remain accepted. Conflicting mode settings are errors; canonical names are preferred. |
 | IAM application discovery | JSON `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
-| Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM 1.11.0 is bundled; `--approve-scopes` is used only when its CLI exposes support. |
+| Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM is installed through Honeycomb without a version constraint; `--approve-scopes` is used only when its CLI exposes support. |
 | Inference | Omni's pinned Rust/client-daemon contract at `d52f5416cd33b363554d2300b5603dc0b6c43545`. |
 | Local interpreter API | Protocol `1`, reported by `silicon info`; protected `POST /control` and `POST /si`. |
-| Honeycomb / Space Station | Honeycomb 0.2.3 and native Space Station CLI 0.1.4 in the distribution. Interpreter telemetry uses the pinned Space Station Rust package. |
+| Honeycomb / Space Station | Latest standalone Honeycomb; Space Station CLI installed only when configured or explicitly requested. Interpreter telemetry uses its compiled Space Station Rust dependency. |
 
 This release makes additive changes and keeps the legacy paths above. No retirement date is set for those configuration or authentication spellings. A future removal or incompatible wire change must publish a migration and use a new contract version. The current checks negotiate CLI capabilities through command help and discovery; there is no general automatic upgrade negotiation between arbitrary client versions.
 
@@ -934,7 +925,7 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | 4.0.0 Windows x64 | [Windows verification](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35140947343) passed on `8fa368d` with the unchanged verified Linux runtime. Fresh PS5.1 installation, Ubuntu updates, missing-only WSL interoperability repair, full Omni/Caddy E2E, Unicode/quoted arguments, UNC paths, pipes, exit status, settings, browser launch, configuration redaction, and connection lifecycle passed. ARM64 native tests and packaging passed; ARM64 WSL2 remains unverified. |
 | 4.0.0 public Unix installation | The exact public curl one-liner installed into a fresh macOS ARM64 prefix. All 34 installed files matched the verified archive. Same-version reinstall repaired missing Honeycomb/Space Station files and links while preserving a marker YAML, and the public installed bundle passed the complete real Omni/Caddy E2E. |
 | Slow heartbeat cannot accumulate work | `runtime::tests::slow_heartbeat_coalesces_ticks_without_blocking_other_sessions` blocks a real protocol connection over several scheduler ticks, verifies independent-session progress, releases it, and verifies foreground delivery and no queued backlog. The final Windows WSL2 suite also passed heartbeat, suggestion, and busy-DNA checks. |
-| Private bundle tools and Silicon home | `tests/bundle_path.rs` verifies actual native interpreter execution through a public symlink, bundled dependency discovery, home command priority, working directory, update suppression, PATH deduplication, and refusal to trust an unmarked bundle directory. |
+| Private bundle tools and Silicon home | `tests/bundle_path.rs` verifies actual native interpreter execution through a public symlink, bundled dependency discovery, home command priority, working directory, preservation of app update preferences, PATH deduplication, and refusal to trust an unmarked bundle directory. |
 | 3.6.1 public release | [Version 3.6.1](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.1) was published as the latest stable release on 16 September at 17:19:29 UTC from `3f604bb1d99c2060b70377f6f8afe92693264475`. [All four native jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35124053286) and [source checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35124052640) passed. All six asset sizes/digests and five checksum entries matched; each native archive contained the expected 34 payload files, architecture, installer, notices, and version. |
 | 3.6.1 public installation and migration repair | The exact public curl installer passed in a fresh macOS ARM64 prefix. Reinstalling the same version repaired missing Honeycomb/Space Station executables, links, and notices while preserving a marker YAML. All 34 installed payload files matched the native CI archive, both dependency commands ran, and the public installed bundle passed the full real Omni/Caddy E2E. |
 | 3.6.1 production documentation | [docs.teamofsilicons.com](https://docs.teamofsilicons.com) served the exact rendered 3.6.1 HTML, installer link, and migration instructions. Its production telemetry gateway returned HTTP 202 and accepted the verification event. |

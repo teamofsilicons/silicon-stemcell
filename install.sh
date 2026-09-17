@@ -7,7 +7,7 @@ set -eu
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
 
-version=${SILICON_VERSION:-v4.0.5}
+version=${SILICON_VERSION:-v4.0.6}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -16,9 +16,9 @@ source_dir=${SILICON_SOURCE_DIR:-}
 git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
 omni_rev=d52f5416cd33b363554d2300b5603dc0b6c43545
-commands='silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook'
-binaries="$commands commit-native remind-native"
-notices='LICENSE LICENSES/README.md LICENSES/iam-LICENSE.txt LICENSES/dm-NOTICE.txt LICENSES/briefcase-LICENSE.txt LICENSES/waveform-LICENSE.txt LICENSES/commit-NOTICE.txt LICENSES/remind-LICENSE.txt LICENSES/hook-NOTICE.txt LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt LICENSES/honeycomb-LICENSE.txt LICENSES/spacestation-LICENSE.txt'
+commands='silicon si omnid silicon-omni omni so caddy'
+binaries="$commands"
+notices='LICENSE LICENSES/README.md LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'
 
 case "$version" in ''|*[!A-Za-z0-9._-]*) fail 'SILICON_VERSION must be a release tag, without slashes' ;; esac
 case "$repository" in ''|*[!A-Za-z0-9._/-]*) fail 'invalid SILICON_REPOSITORY' ;; esac
@@ -30,10 +30,10 @@ fi
 
 system=$(uname -s)
 case "$system/$(uname -m)" in
-    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64; honeycomb_target=macos-aarch64 ;;
-    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64; honeycomb_target=macos-x86_64 ;;
-    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64; honeycomb_target=linux-x86_64 ;;
-    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64; honeycomb_target=linux-aarch64 ;;
+    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64 ;;
+    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64 ;;
+    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64 ;;
+    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64 ;;
     *) fail 'supported systems are macOS and Linux on x86-64 or ARM64' ;;
 esac
 
@@ -113,70 +113,6 @@ copy_dependency() {
     cp "$dependency_bins/$1" "$stage/payload/bin/$1"
 }
 
-install_honeycomb_dependencies() {
-    if ! copy_dependency honeycomb; then
-        honeycomb_asset="honeycomb-$honeycomb_target.tar.gz"
-        honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/download/v0.2.3
-        say "downloading Honeycomb 0.2.3 for $honeycomb_target"
-        download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz" || fail 'could not download Honeycomb 0.2.3'
-        download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256" || fail 'could not download Honeycomb checksum'
-        verify 256 "$stage/honeycomb.sha256" "$honeycomb_asset" "$stage/honeycomb.tar.gz"
-        tar -xOzf "$stage/honeycomb.tar.gz" honeycomb > "$stage/payload/bin/honeycomb" || fail 'Honeycomb release has no executable'
-        chmod 755 "$stage/payload/bin/honeycomb"
-    fi
-    # Anonymous public package installation. Never borrow the user's IAM/Honeycomb session.
-    honeycomb_home="$stage/honeycomb-home"
-    mkdir -p "$honeycomb_home"
-    while read -r binary app_id app_version; do
-        say "installing $app_id $app_version through Honeycomb"
-        SILICON_HOME="$honeycomb_home" HONEYCOMB_AUTO_UPDATE=0 HONEYCOMB_API_URL=https://backend.honeycomb.teamofsilicons.com "$stage/payload/bin/honeycomb" install "$app_id" --version "$app_version" --alias "$binary=silicon-bundled-$binary" --json || fail "Honeycomb could not install $app_id $app_version"
-        # These verified packages each contain one self-contained executable.
-        # Copy its bytes, never the machine-specific Honeycomb launcher.
-        set -- "$honeycomb_home"/.honeycomb/dir/contexts/*/bin/"silicon-bundled-$binary"
-        [ "$#" -eq 1 ] && [ -x "$1" ] || fail "Honeycomb did not install exactly one $binary launcher"
-        cp -L "$1" "$stage/payload/bin/$binary" || fail "could not copy Honeycomb $binary executable"
-    done <<'APPS'
-iam tos>iam 1.11.0
-spacestation tos>spacestation 0.1.4
-dm tos>dm 0.7.0
-briefcase tos>briefcase 1.1.0
-waveform tos>waveform 0.1.2
-commit tos>commit 0.2.0
-remind tos>remind 0.2.0
-hook tos>hook 0.6.1
-APPS
-}
-
-wrap_managed_apps() {
-    for app in commit remind; do
-        mv "$stage/payload/bin/$app" "$stage/payload/bin/$app-native"
-        cat > "$stage/payload/bin/$app" <<'WRAPPER'
-#!/bin/sh
-set -eu
-script=$0
-case "$script" in */*) ;; *) script=$(command -v "$script") ;; esac
-while [ -L "$script" ]; do
-    directory=$(CDPATH= cd -- "$(dirname -- "$script")" && pwd -P)
-    script=$(readlink "$script")
-    case "$script" in /*) ;; *) script="$directory/$script" ;; esac
-done
-directory=$(CDPATH= cd -- "$(dirname -- "$script")" && pwd -P)
-app=${script##*/}
-if [ "$app" = commit ] && [ -z "${COMMIT_API_URL+x}" ]; then
-    silicon_app_home=${SILICON_HOME-${HOME:-.}}
-    if [ ! -e "$silicon_app_home/.commit/session.json" ] && [ ! -e "$silicon_app_home/.commit/home_dir" ]; then
-        COMMIT_API_URL=https://backend.commit.teamofsilicons.com
-        export COMMIT_API_URL
-    fi
-fi
-for arg do
-    [ "$arg" != --no-update ] || exec "$directory/$app-native" "$@"
-done
-exec "$directory/$app-native" --no-update "$@"
-WRAPPER
-    done
-}
-
 configure_caddy_port() {
     [ "$system" = Linux ] || return 0
     port_start=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null) || port_start=1024
@@ -231,9 +167,6 @@ if [ -n "$source_dir" ]; then
                 fail "required Omni binary $binary could not be built at $omni_rev"
         fi
     done
-    install_honeycomb_dependencies
-    "$stage/payload/bin/commit" --no-update logout --help >/dev/null || fail 'required Commit logout command is unavailable'
-    wrap_managed_apps
     if ! copy_dependency caddy; then
         caddy_asset="caddy_2.11.4_${caddy_platform}.tar.gz"
         caddy_url=https://github.com/caddyserver/caddy/releases/download/v2.11.4
@@ -279,10 +212,20 @@ for notice in $notices; do
 done
 "$stage/payload/bin/silicon" --version >/dev/null || fail 'interpreter binary cannot run on this system'
 "$stage/payload/bin/omnid" --version >/dev/null || fail 'Omni daemon binary cannot run on this system'
-"$stage/payload/bin/honeycomb" --version >/dev/null || fail 'Honeycomb binary cannot run on this system'
-"$stage/payload/bin/spacestation" --version >/dev/null || fail 'Space Station binary cannot run on this system'
 printf '%s\n' "$prefix" > "$stage/payload/PREFIX"
 configure_caddy_port
+
+# Honeycomb is installed independently, using its own latest-release installer and
+# update service. No application executables or package version pins enter the bundle.
+download https://raw.githubusercontent.com/teamofsilicons/silicon-honeycomb/main/install.sh "$stage/honeycomb-install.sh"
+SILICON_HOME="$prefix" HONEYCOMB_NO_MODIFY_PATH=1 bash "$stage/honeycomb-install.sh" || fail 'Honeycomb installation failed'
+honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
+link="$prefix/bin/honeycomb"
+if [ -e "$link" ] || [ -L "$link" ]; then
+    [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || fail "unmanaged executable at $link"
+    rm "$link"
+fi
+ln -s "$honeycomb" "$link"
 
 release_name="$version-${stage##*.}"
 mv "$stage/payload" "$runtime/releases/$release_name"
@@ -298,7 +241,14 @@ case "$system" in
     Linux) mv -fT "$stage/current" "$runtime/current" ;;
 esac
 activated=true
-say "installed $version and every required dependency in $prefix/bin"
+# Remove only links owned by older bundles. Honeycomb/app installations are untouched.
+for app in iam spacestation dm briefcase waveform commit remind hook; do
+    link="$prefix/bin/$app"
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "../lib/silicon/current/bin/$app" ]; then
+        rm "$link"
+    fi
+done
+say "installed $version runtime in $prefix/bin"
 quoted_bin=$(printf '%s' "$prefix/bin" | sed "s/'/'\\\\''/g")
 path_line="export PATH='$quoted_bin':\"\$PATH\""
 if [ "$manage_path" = true ]; then

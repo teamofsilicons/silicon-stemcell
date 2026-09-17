@@ -32,31 +32,30 @@ pub fn init_bundle_path() -> Result<()> {
                 version.trim().trim_start_matches('v') == env!("CARGO_PKG_VERSION")
             })
         }) {
-            let path = std::env::join_paths(
-                std::iter::once(bin.to_path_buf()).chain(
-                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                        .filter(|path| path != bin),
+            // A restarted updater can inherit a previous release's app binaries.
+            let releases = crate::update::managed_prefix()
+                .ok()
+                .map(|prefix| prefix.join("lib/silicon/releases"));
+            let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).filter(
+                    |path| {
+                        path != bin && !releases.as_ref().is_some_and(|root| path.starts_with(root))
+                    },
                 ),
-            )?;
+            ))?;
             std::env::set_var("PATH", path);
         }
     }
     Ok(())
 }
 
-/// Every tool process uses the Silicon's app state; the bundled interpreter owns updates.
+/// Every tool process uses the Silicon's app state and preserves the app's update policy.
 pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     command
         .current_dir(home)
         .env("SILICON_HOME", home)
-        .env("SILICON_IAM_HOME", home.join(".silicon-iam"))
-        .env("SILICON_IAM_AUTO_UPDATE", "false")
-        .env("HONEYCOMB_AUTO_UPDATE", "0")
-        .env("BRIEFCASE_AUTO_UPDATE", "0")
-        .env("WAVEFORM_AUTO_UPDATE", "0")
-        .env("SPACE_STATION_UPDATE", "0")
-        .env("SILICON_HOOK_AUTO_UPDATE", "0");
+        .env("SILICON_IAM_HOME", home.join(".silicon-iam"));
     if let Ok(path) = std::env::join_paths(std::iter::once(home.join(".silicon/bin")).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     )) {

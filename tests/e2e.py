@@ -107,6 +107,32 @@ def main():
     env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0", SILICON_TELEMETRY="0")
     assert shutil.which(env.get("OMNI_DAEMON", "omnid"), path=env["PATH"]), "set OMNI_DAEMON to the real Omni daemon"
     assert shutil.which(env.get("SILICON_CADDY", "caddy"), path=env["PATH"]), "set SILICON_CADDY to real Caddy"
+    honeycomb = binaries / "honeycomb"
+    honeycomb.write_text("#!" + sys.executable + "\n" + '''import json, os, pathlib, sys
+packages = pathlib.Path(os.environ["SILICON_HOME"])
+root = packages.parent.parent
+registry = packages / "mock-registry.json"
+records = json.loads(registry.read_text()) if registry.exists() else {}
+args = sys.argv[1:]
+if args == ["installed", "--json"]:
+    print(json.dumps(records))
+else:
+    assert len(args) == 3 and args[0] == "install" and args[2] == "--json", args
+    assert str(root / ".silicon/bin") not in os.environ["PATH"].split(os.pathsep)
+    app_id = args[1]
+    assert app_id in ["tos>iam", "test>progress"], app_id
+    with (root / "install-calls").open("a") as log: log.write(app_id + "\\n")
+    command = "iam" if app_id == "tos>iam" else "progress"
+    path = root / ("iam-stub" if app_id == "tos>iam" else "progress-app")
+    if app_id == "tos>iam":
+        path.write_text("#!/bin/sh\\nexit 0\\n")
+        path.chmod(0o755)
+    records[app_id] = {"app_id": app_id, "commands": {command: str(path)}}
+    registry.write_text(json.dumps(records))
+    print(json.dumps({"status": "installed"}))
+''')
+    honeycomb.chmod(0o755)
+    env["SILICON_HONEYCOMB"] = str(honeycomb)
     config = home / "silicon.yaml"
     config.write_text(f'''silicon:
   id: e2e:local
@@ -237,7 +263,7 @@ flow:
         progress_config = progress_home / "silicon.yaml"
         progress_config.write_text(original.decode().replace("id: e2e:local", "id: progress:local")
             .replace(json.dumps(str(home)), json.dumps(str(progress_home)))
-            .replace("  inference_providers:", "  login: ['./progress-app']\n  inference_providers:"))
+            .replace("  inference_providers:", "  apps: ['test>progress']\n  inference_providers:"))
         progress_app = progress_home / "progress-app"
         progress_app.write_text('''#!/bin/sh
 case "$*" in
@@ -256,32 +282,34 @@ esac
         reader = threading.Thread(target=lambda: lines.extend(iter(connecting.stdout.readline, "")), daemon=True)
         reader.start()
         try:
-            eventually(lambda: any("… Authenticating progress-app" in line for line in lines))
+            eventually(lambda: any("… Authenticating test>progress" in line for line in lines))
             assert connecting.poll() is None, "progress was buffered until connect returned"
-            assert not any("✓ Authenticated progress-app" in line for line in lines)
+            assert not any("✓ Authenticated test>progress" in line for line in lines)
             (progress_home / "auth-release").touch()
             connecting.wait(timeout=35)
             reader.join(timeout=5)
             assert connecting.returncode == 0, connecting.stderr.read()
-            assert any("✓ Authenticated progress-app" in line for line in lines), lines
+            assert any("✓ Authenticated test>progress" in line for line in lines), lines
             assert not any("\x1b" in line for line in lines), "redirected output must not contain terminal control codes"
         finally:
             (progress_home / "auth-release").touch()
             if connecting.poll() is None:
                 connecting.terminate()
                 connecting.wait(timeout=15)
+        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"]
         cli("disconnect", "progress:local")
         (progress_home / "auth-fail").touch()
         (progress_home / "auth-started").unlink()
         result = json.loads(cli("--json", "connect", str(progress_config)))
         assert result["connection"]["id"] == "progress:local"
         assert not (progress_home / "auth-started").exists(), "reconnect must reuse the cached auth check"
+        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"] * 2, "every connect must install without a version even while auth is cached"
         cli("disconnect", "progress:local")
         checked = progress_home / ".silicon/auth-checked.json"
         checked.write_text(json.dumps({key: int(time.time()) - 48 * 60 * 60 for key in json.loads(checked.read_text())}))
         failed = subprocess.run([str(binary), "connect", str(progress_config)], env=env, capture_output=True, text=True, timeout=35)
-        assert failed.returncode != 0 and "✗ Authenticating progress-app" in failed.stdout, failed.stdout + failed.stderr
-        assert "✓ Authenticated progress-app" not in failed.stdout
+        assert failed.returncode != 0 and "✗ Authenticating test>progress" in failed.stdout, failed.stdout + failed.stderr
+        assert "✓ Authenticated test>progress" not in failed.stdout
         assert "private-auth-error" not in failed.stdout + failed.stderr
         cli("compile", str(config))
         assert not (home / "setup-count").exists(), "compile must not run setup"

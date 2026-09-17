@@ -46,24 +46,26 @@ pub(crate) fn honeycomb(home: &Path) -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("SILICON_HONEYCOMB") {
         return Ok(PathBuf::from(path));
     }
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.join("honeycomb")));
-    bundled.filter(|p| executable(p))
-        .or_else(|| on_path("honeycomb"))
+    on_path("honeycomb")
+        .or_else(|| {
+            let path = crate::update::managed_prefix()
+                .ok()?
+                .join(".honeycomb/dir/system/bin/honeycomb");
+            executable(&path).then_some(path)
+        })
         .or_else(|| {
             let path = home.join(".honeycomb/dir/system/bin/honeycomb");
             executable(&path).then_some(path)
         })
         .or_else(|| {
-            let path = PathBuf::from(std::env::var_os("HOME")?).join(".honeycomb/dir/system/bin/honeycomb");
+            let path = PathBuf::from(std::env::var_os("HOME")?)
+                .join(".honeycomb/dir/system/bin/honeycomb");
             executable(&path).then_some(path)
         })
-        .context("Honeycomb CLI is missing; install the complete Silicon bundle or set SILICON_HONEYCOMB")
+        .context("Honeycomb CLI is missing; install Honeycomb or set SILICON_HONEYCOMB")
 }
 
-/// Honeycomb has no per-process auto-update switch. Keep its package state separate
-/// from personal Honeycomb settings and let the Silicon bundle own dependency updates.
+/// Keep each Silicon's package registry separate from personal Honeycomb state.
 pub(crate) fn package_home(home: &Path) -> Result<PathBuf> {
     let directory = home.join(".silicon");
     let packages = directory.join("packages");
@@ -84,30 +86,45 @@ pub(crate) fn package_home(home: &Path) -> Result<PathBuf> {
     Ok(packages)
 }
 
-pub(crate) fn prepare_honeycomb(home: &Path, binary: &Path) -> Result<PathBuf> {
+pub(crate) fn prepare_honeycomb(home: &Path) -> Result<PathBuf> {
     let packages = package_home(home)?;
-    let config = packages.join(".honeycomb/dir/config.json");
-    let disabled = fs::read(config)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|config| config["auto_update"] == false);
-    if !disabled {
-        invoke(
-            &packages,
-            binary,
-            &["config", "set", "auto_update", "false"],
-        )?;
+    // Earlier interpreters forced this private home's updates off. Undo that once;
+    // subsequent app/user preferences belong to Honeycomb.
+    let migrated = packages.join(".silicon-update-policy-migrated");
+    if !migrated.exists() {
+        let config = packages.join(".honeycomb/dir/config.json");
+        if config.exists() {
+            let mut settings: Value = serde_json::from_slice(&fs::read(&config)?)?;
+            if settings["auto_update"] == false {
+                settings
+                    .as_object_mut()
+                    .context("invalid Honeycomb configuration")?
+                    .remove("auto_update");
+                crate::state::write_json(&config, &settings)?;
+            }
+        }
+        fs::write(migrated, "")?;
     }
     Ok(packages)
 }
 
 fn run(home: &Path, binary: &Path, args: &[&str]) -> Result<Value> {
-    let packages = prepare_honeycomb(home, binary)?;
+    let packages = prepare_honeycomb(home)?;
     invoke(&packages, binary, args)
 }
 
 fn invoke(home: &Path, binary: &Path, args: &[&str]) -> Result<Value> {
-    let output = crate::command(binary, home)
+    let mut command = crate::command(binary, home);
+    let exposed = home
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join(".silicon/bin"));
+    let path = std::env::join_paths(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|entry| Some(entry) != exposed.as_ref()),
+    )?;
+    let output = command
+        .env("PATH", path)
         .args(args)
         .arg("--json")
         .stdin(Stdio::null())
@@ -263,16 +280,37 @@ fn selected_home() -> Result<PathBuf> {
 
 /// Install the current distribution using Honeycomb's verified package installer.
 pub fn install(id: &str) -> Result<Value> {
-    install_or_available(&selected_home()?, id)
+    install_at(&selected_home()?, id)
 }
 
-fn install_or_available(home: &Path, id: &str) -> Result<Value> {
-    if let Some(command) = resolve(home, id)? {
-        return Ok(
-            json!({"app_id":id,"status":"already_available","command":command,"silicon_bin_directory":home.join(".silicon/bin")}),
-        );
+/// Resolve the latest release afresh on every connect; authentication has its own cache.
+pub(crate) fn install_all(
+    home: &Path,
+    configured: &[String],
+    generation: uuid::Uuid,
+) -> Result<()> {
+    let mut ids = Vec::new();
+    for id in configured.iter().filter(|id| valid_id(id)) {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
     }
-    install_at(home, id)
+    if ids.is_empty() {
+        return Ok(());
+    }
+    if !ids.iter().any(|id| id == "tos>iam") {
+        ids.insert(0, "tos>iam".into());
+    }
+    for id in ids {
+        crate::progress::step(
+            home,
+            Some(generation),
+            &format!("Installing latest {id} through Honeycomb"),
+            &format!("Installed latest {id}"),
+            || install_at(home, &id),
+        )?;
+    }
+    Ok(())
 }
 
 /// Honeycomb removes only its owned package files; application credentials remain app-owned.
@@ -320,8 +358,7 @@ mod tests {
 set -eu
 [ "$PWD" = "$SILICON_HOME" ]
 case "$1" in
-config) [ "$2 $3 $4" = "set auto_update false" ]; mkdir -p .honeycomb/dir; echo '{"auto_update":false}' > .honeycomb/dir/config.json; echo '{"saved":true}' ;;
-install) [ "$2" = 'test>app' ]; touch installed; echo '{"status":"installed"}' ;;
+install) [ "$*" = 'install test>app --json' ]; echo install >> calls; touch installed; mkdir -p .honeycomb; echo '{"status":"installed"}' ;;
 installed) if [ -f installed ]; then cat ../../records.json; else echo '{}'; fi ;;
 uninstall) rm installed; echo '{"uninstalled":"test>app"}' ;;
 *) exit 2 ;;
@@ -329,6 +366,22 @@ esac
 "#,
         )?;
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o700))?;
+        let packages = package_home(home)?;
+        let config = packages.join(".honeycomb/dir/config.json");
+        crate::state::write_json(&config, &json!({"auto_update":false,"telemetry":false}))?;
+        prepare_honeycomb(home)?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&config)?)?,
+            json!({"telemetry":false})
+        );
+        // Once migrated, the interpreter leaves any later user preference intact.
+        crate::state::write_json(&config, &json!({"auto_update":false}))?;
+        prepare_honeycomb(home)?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&config)?)?["auto_update"],
+            false
+        );
+        fs::remove_file(&config)?;
         assert!(valid_id("tos>space-station"));
         for id in [
             "../>app",
@@ -342,22 +395,19 @@ esac
         }
         install_using(home, "test>app", &cli)?;
         assert!(!home.join(".honeycomb").exists());
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(
-                home.join(".silicon/packages/.honeycomb/dir/config.json")
-            )?)?["auto_update"],
-            false
-        );
+        assert!(!home
+            .join(".silicon/packages/.honeycomb/dir/config.json")
+            .exists());
         assert_eq!(fs::read_link(home.join(".silicon/bin/renamed"))?, app);
         assert!(matches(home, &app, "test>app"));
         assert!(!matches(home, &app, "test>other"));
         std::os::unix::fs::symlink(&app, home.join(".silicon/bin/app"))?;
-        assert_eq!(
-            install_or_available(home, "test>app")?["status"],
-            "already_available"
-        );
         fs::remove_file(home.join(".silicon/bin/app"))?;
         install_using(home, "test>app", &cli)?;
+        assert_eq!(
+            fs::read_to_string(home.join(".silicon/packages/calls"))?,
+            "install\ninstall\n"
+        );
         uninstall_using(home, "test>app", &cli)?;
         assert!(!home.join(".silicon/bin/renamed").exists());
         fs::write(home.join(".silicon/bin/renamed"), "unmanaged")?;

@@ -28,8 +28,8 @@ if [ ! -f "$release/VERSION" ]; then
     # install.sh. Never let an archive symlink redirect a privileged extraction.
     python3 - "$payload/runtime.tar.gz" "$stage" <<'PY'
 import pathlib, sys, tarfile
-commands = 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook commit-native remind-native'.split()
-notices = 'README.md iam-LICENSE.txt dm-NOTICE.txt briefcase-LICENSE.txt waveform-LICENSE.txt commit-NOTICE.txt remind-LICENSE.txt hook-NOTICE.txt omni-LICENSE.txt caddy-LICENSE.txt caddy-AUTHORS.txt honeycomb-LICENSE.txt spacestation-LICENSE.txt'.split()
+commands = 'silicon si omnid silicon-omni omni so caddy'.split()
+notices = 'README.md omni-LICENSE.txt caddy-LICENSE.txt caddy-AUTHORS.txt'.split()
 expected = {'VERSION', 'installer.sh', 'LICENSE'} | {'bin/' + name for name in commands} | {'LICENSES/' + name for name in notices}
 with tarfile.open(sys.argv[1]) as archive:
     files = [member for member in archive.getmembers() if not member.isdir()]
@@ -50,7 +50,7 @@ PY
     mv "$stage" "$release"
     trap - EXIT HUP INT TERM
 fi
-for binary in silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook; do
+for binary in silicon si omnid silicon-omni omni so caddy; do
     path="$prefix/bin/$binary"
     { [ ! -e "$path" ] && [ ! -L "$path" ]; } || [ "$(readlink "$path")" = "../lib/silicon/current/bin/$binary" ] || { echo "Unmanaged executable at $path" >&2; exit 2; }
     [ -L "$path" ] || ln -s "../lib/silicon/current/bin/$binary" "$path"
@@ -62,6 +62,25 @@ trap 'rm -f "$next"' EXIT HUP INT TERM
 chown -h silicon:silicon "$next"
 mv -fT "$next" "$runtime/current"
 trap - EXIT HUP INT TERM
+# Install Honeycomb separately at its latest release, retaining its own update policy.
+bootstrap=$(mktemp)
+trap 'rm -f "$bootstrap"' EXIT HUP INT TERM
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/teamofsilicons/silicon-honeycomb/main/install.sh -o "$bootstrap"
+chmod 644 "$bootstrap"
+runuser -u silicon -- env HOME=/home/silicon SILICON_HOME="$prefix" HONEYCOMB_NO_MODIFY_PATH=1 bash "$bootstrap"
+rm "$bootstrap"
+trap - EXIT HUP INT TERM
+honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
+link="$prefix/bin/honeycomb"
+if [ -e "$link" ] || [ -L "$link" ]; then
+    [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || { echo "Unmanaged executable at $link" >&2; exit 2; }
+    rm "$link"
+fi
+ln -s "$honeycomb" "$link"
+for app in iam spacestation dm briefcase waveform commit remind hook; do
+    path="$prefix/bin/$app"
+    if [ -L "$path" ] && [ "$(readlink "$path")" = "../lib/silicon/current/bin/$app" ]; then rm "$path"; fi
+done
 install -m 755 "$payload/launch.sh" /opt/silicon/launch
 printf '%s\n' "$windows_powershell" > /opt/silicon/windows-powershell
 printf '%s\n' "$windows_opener" > /opt/silicon/windows-opener

@@ -206,6 +206,9 @@ impl Runtime {
                     format!("silicon.setup[{index}] failed; connection was not started")
                 })?;
             }
+            let mut apps = cfg.silicon.managed_apps();
+            apps.extend(auth::registered(&cfg.home)?);
+            crate::apps::install_all(&cfg.home, &apps, cfg.generation)?;
             auth::ensure_all_scoped(
                 &cfg.home,
                 &id,

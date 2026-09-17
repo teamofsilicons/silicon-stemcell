@@ -12,7 +12,7 @@ use std::{
 // ponytail: serialize auth exchanges; use per-home/app locks if authentication throughput matters.
 static AUTH_LOCK: Mutex<()> = Mutex::new(());
 
-fn registered(home: &Path) -> Result<Vec<String>> {
+pub(crate) fn registered(home: &Path) -> Result<Vec<String>> {
     let path = home.join(".silicon/auth-apps.json");
     if path.exists() {
         serde_json::from_slice(&fs::read(path)?).context("invalid managed app registry")
@@ -22,9 +22,6 @@ fn registered(home: &Path) -> Result<Vec<String>> {
 }
 
 fn remember(home: &Path, app: &App, present: bool) -> Result<()> {
-    if !app.managed {
-        return Ok(());
-    }
     let command = app.reference.clone();
     let mut commands = registered(home)?;
     commands.retain(|item| item != &command);
@@ -96,7 +93,6 @@ struct App {
     argv: Vec<String>,
     reference: String,
     expected_id: Option<String>,
-    managed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -139,7 +135,6 @@ impl App {
             argv,
             reference,
             expected_id: None,
-            managed: true,
         })
     }
 
@@ -311,13 +306,6 @@ fn setup_locked(
                 path
             }
             None => {
-                let honeycomb = crate::apps::honeycomb(home)?;
-                let packages = crate::apps::prepare_honeycomb(home, &honeycomb)?;
-                let mut package_app =
-                    App::new(&packages, &shell_words::quote(&honeycomb.to_string_lossy()))?;
-                // Honeycomb's private session is checked when installing, not as an app in the Silicon home.
-                package_app.managed = false;
-                authenticate(home, sid, stk, package_app, iam, true, generation)?;
                 crate::progress::step(
                     home,
                     generation,
@@ -413,12 +401,21 @@ fn authenticate_inner(
     // This is the installed IAM CLI's noninteractive contract. Only IAM gets
     // the STK; only the single-use SLT crosses the application boundary.
     let mut issuer = crate::command(iam, &home);
-    // IAM 1.9 adds explicit noninteractive scope consent; keep older bundles usable.
-    let help = crate::command(iam, &home)
-        .args(["silicon-login", "--help"])
-        .stdin(Stdio::null())
-        .output()
-        .context("could not inspect IAM silicon-login contract")?;
+    // Discover CLI capabilities without constraining the installed version.
+    let inspect = || {
+        crate::command(iam, &home)
+            .args(["silicon-login", "--help"])
+            .stdin(Stdio::null())
+            .output()
+    };
+    let help = match inspect() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && iam == Path::new("iam") => {
+            crate::apps::install_at(&home, "tos>iam")?;
+            inspect()
+        }
+        result => result,
+    }
+    .context("could not inspect IAM silicon-login contract")?;
     issuer.args([
         "--output",
         "json",
