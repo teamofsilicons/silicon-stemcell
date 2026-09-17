@@ -271,10 +271,14 @@ esac
                 connecting.terminate()
                 connecting.wait(timeout=15)
         cli("disconnect", "progress:local")
+        (progress_home / "auth-fail").touch()
+        (progress_home / "auth-started").unlink()
         result = json.loads(cli("--json", "connect", str(progress_config)))
         assert result["connection"]["id"] == "progress:local"
+        assert not (progress_home / "auth-started").exists(), "reconnect must reuse the cached auth check"
         cli("disconnect", "progress:local")
-        (progress_home / "auth-fail").touch()
+        checked = progress_home / ".silicon/auth-checked.json"
+        checked.write_text(json.dumps({key: int(time.time()) - 48 * 60 * 60 for key in json.loads(checked.read_text())}))
         failed = subprocess.run([str(binary), "connect", str(progress_config)], env=env, capture_output=True, text=True, timeout=35)
         assert failed.returncode != 0 and "✗ Authenticating progress-app" in failed.stdout, failed.stdout + failed.stderr
         assert "✓ Authenticated progress-app" not in failed.stdout
