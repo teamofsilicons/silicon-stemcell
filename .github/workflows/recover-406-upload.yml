@@ -1,0 +1,35 @@
+name: Recover verified 4.0.6 release uploads
+on: workflow_dispatch
+permissions:
+  actions: read
+  contents: write
+jobs:
+  upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: 35270308880
+          repository: teamofsilicons/silicon-stemcell
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - name: Upload only missing verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: teamofsilicons/silicon-stemcell
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          for path in sorted(pathlib.Path('dist').iterdir()):
+              if not path.is_file(): continue
+              assets = json.loads(subprocess.check_output(['gh', 'api', 'repos/teamofsilicons/silicon-stemcell/releases/391045729/assets']))
+              existing = next((a for a in assets if a['name'] == path.name), None)
+              if existing:
+                  assert existing['state'] == 'uploaded' and existing['digest'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest(), path.name
+                  print('Verified existing', path.name, flush=True)
+              else:
+                  subprocess.run(['gh', 'release', 'upload', 'v4.0.6', str(path)], check=True, timeout=180)
+                  print('Uploaded', path.name, flush=True)
+          PY
