@@ -1,4 +1,4 @@
-# Silicon 4.0.1
+# Silicon 4.0.2
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -27,21 +27,21 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.1` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.2` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.sh | sh
 ```
 
-Find the platform bundles and their checksums on the [v4.0.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.1). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the platform bundles and their checksums on the [v4.0.2 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.2). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
 
-**4.0.1** adds `make_readable` and `convert_time`, fixes the reference YAML expressions, and tests its event-flow branches.
+**4.0.2** adds `make_readable` and `convert_time`, fixes the reference YAML expressions, and tests its event-flow branches.
 
 **4.0.0** focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
-**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.1. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
+**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.2. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -54,7 +54,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -64,7 +64,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 4.0.1 |
+| `silicon`, `si` | Interpreter and internal CLI, 4.0.2 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
 | `iam` | Honeycomb `tos>iam` 1.11.0 |
@@ -88,7 +88,7 @@ The bundle supplies the listed client tools and local daemons. Accounts, permiss
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux interpreter and application bundle used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -117,22 +117,22 @@ Version 4 removes the remote `login`, `logout`, and `watch` commands and the `re
 
 The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
 
-When you are ready to restart, stop the old interpreter and rerun the **4.0.1 public installer into the same prefix**:
+When you are ready to restart, stop the old interpreter and rerun the **4.0.2 public installer into the same prefix**:
 
 ```sh
 silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.sh | sh
 silicon serve
 ```
 
 Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter and restores its saved connections. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.1. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.
+Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.2. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.
 
 ### Linux and port 80
 
@@ -154,7 +154,7 @@ Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and depend
 
 For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
-The 4.0.1 installer obtains Commit 0.2.0 from Honeycomb and verifies that `logout` is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
+The 4.0.2 installer obtains Commit 0.2.0 from Honeycomb and verifies that `logout` is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 

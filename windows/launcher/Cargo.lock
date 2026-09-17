@@ -4,4 +4,4 @@ version = 4
 
 [[package]]
 name = "silicon-windows-launcher"
-version = "4.0.1"
+version = "4.0.2"
