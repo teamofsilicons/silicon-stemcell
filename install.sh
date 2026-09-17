@@ -143,7 +143,7 @@ briefcase tos>briefcase 1.1.0
 waveform tos>waveform 0.1.2
 commit tos>commit 0.2.0
 remind tos>remind 0.2.0
-hook tos>hook 0.6.0
+hook tos>hook 0.6.1
 APPS
 }
 

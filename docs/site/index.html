@@ -105,7 +105,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </tr>
 <tr>
 <td><code>hook</code></td>
-<td>Honeycomb <code>tos&gt;hook</code> 0.6.0</td>
+<td>Honeycomb <code>tos&gt;hook</code> 0.6.1</td>
 </tr>
 </tbody>
 </table>
@@ -1456,7 +1456,7 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 </section><section class="chapter"><h2 id="implementation-diary">Implementation diary</h2>
 <p>9–17 September 2026 · implementation diary</p>
 <h3 id="17-september-readable-webhook-events">17 September: readable webhook events</h3>
-<p>The reported <code>make_readable(request)</code> failure was a missing registration in the shared CEL context. <code>make_readable</code> now uses the existing YAML serializer so nested event data stays readable through <code>var</code> and <code>send</code>; <code>convert_time</code> aliases the existing timezone formatter. The reference YAML's three misplaced interpolation braces and Python null check were corrected. Regression checks evaluate all reference flow branches, nested and scalar data, and timezone aliases. The protocol E2E now also sends a DM-shaped webhook through <code>make_readable(request)</code> → <code>var.new_message</code> → the real Omni transport. Version 4.0.1 carries the fix across Unix and Windows/WSL.</p>
+<p>The reported <code>make_readable(request)</code> failure was a missing registration in the shared CEL context. <code>make_readable</code> now uses the existing YAML serializer so nested event data stays readable through <code>var</code> and <code>send</code>; <code>convert_time</code> aliases the existing timezone formatter. The reference YAML's three misplaced interpolation braces and Python null check were corrected. Regression checks evaluate all reference flow branches, nested and scalar data, and timezone aliases. The protocol E2E now also sends a DM-shaped webhook through <code>make_readable(request)</code> → <code>var.new_message</code> → the real Omni transport. Version 4.0.1 carries the fix across Unix and Windows/WSL. A fresh Honeycomb catalog check found Hook 0.6.1, so its bundle pin was updated before publication; IAM 1.11.0, Space Station 0.1.4, DM 0.7.0, Briefcase 1.1.0, Waveform 0.1.2, Commit 0.2.0, and Remind 0.2.0 matched their latest published versions.</p>
 <h3 id="17-september-github-distribution-only">17 September: GitHub distribution only</h3>
 <p>The interpreter does not need a Honeycomb listing. Its catalog publication plan was withdrawn, and the unused package-preparation script, matching test, and CI step were removed. GitHub Releases and the existing Unix/Windows one-liners remain the distribution path. Honeycomb still supplies application dependencies and managed app installation. No <code>tos&gt;silicon</code> application, catalog release, or review request was created. Earlier Honeycomb packaging work below is historical, not outstanding release work.</p>
 <h3 id="1617-september-preparing-400">16–17 September: preparing 4.0.0</h3>

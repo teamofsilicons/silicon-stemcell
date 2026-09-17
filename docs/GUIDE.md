@@ -75,7 +75,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | `waveform` | Honeycomb `tos>waveform` 0.1.2 |
 | `commit` | Honeycomb `tos>commit` 0.2.0, through a managed wrapper |
 | `remind` | Honeycomb `tos>remind` 0.2.0, through a managed wrapper |
-| `hook` | Honeycomb `tos>hook` 0.6.0 |
+| `hook` | Honeycomb `tos>hook` 0.6.1 |
 
 The Commit and Remind wrappers suppress their independent update checks. Their underlying binaries are shipped as `commit-native` and `remind-native` inside the release. For a fresh Commit home with no explicit backend override or existing saved configuration, the wrapper selects `https://backend.commit.teamofsilicons.com`. It preserves an existing configuration or explicit `COMMIT_API_URL`.
 
