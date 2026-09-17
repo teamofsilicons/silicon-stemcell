@@ -325,8 +325,15 @@ impl Runtime {
             .ok_or_else(|| anyhow!("current session ended"))
     }
 
-    pub fn event(self: &Arc<Self>, id: &str, request: Value) -> Result<Value> {
+    pub fn event(self: &Arc<Self>, id: &str, mut request: Value) -> Result<Value> {
         let _activity = self.activity()?;
+        // DM message callbacks carry delivery metadata inside data. Preserve that
+        // wire payload while exposing the common top-level metadata to flows.
+        if request.get("metadata").is_none() {
+            if let Some(metadata) = request.pointer("/data/metadata").filter(|v| v.is_object()).cloned() {
+                request["metadata"] = metadata;
+            }
+        }
         if !request.get("type").is_some_and(Value::is_string)
             || !request.get("data").is_some_and(Value::is_object)
             || !request.get("metadata").is_some_and(Value::is_object)
