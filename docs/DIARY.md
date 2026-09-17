@@ -1,6 +1,18 @@
 # Building Silicon
 
 
+## 4.0.7: Repairing the package home 4.0.6 left unconfigurable
+
+4.0.6 returned update policy to Honeycomb by deleting `auto_update` from each Silicon's private package home. Honeycomb requires that setting, so every package command in a migrated home failed with `config.json is invalid JSON; repair it before continuing`. The first upgraded connection could not install `tos>iam` and the Silicon stayed disconnected; the interpreter's restore reported the Honeycomb failure with the command needed to reproduce it.
+
+The migration now writes Honeycomb's own default instead of removing the setting, and a home already left without it is repaired before any package command runs. Later app and user preferences remain untouched, and a configuration the interpreter cannot parse is left for Honeycomb to report. The repair was verified against a copy of the affected home using the real Honeycomb CLI, and the regression is covered twice: a unit test for migration, repair, and unparsable configuration, and an end-to-end connection that starts from the exact state 4.0.6 produced, with the mock Honeycomb enforcing the real CLI's required setting.
+
+Upgrading from 4.0.6 needs only `silicon update` and an interpreter restart; the bundle layout is unchanged.
+
+[Silicon 4.0.7](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.7) was published as latest stable on 17 September 2026 at 21:30 UTC. All six archives reported `v4.0.7` and the intended runtime-only inventory, and all eight asset digests matched the verified CI files before publication. The local interpreter updated through `silicon update`, restarted on 4.0.7, and restored its Silicon: every configured app reinstalled at its latest Honeycomb release, with IAM 2.0.0, DM 0.9.2, Briefcase 1.1.0, Browser 0.2.4, and Waveform 0.1.2 all satisfying the `iam --json` contract.
+
+
+
 ## 4.0.6: Independent Honeycomb applications
 
 Configured and registered canonical app IDs now install through Honeycomb on every connection with no version argument. Application executables, version selections, and update-suppressing wrappers have been removed from the interpreter bundle. Honeycomb itself is downloaded independently from its latest release with checksum verification, preserving existing update settings and services. Omni and Caddy remain runtime dependencies.
