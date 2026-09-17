@@ -2,6 +2,10 @@
 
 9–17 September 2026 · implementation diary
 
+### 17 September: readable webhook events
+
+The reported `make_readable(request)` failure was a missing registration in the shared CEL context. `make_readable` now uses the existing YAML serializer so nested event data stays readable through `var` and `send`; `convert_time` aliases the existing timezone formatter. The reference YAML's three misplaced interpolation braces and Python null check were corrected. Regression checks evaluate all reference flow branches, nested and scalar data, and timezone aliases. The protocol E2E now also sends a DM-shaped webhook through `make_readable(request)` → `var.new_message` → the real Omni transport. Version 4.0.1 carries the fix across Unix and Windows/WSL.
+
 ### 17 September: GitHub distribution only
 
 The interpreter does not need a Honeycomb listing. Its catalog publication plan was withdrawn, and the unused package-preparation script, matching test, and CI step were removed. GitHub Releases and the existing Unix/Windows one-liners remain the distribution path. Honeycomb still supplies application dependencies and managed app installation. No `tos>silicon` application, catalog release, or review request was created. Earlier Honeycomb packaging work below is historical, not outstanding release work.

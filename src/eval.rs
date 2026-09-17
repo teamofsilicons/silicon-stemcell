@@ -46,22 +46,24 @@ fn context(env: &Json) -> Result<Context<'static>> {
     {
         context.add_variable_from_value(name, cel_value(value.clone()));
     }
-    context.add_function(
-        "tz_time",
-        |when: Arc<String>, zone: Arc<String>| -> Result<Value, ExecutionError> {
-            let time = DateTime::parse_from_rfc3339(&when)
-                .map_err(|e| ExecutionError::function_error("tz_time", e))?;
-            let tz: Tz = zone
-                .parse()
-                .map_err(|e| ExecutionError::function_error("tz_time", e))?;
-            Ok(format!(
-                "{} {}",
-                time.with_timezone(&tz).format("%H:%M:%S %d:%m:%y"),
-                zone
-            )
-            .into())
-        },
-    );
+    for name in ["tz_time", "convert_time"] {
+        context.add_function(
+            name,
+            move |when: Arc<String>, zone: Arc<String>| -> Result<Value, ExecutionError> {
+                let time = DateTime::parse_from_rfc3339(&when)
+                    .map_err(|e| ExecutionError::function_error(name, e))?;
+                let tz: Tz = zone
+                    .parse()
+                    .map_err(|e| ExecutionError::function_error(name, e))?;
+                Ok(format!(
+                    "{} {}",
+                    time.with_timezone(&tz).format("%H:%M:%S %d:%m:%y"),
+                    zone
+                )
+                .into())
+            },
+        );
+    }
     context.add_function(
         "to_json",
         |source: Arc<String>| -> Result<Value, ExecutionError> {
@@ -70,14 +72,16 @@ fn context(env: &Json) -> Result<Context<'static>> {
             Ok(cel_value(value))
         },
     );
-    context.add_function("to_yaml", |value: Value| -> Result<Value, ExecutionError> {
-        let json = value
-            .json()
-            .map_err(|e| ExecutionError::function_error("to_yaml", e))?;
-        serde_yaml::to_string(&json)
-            .map(Value::from)
-            .map_err(|e| ExecutionError::function_error("to_yaml", e))
-    });
+    for name in ["to_yaml", "make_readable"] {
+        context.add_function(name, move |value: Value| -> Result<Value, ExecutionError> {
+            let json = value
+                .json()
+                .map_err(|e| ExecutionError::function_error(name, e))?;
+            serde_yaml::to_string(&json)
+                .map(Value::from)
+                .map_err(|e| ExecutionError::function_error(name, e))
+        });
+    }
     // The reference dialect uses the Python spelling and split alongside standard CEL.
     context.add_function("startswith", cel_interpreter::functions::starts_with);
     context.add_function(
@@ -526,7 +530,7 @@ mod tests {
     fn real_cel_nested_templates_helpers_and_failures() {
         let dir = tempfile::tempdir().unwrap();
         let env = json!({"request": {"items": [1, 2, 3], "body": "{\"n\":7}"}, "var": {}});
-        let eval = |source| evaluate(source, &env, dir.path(), "worker:job");
+        let eval = |source: &str| evaluate(source, &env, dir.path(), "worker:job");
         assert_eq!(
             eval("{request.items.filter(x, x > 1).map(x, x * 2)}").unwrap(),
             "[4,6]"
@@ -564,6 +568,39 @@ mod tests {
             "05:30:00 01:01:26 Asia/Kolkata"
         );
         assert_eq!(eval("{to_yaml([1, 2])}").unwrap(), "- 1\n- 2\n");
+        let request = json!({"type": "new_message", "data": {
+            "message": "hola 👋\nsecond line", "sender": {"id": "shubham", "type": "carbon"},
+            "attachments": [null, true, 7, 1.5, {"name": "photo"}], "reply_to": null
+        }});
+        let readable = evaluate(
+            "{make_readable(request)}",
+            &json!({"request": request}),
+            dir.path(),
+            "interpreter",
+        )
+        .unwrap();
+        assert_eq!(serde_yaml::from_str::<Json>(&readable).unwrap(), request);
+        assert!(readable.contains("sender:\n"));
+        assert_eq!(
+            eval("{make_readable(request.items)}").unwrap(),
+            "- 1\n- 2\n- 3\n"
+        );
+        for source in ["null", "true", "42", "1.5", "'hola'", "[]", "{}"] {
+            assert_eq!(
+                eval(&format!("{{make_readable({source})}}")).unwrap(),
+                eval(&format!("{{to_yaml({source})}}")).unwrap()
+            );
+        }
+        for when in ["2026-01-01T00:00:00Z", "2026-07-01T12:00:00+05:30"] {
+            for zone in ["Asia/Kolkata", "America/New_York"] {
+                assert_eq!(
+                    eval(&format!("{{convert_time('{when}', '{zone}')}}")).unwrap(),
+                    eval(&format!("{{tz_time('{when}', '{zone}')}}")).unwrap()
+                );
+            }
+        }
+        assert!(eval("{convert_time('bad', 'UTC')}").is_err());
+        assert!(eval("{convert_time('2026-01-01T00:00:00Z', 'invalid')}").is_err());
         assert!(eval("{tz_time('bad', 'UTC')}").is_err());
         assert!(validate_template("{request.type == }").is_err());
         assert!(validate_template("{request.type").is_err());

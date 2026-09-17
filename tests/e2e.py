@@ -3,6 +3,7 @@
 Run after cargo build: OMNI_DAEMON=/path/omnid SILICON_CADDY=/path/caddy python3 tests/e2e.py
 """
 import http.server
+import errno
 import json
 import os
 from pathlib import Path
@@ -175,6 +176,15 @@ flow:
   - log:
       message: 'flow finished {{request.type}}'
   - if:
+      condition: '{{request.type == "new_message"}}'
+      then:
+        - var:
+            name: new_message
+            value: '{{make_readable(request)}}'
+        - send:
+            isi: source
+            message: '{{var.new_message}}'
+  - if:
       condition: '{{request.type == "ephemeral"}}'
       then:
         - send:
@@ -189,8 +199,12 @@ flow:
         assert (out.returncode == 0) == ok, out.stdout + out.stderr
         return out.stdout
     occupied = socket.socket()
-    occupied.bind(("127.0.0.1", 1823))
-    occupied.listen()
+    try:
+        occupied.bind(("127.0.0.1", 1823))
+        occupied.listen()
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
     log = (work / "server.log").open("w")
     process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, cwd=home, stdout=log, stderr=log)
     try:
@@ -264,6 +278,9 @@ flow:
         progress = control("show", silicon="e2e:local", isi="source")
         assert any(event["type"] == "injected" and event["text"] == "mid-turn" for event in progress["events"]), progress
         assert not any(event["type"] == "end" for event in progress["events"])
+        post("/", {"type": "new_message", "data": {"message": "hola", "sender": {"id": "shubham", "type": "carbon"}, "reply_to": None}, "metadata": {}}, host="e2e.local.localhost")
+        progress = control("show", silicon="e2e:local", isi="source")
+        assert any(event["type"] == "injected" and "message: hola" in event["text"] and "  sender:\n    id: shubham\n    type: carbon" in event["text"] for event in progress["events"]), progress
         provider_info = eventually(lambda: next((json.loads(file.read_text()) for file in home.glob("*.provider.json") if json.loads(file.read_text())["ISI"] == "source"), None))
         assert provider_info["SILICON_HOME"] == str(home)
         assert provider_info["cwd"] == str(home)

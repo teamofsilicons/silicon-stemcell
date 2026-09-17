@@ -14,9 +14,9 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
 </style></head>
 <body><a class="skip" href="#content">Skip to documentation</a>
-<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v4.0.0</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="#implementation-diary">The diary</a></div></header>
+<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v4.0.1</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="#implementation-diary">The diary</a></div></header>
 <div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a></nav></details></aside>
-<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter, Omni, Caddy, IAM, Honeycomb, app CLIs, and Space Station.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
+<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter, Omni, Caddy, IAM, Honeycomb, app CLIs, and Space Station.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
 <section class="chapter"><h2 id="start-here">Start here</h2>
 <ol>
 <li><a href="#installation">Install Silicon and its dependencies</a> with the one-line command below.</li>
@@ -33,19 +33,20 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>No terminal window is opened for each ISI. Each receives an independent process context, an Omni session, and the environment needed by its commands. Persistent session data survives stopping the interpreter. Global ephemeral work is discarded when it finishes.</p>
 </section><section class="chapter"><h2 id="installation">Installation</h2>
 <h3 id="public-binary-installation">Public binary installation</h3>
-<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v4.0.0</code> with:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh | sh
+<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v4.0.1</code> with:</p>
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh
 </code></pre>
-<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.0">v4.0.0 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
+<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.1">v4.0.1 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
 <p>Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.</p>
+<p><strong>4.0.1</strong> adds <code>make_readable</code> and <code>convert_time</code>, fixes the reference YAML expressions, and tests its event-flow branches.</p>
 <p><strong>4.0.0</strong> focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.</p>
-<p><strong>Upgrading from 3.5.x requires running this complete installer once into the same prefix</strong>, even when the old updater has already changed the reported Silicon version to 4.0.0. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the <a href="#upgrading-from-35x">migration instructions</a> below before using the new package features.</p>
+<p><strong>Upgrading from 3.5.x requires running this complete installer once into the same prefix</strong>, even when the old updater has already changed the reported Silicon version to 4.0.1. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the <a href="#upgrading-from-35x">migration instructions</a> below before using the new package features.</p>
 <p>The default installation prefix is <code>~/.local/share/silicon</code>. Add its <code>bin</code> directory to your shell's <code>PATH</code>:</p>
 <pre><code class="language-sh">export PATH=&quot;$HOME/.local/share/silicon/bin:$PATH&quot;
 </code></pre>
 <p>For the default prefix, the installer adds this path once to the startup file for your detected shell. Open a new terminal, or run the printed export command in your current terminal. Set <code>SILICON_NO_PATH=1</code> to leave shell startup files alone. Custom prefixes print the path without changing startup files.</p>
 <p>To choose another dedicated prefix, set the variable on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>The target matrix covers macOS, Linux, and Windows on ARM64 and x86-64. Windows runs the Linux bundle through WSL2. Native Unix bundles target macOS 15 and Ubuntu 24.04; the Linux binaries require glibc 2.39 or newer. Platform verification is recorded in the release evidence below; testing one architecture does not verify another.</p>
@@ -60,7 +61,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <tbody>
 <tr>
 <td><code>silicon</code>, <code>si</code></td>
-<td>Interpreter and internal CLI, 4.0.0</td>
+<td>Interpreter and internal CLI, 4.0.1</td>
 </tr>
 <tr>
 <td><code>omnid</code>, <code>silicon-omni</code>, <code>omni</code>, <code>so</code></td>
@@ -113,7 +114,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>The bundle supplies the listed client tools and local daemons. Accounts, permissions, remote service availability, and authenticated inference providers still have to be available. Installing a CLI does not create an IAM identity or grant provider access.</p>
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>In PowerShell:</p>
-<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.ps1 | iex
+<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.ps1 | iex
 </code></pre>
 <p>Windows uses a native launcher and a dedicated WSL2 distribution named <code>Silicon</code>, with the same Linux interpreter and application bundle used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user <code>silicon</code>.</p>
 <p>Keep each project, its YAML, and its <code>SILICON_HOME</code> inside the distribution's Linux filesystem. Open <code>\\wsl.localhost\Silicon\home\silicon</code> in File Explorer and copy or create your project folder there. For example:</p>
@@ -129,16 +130,16 @@ silicon web
 <p>Version 4 removes the remote <code>login</code>, <code>logout</code>, and <code>watch</code> commands and the <code>realtime</code> setting. Use local <code>silicon logs</code>, <code>silicon config</code>, and <code>silicon ping</code>. Saved Silicon configurations, sessions, and managed-app authentication are retained. The interpreter no longer connects to the retired relay.</p>
 <h3 id="upgrading-from-35x">Upgrading from 3.5.x</h3>
 <p>The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new <code>install.sh</code> as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.</p>
-<p>When you are ready to restart, stop the old interpreter and rerun the <strong>4.0.0 public installer into the same prefix</strong>:</p>
+<p>When you are ready to restart, stop the old interpreter and rerun the <strong>4.0.1 public installer into the same prefix</strong>:</p>
 <pre><code class="language-sh">silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh
 silicon serve
 </code></pre>
 <p>Skip <code>silicon stop</code> if no interpreter is running. <code>silicon serve</code> runs the new interpreter and restores its saved connections. The default command uses <code>~/.local/share/silicon</code>; if your existing installation uses another prefix, preserve it on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
-<p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 4.0.0. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
+<p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 4.0.1. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
 <h3 id="linux-and-port-80">Linux and port 80</h3>
 <p>On Linux, the installer checks whether unprivileged processes can bind port 80. If not, it grants only the bundled Caddy binary <code>cap_net_bind_service=ep</code> using <code>setcap</code>. This requires the system's libcap tools and suitable privileges; it can ask for <code>sudo</code> in an interactive terminal. Silicon itself does not need to run as root.</p>
 <p>An automatic, noninteractive update cannot prompt for privileges. When the Caddy binary is unchanged, the installer can reuse the existing capability. If a new Caddy binary needs a capability and unattended privilege is unavailable, activation fails with an explanation and leaves the current release selected. Rerun the installation or update interactively.</p>
@@ -149,7 +150,7 @@ silicon serve
 <p>Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and dependencies needed by the pinned Rust crates. Release CI pins Rust 1.98.1. It builds the interpreter and Omni, downloads verified Caddy and Honeycomb, and installs the eight application CLIs through Honeycomb. Caddy's upstream checksum file uses SHA-512.</p>
 <p><code>SILICON_GIT_REV</code> is an alternative to <code>SILICON_SOURCE_DIR</code>: supply an exact, lowercase, 40-character Git commit. The installer fetches that commit and verifies the checkout. The two source selectors cannot be used together.</p>
 <p>For controlled builds, <code>SILICON_DEPENDENCY_BIN_DIR</code> can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. <code>CARGO_TARGET_DIR</code> can reuse a compilation directory.</p>
-<p>The 4.0.0 installer obtains Commit 0.2.0 from Honeycomb and verifies that <code>logout</code> is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.</p>
+<p>The 4.0.1 installer obtains Commit 0.2.0 from Honeycomb and verifies that <code>logout</code> is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.</p>
 <p>For a developer build of only the interpreter and internal CLI:</p>
 <pre><code class="language-sh">cargo build --locked
 ./target/debug/silicon --help
@@ -455,6 +456,14 @@ No contacts are available.
 <td><code>05:30:00 01:01:26 Asia/Kolkata</code></td>
 </tr>
 <tr>
+<td><code>{convert_time(request.data.sent_at, silicon.timezone)}</code></td>
+<td>Alias of <code>tz_time</code>, with the same RFC 3339 input and IANA timezone.</td>
+</tr>
+<tr>
+<td><code>{make_readable(request)}</code></td>
+<td>Serialize any JSON-shaped value as readable YAML, including nested objects, arrays, and nulls. Alias of <code>to_yaml</code>.</td>
+</tr>
+<tr>
 <td><code>{to_json(request.data.raw).name}</code></td>
 <td>Parse a JSON string, then select a field.</td>
 </tr>
@@ -472,7 +481,7 @@ No contacts are available.
 </tr>
 </tbody>
 </table>
-<p>Use CEL syntax, including <code>null</code>, <code>&amp;&amp;</code>, and <code>!=</code>. Python expressions such as <code>is not None</code> are not valid CEL. <code>convert_time</code> and <code>make_readable</code> are not registered helpers.</p>
+<p>Use CEL syntax, including <code>null</code>, <code>&amp;&amp;</code>, and <code>!=</code>. Python expressions such as <code>is not None</code> are not valid CEL.</p>
 <p>Escape literal braces as <code>\{</code> and <code>\}</code>. YAML single-quoted strings are often convenient for CEL and backslashes. YAML double-quoted strings require their own escaping. Bash parameter forms such as <code>${NAME}</code> also contain braces; escape literal braces when they are intended for Bash rather than CEL. <code>$NAME</code> avoids that particular ambiguity.</p>
 <p>For JSON variables, the interpreter recursively evaluates strings in YAML maps/lists and JSON container strings. Object keys are evaluated too; two keys that evaluate to the same name cause an error. A string result containing valid JSON is decoded, so <code>"123"</code> can become a number and <code>"{\"name\":\"Ada\"}"</code> can become an object. Subsequent CEL expressions can address that structure.</p>
 <p>Fallback candidates are separated by unquoted <code>!&gt;&gt;</code> outside CEL. Each candidate is tried in order. A failure is logged; the next candidate does not receive an <code>error</code> variable from the failed candidate:</p>
@@ -1025,13 +1034,10 @@ silicon settings set auto_update --off
 </table>
 <p>Useful environment switches are <code>SILICON_INTERPRETER_HOME</code> for interpreter state, <code>SILICON_CADDY</code> for the Caddy executable, <code>OMNI_DAEMON</code> for the Omni daemon executable, and <code>SILICON_AUTO_UPDATE=0</code> for development runs. They affect the process in which they are set; an already-running daemon does not inherit new variables from a later terminal command.</p>
 </section><section class="chapter"><h2 id="the-repositorys-reference-template">The repository's reference template</h2>
-<p><code>stemcell/silicon</code>, <code>stemcell/memories</code>, and <code>stemcell/workspace</code> are reference/testing material. The installer does not distribute them into user homes, and this implementation does not modify them.</p>
-<p><code>stemcell/silicon/silicon.yaml</code> is deliberately preserved as the supplied source of intent. It is not a ready-to-connect configuration. Its current issues include:</p>
+<p><code>stemcell/silicon</code>, <code>stemcell/memories</code>, and <code>stemcell/workspace</code> are reference/testing material. The installer does not distribute them into user homes, and they still require your own credentials and supporting scripts.</p>
+<p><code>stemcell/silicon/silicon.yaml</code> is the supplied source of intent, with its CEL expressions corrected and its helper functions supported. It is not a ready-to-connect configuration. Its current issues include:</p>
 <ul>
 <li><code>silicon.id</code>, <code>silicon.token</code>, and the optional Space Station fields are <code>...</code> placeholders.</li>
-<li>Several CEL interpolations contain text such as <code>your time</code> inside the expression without valid CEL syntax.</li>
-<li>It contains Python-style <code>is not None</code>, which must be expressed in CEL in a user's own configuration.</li>
-<li>It refers to <code>convert_time</code> and <code>make_readable</code>, which are not registered helpers.</li>
 <li>It refers to missing scripts/files including <code>install_python.sh</code>, <code>contacts.sh</code>, <code>tools.sh</code>, <code>team.sh</code>, <code>time_delay.sh</code>, and <code>learn.sh</code>. The repository has <code>CONTACTS.md</code>, <code>tools.md</code>, and <code>learn.md</code>; those names do not make the scripts exist automatically.</li>
 <li>Some suggestion messages still show old command forms. Current rollover uses <code>si session new --archive-current-session --id ... --title ... --description ...</code>.</li>
 <li>It mixes canonical settings with <code>sticky</code> and <code>archive_on_end</code>. The compatibility mappings above describe their actual meaning.</li>
@@ -1449,6 +1455,8 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <p>The Windows installer now probes real Windows process execution after provisioning. If that fails, it restores only a missing WSL interoperability registration using <a href="https://github.com/microsoft/WSL/blob/40f18621d54abc1472657c07cc9fbb50cb9f2351/src/linux/init/binfmt.h">Microsoft's exact WSL2 <code>FP</code> registration</a>, then probes again. It refuses to replace an existing registration or enable globally disabled binfmt, and it does not shut down other WSL distributions. A persistent distribution configuration preserves the registration for future service starts. The native integration test additionally checks Windows PowerShell output and exit status after the distribution reload. Final hosted verification is recorded in the implementation diary; the patch does not change WSL or Ubuntu source.</p>
 </section><section class="chapter"><h2 id="implementation-diary">Implementation diary</h2>
 <p>9–17 September 2026 · implementation diary</p>
+<h3 id="17-september-readable-webhook-events">17 September: readable webhook events</h3>
+<p>The reported <code>make_readable(request)</code> failure was a missing registration in the shared CEL context. <code>make_readable</code> now uses the existing YAML serializer so nested event data stays readable through <code>var</code> and <code>send</code>; <code>convert_time</code> aliases the existing timezone formatter. The reference YAML's three misplaced interpolation braces and Python null check were corrected. Regression checks evaluate all reference flow branches, nested and scalar data, and timezone aliases. The protocol E2E now also sends a DM-shaped webhook through <code>make_readable(request)</code> → <code>var.new_message</code> → the real Omni transport. Version 4.0.1 carries the fix across Unix and Windows/WSL.</p>
 <h3 id="17-september-github-distribution-only">17 September: GitHub distribution only</h3>
 <p>The interpreter does not need a Honeycomb listing. Its catalog publication plan was withdrawn, and the unused package-preparation script, matching test, and CI step were removed. GitHub Releases and the existing Unix/Windows one-liners remain the distribution path. Honeycomb still supplies application dependencies and managed app installation. No <code>tos&gt;silicon</code> application, catalog release, or review request was created. Earlier Honeycomb packaging work below is historical, not outstanding release work.</p>
 <h3 id="1617-september-preparing-400">16–17 September: preparing 4.0.0</h3>

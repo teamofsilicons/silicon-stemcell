@@ -1,4 +1,4 @@
-# Silicon 4.0.0
+# Silicon 4.0.1
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -27,19 +27,21 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.0` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.1` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh
 ```
 
-Find the platform bundles and their checksums on the [v4.0.0 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.0). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the platform bundles and their checksums on the [v4.0.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.1). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
 
+**4.0.1** adds `make_readable` and `convert_time`, fixes the reference YAML expressions, and tests its event-flow branches.
+
 **4.0.0** focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
-**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.0. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
+**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.1. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -52,7 +54,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -62,7 +64,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 4.0.0 |
+| `silicon`, `si` | Interpreter and internal CLI, 4.0.1 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
 | `iam` | Honeycomb `tos>iam` 1.11.0 |
@@ -86,7 +88,7 @@ The bundle supplies the listed client tools and local daemons. Accounts, permiss
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux interpreter and application bundle used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -115,22 +117,22 @@ Version 4 removes the remote `login`, `logout`, and `watch` commands and the `re
 
 The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
 
-When you are ready to restart, stop the old interpreter and rerun the **4.0.0 public installer into the same prefix**:
+When you are ready to restart, stop the old interpreter and rerun the **4.0.1 public installer into the same prefix**:
 
 ```sh
 silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh | sh
 silicon serve
 ```
 
 Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter and restores its saved connections. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.0. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.
+Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.1. The complete installer installs Honeycomb, Space Station, their notices, and the rest of the distribution. Your Silicon YAML and runtime state remain outside the bundle payload.
 
 ### Linux and port 80
 
@@ -152,7 +154,7 @@ Source installation requires Rust 1.98 or newer, Cargo, a C compiler, and depend
 
 For controlled builds, `SILICON_DEPENDENCY_BIN_DIR` can supply trusted Omni, Caddy, and Honeycomb executables. This is a reuse mechanism, not independent verification of arbitrary local binaries. The interpreter is still built from the selected source, and all eight application CLIs are still obtained through Honeycomb. `CARGO_TARGET_DIR` can reuse a compilation directory.
 
-The 4.0.0 installer obtains Commit 0.2.0 from Honeycomb and verifies that `logout` is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
+The 4.0.1 installer obtains Commit 0.2.0 from Honeycomb and verifies that `logout` is available before activation. The original crates.io 0.1.0 and Silicon 3.5.0 bundle do not include this command.
 
 For a developer build of only the interpreter and internal CLI:
 
@@ -409,12 +411,14 @@ Supported helper functions include:
 | Expression | Result |
 | --- | --- |
 | `{tz_time('2026-01-01T00:00:00Z', 'Asia/Kolkata')}` | `05:30:00 01:01:26 Asia/Kolkata` |
+| `{convert_time(request.data.sent_at, silicon.timezone)}` | Alias of `tz_time`, with the same RFC 3339 input and IANA timezone. |
+| `{make_readable(request)}` | Serialize any JSON-shaped value as readable YAML, including nested objects, arrays, and nulls. Alias of `to_yaml`. |
 | `{to_json(request.data.raw).name}` | Parse a JSON string, then select a field. |
 | `{to_yaml(request.data)}` | Serialize JSON-shaped data as YAML using standard YAML indentation and newlines. |
 | `{request.data.to.startswith('worker')}` | The supported Python-style spelling of CEL's string-prefix helper. |
 | `{request.data.to.split('@')[0]}` | Split a string into a list. |
 
-Use CEL syntax, including `null`, `&&`, and `!=`. Python expressions such as `is not None` are not valid CEL. `convert_time` and `make_readable` are not registered helpers.
+Use CEL syntax, including `null`, `&&`, and `!=`. Python expressions such as `is not None` are not valid CEL.
 
 Escape literal braces as `\{` and `\}`. YAML single-quoted strings are often convenient for CEL and backslashes. YAML double-quoted strings require their own escaping. Bash parameter forms such as `${NAME}` also contain braces; escape literal braces when they are intended for Bash rather than CEL. `$NAME` avoids that particular ambiguity.
 
@@ -851,14 +855,11 @@ Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state
 
 ## The repository's reference template
 
-`stemcell/silicon`, `stemcell/memories`, and `stemcell/workspace` are reference/testing material. The installer does not distribute them into user homes, and this implementation does not modify them.
+`stemcell/silicon`, `stemcell/memories`, and `stemcell/workspace` are reference/testing material. The installer does not distribute them into user homes, and they still require your own credentials and supporting scripts.
 
-`stemcell/silicon/silicon.yaml` is deliberately preserved as the supplied source of intent. It is not a ready-to-connect configuration. Its current issues include:
+`stemcell/silicon/silicon.yaml` is the supplied source of intent, with its CEL expressions corrected and its helper functions supported. It is not a ready-to-connect configuration. Its current issues include:
 
 - `silicon.id`, `silicon.token`, and the optional Space Station fields are `...` placeholders.
-- Several CEL interpolations contain text such as `your time` inside the expression without valid CEL syntax.
-- It contains Python-style `is not None`, which must be expressed in CEL in a user's own configuration.
-- It refers to `convert_time` and `make_readable`, which are not registered helpers.
 - It refers to missing scripts/files including `install_python.sh`, `contacts.sh`, `tools.sh`, `team.sh`, `time_delay.sh`, and `learn.sh`. The repository has `CONTACTS.md`, `tools.md`, and `learn.md`; those names do not make the scripts exist automatically.
 - Some suggestion messages still show old command forms. Current rollover uses `si session new --archive-current-session --id ... --title ... --description ...`.
 - It mixes canonical settings with `sticky` and `archive_on_end`. The compatibility mappings above describe their actual meaning.

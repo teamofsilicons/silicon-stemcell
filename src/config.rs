@@ -1059,6 +1059,87 @@ mod tests {
     }
 
     #[test]
+    fn reference_flow_functions_execute_in_every_branch() {
+        let config = parse_document(
+            include_str!("../stemcell/silicon/silicon.yaml"),
+            &mut vec![],
+        )
+        .unwrap();
+        validate_expressions(&config).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let reply_condition = config["flow"][0]["if"]["then"][1]["if"]["then"][2]["if"]
+            ["condition"]
+            .as_str()
+            .unwrap();
+        for data in [json!({}), json!({"reply_to": null})] {
+            assert_eq!(
+                crate::eval::evaluate(
+                    reply_condition,
+                    &json!({"request": {"data": data}}),
+                    dir.path(),
+                    "interpreter"
+                )
+                .unwrap(),
+                "false"
+            );
+        }
+        // The reference expects this deployment-specific script; exercise its CEL arguments.
+        let script = dir.path().join("time_delay.sh");
+        fs::write(&script, "#!/bin/sh\nprintf '%s ' \"$@\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        for (kind, target, replies) in [
+            ("new_message", "deliberate@demo", 3),
+            ("new_message", "worker:job@demo", 3),
+            ("new_message", "advisor@demo", 2),
+            ("new_message", "intuit@demo", 1),
+            ("message_sent", "intuit@demo", 1),
+            ("event", "intuit@demo", 1),
+        ] {
+            let mut sent = Vec::new();
+            let vars = crate::flow::execute(
+                &config["flow"],
+                json!({
+                    "silicon": {"timezone": "Asia/Kolkata"},
+                    "request": {"type": kind, "data": {
+                        "from": "shubham", "to": target, "message": "hola", "msg_id": "message-1",
+                        "sent_at": "2026-09-17T07:29:04Z", "sender_timezone": "UTC",
+                        "timestamp": "2026-09-17T07:29:04Z",
+                        "reply_to": {"sent_at": "2026-09-17T07:28:04Z", "sender_timezone": "UTC"}
+                    }}
+                }),
+                dir.path(),
+                "interpreter",
+                |target, message, session| {
+                    sent.push((
+                        target.to_owned(),
+                        message.to_owned(),
+                        session.map(str::to_owned),
+                    ));
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(sent.len(), replies, "{kind}: {target}: {sent:?}");
+            assert!(sent[0].1.contains("hola"), "{sent:?}");
+            if target.starts_with("deliberate") {
+                assert!(vars["time_delay"]
+                    .as_str()
+                    .unwrap()
+                    .contains("07:28:04 17:09:26 UTC"));
+            }
+            if target.starts_with("worker") {
+                assert_eq!(
+                    (&sent[2].0[..], sent[2].2.as_deref()),
+                    ("worker", Some("job"))
+                );
+            }
+        }
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(!logs.contains("[error]"), "{logs}");
+    }
+
+    #[test]
     fn parser_keeps_shell_commands_and_order_without_rewriting_templates() {
         let source = include_str!("../stemcell/silicon/silicon.yaml");
         let mut warnings = Vec::new();

@@ -176,7 +176,7 @@ flow:
     then:
       - var:
         name: new_message
-        value: 'New message from {request.data.from} to {request.data.to} at {tz_time(request.data.sent_at, request.data.sender_timezone)} sender time, or {tz_time(request.data.sent_at, silicon.timezone) your time}:\n\n<|message:{request.data.msg_id}|>\n{request.data.message}\n<|message:{request.data.msg_id}|>'
+        value: 'New message from {request.data.from} to {request.data.to} at {tz_time(request.data.sent_at, request.data.sender_timezone)} sender time, or {tz_time(request.data.sent_at, silicon.timezone)} your time:\n\n<|message:{request.data.msg_id}|>\n{request.data.message}\n<|message:{request.data.msg_id}|>'
 
       - if:
           condition: '{request.data.to.startswith("deliberate")}'
@@ -189,7 +189,7 @@ flow:
                 isi: intuit
                 message: 'Deliberate got a direct reply & has been sent to deleberate. This is for your information only.\n{var.new_message}'
             - if:
-                condition: '{request.data.reply_to is not None}'
+                condition: '{has(request.data.reply_to) && request.data.reply_to != null}'
                 then:
                   - var:
                       name: time_delay
@@ -251,7 +251,7 @@ flow:
     then:
       - var:
           name: message_sent_recipt
-          value: 'New message sent by {request.data.from} to {request.data.to} at {tz_time(request.data.sent_at, silicon.timezone) your time}:\n\n<|message:{request.data.msg_id}|>\n{request.data.message}\n<|message:{request.data.msg_id}|>'
+          value: 'New message sent by {request.data.from} to {request.data.to} at {tz_time(request.data.sent_at, silicon.timezone)} your time:\n\n<|message:{request.data.msg_id}|>\n{request.data.message}\n<|message:{request.data.msg_id}|>'
       - send:
           isi: intuit
           message: '{var.message_sent_recipt}'
@@ -260,7 +260,7 @@ flow:
     then:
       - var:
           name: event
-          value: 'New event received at {tz_time(request.data.timestamp, silicon.timezone) your time}:\n\n{make_readable(request.data)}'
+          value: 'New event received at {tz_time(request.data.timestamp, silicon.timezone)} your time:\n\n{make_readable(request.data)}'
       - send:
           isi: intuit
           message: '{var.event}'
