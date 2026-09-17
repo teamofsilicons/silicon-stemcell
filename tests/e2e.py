@@ -118,7 +118,7 @@ if args == ["installed", "--json"]:
     print(json.dumps(records))
 else:
     assert len(args) == 3 and args[0] == "install" and args[2] == "--json", args
-    assert str(root / ".silicon/bin") not in os.environ["PATH"].split(os.pathsep)
+    assert "PATH" not in os.environ, "private installs must not collide with global app commands"
     app_id = args[1]
     assert app_id in ["tos>iam", "test>progress"], app_id
     with (root / "install-calls").open("a") as log: log.write(app_id + "\\n")

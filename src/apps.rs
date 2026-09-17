@@ -114,17 +114,10 @@ fn run(home: &Path, binary: &Path, args: &[&str]) -> Result<Value> {
 }
 
 fn invoke(home: &Path, binary: &Path, args: &[&str]) -> Result<Value> {
-    let mut command = crate::command(binary, home);
-    let exposed = home
-        .parent()
-        .and_then(Path::parent)
-        .map(|root| root.join(".silicon/bin"));
-    let path = std::env::join_paths(
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .filter(|entry| Some(entry) != exposed.as_ref()),
-    )?;
-    let output = command
-        .env("PATH", path)
+    // Packages live in a private registry. Unrelated commands on the user's PATH
+    // must not block its installs; Honeycomb and expose still reject owned-home collisions.
+    let output = crate::command(binary, home)
+        .env_remove("PATH")
         .args(args)
         .arg("--json")
         .stdin(Stdio::null())
