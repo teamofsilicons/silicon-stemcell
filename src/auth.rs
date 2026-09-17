@@ -287,7 +287,13 @@ fn setup_using_scoped(
                 // Honeycomb's private session is checked when installing, not as an app in the Silicon home.
                 package_app.managed = false;
                 authenticate(home, sid, stk, package_app, iam, true, generation)?;
-                crate::apps::install_at(home, command)?;
+                crate::progress::step(
+                    home,
+                    generation,
+                    &format!("Installing {command} through Honeycomb"),
+                    &format!("Installed {command}"),
+                    || crate::apps::install_at(home, command),
+                )?;
                 crate::log_line_scoped(
                     home,
                     generation,
@@ -310,6 +316,32 @@ fn setup_using_scoped(
 }
 
 fn authenticate(
+    home: &Path,
+    sid: &str,
+    stk: &str,
+    app: App,
+    iam: &Path,
+    only_if_needed: bool,
+    generation: Option<uuid::Uuid>,
+) -> Result<String> {
+    // Display an app handle or executable name, never its arguments or credentials.
+    let label = app.expected_id.clone().unwrap_or_else(|| {
+        Path::new(&app.argv[0])
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    });
+    crate::progress::step(
+        home,
+        generation,
+        &format!("Authenticating {label}"),
+        &format!("Authenticated {label}"),
+        || authenticate_inner(home, sid, stk, app, iam, only_if_needed, generation),
+    )
+}
+
+fn authenticate_inner(
     home: &Path,
     sid: &str,
     stk: &str,

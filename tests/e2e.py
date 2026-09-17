@@ -231,6 +231,54 @@ flow:
             return result
         def control(action, **args):
             return post("/control", {"action": action, "args": args}, daemon["token"])
+        # A gated app status check proves connect reports authentication before it finishes.
+        progress_home = work / "progress"
+        progress_home.mkdir()
+        progress_config = progress_home / "silicon.yaml"
+        progress_config.write_text(original.decode().replace("id: e2e:local", "id: progress:local")
+            .replace(json.dumps(str(home)), json.dumps(str(progress_home)))
+            .replace("  inference_providers:", "  login: ['./progress-app']\n  inference_providers:"))
+        progress_app = progress_home / "progress-app"
+        progress_app.write_text('''#!/bin/sh
+case "$*" in
+  'iam --json') echo '{"app_id":"test>progress"}' ;;
+  'auth status --json')
+    touch auth-started
+    while ! test -f auth-release; do sleep 0.05; done
+    if test -f auth-fail; then echo private-auth-error >&2; exit 1; fi
+    echo '{"authenticated":true}' ;;
+  *) exit 1 ;;
+esac
+''')
+        progress_app.chmod(0o755)
+        connecting = subprocess.Popen([str(binary), "connect", str(progress_config)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        lines = []
+        reader = threading.Thread(target=lambda: lines.extend(iter(connecting.stdout.readline, "")), daemon=True)
+        reader.start()
+        try:
+            eventually(lambda: any("… Authenticating progress-app" in line for line in lines))
+            assert connecting.poll() is None, "progress was buffered until connect returned"
+            assert not any("✓ Authenticated progress-app" in line for line in lines)
+            (progress_home / "auth-release").touch()
+            connecting.wait(timeout=35)
+            reader.join(timeout=5)
+            assert connecting.returncode == 0, connecting.stderr.read()
+            assert any("✓ Authenticated progress-app" in line for line in lines), lines
+            assert not any("\x1b" in line for line in lines), "redirected output must not contain terminal control codes"
+        finally:
+            (progress_home / "auth-release").touch()
+            if connecting.poll() is None:
+                connecting.terminate()
+                connecting.wait(timeout=15)
+        cli("disconnect", "progress:local")
+        result = json.loads(cli("--json", "connect", str(progress_config)))
+        assert result["connection"]["id"] == "progress:local"
+        cli("disconnect", "progress:local")
+        (progress_home / "auth-fail").touch()
+        failed = subprocess.run([str(binary), "connect", str(progress_config)], env=env, capture_output=True, text=True, timeout=35)
+        assert failed.returncode != 0 and "✗ Authenticating progress-app" in failed.stdout, failed.stdout + failed.stderr
+        assert "✓ Authenticated progress-app" not in failed.stdout
+        assert "private-auth-error" not in failed.stdout + failed.stderr
         cli("compile", str(config))
         assert not (home / "setup-count").exists(), "compile must not run setup"
         result = cli("connect", str(config))

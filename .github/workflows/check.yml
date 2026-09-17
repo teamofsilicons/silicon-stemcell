@@ -51,7 +51,7 @@ jobs:
                           body = caddy_body if name == 'caddy' and caddy_body else b'#!/bin/sh\necho test-binary\n'
                           entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
                           archive.addfile(entry, io.BytesIO(body))
-                      body = b'v4.0.2\n'
+                      body = b'v4.0.3\n'
                       entry = tarfile.TarInfo('VERSION'); entry.size = len(body)
                       archive.addfile(entry, io.BytesIO(body))
                       body = installer.read_bytes()
@@ -132,7 +132,7 @@ jobs:
           if args == ['--version']: print('honeycomb 0.2.3')
           else:
               assert home.name == 'honeycomb-home' and os.environ['HONEYCOMB_AUTO_UPDATE'] == '0'
-              versions = dict(iam='1.11.0', spacestation='0.1.4', dm='0.7.0', briefcase='1.1.0', waveform='0.1.2', commit='0.2.0', remind='0.2.0', hook='0.6.0')
+              versions = dict(iam='1.11.0', spacestation='0.1.4', dm='0.7.0', briefcase='1.1.0', waveform='0.1.2', commit='0.2.0', remind='0.2.0', hook='0.6.1')
               binary = args[1].removeprefix('tos>')
               assert args == ['install', 'tos>' + binary, '--version', versions[binary], '--alias', binary + '=silicon-bundled-' + binary, '--json']
               if os.environ.get('MOCK_HONEYCOMB_FAIL') == '1' or os.environ.get('MOCK_HONEYCOMB_FAIL_BINARY') == binary: sys.exit(1)

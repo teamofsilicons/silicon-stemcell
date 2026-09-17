@@ -533,13 +533,32 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 );
             }
             let result = (|| -> Result<()> {
-                update_proxy(app)?;
                 let connected = app.runtime.get(&connection.id)?;
+                crate::progress::step(
+                    &connected.cfg.home,
+                    Some(connected.cfg.generation),
+                    "Configuring local routing",
+                    "Configured local routing",
+                    || update_proxy(app),
+                )?;
                 for command in &connected.cfg.silicon.hooked_apps() {
-                    auth::webhook(
+                    let label = if crate::apps::valid_id(command) {
+                        command.clone()
+                    } else {
+                        "application".to_owned()
+                    };
+                    crate::progress::step(
                         &connected.cfg.home,
-                        command,
-                        &format!("http://{}", connection.host),
+                        Some(connected.cfg.generation),
+                        &format!("Registering {label} webhook"),
+                        &format!("Registered {label} webhook"),
+                        || {
+                            auth::webhook(
+                                &connected.cfg.home,
+                                command,
+                                &format!("http://{}", connection.host),
+                            )
+                        },
                     )?;
                     crate::log_line_scoped(
                         &connected.cfg.home,

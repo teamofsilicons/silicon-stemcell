@@ -296,20 +296,16 @@ pub fn silicon() -> Result<()> {
             }
         }
         SiliconCommand::Connect { yaml } => {
-            let cfg = server::compile(yaml)?;
-            let value = server::call(&server::daemon(true)?, "connect", json!({"yaml":cfg.path}))?;
+            let value = if cli.json {
+                let cfg = server::compile(yaml)?;
+                server::call(&server::daemon(true)?, "connect", json!({"yaml":cfg.path}))?
+            } else {
+                crate::progress::connect(yaml)?
+            };
             if cli.json {
                 print_json(&value)?;
             } else {
                 warnings(&value["warnings"]);
-                for line in value["progress"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                {
-                    println!("{line}");
-                }
                 println!(
                     "connected {} at http://{}",
                     field(&value["connection"], "id")?,

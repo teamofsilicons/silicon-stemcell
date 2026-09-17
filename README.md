@@ -1,20 +1,20 @@
-# Silicon 4.0.2
+# Silicon 4.0.3
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route events through CEL flows, run ISIs with Silicon Omni, and manage their sessions and IAM applications.
 
 macOS and Linux:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.2/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.3/install.ps1 | iex
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.2).
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.3).
 
 **Upgrading from 3.5.x:** rerun the installer above once into your existing installation prefix, even if an older update has already changed the reported version. The old updater cannot add Honeycomb and Space Station. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
 

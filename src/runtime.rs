@@ -195,7 +195,14 @@ impl Runtime {
         crate::telemetry::register(&cfg);
         let preparation = (|| -> Result<()> {
             for (index, script) in cfg.silicon.setup.iter().enumerate() {
-                eval::setup(script, &environment(&cfg), &cfg.home).with_context(|| {
+                crate::progress::step(
+                    &cfg.home,
+                    Some(cfg.generation),
+                    &format!("Running setup step {}", index + 1),
+                    &format!("Completed setup step {}", index + 1),
+                    || eval::setup(script, &environment(&cfg), &cfg.home),
+                )
+                .with_context(|| {
                     format!("silicon.setup[{index}] failed; connection was not started")
                 })?;
             }
@@ -1930,6 +1937,9 @@ flow: []
 
         let (home, runtime, original, _) = worker(false);
         let mut cfg = original.cfg.clone();
+        // The helper's global worker must not become a third session heartbeat
+        // backed by a real Omni process after changing to session addressing.
+        runtime.end("test:org", "a", None).unwrap();
         runtime.disconnect("test:org").unwrap();
         let isi = cfg.isi.get_mut("a").unwrap();
         isi.primary_send_mode = Some("session".into());
@@ -1947,6 +1957,7 @@ flow: []
         };
         let slow = runtime.worker(&connected, "a", &options("slow")).unwrap();
         let fast = runtime.worker(&connected, "a", &options("fast")).unwrap();
+        assert_eq!(runtime.list("test:org", "a", false).unwrap().len(), 2);
         let fast_transport = transport(&fast);
         let (client, mut daemon) = UnixStream::pair().unwrap();
         daemon

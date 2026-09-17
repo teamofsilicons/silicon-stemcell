@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod eval;
 pub mod flow;
+mod progress;
 pub mod proxy;
 pub mod runtime;
 pub mod server;

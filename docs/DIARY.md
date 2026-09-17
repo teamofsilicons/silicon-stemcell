@@ -2,9 +2,15 @@
 
 9–17 September 2026 · implementation diary
 
+### 17 September: live connection progress
+
+`silicon connect` now follows new progress records in the existing redacted local log while its control request runs. Setup, app installation, authentication, and webhook registration report running, completed, or failed states. Terminal output replaces the pending status with a checkmark or failure marker; redirected text has no cursor controls, and JSON output remains a complete machine-readable response. No hosted realtime service or new streaming endpoint was added. A gated app authentication test proves output arrives before the app returns, then checks success, failure, credential-output suppression, and JSON mode through the actual CLI and daemon.
+
+The broader tests exposed two fixture issues. The installer mock still expected Hook 0.6.0 after the bundle pin moved to 0.6.1; its expectation now matches. The heartbeat fixture retained its initial global session when switching to session addressing, accidentally scheduling a third heartbeat through a real Omni process. It now ends that initial session and asserts exactly two test targets. The interpreter scheduler did not need a production change.
+
 ### 17 September: readable webhook events
 
-The reported `make_readable(request)` failure was a missing registration in the shared CEL context. `make_readable` now uses the existing YAML serializer so nested event data stays readable through `var` and `send`; `convert_time` aliases the existing timezone formatter. The reference YAML's three misplaced interpolation braces and Python null check were corrected. Regression checks evaluate all reference flow branches, nested and scalar data, and timezone aliases. The protocol E2E now also sends a DM-shaped webhook through `make_readable(request)` → `var.new_message` → the real Omni transport. Version 4.0.2 carries the fix across Unix and Windows/WSL. A fresh Honeycomb catalog check found Hook 0.6.1, so its bundle pin was updated before publication; IAM 1.11.0, Space Station 0.1.4, DM 0.7.0, Briefcase 1.1.0, Waveform 0.1.2, Commit 0.2.0, and Remind 0.2.0 matched their latest published versions.
+The reported `make_readable(request)` failure was a missing registration in the shared CEL context. `make_readable` now uses the existing YAML serializer so nested event data stays readable through `var` and `send`; `convert_time` aliases the existing timezone formatter. The reference YAML's three misplaced interpolation braces and Python null check were corrected. Regression checks evaluate all reference flow branches, nested and scalar data, and timezone aliases. The protocol E2E now also sends a DM-shaped webhook through `make_readable(request)` → `var.new_message` → the real Omni transport. Version 4.0.3 carries the fix across Unix and Windows/WSL. A fresh Honeycomb catalog check found Hook 0.6.1, so its bundle pin was updated before publication; IAM 1.11.0, Space Station 0.1.4, DM 0.7.0, Briefcase 1.1.0, Waveform 0.1.2, Commit 0.2.0, and Remind 0.2.0 matched their latest published versions.
 
 ### 17 September: GitHub distribution only
 
