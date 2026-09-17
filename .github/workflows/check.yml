@@ -65,7 +65,14 @@ jobs:
                           archive.addfile(entry, io.BytesIO(body))
                   checksum = hashlib.sha256((downloads / asset).read_bytes()).hexdigest()
                   (downloads / 'SHA256SUMS').write_text(f'{checksum}  {asset}\n')
-              (downloads / 'install.sh').write_text('#!/bin/sh\nset -eu\n[ "$HONEYCOMB_NO_MODIFY_PATH" = 1 ]\nmkdir -p "$SILICON_HOME/.honeycomb/dir/system/bin"\nprintf "#!/bin/sh\\nexit 0\\n" > "$SILICON_HOME/.honeycomb/dir/system/bin/honeycomb"\nchmod +x "$SILICON_HOME/.honeycomb/dir/system/bin/honeycomb"\n')
+              for target in ['macos-aarch64', 'macos-x86_64', 'linux-x86_64', 'linux-aarch64']:
+                  asset_name = 'honeycomb-' + target + '.tar.gz'
+                  with tarfile.open(downloads / asset_name, 'w:gz') as archive:
+                      body = b'#!/bin/sh\nexit 0\n'
+                      entry = tarfile.TarInfo('honeycomb'); entry.size = len(body)
+                      archive.addfile(entry, io.BytesIO(body))
+                  checksum = hashlib.sha256((downloads / asset_name).read_bytes()).hexdigest()
+                  (downloads / (asset_name + '.sha256')).write_text(f'{checksum}  {asset_name}\n')
               curl = mocks / 'curl'
               curl.write_text('#!/bin/sh\nset -eu\nwhile [ "$#" -gt 0 ]; do\n if [ "$1" = --output ]; then out=$2; shift 2; else url=$1; shift; fi\ndone\ncp "$MOCK_DOWNLOADS/${url##*/}" "$out"\n')
               curl.chmod(0o755)

@@ -30,10 +30,10 @@ fi
 
 system=$(uname -s)
 case "$system/$(uname -m)" in
-    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64 ;;
-    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64 ;;
-    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64 ;;
-    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64 ;;
+    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64; honeycomb_target=macos-aarch64 ;;
+    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64; honeycomb_target=macos-x86_64 ;;
+    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64; honeycomb_target=linux-x86_64 ;;
+    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64; honeycomb_target=linux-aarch64 ;;
     *) fail 'supported systems are macOS and Linux on x86-64 or ARM64' ;;
 esac
 
@@ -215,11 +215,21 @@ done
 printf '%s\n' "$prefix" > "$stage/payload/PREFIX"
 configure_caddy_port
 
-# Honeycomb is installed independently, using its own latest-release installer and
-# update service. No application executables or package version pins enter the bundle.
-download https://raw.githubusercontent.com/teamofsilicons/silicon-honeycomb/main/install.sh "$stage/honeycomb-install.sh"
-SILICON_HOME="$prefix" HONEYCOMB_NO_MODIFY_PATH=1 bash "$stage/honeycomb-install.sh" || fail 'Honeycomb installation failed'
+# Install the latest standalone Honeycomb without changing its settings or services.
+# Its ordinary CLI update checks remain enabled; app binaries stay outside the bundle.
+honeycomb_asset="honeycomb-$honeycomb_target.tar.gz"
+honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/latest/download
+download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz"
+download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256"
+verify 256 "$stage/honeycomb.sha256" "$honeycomb_asset" "$stage/honeycomb.tar.gz"
+tar -xOzf "$stage/honeycomb.tar.gz" honeycomb > "$stage/honeycomb"
+[ -s "$stage/honeycomb" ] || fail 'Honeycomb archive has no executable'
+chmod 755 "$stage/honeycomb"
+"$stage/honeycomb" --version >/dev/null || fail 'Honeycomb binary cannot run on this system'
 honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
+mkdir -p "$(dirname "$honeycomb")"
+cp "$stage/honeycomb" "$honeycomb.new.$$"
+mv -f "$honeycomb.new.$$" "$honeycomb"
 link="$prefix/bin/honeycomb"
 if [ -e "$link" ] || [ -L "$link" ]; then
     [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || fail "unmanaged executable at $link"

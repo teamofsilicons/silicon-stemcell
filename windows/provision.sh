@@ -62,15 +62,26 @@ trap 'rm -f "$next"' EXIT HUP INT TERM
 chown -h silicon:silicon "$next"
 mv -fT "$next" "$runtime/current"
 trap - EXIT HUP INT TERM
-# Install Honeycomb separately at its latest release, retaining its own update policy.
-bootstrap=$(mktemp)
-trap 'rm -f "$bootstrap"' EXIT HUP INT TERM
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/teamofsilicons/silicon-honeycomb/main/install.sh -o "$bootstrap"
-chmod 644 "$bootstrap"
-runuser -u silicon -- env HOME=/home/silicon SILICON_HOME="$prefix" HONEYCOMB_NO_MODIFY_PATH=1 bash "$bootstrap"
-rm "$bootstrap"
-trap - EXIT HUP INT TERM
+# Install latest Honeycomb independently; leave its app-update settings and services alone.
+bootstrap=$(mktemp -d)
+trap 'rm -rf "$bootstrap"' EXIT HUP INT TERM
+case "$(uname -m)" in x86_64) honeycomb_arch=x86_64 ;; aarch64|arm64) honeycomb_arch=aarch64 ;; *) exit 2 ;; esac
+honeycomb_asset="honeycomb-linux-$honeycomb_arch.tar.gz"
+honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/latest/download
+curl --proto '=https' --tlsv1.2 -fsSL "$honeycomb_url/$honeycomb_asset" -o "$bootstrap/$honeycomb_asset"
+curl --proto '=https' --tlsv1.2 -fsSL "$honeycomb_url/$honeycomb_asset.sha256" -o "$bootstrap/checksum"
+expected_honeycomb=$(awk -v name="$honeycomb_asset" '$2 == name {print $1}' "$bootstrap/checksum")
+[ "$(sha256sum "$bootstrap/$honeycomb_asset" | cut -d' ' -f1)" = "$expected_honeycomb" ] || { echo 'Honeycomb checksum mismatch' >&2; exit 2; }
+tar -xOzf "$bootstrap/$honeycomb_asset" honeycomb > "$bootstrap/honeycomb"
+[ -s "$bootstrap/honeycomb" ] || exit 2
 honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
+mkdir -p "$(dirname "$honeycomb")"
+chown silicon:silicon "$prefix/.honeycomb" "$prefix/.honeycomb/dir" "$prefix/.honeycomb/dir/system" "$prefix/.honeycomb/dir/system/bin"
+install -o silicon -g silicon -m 755 "$bootstrap/honeycomb" "$honeycomb.new.$$"
+runuser -u silicon -- "$honeycomb.new.$$" --version
+mv -f "$honeycomb.new.$$" "$honeycomb"
+rm -rf "$bootstrap"
+trap - EXIT HUP INT TERM
 link="$prefix/bin/honeycomb"
 if [ -e "$link" ] || [ -L "$link" ]; then
     [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || { echo "Unmanaged executable at $link" >&2; exit 2; }

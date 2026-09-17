@@ -74,7 +74,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
 | `caddy` | Caddy 2.11.4 |
 
-Honeycomb is installed separately using its latest-release installer and retains its own update service. Each Silicon connection runs `honeycomb install 'org>app' --json` for configured and registered canonical app IDs and for the IAM issuer. Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.
+Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs `honeycomb install 'org>app' --json` for configured and registered canonical app IDs and for the IAM issuer. Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.
 
 Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create an IAM identity or grant provider access.
 
@@ -86,7 +86,7 @@ In PowerShell:
 irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.ps1 | iex
 ```
 
-Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Honeycomb installer used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
+Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
 
 Keep each project, its YAML, and its `SILICON_HOME` inside the distribution's Linux filesystem. Open `\\wsl.localhost\Silicon\home\silicon` in File Explorer and copy or create your project folder there. For example:
 
@@ -800,7 +800,7 @@ Caddy updates use its dedicated private admin socket. Accepted routes are persis
 
 Managed installations check GitHub's latest stable release once per hour while the interpreter is running. The first periodic check occurs after an hour. Drafts, prereleases, malformed version tags, and versions no newer than the running interpreter are not installed.
 
-The updater uses the same embedded installer and checksum-verified complete bundle as public installation. It clears source-build/release-mirror overrides before the update install. The installer separately invokes Honeycomb’s official latest-release installer; Honeycomb verifies its own binary download. Its logs are in the interpreter state directory's `updates.log`.
+The updater uses the same embedded installer and checksum-verified complete bundle as public installation. It clears source-build/release-mirror overrides before the update install. The installer separately downloads Honeycomb’s latest official release and verifies its checksum. Its logs are in the interpreter state directory's `updates.log`.
 
 After successful automatic activation, the interpreter waits for active dispatches, nested activity, and pending provider work to finish. It then closes the admission gate, stops its owned children, and executes the newly installed interpreter. Connections and durable sessions are restored from disk. Incoming work is rejected once restart begins. Continuous active work can postpone the restart.
 

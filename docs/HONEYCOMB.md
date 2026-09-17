@@ -2,7 +2,7 @@
 
 Silicon itself is distributed through [GitHub Releases](https://github.com/teamofsilicons/silicon-stemcell/releases) and the [Unix and Windows installers](https://docs.teamofsilicons.com/#installation). It does not need a Honeycomb listing, public-review request, or its own IAM app registration.
 
-Honeycomb is installed independently using its latest-release installer. Application CLIs are not copied into interpreter release bundles.
+Honeycomb is installed independently from its checksum-verified latest release. Application CLIs are not copied into interpreter release bundles.
 
 On every connection, Silicon runs `honeycomb install 'org>app' --json` for each configured or previously registered canonical app ID, plus `tos>iam` for token issuance. No version argument or persistent pin is written. Honeycomb selects the latest published package and handles verification and installation. Legacy explicit executable commands stay under the user's control.
 
