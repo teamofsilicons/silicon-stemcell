@@ -1,5 +1,5 @@
 param(
-    [string]$Version = 'v4.0.6',
+    [string]$Version = 'v4.0.7',
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'Silicon'),
     [string]$PayloadRoot,
     [switch]$NoPath
@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 if ($env:OS -ne 'Windows_NT') { throw 'This installer requires Windows 11 or Windows Server with WSL2.' }
-if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must be an exact stable release tag such as v4.0.6.' }
+if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must be an exact stable release tag such as v4.0.7.' }
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 switch ($architecture) {
     'X64' {

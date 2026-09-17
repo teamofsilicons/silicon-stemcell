@@ -88,21 +88,24 @@ pub(crate) fn package_home(home: &Path) -> Result<PathBuf> {
 
 pub(crate) fn prepare_honeycomb(home: &Path) -> Result<PathBuf> {
     let packages = package_home(home)?;
-    // Earlier interpreters forced this private home's updates off. Undo that once;
-    // subsequent app/user preferences belong to Honeycomb.
+    // Earlier interpreters forced this private home's updates off. Restore Honeycomb's
+    // own default once; later app/user preferences belong to Honeycomb. 4.0.6 deleted
+    // the setting instead, and Honeycomb requires it, so a missing one is always
+    // repaired: without it every command in this home fails as invalid configuration.
     let migrated = packages.join(".silicon-update-policy-migrated");
-    if !migrated.exists() {
-        let config = packages.join(".honeycomb/dir/config.json");
-        if config.exists() {
-            let mut settings: Value = serde_json::from_slice(&fs::read(&config)?)?;
-            if settings["auto_update"] == false {
-                settings
-                    .as_object_mut()
-                    .context("invalid Honeycomb configuration")?
-                    .remove("auto_update");
+    let config = packages.join(".honeycomb/dir/config.json");
+    if let Ok(mut settings) =
+        serde_json::from_slice::<Value>(&fs::read(&config).unwrap_or_default())
+    {
+        if let Some(object) = settings.as_object_mut() {
+            let forced_off = object.get("auto_update") == Some(&Value::Bool(false));
+            if !object.contains_key("auto_update") || (forced_off && !migrated.exists()) {
+                object.insert("auto_update".into(), Value::Bool(true));
                 crate::state::write_json(&config, &settings)?;
             }
         }
+    }
+    if !migrated.exists() {
         fs::write(migrated, "")?;
     }
     Ok(packages)
@@ -363,9 +366,10 @@ esac
         let config = packages.join(".honeycomb/dir/config.json");
         crate::state::write_json(&config, &json!({"auto_update":false,"telemetry":false}))?;
         prepare_honeycomb(home)?;
+        // Honeycomb requires this setting, so the migration restores its default value.
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(&config)?)?,
-            json!({"telemetry":false})
+            json!({"auto_update":true,"telemetry":false})
         );
         // Once migrated, the interpreter leaves any later user preference intact.
         crate::state::write_json(&config, &json!({"auto_update":false}))?;
@@ -374,6 +378,17 @@ esac
             serde_json::from_slice::<Value>(&fs::read(&config)?)?["auto_update"],
             false
         );
+        // A home left without the setting by 4.0.6 is repaired even after migration.
+        crate::state::write_json(&config, &json!({"telemetry":false}))?;
+        prepare_honeycomb(home)?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&config)?)?,
+            json!({"auto_update":true,"telemetry":false})
+        );
+        // Configuration the interpreter cannot read stays untouched for Honeycomb to report.
+        fs::write(&config, "not json")?;
+        prepare_honeycomb(home)?;
+        assert_eq!(fs::read_to_string(&config)?, "not json");
         fs::remove_file(&config)?;
         assert!(valid_id("tos>space-station"));
         for id in [

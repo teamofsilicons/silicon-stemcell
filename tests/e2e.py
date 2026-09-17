@@ -100,6 +100,10 @@ def main():
     home = work / "silicon"
     home.mkdir()
     (home / "dna-interval").write_text("0.5s")
+    packages = home / ".silicon/packages"
+    (packages / ".honeycomb/dir").mkdir(parents=True)
+    (packages / ".honeycomb/dir/config.json").write_text(json.dumps({"telemetry": True}))
+    (packages / ".silicon-update-policy-migrated").touch()
     state = work / "interpreter"
     state.mkdir()
     registry = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Registry)
@@ -113,6 +117,9 @@ packages = pathlib.Path(os.environ["SILICON_HOME"])
 root = packages.parent.parent
 registry = packages / "mock-registry.json"
 records = json.loads(registry.read_text()) if registry.exists() else {}
+settings = packages / ".honeycomb/dir/config.json"
+if settings.exists() and "auto_update" not in json.loads(settings.read_text()):
+    sys.exit(str(settings) + " is invalid JSON; repair it before continuing")
 args = sys.argv[1:]
 if args == ["installed", "--json"]:
     print(json.dumps(records))
@@ -260,6 +267,12 @@ flow:
         # A gated app status check proves connect reports authentication before it finishes.
         progress_home = work / "progress"
         progress_home.mkdir()
+        # Start from the package home 4.0.6 left behind: migrated, without Honeycomb's
+        # required auto_update setting, which made every command in that home fail.
+        progress_packages = progress_home / ".silicon/packages"
+        (progress_packages / ".honeycomb/dir").mkdir(parents=True)
+        (progress_packages / ".honeycomb/dir/config.json").write_text(json.dumps({"telemetry": True}))
+        (progress_packages / ".silicon-update-policy-migrated").touch()
         progress_config = progress_home / "silicon.yaml"
         progress_config.write_text(original.decode().replace("id: e2e:local", "id: progress:local")
             .replace(json.dumps(str(home)), json.dumps(str(progress_home)))
@@ -297,6 +310,7 @@ esac
                 connecting.terminate()
                 connecting.wait(timeout=15)
         assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"]
+        assert json.loads((progress_home / ".silicon/packages/.honeycomb/dir/config.json").read_text()) == {"auto_update": True, "telemetry": True}, "a package home left without Honeycomb's required setting must be repaired"
         cli("disconnect", "progress:local")
         (progress_home / "auth-fail").touch()
         (progress_home / "auth-started").unlink()

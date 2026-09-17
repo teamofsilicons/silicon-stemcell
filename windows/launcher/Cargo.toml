@@ -1,6 +1,6 @@
 [package]
 name = "silicon-windows-launcher"
-version = "4.0.6"
+version = "4.0.7"
 edition = "2021"
 license = "MIT"
 description = "Native Windows entry point for the Silicon WSL2 distribution"
