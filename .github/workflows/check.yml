@@ -33,8 +33,9 @@ jobs:
         run: |
           sh -n install.sh
           python3 - <<'PY'
-          import hashlib, io, os, pathlib, platform, subprocess, tarfile, tempfile
+          import hashlib, io, os, pathlib, platform, subprocess, tarfile, tempfile, tomllib
           installer = pathlib.Path('install.sh').resolve()
+          version = 'v' + tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
           commands = 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook'.split()
           binaries = commands + ['commit-native', 'remind-native']
           notices = ['LICENSE'] + ['LICENSES/' + p.name for p in sorted(pathlib.Path('LICENSES').iterdir()) if p.is_file()]
@@ -51,7 +52,7 @@ jobs:
                           body = caddy_body if name == 'caddy' and caddy_body else b'#!/bin/sh\necho test-binary\n'
                           entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
                           archive.addfile(entry, io.BytesIO(body))
-                      body = b'v4.0.3\n'
+                      body = (version + '\n').encode()
                       entry = tarfile.TarInfo('VERSION'); entry.size = len(body)
                       archive.addfile(entry, io.BytesIO(body))
                       body = installer.read_bytes()
