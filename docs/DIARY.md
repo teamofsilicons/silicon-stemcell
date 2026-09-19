@@ -9,6 +9,8 @@ Omni 0.8.0 also starts CLIs on the `PATH` the user's login shell reports, ahead 
 
 The local interpreter passed 42 unit tests, formatting, and Clippy against the new client, and the complete protocol E2E passed with a daemon built from the pinned 0.8.0 revision the way the installer builds it, with real Caddy. Upgrading from 4.0.6 or 4.0.7 needs only `silicon update` and an interpreter restart; the bundle layout is unchanged.
 
+[Silicon 4.0.8](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.8) was published as latest stable on 19 September 2026 at 06:49 UTC. [All six platform builds and checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35426793090) passed on `9d3c61cad1c05e1fb69f94a0b713b4a4edd9d10c` before the tag existed. Every archive reported `v4.0.8`, the seven-binary runtime inventory, and the Omni 0.8.0 notices; the macOS ARM64 bundle ran `silicon 4.0.8`, `omnid 0.8.0`, and Caddy 2.11.4 natively; and all nine asset digests and sizes matched the verified CI files before publication, with every public download URL answering at its verified size afterwards. The local interpreter updated through `silicon update`, restarted on 4.0.8, and restored its Silicon with every configured app reinstalled at its latest Honeycomb release.
+
 
 
 ## 4.0.7: Repairing the package home 4.0.6 left unconfigurable
