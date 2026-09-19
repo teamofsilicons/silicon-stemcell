@@ -1326,6 +1326,37 @@ impl Worker {
                     return Ok(());
                 }
             }
+            Event::CONFIG => {
+                // Omni takes a failing provider off the chat and says so before switching.
+                if event.text == "provider_removed" {
+                    let why = event
+                        .extra
+                        .get("why")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown reason");
+                    let left: Vec<&str> = event
+                        .extra
+                        .get("left")
+                        .and_then(Value::as_array)
+                        .map(|left| left.iter().filter_map(Value::as_str).collect())
+                        .unwrap_or_default();
+                    let remaining = if left.is_empty() {
+                        "no providers remain; Omni retries them all on the next send".to_string()
+                    } else {
+                        format!("remaining providers: {}", left.join(", "))
+                    };
+                    log_line_scoped(
+                        &cfg.home,
+                        Some(cfg.generation),
+                        "provider_removed",
+                        &state.record.isi,
+                        &format!(
+                            "Omni removed provider {}: {why}; {remaining}",
+                            event.provider
+                        ),
+                    )?;
+                }
+            }
             Event::END => {
                 // Native next-turn injections can share event.turn with an earlier END.
                 // Omni's snapshot is the authority for whether all accepted work is now idle.
@@ -2287,6 +2318,48 @@ flow: []
             event.join().unwrap();
             transport.join().unwrap();
         }
+    }
+
+    #[test]
+    fn provider_removed_config_events_get_a_readable_log_line() {
+        let (dir, _runtime, _connected, worker) = worker(false);
+        let removed = Event::config("provider_removed")
+            .from("claude-code-cli")
+            .with("why", "crash")
+            .with("left", json!(["codex-cli"]));
+        worker.on_event(removed, false, 0).unwrap();
+        let log = dir.path().join(".silicon/silicon.log");
+        let lines = fs::read_to_string(&log).unwrap();
+        assert!(
+            lines.contains("[config] [a]"),
+            "raw event still logged: {lines}"
+        );
+        assert!(
+            lines.contains("[provider_removed] [a]")
+                && lines.contains(
+                    "[Omni removed provider claude-code-cli: crash; remaining providers: codex-cli]"
+                ),
+            "{lines}"
+        );
+        let last = Event::config("provider_removed")
+            .from("codex-cli")
+            .with("why", "limit")
+            .with("left", json!([]));
+        worker.on_event(last, true, 0).unwrap();
+        let lines = fs::read_to_string(&log).unwrap();
+        assert!(
+            lines.contains("[Omni removed provider codex-cli: limit; no providers remain; Omni retries them all on the next send]"),
+            "{lines}"
+        );
+        let other = Event::config("retune").from("codex-cli");
+        worker.on_event(other, true, 0).unwrap();
+        assert_eq!(
+            fs::read_to_string(&log)
+                .unwrap()
+                .matches("[provider_removed]")
+                .count(),
+            2
+        );
     }
 
     #[test]

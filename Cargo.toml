@@ -1,6 +1,6 @@
 [package]
 name = "silicon"
-version = "4.0.7"
+version = "4.0.8"
 edition = "2021"
 description = "Silicon interpreter and CLI"
 license = "MIT"
@@ -16,7 +16,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4", "serde"] }
-silicon-omni = { git = "https://github.com/teamofsilicons/silicon-omni", rev = "d52f5416cd33b363554d2300b5603dc0b6c43545" }
+silicon-omni = { git = "https://github.com/teamofsilicons/silicon-omni", rev = "1738108d7c0fdc9f7adcbcd1029d668adfb6ad99" }
 cel-interpreter = { version = "0.10", features = ["json"] }
 shell-words = "1"
 libc = "0.2"

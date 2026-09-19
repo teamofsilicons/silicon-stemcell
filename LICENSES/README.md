@@ -2,10 +2,10 @@
 
 Application CLIs are installed separately through Honeycomb and are not included in this archive. Their packages carry their own licenses.
 
-## Omni 0.7.2 (daemon and CLI aliases)
+## Omni 0.8.0 (daemon and CLI aliases)
 
 - Declared license: MIT
-- Source: https://github.com/teamofsilicons/silicon-omni/tree/d52f5416cd33b363554d2300b5603dc0b6c43545
+- Source: https://github.com/teamofsilicons/silicon-omni/tree/1738108d7c0fdc9f7adcbcd1029d668adfb6ad99
 - File: omni-LICENSE.txt
 
 ## Caddy 2.11.4

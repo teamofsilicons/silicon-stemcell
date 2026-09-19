@@ -1,6 +1,16 @@
 # Building Silicon
 
 
+## 4.0.8: Omni 0.8.0 and provider removal logging
+
+Silicon Omni 0.8.0 takes a failing provider off the chat. A crash, a rate limit, an outage the provider ends the turn on, or a CLI that will not start now closes the turn, sets that provider aside while the chat is live, and resolves the same ask over whoever is left, announced by a `CONFIG` event whose text is `provider_removed`. The interpreter now pins that release for its Rust client and the bundled daemon, and writes each removal to the Silicon log as a `provider_removed` line naming the provider, the reason, and the providers left, alongside the raw event it already recorded. A unit test covers a removal with providers left, the last removal, and other configuration events staying quiet.
+
+Omni 0.8.0 also starts CLIs on the `PATH` the user's login shell reports, ahead of the daemon's own. On a development machine with a real `claude` on that PATH, the protocol E2E's scripted provider would have been shadowed by it. The E2E now points `SHELL` at a profile-free wrapper so the daemon's probe answers with the test's own environment; the guide records why.
+
+The local interpreter passed 42 unit tests, formatting, and Clippy against the new client, and the complete protocol E2E passed with a daemon built from the pinned 0.8.0 revision the way the installer builds it, with real Caddy. Upgrading from 4.0.6 or 4.0.7 needs only `silicon update` and an interpreter restart; the bundle layout is unchanged.
+
+
+
 ## 4.0.7: Repairing the package home 4.0.6 left unconfigurable
 
 4.0.6 returned update policy to Honeycomb by deleting `auto_update` from each Silicon's private package home. Honeycomb requires that setting, so every package command in a migrated home failed with `config.json is invalid JSON; repair it before continuing`. The first upgraded connection could not install `tos>iam` and the Silicon stayed disconnected; the interpreter's restore reported the Honeycomb failure with the command needed to reproduce it.

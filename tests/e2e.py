@@ -97,6 +97,12 @@ def main():
     provider_path = binaries / "claude"
     provider_path.write_text("#!" + sys.executable + "\n" + Path(__file__).read_text().split("\n", 1)[1])
     provider_path.chmod(0o755)
+    # Omni starts CLIs on the PATH the user's login shell reports, ahead of its own. Answer that
+    # probe with this run's own environment so a real `claude` on the developer's shell PATH can
+    # never shadow the scripted provider.
+    shell = binaries / "shell"
+    shell.write_text("#!/bin/sh\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n")
+    shell.chmod(0o755)
     home = work / "silicon"
     home.mkdir()
     (home / "dna-interval").write_text("0.5s")
@@ -108,7 +114,7 @@ def main():
     state.mkdir()
     registry = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Registry)
     threading.Thread(target=registry.serve_forever, daemon=True).start()
-    env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0", SILICON_TELEMETRY="0")
+    env = dict(os.environ, SILICON_INTERPRETER_HOME=str(state), SHELL=str(shell), PATH=str(binaries) + os.pathsep + str(binary_dir) + os.pathsep + os.environ["PATH"], OMNI_REGISTRY=f"http://127.0.0.1:{registry.server_port}/choose.json", SILICON_AUTO_UPDATE="0", SILICON_TELEMETRY="0")
     assert shutil.which(env.get("OMNI_DAEMON", "omnid"), path=env["PATH"]), "set OMNI_DAEMON to the real Omni daemon"
     assert shutil.which(env.get("SILICON_CADDY", "caddy"), path=env["PATH"]), "set SILICON_CADDY to real Caddy"
     honeycomb = binaries / "honeycomb"
