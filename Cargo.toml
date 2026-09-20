@@ -1,6 +1,6 @@
 [package]
 name = "silicon"
-version = "4.0.8"
+version = "4.0.9"
 edition = "2021"
 description = "Silicon interpreter and CLI"
 license = "MIT"

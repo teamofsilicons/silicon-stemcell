@@ -1,4 +1,4 @@
-# Silicon 4.0.8
+# Silicon 4.0.9
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -27,19 +27,21 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-> Upgrading from 4.0.6 or 4.0.8: run `silicon update` and restart the interpreter. No reinstallation is needed.
+> Upgrading from 4.0.6–4.0.8: replace any `sticky` and `archive_on_end` fields using the [migration table](#legacy-mode-fields-removed), then run `silicon update` and restart the interpreter. No reinstallation is needed.
 >
-> Upgrading from 4.0.5 or earlier: rerun the 4.0.8 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
+> Upgrading from 4.0.5 or earlier: rerun the 4.0.9 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.8` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v4.0.9` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.sh | sh
 ```
 
-Find the platform bundles and their checksums on the [v4.0.8 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.8). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the platform bundles and their checksums on the [v4.0.9 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.9). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
+
+**4.0.9** retains session-addressed ephemeral records and event history, archiving them when work retires. Only global ephemeral work is discarded. Logs identify the CLI or daemon, the sending ISI, and the flow branch or assignment. The legacy `sticky` and `archive_on_end` fields are removed; use `primary_send_mode` and `session_type` as described in the [migration table](#legacy-mode-fields-removed).
 
 **4.0.8** moves to Omni 0.8.0. A provider that crashes, hits a rate limit, becomes unavailable, or will not start no longer keeps the chat: Omni closes the turn, sets that provider aside for the rest of the live session, and resolves the same ask over the providers left. The interpreter logs each removal with its reason and the remaining providers. Omni also finds CLIs on the `PATH` the user's login shell reports, so a CLI visible only to a terminal, or installed after the daemon started, is found.
 
@@ -53,7 +55,7 @@ Silicon is distributed through GitHub Releases using the installers above. It do
 
 **4.0.0** focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
-**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.8. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
+**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.9. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -66,7 +68,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -76,7 +78,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 4.0.8 |
+| `silicon`, `si` | Interpreter and internal CLI, 4.0.9 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `1738108d7c0fdc9f7adcbcd1029d668adfb6ad99` |
 | `caddy` | Caddy 2.11.4 |
 
@@ -89,7 +91,7 @@ Accounts, permissions, remote service availability, and authenticated inference 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -118,22 +120,22 @@ Version 4 removes the remote `login`, `logout`, and `watch` commands and the `re
 
 The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
 
-When you are ready to restart, stop the old interpreter and rerun the **4.0.8 public installer into the same prefix**:
+When you are ready to restart, stop the old interpreter and rerun the **4.0.9 public installer into the same prefix**:
 
 ```sh
 silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.sh | sh
 silicon serve
 ```
 
 Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter and restores its saved connections. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.8. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.
+Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.9. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.
 
 ### Linux and port 80
 
@@ -313,21 +315,23 @@ Define at least one ISI. Names may contain ASCII letters, digits, `.`, `_`, and 
 | --- | --- |
 | `model` | Required Omni model key, passed using `Ask::key`. A key such as `fast` or `code` is resolved by Omni. |
 | `primary_send_mode` | Required `global` or `session`. It controls addressing, not retention. |
-| `session_type` | Required `persistent` or `ephemeral`. It controls retention and completion behavior. |
+| `session_type` | Required `persistent` or `ephemeral`. It controls completion behavior, and retention together with `primary_send_mode`: only `global` + `ephemeral` is discarded. |
 | `dna` | Required mapping with `assemble` and `next_refresh`. An empty assembly list is permitted; the internal instruction footer is still appended. |
 | `heartbeat` | Optional mapping with `next` and a nonempty string `message`. Omit it for no heartbeat. |
 | `new_session_suggestion` | Optional mapping with `cooldown_minutes`, `min_new_messages`, and a nonempty string `suggestion_message`. Omit it for no suggestions. |
 
-Legacy fields are accepted with warnings:
+#### Legacy mode fields removed
 
-| Legacy field | Canonical interpretation |
+Addressing and retention are set only by `primary_send_mode` and `session_type`. The former `sticky` and `archive_on_end` fields have been removed; a configuration that still uses one is rejected with the replacement named:
+
+| Removed field | Write instead |
 | --- | --- |
 | `sticky: true` | `primary_send_mode: global` |
 | `sticky: false` | `primary_send_mode: session` |
 | `archive_on_end: true` | `session_type: ephemeral` |
 | `archive_on_end: false` | `session_type: persistent` |
 
-Conflicting legacy and canonical settings are rejected. In particular, `archive_on_end: false` does not mean ephemeral. Use canonical names in new configurations.
+Note the last row when migrating: `archive_on_end: false` meant persistent, not ephemeral.
 
 ### Intervals and scheduled work
 
@@ -587,7 +591,9 @@ Addressing and retention are separate choices:
 | Global + persistent | `si isi send NAME MESSAGE` reuses the active session or creates it. | Retains the session and conversation for later messages. |
 | Global + ephemeral | `si isi send NAME MESSAGE` creates independent disposable work. | Returns final output to an internal caller, then discards recoverable session data. |
 | Session + persistent | Use `--id`; add `--new` to create a missing session. | Retains each addressed session separately. |
-| Session + ephemeral | Use `--id --title` to create; `--id` sends to an existing running address. | Returns final output to an internal caller and retires the disposable session. |
+| Session + ephemeral | Use `--id --title` to create; `--id` sends to an existing running address. | Returns final output to an internal caller, then archives the session under its id. |
+
+Only global ephemeral work is discarded. A session-addressed ephemeral session is created and reached through an id its caller holds, so it keeps its session record and event history and is archived when it retires, exactly like a persistent session; reach it afterwards with `--archived`.
 
 For ephemeral work, an automatic reply goes back to the ISI session that invoked it through `si`, if that caller still exists. An external event or management send has no calling ISI to receive this reply; inspect logs or progress instead. A global ephemeral call always starts independent work, while a session-addressed ephemeral call can address its currently running ID.
 
@@ -754,13 +760,15 @@ Session metadata includes the logical ID, Omni UUID, ISI, title, description, fi
 
 Short private aliases under `/tmp/silicon-<uid>/` keep Omni socket paths within macOS's Unix-socket limit; session data remains under the Silicon home. Caddy gets a separate private temporary admin-socket directory. The interpreter never contacts the machine's default Caddy admin API.
 
-Ephemeral work does not leave recoverable session records, event-history files, or its Omni session directory after retirement. Its operational activity can still appear in the append-only Silicon log. “Ephemeral” is a retention choice, not a promise that no log of the work exists.
+Global ephemeral work does not leave recoverable session records, event-history files, or its Omni session directory after retirement. Session-addressed ephemeral work is retained: it writes a session record and an event-history file and is archived when it retires. Discarded work's operational activity can still appear in the append-only Silicon log. “Discarded” is a retention choice, not a promise that no log of the work exists.
 
 Log entries have this shape:
 
 ```text
-[type] [origin] [UTC timestamp] [message]
+[type] [origin/process] [UTC timestamp] [message]
 ```
+
+The origin names who produced the entry — `interpreter`, an ISI name, or an app — and is followed by the process that wrote it: `daemon` for the interpreter started by `silicon serve`, `cli` for any other `silicon` or `si` invocation. Both append to the same file, so the suffix tells apart, for example, the configuration compile `silicon connect` performs before contacting the interpreter from the interpreter's own compile of the same YAML. Entries written before this release carry no suffix.
 
 Embedded message newlines are escaped so an entry stays on one line. `silicon logs show ID` prints the latest 100 entries and follows new ones. On a terminal, the type/origin prefix is colored, and the Silicon ID and log location remain in a footer. Ctrl-C restores the terminal and exits the viewer. `--no-follow` prints the tail and exits.
 
@@ -834,7 +842,7 @@ Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic
 | Flow acknowledged but model is still working | Expected: the acknowledgment waits for flow completion and provider delivery, not final inference output. Inspect progress/logs. |
 | Event retry repeats an action | There is no automatic flow transaction or event deduplication. Use app/domain identifiers when your own side effects need idempotency. |
 | Session send needs an ID | The target uses `primary_send_mode: session`. Supply `--id`; use `--new` for a missing persistent session. |
-| Ephemeral session has disappeared | Expected after completion. Use a persistent ISI when later recovery/querying is required. |
+| Ephemeral session has disappeared | Expected after completion for a `global` + `ephemeral` ISI, which is the only combination that is discarded. Give the ISI `primary_send_mode: session`, or use a persistent ISI, when later recovery/querying is required. |
 | Archive search seems empty | Bare `--archived` is only 72 hours. Supply explicit filters for older history and check the Silicon timezone. |
 | `si` lacks context or capability | Run it inside an interpreter-created ISI. Setting only the `ISI` variable is insufficient. |
 | An ISI cannot reach another ISI | Check its `access` list and the target spelling. Cross-Silicon sends are not supported by `si`. |
@@ -861,7 +869,6 @@ Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state
 - `silicon.id`, `silicon.token`, and the optional Space Station fields are `...` placeholders.
 - It refers to missing scripts/files including `install_python.sh`, `contacts.sh`, `tools.sh`, `team.sh`, `time_delay.sh`, and `learn.sh`. The repository has `CONTACTS.md`, `tools.md`, and `learn.md`; those names do not make the scripts exist automatically.
 - Some suggestion messages still show old command forms. Current rollover uses `si session new --archive-current-session --id ... --title ... --description ...`.
-- It mixes canonical settings with `sticky` and `archive_on_end`. The compatibility mappings above describe their actual meaning.
 - Its repeated flow `if` keys and one unambiguously misplaced `var` field block are normalized by the dialect parser with warnings. Prefer an explicit step list and correct indentation in new files.
 
 Correct a separate copy for your deployment. Compilation can report expression syntax before reaching the placeholder checks because syntax validation runs before any compile-time shell command. The absence of one particular placeholder error does not make the reference configuration valid.
@@ -880,7 +887,7 @@ Keep development and testing on the production authentication paths. An imported
 
 | Consumer or dependency | Contract in Silicon 4.0.0 |
 | --- | --- |
-| Existing 3.5 configurations | `login`, `webhook`, `sticky`, and `archive_on_end` remain accepted. Conflicting mode settings are errors; canonical names are preferred. |
+| Existing 3.5 configurations | `login` and `webhook` remain accepted. `sticky` and `archive_on_end` have been removed; replace them with `primary_send_mode` and `session_type` using the table above. |
 | IAM application discovery | JSON `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
 | Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM is installed through Honeycomb without a version constraint; `--approve-scopes` is used only when its CLI exposes support. |
 | Inference | Omni's pinned Rust/client-daemon contract at `1738108d7c0fdc9f7adcbcd1029d668adfb6ad99`. |

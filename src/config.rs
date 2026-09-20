@@ -71,8 +71,6 @@ pub struct Isi {
     pub model: Option<String>,
     pub primary_send_mode: Option<String>,
     pub session_type: Option<String>,
-    pub archive_on_end: Option<bool>,
-    pub sticky: Option<bool>,
     pub dna: Option<Yaml>,
     pub heartbeat: Option<Yaml>,
     pub new_session_suggestion: Option<Yaml>,
@@ -174,12 +172,23 @@ impl Config {
                 for key in ["model", "primary_send_mode", "session_type"] {
                     evaluate_field(isi, key, &env, &home, name)?;
                 }
-                for key in ["sticky", "archive_on_end"] {
-                    if let Some(source) = isi[key].as_str() {
-                        let result = crate::eval::evaluate(source, &env, &home, name)?;
-                        isi[key] = Yaml::Bool(result.parse::<bool>().with_context(|| {
-                            format!("isi.{name}.{key} must evaluate to true or false")
-                        })?);
+                // Removed in favour of the canonical pair. Rejected here, before
+                // deserialization, so the error names the replacement instead of
+                // reporting an unknown field.
+                for (removed, canonical, mapping) in [
+                    (
+                        "sticky",
+                        "primary_send_mode",
+                        "true is global, false is session",
+                    ),
+                    (
+                        "archive_on_end",
+                        "session_type",
+                        "true is ephemeral, false is persistent",
+                    ),
+                ] {
+                    if !isi[removed].is_null() {
+                        bail!("isi.{name}.{removed} was removed; use {canonical} ({mapping})");
                     }
                 }
             }
@@ -278,34 +287,6 @@ impl Config {
                 bail!("invalid isi name {name:?}; use letters, digits, '.', '_' or '-'");
             }
             required(&isi.model, &format!("isi.{name}.model"))?;
-            if let Some(sticky) = isi.sticky {
-                let legacy = if sticky { "global" } else { "session" };
-                if isi
-                    .primary_send_mode
-                    .as_deref()
-                    .is_some_and(|mode| mode != legacy)
-                {
-                    bail!("isi.{name}.sticky conflicts with primary_send_mode");
-                }
-                isi.primary_send_mode = Some(legacy.into());
-                self.warnings.push(format!(
-                    "isi.{name}.sticky is legacy; use primary_send_mode: {legacy}"
-                ));
-            }
-            if let Some(archive) = isi.archive_on_end {
-                let legacy = if archive { "ephemeral" } else { "persistent" };
-                if isi
-                    .session_type
-                    .as_deref()
-                    .is_some_and(|kind| kind != legacy)
-                {
-                    bail!("isi.{name}.archive_on_end conflicts with session_type");
-                }
-                isi.session_type = Some(legacy.into());
-                self.warnings.push(format!(
-                    "isi.{name}.archive_on_end is legacy; use session_type: {legacy}"
-                ));
-            }
             if !matches!(
                 required(
                     &isi.primary_send_mode,
@@ -1207,10 +1188,39 @@ mod tests {
     }
 
     #[test]
+    fn removed_legacy_mode_fields_name_their_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("silicon.yaml");
+        let base = "silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: session\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
+        fs::write(&path, base).unwrap();
+        Config::load(&path).unwrap();
+        for (removed, line, canonical) in [
+            ("sticky", "    sticky: false\n", "primary_send_mode"),
+            (
+                "archive_on_end",
+                "    archive_on_end: false\n",
+                "session_type",
+            ),
+        ] {
+            fs::write(
+                &path,
+                base.replace("    model: code\n", &format!("    model: code\n{line}")),
+            )
+            .unwrap();
+            let error = format!("{:#}", Config::load(&path).unwrap_err());
+            // Not serde's "unknown field": the error has to say what to write instead.
+            assert!(
+                error.contains(removed) && error.contains(canonical),
+                "{removed}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn load_resolves_home_and_validates_template_and_modes() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
-        let source = "silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    sticky: false\n    archive_on_end: false\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
+        let source = "silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: session\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
         fs::write(&path, source).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(config.home, temp.path().canonicalize().unwrap());
@@ -1229,7 +1239,7 @@ mod tests {
             .contains("template placeholder"));
         fs::write(
             &path,
-            source.replace("sticky: false", "primary_send_mode: invalid"),
+            source.replace("primary_send_mode: session", "primary_send_mode: invalid"),
         )
         .unwrap();
         assert!(Config::load(&path)

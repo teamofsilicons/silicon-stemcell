@@ -54,7 +54,7 @@ isi:
   deliberate:
     model: general
     primary_send_mode: global
-    archive_on_end: false
+    session_type: persistent
 
     dna:
       assemble:
@@ -78,7 +78,7 @@ isi:
   advisor:
     model: research
     primary_send_mode: global
-    archive_on_end: false
+    session_type: persistent
 
     dna:
       assemble:
@@ -102,7 +102,7 @@ isi:
   worker.terminal:
     model: code
     primary_send_mode: session # each invocation needs a id, title, and message. or msg archived sessions with an id and msg.
-    archive_on_end: false
+    session_type: ephemeral
 
     dna:
       assemble:
@@ -113,8 +113,8 @@ isi:
 
   worker.browser:
     model: fast
-    sticky: false # each invocation needs a id, title, and message. or msg archived sessions with an id and msg.
-    archive_on_end: false
+    primary_send_mode: session
+    session_type: ephemeral
 
     dna:
       assemble:
@@ -126,8 +126,8 @@ isi:
     
   worker.creative:
     model: design
-    sticky: false # each invocation needs a id, title, and message. or msg archived sessions with an id and msg.
-    archive_on_end: false
+    primary_send_mode: session
+    session_type: ephemeral
 
     dna:
       assemble:

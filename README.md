@@ -1,24 +1,24 @@
-# Silicon 4.0.8
+# Silicon 4.0.9
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route events through CEL flows, run ISIs with Silicon Omni, and manage their sessions and IAM applications.
 
 macOS and Linux:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.8/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.9/install.ps1 | iex
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.8).
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.9).
 
-**Upgrading from 4.0.6 or 4.0.8:** run `silicon update`, then restart the interpreter with `silicon stop` and `silicon serve`. 4.0.8 bundles Omni 0.8.0, which moves a chat off a provider that fails and finds CLIs the way a terminal does; the interpreter logs each provider removal with its reason.
+**Upgrading from 4.0.6–4.0.8:** replace any `sticky` and `archive_on_end` fields with `primary_send_mode` and `session_type` using the [migration table](https://docs.teamofsilicons.com/#legacy-mode-fields-removed), then run `silicon update` and restart with `silicon stop` and `silicon serve`. 4.0.9 retains session-addressed ephemeral history and adds process, sender, and flow details to logs.
 
-**Upgrading from 4.0.5 or earlier:** rerun the installer above once into your existing installation prefix, even if an older update has already changed the reported version. The old updater requires bundled app executables; 4.0.8 installs apps independently through Honeycomb. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
+**Upgrading from 4.0.5 or earlier:** rerun the installer above once into your existing installation prefix, even if an older update has already changed the reported version. The old updater requires bundled app executables; 4.0.9 installs apps independently through Honeycomb. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
 
 Silicon is distributed through GitHub Releases and the installers above. It does not need a Honeycomb listing or its own IAM app registration. Honeycomb supplies the application dependencies.
 

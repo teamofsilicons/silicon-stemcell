@@ -37,6 +37,21 @@ pub(crate) fn step<T>(
     Ok(value)
 }
 
+/// Strips `[kind] [origin]` and the timestamp's opening bracket, leaving
+/// `TIMESTAMP] [MESSAGE]`. The origin may carry a `/cli` or `/daemon` process
+/// role, so entries written before roles existed still match.
+fn strip_origin<'a>(line: &'a str, kind: &str, origin: &str) -> Option<&'a str> {
+    let rest = line
+        .strip_prefix(kind)?
+        .strip_prefix(" [")?
+        .strip_prefix(origin)?;
+    let rest = match rest.strip_prefix('/') {
+        Some(role) => role.split_once(']')?.1,
+        None => rest.strip_prefix(']')?,
+    };
+    rest.strip_prefix(" [")
+}
+
 struct Display<W> {
     output: W,
     terminal: bool,
@@ -81,8 +96,7 @@ impl<W: Write> Display<W> {
         };
         *offset += end as u64 + 1;
         for line in String::from_utf8_lossy(&bytes[..=end]).lines() {
-            if let Some(body) = line
-                .strip_prefix("[progress] [interpreter] [")
+            if let Some(body) = strip_origin(line, "[progress]", "interpreter")
                 .and_then(|line| line.split_once("] [").map(|(_, body)| body))
                 .and_then(|body| body.strip_suffix(']'))
             {
@@ -93,7 +107,8 @@ impl<W: Write> Display<W> {
                         self.show(state, message)?;
                     }
                 }
-            } else if line.starts_with("[setup] [stdout] ") || line.starts_with("[setup] [stderr] ")
+            } else if strip_origin(line, "[setup]", "stdout").is_some()
+                || strip_origin(line, "[setup]", "stderr").is_some()
             {
                 if self.terminal && self.pending.is_some() {
                     write!(self.output, "\x1b8\x1b[J")?;
@@ -223,5 +238,42 @@ mod tests {
         let count = display.output.len();
         display.lines(&path, &mut offset).unwrap();
         assert_eq!(display.output.len(), count);
+    }
+
+    #[test]
+    fn progress_reads_entries_with_and_without_a_process_role() {
+        // Roles were added after some logs were written; both shapes must parse.
+        for origin in ["interpreter", "interpreter/cli", "interpreter/daemon"] {
+            let line = format!("[progress] [{origin}] [time] [{{\"state\":\"done\"}}]");
+            assert_eq!(
+                strip_origin(&line, "[progress]", "interpreter"),
+                Some("time] [{\"state\":\"done\"}]"),
+                "{origin}"
+            );
+        }
+        for origin in ["stdout", "stdout/daemon"] {
+            let line = format!("[setup] [{origin}] [time] [text]");
+            assert!(
+                strip_origin(&line, "[setup]", "stdout").is_some(),
+                "{origin}"
+            );
+        }
+        // A different origin that merely shares a prefix must not match.
+        assert_eq!(
+            strip_origin(
+                "[progress] [interpreter-x] [time] [body]",
+                "[progress]",
+                "interpreter"
+            ),
+            None
+        );
+        assert_eq!(
+            strip_origin(
+                "[progress] [intuit/cli] [time] [body]",
+                "[progress]",
+                "interpreter"
+            ),
+            None
+        );
     }
 }

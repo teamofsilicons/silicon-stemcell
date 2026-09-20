@@ -1,6 +1,14 @@
 # Building Silicon
 
 
+## 4.0.9: Retained ephemeral sessions and clearer logs
+
+Session-addressed ephemeral work now keeps its record and Omni event history, archives on retirement, and remains reachable through archived-session commands. Only global ephemeral work is discarded. Log origins distinguish CLI and daemon processes, ISI-to-ISI sends name their sender, and flow entries name the condition, assignment, or send target without evaluating expressions twice.
+
+The legacy `sticky` and `archive_on_end` configuration fields are removed. Replace `sticky: true/false` with `primary_send_mode: global/session`, and `archive_on_end: true/false` with `session_type: ephemeral/persistent` before upgrading. The reference YAML and guide use the canonical fields.
+
+Local validation passed 49 unit tests and the bundle-path integration test, formatting, and Clippy. Two Caddy-only unit tests remain separately gated; the release workflow exercises the real Omni/Caddy protocol suite on each Unix platform.
+
 ## 4.0.8: Omni 0.8.0 and provider removal logging
 
 Silicon Omni 0.8.0 takes a failing provider off the chat. A crash, a rate limit, an outage the provider ends the turn on, or a CLI that will not start now closes the turn, sets that provider aside while the chat is live, and resolves the same ask over whoever is left, announced by a `CONFIG` event whose text is `provider_removed`. The interpreter now pins that release for its Rust client and the bundled daemon, and writes each removal to the Silicon log as a `provider_removed` line naming the provider, the reason, and the providers left, alongside the raw event it already recorded. A unit test covers a removal with providers left, the last removal, and other configuration events staying quiet.

@@ -210,6 +210,7 @@ struct App {
 }
 
 pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
+    crate::mark_daemon();
     let dir = directory();
     state::private_dir(&dir)?;
     let _lock = lock(&dir.join("daemon.lock"), true)?;
