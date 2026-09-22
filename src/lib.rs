@@ -11,6 +11,7 @@ pub mod server;
 pub mod settings;
 pub mod state;
 pub mod telemetry;
+pub mod ting;
 pub mod update;
 
 use anyhow::Result;
@@ -76,6 +77,11 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
         .current_dir(home)
         .env("SILICON_HOME", home)
         .env("SILICON_IAM_HOME", home.join(".silicon-iam"));
+    if let Ok(bytes) = std::fs::read(home.join(".silicon/org.json")) {
+        if let Ok(org) = serde_json::from_slice::<String>(&bytes) {
+            command.env("SILICON_ORG", org);
+        }
+    }
     if let Ok(path) = std::env::join_paths(std::iter::once(home.join(".silicon/bin")).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     )) {

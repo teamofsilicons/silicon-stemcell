@@ -7,7 +7,7 @@ set -eu
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
 
-version=${SILICON_VERSION:-v4.0.9}
+version=${SILICON_VERSION:-v4.1.0}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -15,7 +15,7 @@ repository=${SILICON_REPOSITORY:-teamofsilicons/silicon-stemcell}
 source_dir=${SILICON_SOURCE_DIR:-}
 git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
-omni_rev=1738108d7c0fdc9f7adcbcd1029d668adfb6ad99
+omni_rev=c23d80a7251a1f6a77e76172a197126e693c00f1
 commands='silicon si omnid silicon-omni omni so caddy'
 binaries="$commands"
 notices='LICENSE LICENSES/README.md LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'

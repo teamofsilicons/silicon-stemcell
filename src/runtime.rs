@@ -126,6 +126,8 @@ impl Drop for Activity<'_> {
 
 pub struct Connected {
     pub cfg: Config,
+    pub app_settings: RwLock<crate::config::Silicon>,
+    pub ting: crate::ting::Inbox,
     generation: Uuid,
     workers: Mutex<BTreeMap<Uuid, Arc<Worker>>>,
     pub enabled: AtomicBool,
@@ -191,6 +193,10 @@ impl Runtime {
             }
         }
         state::private_dir(&cfg.home.join(".silicon"))?;
+        state::write_json(
+            &cfg.home.join(".silicon/org.json"),
+            &cfg.silicon.silicon_org,
+        )?;
         cfg.generation = Uuid::new_v4();
         crate::telemetry::register(&cfg);
         let preparation = (|| -> Result<()> {
@@ -216,6 +222,7 @@ impl Runtime {
                 &cfg.silicon.managed_apps(),
                 cfg.generation,
             )?;
+            auth::configure(&cfg.home, &cfg.silicon.app_configs)?;
             Ok(())
         })();
         if let Err(error) = preparation {
@@ -223,6 +230,15 @@ impl Runtime {
             crate::telemetry::unregister(&cfg.home);
             bail!("{message}");
         }
+        self.connect_prepared(cfg)
+    }
+
+    fn connect_prepared(self: &Arc<Self>, mut cfg: Config) -> Result<()> {
+        let id = cfg.silicon.id.clone().context("silicon.id missing")?;
+        let ting = crate::ting::Inbox::new(&cfg);
+        let app_settings = RwLock::new(cfg.silicon.clone());
+        // Flows belong to the source file and are reloaded for every accepted batch.
+        cfg.flow = serde_yaml::Value::Null;
         log_line_scoped(
             &cfg.home,
             Some(cfg.generation),
@@ -235,6 +251,8 @@ impl Runtime {
             Arc::new(Connected {
                 generation: cfg.generation,
                 cfg,
+                app_settings,
+                ting,
                 workers: Mutex::new(BTreeMap::new()),
                 enabled: AtomicBool::new(true),
             }),
@@ -265,10 +283,8 @@ impl Runtime {
                 errors.push(error.to_string());
             }
         }
-        for app in &connected.cfg.silicon.hooked_apps() {
-            if let Err(error) = auth::unhook(&connected.cfg.home, app) {
-                errors.push(error.to_string());
-            }
+        if let Err(error) = connected.ting.unhook(&connected.cfg) {
+            errors.push(error.to_string());
         }
         self.callers.write().unwrap().retain(|_, c| c.silicon != id);
         self.silicons.write().unwrap().remove(id);
@@ -326,14 +342,21 @@ impl Runtime {
     }
 
     pub fn event(self: &Arc<Self>, id: &str, request: Value) -> Result<Value> {
+        self.event_connected(&self.get(id)?, request)
+    }
+
+    fn event_connected(
+        self: &Arc<Self>,
+        connected: &Arc<Connected>,
+        request: Value,
+    ) -> Result<Value> {
         let _activity = self.activity()?;
-        if !request.get("type").is_some_and(Value::is_string)
-            || !request.get("data").is_some_and(Value::is_object)
-            || !request.get("metadata").is_some_and(Value::is_object)
-        {
-            bail!("event requires type:string, data:object, metadata:object");
+        if !request.get("tings").is_some_and(Value::is_array) {
+            bail!("event requires tings:array");
         }
-        let connected = self.get(id)?;
+        if !connected.enabled.load(Ordering::SeqCst) {
+            bail!("silicon disconnected");
+        }
         let event_id = Uuid::new_v4();
         let cfg = &connected.cfg;
         log_line_scoped(
@@ -346,7 +369,7 @@ impl Runtime {
         let mut env = environment(cfg);
         env["request"] = request;
         flow::execute(
-            &cfg.flow,
+            &cfg.load_flow()?,
             env,
             &cfg.home,
             "interpreter",
@@ -357,11 +380,50 @@ impl Runtime {
                     new: true,
                     ..Default::default()
                 };
-                self.send_connected(&connected, None, target, message, &options, false)?
+                self.send_connected(connected, None, target, message, &options, false)?
                     .wait_started()
             },
         )?;
         Ok(json!({"status":"ok","event_id":event_id}))
+    }
+
+    pub fn start_inbox(self: &Arc<Self>, connected: &Arc<Connected>) {
+        let runtime = Arc::downgrade(self);
+        let connected = Arc::downgrade(connected);
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(200));
+            let (Some(runtime), Some(connected)) = (runtime.upgrade(), connected.upgrade()) else {
+                break;
+            };
+            if runtime.stopping.load(Ordering::SeqCst) || !connected.enabled.load(Ordering::SeqCst)
+            {
+                break;
+            }
+            let result = (|| -> Result<()> {
+                let _activity = runtime.activity()?;
+                connected
+                    .ting
+                    .process(|request| runtime.event_connected(&connected, request).map(|_| ()))
+            })();
+            if let Err(error) = result {
+                let _ = log_line_scoped(
+                    &connected.cfg.home,
+                    Some(connected.cfg.generation),
+                    "error",
+                    "ting",
+                    &format!("pending Ting flow: {error:#}"),
+                );
+                // Keep failed work durable. Re-read the flow on retry so edits can repair it.
+                for _ in 0..60 {
+                    if runtime.stopping.load(Ordering::SeqCst)
+                        || !connected.enabled.load(Ordering::SeqCst)
+                    {
+                        return;
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+        });
     }
 
     pub fn send(
@@ -507,7 +569,7 @@ impl Runtime {
                 &connected.cfg.home,
                 connected.cfg.silicon.id.as_deref().unwrap(),
                 connected.cfg.silicon.token.as_deref().unwrap(),
-                &connected.cfg.silicon.managed_apps(),
+                &connected.app_settings.read().unwrap().managed_apps(),
                 connected.cfg.generation,
             )?;
         }
@@ -914,6 +976,16 @@ impl Runtime {
     pub fn shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         for connected in self.silicons.read().unwrap().values() {
+            connected.enabled.store(false, Ordering::SeqCst);
+            if let Err(error) = connected.ting.unhook(&connected.cfg) {
+                let _ = log_line_scoped(
+                    &connected.cfg.home,
+                    Some(connected.cfg.generation),
+                    "error",
+                    "ting",
+                    &error.to_string(),
+                );
+            }
             let workers: Vec<_> = connected
                 .workers
                 .lock()
@@ -1014,6 +1086,10 @@ impl Worker {
             .env("OMNI_HOME", &short_home)
             .env("OMNI_STDIO_LOGGED", "1")
             .env("SILICON_HOME", &cfg.home)
+            .env(
+                "SILICON_ORG",
+                cfg.silicon.silicon_org.as_deref().unwrap_or_default(),
+            )
             .env("ISI", &address)
             .env("TZ", cfg.silicon.timezone.as_deref().unwrap_or("UTC"))
             .env("SI_URL", &runtime.url)
@@ -1701,6 +1777,7 @@ fn suggestion_due(
 pub fn environment(cfg: &Config) -> Value {
     let mut silicon = serde_json::to_value(&cfg.silicon).unwrap();
     silicon.as_object_mut().unwrap().remove("token");
+    silicon.as_object_mut().unwrap().remove("app_configs");
     if let Some(station) = silicon
         .get_mut("space_station")
         .and_then(Value::as_object_mut)
@@ -1890,6 +1967,21 @@ flow: []
         );
     }
 
+    fn connect(runtime: &Arc<Runtime>, mut cfg: Config) {
+        cfg.generation = Uuid::new_v4();
+        if cfg.flow.is_null() {
+            cfg.flow = serde_yaml::Value::Sequence(Vec::new());
+        }
+        fs::write(&cfg.path, serde_yaml::to_string(&cfg).unwrap()).unwrap();
+        let key = serde_json::to_string(&(cfg.silicon.id.as_deref().unwrap(), "tos>ting")).unwrap();
+        state::write_json(
+            &cfg.home.join(".silicon/auth-checked.json"),
+            &BTreeMap::from([(key, Utc::now().timestamp())]),
+        )
+        .unwrap();
+        runtime.connect_prepared(cfg).unwrap();
+    }
+
     fn worker(ephemeral: bool) -> (tempfile::TempDir, Arc<Runtime>, Arc<Connected>, Arc<Worker>) {
         worker_with_flow(ephemeral, serde_yaml::Value::Sequence(Vec::new()))
     }
@@ -1923,7 +2015,7 @@ flow: []
         cfg.path = dir.path().join("silicon.yaml");
         cfg.flow = flow;
         let runtime = Runtime::new("http://127.0.0.1:1823".into());
-        runtime.connect(cfg).unwrap();
+        connect(&runtime, cfg);
         let connected = runtime.get("test:org").unwrap();
         // Session addressing needs an id; global addressing must not be given one.
         let options = SendOptions {
@@ -2024,7 +2116,7 @@ flow: []
             "message": "! printf '%s\\n' \"$ISI\" >> heartbeat-started; printf heartbeat"
         })).unwrap());
         fs::write(home.path().join("heartbeat-interval"), "0.01s").unwrap();
-        runtime.connect(cfg).unwrap();
+        connect(&runtime, cfg);
         let connected = runtime.get("test:org").unwrap();
         let options = |id: &str| SendOptions {
             id: Some(id.into()),
@@ -2150,7 +2242,7 @@ flow: []
                     {"log":{"message":"continued"}}
                 ])).unwrap();
             }
-            runtime.connect(cfg.clone()).unwrap();
+            connect(&runtime, cfg.clone());
             let old = runtime.get("test:org").unwrap();
             let event = if heartbeat {
                 runtime.start_scheduler();
@@ -2158,7 +2250,7 @@ flow: []
             } else {
                 let runtime = runtime.clone();
                 Some(thread::spawn(move || {
-                    runtime.event("test:org", json!({"type":"test", "data":{}, "metadata":{}}))
+                    runtime.event("test:org", json!({"tings":[{"id":"test-event", "type":"test", "data":{}, "metadata":{}}]}))
                 }))
             };
             let started = wait_until(|| old_home.path().join("started").exists());
@@ -2174,7 +2266,7 @@ flow: []
                     .unwrap(),
                 );
             }
-            runtime.connect(cfg).unwrap();
+            connect(&runtime, cfg);
             let replacement = runtime.get("test:org").unwrap();
             let worker = runtime
                 .worker(&replacement, "a", &SendOptions::default())
@@ -2346,7 +2438,7 @@ flow: []
         let fresh = runtime.caller(&replacement.capability).unwrap();
         assert!(runtime.caller_connection(&fresh).is_ok());
         runtime.disconnect("test:org").unwrap();
-        runtime.connect(connected.cfg.clone()).unwrap();
+        connect(&runtime, connected.cfg.clone());
         let reconnected = runtime.get("test:org").unwrap();
         let resumed = runtime
             .worker(&reconnected, "a", &SendOptions::default())
@@ -2368,7 +2460,7 @@ flow: []
         let isi = cfg.isi.get_mut("a").unwrap();
         isi.primary_send_mode = Some("session".into());
         isi.session_type = Some("ephemeral".into());
-        runtime.connect(cfg).unwrap();
+        connect(&runtime, cfg);
         let connected = runtime.get("test:org").unwrap();
         let mut options = SendOptions {
             id: Some("job".into()),
@@ -2405,7 +2497,7 @@ flow: []
     }
 
     #[test]
-    fn webhook_ack_waits_for_delivery_and_runs_send_catch_before_continuing() {
+    fn flow_waits_for_delivery_and_runs_send_catch_before_continuing() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
         use std::sync::mpsc;
@@ -2457,7 +2549,7 @@ flow: []
             let event = thread::spawn(move || {
                 ack.send(event_runtime.event(
                     "test:org",
-                    json!({"type": "test", "data": {}, "metadata": {}}),
+                    json!({"tings":[{"id":"test-event", "type": "test", "data": {}, "metadata": {}}]}),
                 ))
                 .unwrap();
             });
@@ -2681,28 +2773,35 @@ flow: []
     }
 
     #[test]
-    fn disconnect_unhook_failure_still_removes_connection_and_capabilities() {
+    fn disconnect_ting_unhook_failure_still_removes_connection_and_capabilities() {
         let (_dir, runtime, connected, first) = worker(false);
-        let mut cfg = connected.cfg.clone();
+        let cfg = connected.cfg.clone();
         runtime.disconnect("test:org").unwrap();
         assert!(first.stopped.load(Ordering::SeqCst));
         use std::os::unix::fs::PermissionsExt;
-        let app = cfg.home.join("unhook-failure-app");
+        let app = cfg.home.join(".silicon/bin/ting");
+        std::fs::create_dir_all(app.parent().unwrap()).unwrap();
         std::fs::write(
             &app,
             r#"#!/bin/sh
 case "$*" in
-  'iam --json') echo '{"app_id":"test>app"}' ;;
-  'login status --json') echo '{"authenticated":true}' ;;
-  unhook) exit 1 ;;
+  'iam --json') echo '{"app_id":"tos>ting"}' ;;
+  'unhook retained-hook --json') exit 1 ;;
   *) exit 2 ;;
 esac
 "#,
         )
         .unwrap();
         std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o700)).unwrap();
-        cfg.silicon.webhook = vec![shell_words::quote(&app.to_string_lossy()).into_owned()];
-        runtime.connect(cfg).unwrap();
+        state::write_json(
+            &cfg.home
+                .join(".silicon/ting/test:org")
+                .join(cfg.silicon.silicon_org.as_deref().unwrap_or_default())
+                .join("hook.json"),
+            &"retained-hook",
+        )
+        .unwrap();
+        connect(&runtime, cfg);
         let connected = runtime.get("test:org").unwrap();
         let second = runtime
             .worker(&connected, "a", &SendOptions::default())

@@ -1,6 +1,9 @@
 //! Shared CEL → Bash → string evaluation. Configuration is trusted executable input.
 use anyhow::{anyhow, bail, Context as _, Result};
-use cel_interpreter::{extractors::This, Context, ExecutionError, Program, Value};
+use cel_interpreter::{
+    extractors::{Identifier, This},
+    Context, ExecutionError, FunctionContext, IdedExpr, Program, Value,
+};
 use chrono::DateTime;
 use chrono_tz::Tz;
 use serde_json::Value as Json;
@@ -96,7 +99,113 @@ fn context(env: &Json) -> Result<Context<'static>> {
                 .into())
         },
     );
+    context.add_function(
+        "sortBy",
+        |ctx: &FunctionContext,
+         This(items): This<Arc<Vec<Value>>>,
+         Identifier(binding): Identifier,
+         key: IdedExpr|
+         -> Result<Value, ExecutionError> {
+            if ctx.args.len() != 2 {
+                return Err(ctx.error("expected sortBy(binding, key)"));
+            }
+            let mut scope = ctx.ptx.new_inner_scope();
+            let mut keyed = items
+                .iter()
+                .map(|item| {
+                    scope.add_variable_from_value(binding.as_str(), item.clone());
+                    scope.resolve(&key).map(|key| (key, item.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let compare = |a: &Value, b: &Value| match (a, b) {
+                (Value::Bytes(a), Value::Bytes(b)) => Some(a.cmp(b)),
+                (Value::Null, _) => None,
+                _ => a.partial_cmp(b),
+            };
+            if let Some((first, _)) = keyed.first() {
+                if keyed.iter().any(|(key, _)| {
+                    std::mem::discriminant(key) != std::mem::discriminant(first)
+                        || compare(first, key).is_none()
+                }) {
+                    return Err(ctx.error("sort keys must have the same comparable type"));
+                }
+            }
+            keyed.sort_by(|(a, _), (b, _)| compare(a, b).unwrap());
+            Ok(keyed
+                .into_iter()
+                .map(|(_, item)| item)
+                .collect::<Vec<_>>()
+                .into())
+        },
+    );
+    for name in ["join", "distinct", "slice", "reverse", "flatten"] {
+        context.add_function(name, list_function);
+    }
     Ok(context)
+}
+
+fn list_function(ctx: &FunctionContext) -> Result<Value, ExecutionError> {
+    let Some(Value::List(items)) = &ctx.this else {
+        return Err(ctx.error("expected a list receiver"));
+    };
+    let args = ctx
+        .args
+        .iter()
+        .map(|arg| ctx.ptx.resolve(arg))
+        .collect::<Result<Vec<_>, _>>()?;
+    match (ctx.name.as_str(), args.as_slice()) {
+        ("join", [] | [Value::String(_)]) => {
+            let separator = match args.first() {
+                Some(Value::String(separator)) => separator.as_str(),
+                _ => "",
+            };
+            items
+                .iter()
+                .map(|item| match item {
+                    Value::String(item) => Ok(item.as_str()),
+                    _ => Err(ctx.error("join requires string elements")),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(|items| items.join(separator).into())
+        }
+        ("distinct", []) => {
+            let mut distinct = Vec::new();
+            // ponytail: quadratic CEL equality scan; hash canonical keys if Ting batches grow large.
+            for item in items.iter() {
+                if !distinct.contains(item) {
+                    distinct.push(item.clone());
+                }
+            }
+            Ok(distinct.into())
+        }
+        ("slice", [Value::Int(start), Value::Int(end)])
+            if *start >= 0 && start <= end && *end as u64 <= items.len() as u64 =>
+        {
+            Ok(items[*start as usize..*end as usize].to_vec().into())
+        }
+        ("reverse", []) => Ok(items.iter().rev().cloned().collect::<Vec<_>>().into()),
+        ("flatten", [] | [Value::Int(_)]) => {
+            let depth = match args.first() {
+                Some(Value::Int(depth)) => *depth,
+                _ => 1,
+            };
+            if depth < 0 {
+                return Err(ctx.error("flatten depth must not be negative"));
+            }
+            fn flatten(items: &[Value], depth: i64, output: &mut Vec<Value>) {
+                for item in items {
+                    match item {
+                        Value::List(items) if depth > 0 => flatten(items, depth - 1, output),
+                        _ => output.push(item.clone()),
+                    }
+                }
+            }
+            let mut output = Vec::new();
+            flatten(items, depth, &mut output);
+            Ok(output.into())
+        }
+        _ => Err(ctx.error("invalid list arguments or slice bounds")),
+    }
 }
 
 fn cel(source: &str, env: &Json) -> Result<Json> {
@@ -251,14 +360,7 @@ enum Mode {
 }
 
 fn redact(message: &str, env: &Json) -> String {
-    let secrets = [
-        &env["silicon"]["token"],
-        &env["silicon"]["space_station"]["table_key"],
-    ]
-    .into_iter()
-    .filter_map(Json::as_str)
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
+    let secrets = crate::telemetry::silicon_secrets(&env["silicon"]);
     crate::telemetry::redact_text(message, &secrets)
 }
 
@@ -334,6 +436,10 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
             .arg("-c")
             .arg(command.trim_start())
             .env("ISI", isi)
+            .env(
+                "SILICON_ORG",
+                env["silicon"]["SILICON_ORG"].as_str().unwrap_or_default(),
+            )
             .output()
             .context("could not start Bash")?;
         if matches!(mode, Mode::Setup) {
@@ -527,6 +633,57 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn ting_list_extensions_compose_and_validate_arguments() {
+        let env = json!({"request": {"tings": [
+            {"at": 2, "text": "later"}, {"at": 1, "text": "first"},
+            {"at": 2, "text": "last"}, {"at": 1, "text": "first"}
+        ]}, "t": "outer"});
+        assert_eq!(
+            cel("request.tings.sortBy(t, t.at).map(t, t.text).distinct().slice(0, 3).reverse().join(' | ')", &env).unwrap(),
+            json!("last | later | first")
+        );
+        for (source, expected) in [
+            ("['a', 'b'].join()", json!("ab")),
+            ("[].sortBy(t, t.missing)", json!([])),
+            (
+                "request.tings.sortBy(t, t.at).size() == 4 && t == 'outer'",
+                json!(true),
+            ),
+            (
+                "[1, 2, 1, {'n': 1}, {'n': 1}].distinct()",
+                json!([1, 2, {"n": 1}]),
+            ),
+            ("[1, [2, [3]], [], 4].flatten()", json!([1, 2, [3], 4])),
+            ("[1, [2, [3]], [], 4].flatten(2)", json!([1, 2, 3, 4])),
+            ("[1, [2]].flatten(0)", json!([1, [2]])),
+            ("[1].slice(1, 1)", json!([])),
+        ] {
+            assert_eq!(cel(source, &env).unwrap(), expected, "{source}");
+        }
+        for source in [
+            "[1].join()",
+            "[1].slice(-1, 1)",
+            "[1].slice(0, 2)",
+            "[1].slice(1, 0)",
+            "[1].slice(0u, 1u)",
+            "[1].flatten(-1)",
+            "[1].reverse(2)",
+            "[1].distinct(2)",
+            "'abc'.reverse()",
+            "[1, 'a'].sortBy(t, t)",
+            "[{}].sortBy(t, t)",
+            "[null].sortBy(t, t)",
+            "[double('NaN')].sortBy(t, t)",
+            "[1.0, double('NaN')].sortBy(t, t)",
+            "[1].sortBy('t', t)",
+            "[1].sortBy(t, t, 2)",
+            "[1].sortBy(t, t.missing)",
+        ] {
+            assert!(cel(source, &env).is_err(), "accepted {source}");
+        }
+    }
+
+    #[test]
     fn real_cel_nested_templates_helpers_and_failures() {
         let dir = tempfile::tempdir().unwrap();
         let env = json!({"request": {"items": [1, 2, 3], "body": "{\"n\":7}"}, "var": {}});
@@ -609,18 +766,18 @@ mod tests {
     #[test]
     fn bash_fallbacks_and_dna_share_environment_without_losing_quoted_separators() {
         let dir = tempfile::tempdir().unwrap();
-        let env = serde_json::json!({"var": {"x": 3}});
+        let env = serde_json::json!({"var": {"x": 3}, "silicon": {"SILICON_ORG": "test-org"}});
         fs::write(dir.path().join("prompt.md"), "file prompt").unwrap();
         assert_eq!(
             evaluate(
-                "{missing.value} !>> ! false !>> ! printf '%s:%s:%s' \"$ISI\" \"$PWD\" {var.x}",
+                "{missing.value} !>> ! false !>> ! printf '%s:%s:%s:%s' \"$ISI\" \"$PWD\" {var.x} \"$SILICON_ORG\"",
                 &env,
                 dir.path(),
                 "worker:job"
             )
             .unwrap(),
             format!(
-                "worker:job:{}:3",
+                "worker:job:{}:3:test-org",
                 dir.path().canonicalize().unwrap().display()
             )
         );
@@ -689,6 +846,7 @@ mod tests {
     fn credential_expressions_and_compile_diagnostics_do_not_disclose_secrets() {
         let dir = tempfile::tempdir().unwrap();
         let env = json!({"silicon": {"token": "private-token-value",
+            "app_configs": {"tos>app": {"credentials": ["private-application-value"]}},
             "space_station": {"table_key": "private-table-value"}}});
         let log_path = dir.path().join(".silicon/silicon.log");
         assert_eq!(
@@ -723,6 +881,8 @@ mod tests {
         for source in [
             "! printf '{silicon.token}' >&2; exit 1",
             "! printf '{silicon.space_station.table_key}' >&2; exit 1",
+            "! printf '{silicon.app_configs['tos>app'].credentials[0]}' >&2; exit 1",
+            "{missing['private-application-value']}",
             "{to_json(silicon.token)}",
         ] {
             let error = format!(
@@ -731,11 +891,13 @@ mod tests {
             );
             assert!(!error.contains("private-token-value"), "{error}");
             assert!(!error.contains("private-table-value"), "{error}");
+            assert!(!error.contains("private-application-value"), "{error}");
         }
         let logs = fs::read_to_string(log_path).unwrap();
         for secret in [
             "private-token-value",
             "private-table-value",
+            "private-application-value",
             "new-private-credential",
             "fallback-private-credential",
         ] {

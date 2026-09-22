@@ -43,11 +43,12 @@ fn client(key: &str) -> Option<Arc<SpaceClient>> {
 }
 
 pub fn register(cfg: &Config) {
-    let mut secrets = cfg.silicon.token.iter().cloned().collect::<Vec<_>>();
-    let user = cfg.silicon.space_station.as_ref().and_then(|station| {
-        secrets.push(station.table_key.clone());
-        client(&station.table_key)
-    });
+    let secrets = silicon_secrets(&serde_json::to_value(&cfg.silicon).unwrap());
+    let user = cfg
+        .silicon
+        .space_station
+        .as_ref()
+        .and_then(|station| client(&station.table_key));
     let mut redactions = REDACTIONS.get_or_init(Default::default).lock().unwrap();
     let known = redactions.entry(cfg.home.clone()).or_default();
     for secret in secrets {
@@ -55,6 +56,7 @@ pub fn register(cfg: &Config) {
             known.push(secret);
         }
     }
+    known.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     drop(redactions);
     CONTEXTS
         .get_or_init(Default::default)
@@ -76,6 +78,29 @@ pub fn unregister(home: &Path) {
         .lock()
         .unwrap()
         .remove(home);
+}
+
+/// App-specific credential names are unknown, so every configured string is private.
+pub fn silicon_secrets(silicon: &Value) -> Vec<String> {
+    fn strings(value: &Value, secrets: &mut Vec<String>) {
+        match value {
+            Value::String(value) if !value.is_empty() => secrets.push(value.clone()),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, secrets)),
+            Value::Object(items) => items.values().for_each(|item| strings(item, secrets)),
+            _ => {}
+        }
+    }
+    let mut secrets = Vec::new();
+    for value in [
+        &silicon["token"],
+        &silicon["space_station"]["table_key"],
+        &silicon["app_configs"],
+    ] {
+        strings(value, &mut secrets);
+    }
+    secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    secrets.dedup();
+    secrets
 }
 
 pub fn redact_text(text: &str, secrets: &[String]) -> String {
@@ -242,16 +267,24 @@ mod tests {
     #[test]
     fn interpreter_requests_redact_known_secrets_even_after_disconnect() {
         let home = PathBuf::from(format!("/test/{}", Uuid::new_v4()));
-        REDACTIONS
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap()
-            .insert(home.clone(), vec!["custom-configured-secret".into()]);
+        let mut cfg: Config = serde_json::from_value(json!({
+            "silicon": {"id":"test:org", "token":"private-token", "app_configs":{
+                "tos>app":{"nested":["custom-configured-secret", {"value":"nested-app-secret"}]}
+            }}, "isi":{}, "access":{}, "flow":[]
+        }))
+        .unwrap();
+        cfg.home = home.clone();
+        register(&cfg);
+        let env = crate::runtime::environment(&cfg);
+        assert!(env["silicon"].get("app_configs").is_none());
+        assert!(env["silicon"].get("token").is_none());
         unregister(&home);
-        let mut request =
-            json!({"action":"send","args":{"message":"using custom-configured-secret"}});
+        let mut request = json!({"action":"send","args":{"message":"using custom-configured-secret and nested-app-secret"}});
         redact_interpreter_context(&mut request);
-        assert_eq!(request["args"]["message"], "using [redacted]");
+        assert_eq!(
+            request["args"]["message"],
+            "using [redacted] and [redacted]"
+        );
         REDACTIONS.get().unwrap().lock().unwrap().remove(&home);
     }
     #[test]

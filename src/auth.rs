@@ -12,6 +12,51 @@ use std::{
 // ponytail: serialize auth exchanges; use per-home/app locks if authentication throughput matters.
 static AUTH_LOCK: Mutex<()> = Mutex::new(());
 
+fn identity_org(sid: &str) -> Result<&str> {
+    sid.split_once(':')
+        .filter(|(local, org)| {
+            !local.is_empty()
+                && !org.is_empty()
+                && !org.contains(':')
+                && !sid.chars().any(char::is_whitespace)
+        })
+        .map(|(_, org)| org)
+        .ok_or_else(|| anyhow!("silicon.id must be in local-id:organization form"))
+}
+
+fn selected_org(home: &Path, default: &str) -> Result<String> {
+    let command = crate::command("iam", home);
+    let org = command
+        .get_envs()
+        .find(|(key, _)| *key == "SILICON_ORG")
+        .and_then(|(_, value)| value.map(|value| value.to_owned()))
+        .or_else(|| std::env::var_os("SILICON_ORG"))
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| anyhow!("SILICON_ORG must be UTF-8"))
+        })
+        .transpose()?
+        .unwrap_or_else(|| default.to_owned());
+    if org.is_empty()
+        || org.len() > 63
+        || org.starts_with('-')
+        || org.ends_with('-')
+        || !org.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        bail!("SILICON_ORG must be an organization DNS label");
+    }
+    Ok(org)
+}
+
+fn grants(home: &Path) -> Result<BTreeMap<String, String>> {
+    match fs::read(home.join(".silicon/auth-grants.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("invalid app grant organizations"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) fn registered(home: &Path) -> Result<Vec<String>> {
     let path = home.join(".silicon/auth-apps.json");
     if path.exists() {
@@ -54,6 +99,9 @@ fn ensure_all_using(
     generation: Option<uuid::Uuid>,
 ) -> Result<()> {
     let _guard = AUTH_LOCK.lock().unwrap();
+    let identity_org = identity_org(sid)?;
+    let grant_org = selected_org(home, identity_org)?;
+    let grants = grants(home)?;
     let path = home.join(".silicon/auth-checked.json");
     let mut checked: BTreeMap<String, i64> = match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).context("invalid auth check timestamps")?,
@@ -74,10 +122,11 @@ fn ensure_all_using(
     for command in commands {
         let key = serde_json::to_string(&(sid, &command))?;
         let now = chrono::Utc::now().timestamp();
-        if checked
-            .get(&key)
-            .and_then(|last| now.checked_sub(*last))
-            .is_some_and(|age| (0..48 * 60 * 60).contains(&age))
+        if grants.get(&key).map(String::as_str).unwrap_or(identity_org) == grant_org
+            && checked
+                .get(&key)
+                .and_then(|last| now.checked_sub(*last))
+                .is_some_and(|age| (0..48 * 60 * 60).contains(&age))
         {
             continue;
         }
@@ -371,20 +420,18 @@ fn authenticate_inner(
 ) -> Result<String> {
     let app_id = app.discover()?;
     let (contract, authenticated) = app.status()?;
-    if only_if_needed && authenticated {
+    let org = identity_org(sid)?;
+    let grant_org = selected_org(home, org)?;
+    let mut grants = grants(home)?;
+    let key = serde_json::to_string(&(sid, &app.reference))?;
+    // Legacy sessions were granted the identity's org; a different selected org
+    // requires fresh consent even if the app still reports authenticated:true.
+    let granted = grants.get(&key).map(String::as_str).unwrap_or(org);
+    if only_if_needed && authenticated && granted == grant_org {
         remember(home, &app, true)?;
         crate::log_line_scoped(home, generation, "auth", &app_id, "already authenticated")?;
         return Ok(app_id);
     }
-    let (_, org) = sid
-        .split_once(':')
-        .filter(|(local, org)| {
-            !local.is_empty()
-                && !org.is_empty()
-                && !org.contains(':')
-                && !sid.chars().any(char::is_whitespace)
-        })
-        .ok_or_else(|| anyhow!("silicon.id must be in local-id:organization form"))?;
     if stk.trim().is_empty() || stk == "..." || stk.contains('\0') {
         bail!("silicon.token is required for IAM authentication");
     }
@@ -429,7 +476,7 @@ fn authenticate_inner(
         "--app-id",
         &app_id,
         "--grant-org",
-        org,
+        &grant_org,
     ]);
     if help.status.success() && String::from_utf8_lossy(&help.stdout).contains("--approve-scopes") {
         issuer.arg("--approve-scopes");
@@ -465,12 +512,14 @@ fn authenticate_inner(
         Contract::Login => vec!["login", slt],
     };
     // Space Station binds terminal sessions to an organization, including a first login.
-    let app_org = (app_id == "tos>spacestation").then_some(org);
+    let app_org = (app_id == "tos>spacestation").then_some(grant_org.as_str());
     if !app.run_in_org(&args, app_org)?.status.success() {
         // Never retry another login spelling with a possibly consumed SLT.
         bail!("app rejected the IAM short-lived token; start authentication again after fixing the app's login failure");
     }
     app.check_status(contract, true)?;
+    grants.insert(key, grant_org);
+    crate::state::write_json(&home.join(".silicon/auth-grants.json"), &grants)?;
     remember(&home, &app, true)?;
     crate::log_line_scoped(&home, generation, "auth", &app_id, "authenticated")?;
     Ok(app_id)
@@ -504,23 +553,20 @@ pub fn remove(home: &Path, command: &str) -> Result<()> {
     bail!("IAM app must expose `auth remove`, `auth logout`, or `logout`");
 }
 
-/// Register the silicon listening URL with an IAM application.
-pub fn webhook(home: &Path, command: &str, url: &str) -> Result<()> {
-    if url.is_empty() || url.chars().any(char::is_control) {
-        bail!("webhook URL is required");
-    }
-    let app = App::resolve(home, command)?;
-    if !app.run(&["webhook", url])?.status.success() {
-        bail!("app webhook registration failed");
-    }
-    Ok(())
+pub(crate) fn run_app(home: &Path, app: &str, args: &[&str]) -> Result<Output> {
+    App::resolve(home, app)?.run(args)
 }
 
-/// Remove a listening URL when a Silicon disconnects.
-pub fn unhook(home: &Path, command: &str) -> Result<()> {
-    let app = App::resolve(home, command)?;
-    if !app.run(&["unhook"])?.status.success() {
-        bail!("app webhook removal failed");
+/// Configuration values may contain secrets; never log arguments or captured output.
+pub(crate) fn configure(home: &Path, configs: &BTreeMap<String, Value>) -> Result<()> {
+    for (app, config) in configs {
+        let value = serde_json::to_string(config)?;
+        if !run_app(home, app, &["config", "set", &value])?
+            .status
+            .success()
+        {
+            bail!("{app} config set failed; inspect the app configuration locally");
+        }
     }
     Ok(())
 }
@@ -529,6 +575,65 @@ pub fn unhook(home: &Path, command: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn selected_org_changes_force_new_grants_despite_fresh_checks_and_active_sessions() -> Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path();
+        let bin = home.join(".silicon/bin");
+        fs::create_dir_all(&bin)?;
+        let iam = bin.join("iam");
+        let app = bin.join("app");
+        fs::write(
+            &iam,
+            r#"#!/bin/sh
+set -eu
+if [ "$*" = 'silicon-login --help' ]; then echo --approve-scopes; exit 0; fi
+[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '--output json --org home-org silicon-login --sid silicon:home-org --stk stk-secret' ]
+[ "${10} ${11} ${12} ${13} ${14}" = "--app-id test>app --grant-org $SILICON_ORG --approve-scopes" ]
+printf '%s\n' "$SILICON_ORG" >> minted
+printf '{"slt":"issued-%s","expires_in":120}\n' "$SILICON_ORG"
+"#,
+        )?;
+        fs::write(
+            &app,
+            r#"#!/bin/sh
+set -eu
+case "$*" in
+  'iam --json') echo '{"app_id":"test>app"}' ;;
+  'login status --json') echo '{"authenticated":true}' ;;
+  'login issued-'*) [ "$2" = "issued-$SILICON_ORG" ]; printf '%s' "$SILICON_ORG" > active-org ;;
+  *) exit 1 ;;
+esac
+"#,
+        )?;
+        for path in [&iam, &app] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+        let key = serde_json::to_string(&("silicon:home-org", "test>app"))?;
+        crate::state::write_json(
+            &home.join(".silicon/auth-checked.json"),
+            &BTreeMap::from([(key.clone(), chrono::Utc::now().timestamp())]),
+        )?;
+        let mut expected = Vec::new();
+        for org in ["work-org", "another-org", "home-org", "work-org"] {
+            crate::state::write_json(&home.join(".silicon/org.json"), &org)?;
+            for _ in 0..2 {
+                ensure_all(home, "silicon:home-org", "stk-secret", &["test>app".into()])?;
+            }
+            expected.push(org);
+            assert_eq!(
+                fs::read_to_string(home.join("minted"))?
+                    .lines()
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(fs::read_to_string(home.join("active-org"))?, org);
+            assert_eq!(grants(home)?[&key], org);
+        }
+        Ok(())
+    }
 
     #[test]
     fn automatic_checks_are_cached_per_app_and_silicon_for_48_hours() -> Result<()> {
@@ -636,8 +741,7 @@ case "$*" in
   'auth remove --help') [ "$mode" = modern ] ;;
   'logout --help') [ "$mode" = legacy ] ;;
   'auth remove'|'logout') rm active ;;
-  'webhook test.localhost') touch hooked ;;
-  unhook) rm hooked ;;
+  'config set '*) printf '%s' "$3" > configured ;;
   *) exit 2 ;;
 esac
 "#,
@@ -662,9 +766,6 @@ esac
                 true,
             )?;
             assert_eq!(fs::read_to_string(home.join("minted"))?, minted);
-            webhook(home, &command, "test.localhost")?;
-            assert!(home.join("hooked").exists());
-            unhook(home, &command)?;
             remove(home, &command)?;
             assert!(registered(home)?.is_empty());
             assert!(!home.join("active").exists());
@@ -688,8 +789,12 @@ esac
             "test>app"
         );
         assert_eq!(registered(home)?, ["test>app"]);
-        webhook(home, "test>app", "test.localhost")?;
-        unhook(home, "test>app")?;
+        let config = serde_json::json!({"silicon_org": "test", "nested": {"enabled": true}});
+        configure(home, &BTreeMap::from([("test>app".into(), config.clone())]))?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(home.join("configured"))?)?,
+            config
+        );
         remove(home, "test>app")?;
         assert!(registered(home)?.is_empty());
         fs::write(home.join("space-app"), "")?;

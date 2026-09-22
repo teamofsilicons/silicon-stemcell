@@ -19,6 +19,8 @@ pub struct Silicon {
     pub timezone: Option<String>,
     #[serde(rename = "SILICON_HOME")]
     pub silicon_home: Option<String>,
+    #[serde(rename = "SILICON_ORG")]
+    pub silicon_org: Option<String>,
     #[serde(default)]
     pub inference_providers: Yaml,
     #[serde(default)]
@@ -26,12 +28,10 @@ pub struct Silicon {
     #[serde(default)]
     pub apps: Vec<String>,
     #[serde(default)]
-    pub webhooks: Vec<String>,
+    pub app_configs: BTreeMap<String, Json>,
     pub space_station: Option<SpaceStation>,
     #[serde(default)]
     pub login: Vec<String>,
-    #[serde(default)]
-    pub webhook: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -47,20 +47,9 @@ impl Silicon {
         self.apps
             .iter()
             .chain(&self.login)
-            .chain(&self.webhooks)
-            .chain(&self.webhook)
-            .filter(|app| seen.insert(*app))
             .cloned()
-            .collect()
-    }
-
-    pub fn hooked_apps(&self) -> Vec<String> {
-        let mut seen = HashSet::new();
-        self.webhooks
-            .iter()
-            .chain(&self.webhook)
-            .filter(|app| seen.insert(*app))
-            .cloned()
+            .chain(std::iter::once("tos>ting".to_owned()))
+            .filter(|app| seen.insert(app.clone()))
             .collect()
     }
 }
@@ -94,6 +83,15 @@ pub struct Config {
 }
 
 impl Config {
+    /// Flow stays editable while a Silicon is connected; compile-time expressions are untouched.
+    pub fn load_flow(&self) -> Result<Yaml> {
+        let document = parse_document(&fs::read_to_string(&self.path)?, &mut Vec::new())?;
+        let flow = document["flow"].clone();
+        crate::eval::validate(&flow).context("invalid flow expression syntax")?;
+        validate_static_sends(&flow, &self.isi)?;
+        Ok(flow)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path
             .as_ref()
@@ -133,9 +131,19 @@ impl Config {
         }
         document["silicon"]["SILICON_HOME"] = Yaml::String(home.to_string_lossy().into_owned());
         env["silicon"]["SILICON_HOME"] = json!(home);
-        for key in ["id", "token", "timezone"] {
+        for key in ["id", "token", "timezone", "SILICON_ORG"] {
             evaluate_field(&mut document["silicon"], key, &env, &home, "interpreter")?;
             env["silicon"][key] = serde_json::to_value(&document["silicon"][key])?;
+        }
+        if document["silicon"]["SILICON_ORG"].is_null() {
+            if let Some((_, org)) = document["silicon"]["id"]
+                .as_str()
+                .and_then(|id| id.split_once(':'))
+            {
+                document["silicon"]["SILICON_ORG"] = Yaml::String(org.to_owned());
+                env["silicon"]["SILICON_ORG"] =
+                    serde_json::to_value(&document["silicon"]["SILICON_ORG"])?;
+            }
         }
         evaluate_provider_values(&mut document["silicon"]["inference_providers"], &env, &home)?;
         env["silicon"]["inference_providers"] =
@@ -153,7 +161,7 @@ impl Config {
             env["silicon"]["space_station"] =
                 serde_json::to_value(&document["silicon"]["space_station"])?;
         }
-        for key in ["apps", "webhooks", "login", "webhook"] {
+        for key in ["apps", "login"] {
             if let Some(commands) = document["silicon"][key].as_sequence_mut() {
                 for (index, command) in commands.iter_mut().enumerate() {
                     *command = Yaml::String(
@@ -163,6 +171,12 @@ impl Config {
                 }
                 env["silicon"][key] = serde_json::to_value(commands)?;
             }
+        }
+        if let Some(configs) = document["silicon"]["app_configs"].as_mapping_mut() {
+            for config in configs.values_mut() {
+                evaluate_app_config(config, &env, &home)?;
+            }
+            env["silicon"]["app_configs"] = serde_json::to_value(configs)?;
         }
         if let Some(isies) = document["isi"].as_mapping_mut() {
             for (name, isi) in isies {
@@ -208,13 +222,21 @@ impl Config {
                 }
             }
         }
-        let mut config: Self =
-            serde_yaml::from_value(document).context("invalid silicon schema")?;
-        config.path = path;
-        config.home = home;
-        config.warnings = warnings;
-        config.validate()?;
-        Ok(config)
+        let result = (|| {
+            let mut config: Self =
+                serde_yaml::from_value(document).context("invalid silicon schema")?;
+            config.path = path;
+            config.home = home;
+            config.warnings = warnings;
+            config.validate()?;
+            Ok(config)
+        })();
+        result.map_err(|error: anyhow::Error| {
+            anyhow!(crate::telemetry::redact_text(
+                &format!("{error:#}"),
+                &crate::telemetry::silicon_secrets(&env["silicon"])
+            ))
+        })
     }
 
     fn validate(&mut self) -> Result<()> {
@@ -226,30 +248,28 @@ impl Config {
             bail!("silicon.id must contain two DNS labels separated by one colon");
         }
         required(&self.silicon.token, "silicon.token")?;
+        if !host_label(required(&self.silicon.silicon_org, "silicon.SILICON_ORG")?) {
+            bail!("silicon.SILICON_ORG must be a DNS label");
+        }
         required(&self.silicon.timezone, "silicon.timezone")?
             .parse::<Tz>()
             .context("silicon.timezone must be an IANA timezone")?;
         validate_providers(&self.silicon.inference_providers)?;
-        for (name, apps) in [
-            ("apps", &self.silicon.apps),
-            ("webhooks", &self.silicon.webhooks),
-        ] {
-            let mut seen = HashSet::new();
-            for app in apps {
-                if !app.split_once('>').is_some_and(|(org, app)| {
-                    [org, app].iter().all(|part| {
-                        (1..=64).contains(&part.len())
-                            && part.as_bytes()[0].is_ascii_alphanumeric()
-                            && part
-                                .bytes()
-                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    })
-                }) {
-                    bail!("silicon.{name} entries must be IAM app IDs, e.g. tos>dm");
-                }
-                if !seen.insert(app) {
-                    bail!("silicon.{name} repeats {app}");
-                }
+        let mut seen = HashSet::new();
+        for app in &self.silicon.apps {
+            if !crate::apps::valid_id(app) {
+                bail!("silicon.apps entries must be IAM app IDs, e.g. tos>dm");
+            }
+            if !seen.insert(app) {
+                bail!("silicon.apps repeats {app}");
+            }
+        }
+        for (app, config) in &self.silicon.app_configs {
+            if !crate::apps::valid_id(app) || !self.silicon.managed_apps().contains(app) {
+                bail!("silicon.app_configs keys must be managed IAM app IDs, e.g. tos>dm");
+            }
+            if !config.is_object() {
+                bail!("silicon.app_configs.{app} must be a key-value mapping");
             }
         }
         for source in &self.silicon.setup {
@@ -268,15 +288,10 @@ impl Config {
                 )?;
             }
         }
-        for (name, commands) in [
-            ("login", &self.silicon.login),
-            ("webhook", &self.silicon.webhook),
-        ] {
-            for command in commands {
-                let command = command.trim().strip_prefix('!').unwrap_or(command).trim();
-                if command.is_empty() || command.contains(['\n', '\0']) {
-                    bail!("silicon.{name} commands must be nonempty single lines");
-                }
+        for command in &self.silicon.login {
+            let command = command.trim().strip_prefix('!').unwrap_or(command).trim();
+            if command.is_empty() || command.contains(['\n', '\0']) {
+                bail!("silicon.login commands must be nonempty single lines");
             }
         }
         if self.isi.is_empty() {
@@ -334,6 +349,14 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
     for (key, value) in document.as_mapping().unwrap() {
         crate::eval::validate(key)?;
         if key.as_str() == Some("silicon") {
+            for removed in ["webhooks", "webhook"] {
+                if value
+                    .as_mapping()
+                    .is_some_and(|map| map.contains_key(removed))
+                {
+                    bail!("silicon.{removed} was removed; Ting is registered automatically for every Silicon");
+                }
+            }
             fields(
                 value,
                 "silicon",
@@ -342,13 +365,13 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                     "token",
                     "timezone",
                     "SILICON_HOME",
+                    "SILICON_ORG",
                     "inference_providers",
                     "setup",
                     "apps",
-                    "webhooks",
+                    "app_configs",
                     "space_station",
                     "login",
-                    "webhook",
                 ],
             )?;
             if !value["space_station"].is_null() {
@@ -369,7 +392,21 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                 crate::eval::validate_secret(&table_key)
                     .context("silicon.space_station.table_key")?;
             }
-            for key in ["setup", "apps", "webhooks", "login", "webhook"] {
+            if let Some(configs) = silicon
+                .as_mapping_mut()
+                .and_then(|map| map.remove("app_configs"))
+            {
+                let configs = configs
+                    .as_mapping()
+                    .context("silicon.app_configs must be a mapping")?;
+                for (app, config) in configs {
+                    if !app.as_str().is_some_and(crate::apps::valid_id) || !config.is_mapping() {
+                        bail!("silicon.app_configs must map IAM app IDs to key-value mappings");
+                    }
+                    crate::eval::validate_secret(config).context("silicon.app_configs")?;
+                }
+            }
+            for key in ["setup", "apps", "login"] {
                 if let Some(commands) = silicon
                     .as_mapping_mut()
                     .and_then(|map| map.remove(Yaml::String(key.into())))
@@ -423,6 +460,120 @@ fn evaluate_provider_values(value: &mut Yaml, env: &Json, home: &Path) -> Result
         _ => {}
     }
     Ok(())
+}
+
+fn evaluate_app_config(value: &mut Yaml, env: &Json, home: &Path) -> Result<()> {
+    match value {
+        Yaml::String(source) => {
+            *source = crate::eval::evaluate_secret(source, env, home, "interpreter")
+                .context("evaluate silicon.app_configs")?;
+        }
+        Yaml::Sequence(values) => {
+            for value in values {
+                evaluate_app_config(value, env, home)?;
+            }
+        }
+        Yaml::Mapping(values) => {
+            for value in values.values_mut() {
+                evaluate_app_config(value, env, home)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Update only the Silicon section, preserving live flow and other source verbatim.
+pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> {
+    use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
+    if !crate::apps::valid_id(id) {
+        bail!("expected a Honeycomb org>app ID");
+    }
+    if !installed && ["tos>iam", "tos>ting"].contains(&id) {
+        bail!("{id} is required by the interpreter and cannot be uninstalled");
+    }
+    let path = path.canonicalize()?;
+    let source = fs::read_to_string(&path)?;
+    let current = Config::load(&path)?;
+    if fs::read_to_string(&path)? != source {
+        bail!("silicon.yaml changed while updating apps; retry the command");
+    }
+    if installed && current.silicon.apps.iter().any(|app| app == id) {
+        return Ok(current);
+    }
+    let mut document = parse_document(&source, &mut Vec::new())?;
+    let silicon = document["silicon"]
+        .as_mapping_mut()
+        .context("silicon must be a mapping")?;
+    let apps = silicon
+        .entry(Yaml::String("apps".into()))
+        .or_insert(Yaml::Sequence(Vec::new()))
+        .as_sequence_mut()
+        .context("silicon.apps must be a list")?;
+    if installed {
+        apps.push(Yaml::String(id.to_owned()));
+    } else {
+        let mut index = 0;
+        apps.retain(|_| {
+            let keep = current.silicon.apps[index] != id;
+            index += 1;
+            keep
+        });
+        if let Some(configs) = silicon
+            .get_mut("app_configs")
+            .and_then(Yaml::as_mapping_mut)
+        {
+            configs.remove(id);
+        }
+    }
+    let mut start = None;
+    let mut end = source.len();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if !line.starts_with(char::is_whitespace) && !line.starts_with('#') {
+            if let Some(colon) = mapping_colon(line) {
+                let key = serde_yaml::from_str::<String>(&line[..colon]).ok();
+                if key.as_deref() == Some("silicon") {
+                    start = Some(offset);
+                } else if start.is_some() {
+                    end = offset;
+                    break;
+                }
+            }
+        }
+        offset += line.len();
+    }
+    // ponytail: preserve block-style YAML; add a source-span parser if compact root maps need editing.
+    let start = start.context("si app requires silicon as a top-level YAML block")?;
+    let replacement = serde_yaml::to_string(&BTreeMap::from([("silicon", &document["silicon"])]))?;
+    let next = format!("{}{}{}", &source[..start], replacement, &source[end..]);
+    if parse_document(&next, &mut Vec::new())? != document {
+        bail!("cannot safely update this YAML layout; use a top-level silicon block");
+    }
+    let parent = path.parent().context("config has no parent directory")?;
+    let staged = parent.join(format!(".silicon-{}.yaml", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&staged)?;
+        file.write_all(next.as_bytes())?;
+        file.sync_all()?;
+        let mut config = Config::load(&staged)?;
+        if fs::read_to_string(&path)? != source {
+            bail!("silicon.yaml changed while updating apps; retry the command");
+        }
+        fs::set_permissions(&staged, fs::metadata(&path)?.permissions())?;
+        fs::rename(&staged, &path)?;
+        fs::File::open(parent)?.sync_all()?;
+        config.path = path.clone();
+        Ok(config)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    result
 }
 
 fn required<'a>(value: &'a Option<String>, path: &str) -> Result<&'a str> {
@@ -1048,15 +1199,22 @@ mod tests {
         .unwrap();
         validate_expressions(&config).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let reply_condition = config["flow"][0]["if"]["then"][1]["if"]["then"][2]["if"]
-            ["condition"]
-            .as_str()
-            .unwrap();
-        for data in [json!({}), json!({"reply_to": null})] {
+        let generated = crate::eval::value(
+            &config["flow"][1],
+            &json!({"request":{"tings":[{}]}}),
+            dir.path(),
+            "interpreter",
+        )
+        .unwrap();
+        let reply_condition = generated[4]["if"]["condition"].as_str().unwrap();
+        for data in [
+            json!({"to":"deliberate@demo"}),
+            json!({"to":"deliberate@demo","reply_to": null}),
+        ] {
             assert_eq!(
                 crate::eval::evaluate(
                     reply_condition,
-                    &json!({"request": {"data": data}}),
+                    &json!({"var": {"ting_kind":"new_message", "ting": {"data": data}}}),
                     dir.path(),
                     "interpreter"
                 )
@@ -1074,7 +1232,9 @@ mod tests {
             ("new_message", "worker:job@demo", 3),
             ("new_message", "advisor@demo", 2),
             ("new_message", "intuit@demo", 1),
+            ("tos>dm.msg.received", "deliberate@demo", 3),
             ("message_sent", "intuit@demo", 1),
+            ("tos>dm.msg.sent", "intuit@demo", 1),
             ("event", "intuit@demo", 1),
         ] {
             let mut sent = Vec::new();
@@ -1082,12 +1242,12 @@ mod tests {
                 &config["flow"],
                 json!({
                     "silicon": {"timezone": "Asia/Kolkata"},
-                    "request": {"type": kind, "data": {
-                        "from": "shubham", "to": target, "message": "hola", "msg_id": "message-1",
+                    "request": {"tings": [{"type": kind, "data": {
+                        "from": "shubham", "to": target, "message": "hola {untrusted}", "msg_id": "message-1",
                         "sent_at": "2026-09-17T07:29:04Z", "sender_timezone": "UTC",
                         "timestamp": "2026-09-17T07:29:04Z",
                         "reply_to": {"sent_at": "2026-09-17T07:28:04Z", "sender_timezone": "UTC"}
-                    }}
+                    }}]}
                 }),
                 dir.path(),
                 "interpreter",
@@ -1116,6 +1276,22 @@ mod tests {
                 );
             }
         }
+        let mut sent = Vec::new();
+        crate::flow::execute(&config["flow"], json!({
+            "silicon":{"timezone":"UTC"},
+            "request":{"tings":[
+                {"type":"event","data":{"timestamp":"2026-09-17T07:29:04Z","message":"first {untrusted}"}},
+                {"type":"event","data":{"timestamp":"2026-09-17T07:29:05Z","message":"second"}},
+                {"id":"canonical-id","type":"tos>dm.msg.received","data":{"message_id":"dm-id","text":"real notification"}},
+                {"id":"other-id","type":"example>app.changed","data":{"text":"! touch must-not-run"}}
+            ]}
+        }), dir.path(), "interpreter", |_, message, _| { sent.push(message.to_owned()); Ok(()) }).unwrap();
+        assert_eq!(sent.len(), 4);
+        assert!(sent[0].contains("first {untrusted}"));
+        assert!(sent[1].contains("second"));
+        assert!(sent[2].contains("canonical-id") && sent[2].contains("real notification"));
+        assert!(sent[3].contains("other-id") && sent[3].contains("! touch must-not-run"));
+        assert!(!dir.path().join("must-not-run").exists());
         let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
         assert!(!logs.contains("[error]"), "{logs}");
     }
@@ -1135,13 +1311,16 @@ mod tests {
             config["isi"]["intuit"]["dna"]["assemble"][2].as_str(),
             Some("! ./contacts.sh !>> \"You have no contacts\"")
         );
-        assert_eq!(config["flow"].as_sequence().unwrap().len(), 3);
+        assert_eq!(config["flow"].as_sequence().unwrap().len(), 2);
         assert_eq!(
-            config["flow"][0]["if"]["then"][0]["var"]["name"].as_str(),
-            Some("new_message")
+            config["flow"][0]["var"]["name"].as_str(),
+            Some("ting_index")
         );
-        assert!(config["flow"][0]["if"]["then"][4]["else"].is_sequence());
-        assert!(!warnings.is_empty());
+        assert!(config["flow"][1]
+            .as_str()
+            .unwrap()
+            .contains("request.tings.map"));
+        assert!(warnings.is_empty());
         assert!(parse_document(
             "silicon: {}\nsilicon: {}\nisi: {}\naccess: {}\nflow: []\n",
             &mut vec![]
@@ -1285,15 +1464,13 @@ mod tests {
         fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
         let app = shell_words::quote(app.to_str().unwrap());
         let login = format!("! {app} --title \"hello {{silicon.id}}\" --literal '!>>'");
-        let webhook = format!("{{missing.command}} !>> ! {app} --zone \"{{silicon.timezone}}\"");
-        let source = format!("silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\n  login: [{}]\n  webhook: [{}]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n", serde_json::to_string(&login).unwrap(), serde_json::to_string(&webhook).unwrap());
+        let source = format!("silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\n  login: [{}]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n", serde_json::to_string(&login).unwrap());
         fs::write(&path, &source).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(
             config.silicon.login,
             [format!("{app} --title \"hello test:org\" --literal '!>>'")]
         );
-        assert_eq!(config.silicon.webhook, [format!("{app} --zone \"UTC\"")]);
         assert!(!temp.path().join("app-was-invoked").exists());
         let source = source.replace(
             &format!("login: [{}]", serde_json::to_string(&login).unwrap()),
@@ -1325,9 +1502,7 @@ mod tests {
     - ! touch must-not-exist; printf '{silicon.id}'
     - printf 'plain shell command'
   apps: ['tos>{"dm"}', tos>hook]
-  webhooks: [tos>hook, tos>remind]
   login: [legacy-app]
-  webhook: [legacy-app]
   space_station:
     table_name: 'events-{silicon.id}'
     table_key: test-key
@@ -1351,11 +1526,7 @@ flow: []
             assert_eq!(cfg.silicon.apps, ["tos>dm", "tos>hook"]);
             assert_eq!(
                 cfg.silicon.managed_apps(),
-                ["tos>dm", "tos>hook", "legacy-app", "tos>remind"]
-            );
-            assert_eq!(
-                cfg.silicon.hooked_apps(),
-                ["tos>hook", "tos>remind", "legacy-app"]
+                ["tos>dm", "tos>hook", "legacy-app", "tos>ting"]
             );
             let station = cfg.silicon.space_station.unwrap();
             assert_eq!(station.table_name, "events-test:org");
@@ -1409,6 +1580,117 @@ flow: []
             assert!(Config::load(&path).is_err());
             assert!(!temp.path().join("must-not-exist").exists());
         }
+    }
+
+    #[test]
+    fn app_settings_and_mutations_preserve_live_flow_and_secret_sources() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        let source = r#"# leave the source expressions intact
+silicon:
+  id: test:org
+  token: '! printf private-token'
+  timezone: UTC
+  SILICON_HOME: ! pwd
+  SILICON_ORG: '{"another-org"}'
+  inference_providers: [all-available-providers]
+  apps: ['tos>{"waveform"}']
+  app_configs:
+    tos>waveform:
+      default_tts_provider: google
+      api_key: '! printf private-api-key'
+      retries: 2
+      enabled: true
+      nested: [null, '{silicon.SILICON_ORG}']
+isi:
+  worker:
+    model: code
+    primary_send_mode: global
+    session_type: persistent
+    dna: {assemble: [], next_refresh: 30min}
+access: {worker: []}
+# This exact flow source must survive app mutations.
+flow:
+  log: {message: before}
+  log: {message: second}
+"#;
+        fs::write(&path, source)?;
+        let cfg = Config::load(&path)?;
+        assert_eq!(cfg.silicon.silicon_org.as_deref(), Some("another-org"));
+        assert_eq!(
+            cfg.silicon.app_configs["tos>waveform"],
+            json!({
+                "default_tts_provider": "google", "api_key": "private-api-key", "retries": 2,
+                "enabled": true, "nested": [null, "another-org"]
+            })
+        );
+        assert_eq!(cfg.silicon.managed_apps(), ["tos>waveform", "tos>ting"]);
+        let added = set_app(&path, "tos>dm", true)?;
+        assert_eq!(added.path, path.canonicalize()?);
+        assert_eq!(added.silicon.apps, ["tos>waveform", "tos>dm"]);
+        assert_eq!(set_app(&path, "tos>dm", true)?.silicon.apps.len(), 2);
+        let removed = set_app(&path, "tos>waveform", false)?;
+        assert_eq!(removed.silicon.apps, ["tos>dm"]);
+        assert!(removed.silicon.app_configs.is_empty());
+        let updated = fs::read_to_string(&path)?;
+        assert!(updated.starts_with("# leave the source expressions intact\n"));
+        assert!(updated.ends_with(source.split_once("isi:\n").unwrap().1));
+        assert!(updated.contains("! printf private-token"));
+        assert!(!updated.contains("token: private-token"));
+        for id in ["tos>ting", "tos>iam", "not-an-id"] {
+            assert!(set_app(&path, id, false).is_err());
+            assert_eq!(fs::read_to_string(&path)?, updated);
+        }
+        fs::write(
+            &path,
+            updated
+                .replace("message: before", "message: after")
+                .replace(
+                    "! printf private-token",
+                    "! touch must-not-run; printf private-token",
+                ),
+        )?;
+        assert_eq!(cfg.load_flow()?[0]["log"]["message"], "after");
+        assert!(!dir.path().join("must-not-run").exists());
+        fs::write(
+            &path,
+            source.replace("  SILICON_ORG: '{\"another-org\"}'\n", ""),
+        )?;
+        assert_eq!(
+            Config::load(&path)?.silicon.silicon_org.as_deref(),
+            Some("org")
+        );
+        for invalid in [
+            source.replace("  app_configs:", "  webhooks: []\n  app_configs:"),
+            source.replace("  app_configs:", "  webhook: []\n  app_configs:"),
+            source.replace(
+                "  app_configs:\n    tos>waveform:",
+                "  app_configs:\n    tos>unknown:",
+            ),
+            source.replace(
+                "  app_configs:\n    tos>waveform:",
+                "  app_configs: []\n  unused:",
+            ),
+            source.replace(
+                "! printf private-api-key",
+                "! printf private-api-key >&2; exit 1",
+            ),
+            source.replace(
+                "api_key: '! printf private-api-key'",
+                "api_key: \"{'private-api-key' + }\"",
+            ),
+            source.replace(
+                "access: {worker: []}",
+                "access: {worker: ['{silicon.app_configs[\"tos>waveform\"].api_key}']}",
+            ),
+        ] {
+            fs::write(&path, invalid)?;
+            let error = format!("{:#}", Config::load(&path).unwrap_err());
+            assert!(!error.contains("private-api-key"), "{error}");
+        }
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log"))?;
+        assert!(!logs.contains("private-api-key"));
+        Ok(())
     }
 
     #[test]

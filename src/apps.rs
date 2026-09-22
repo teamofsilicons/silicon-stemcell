@@ -312,7 +312,11 @@ pub(crate) fn install_all(
 /// Honeycomb removes only its owned package files; application credentials remain app-owned.
 pub fn uninstall(id: &str) -> Result<Value> {
     let home = selected_home()?;
-    uninstall_using(&home, id, &honeycomb(&home)?)
+    uninstall_at(&home, id)
+}
+
+pub(crate) fn uninstall_at(home: &Path, id: &str) -> Result<Value> {
+    uninstall_using(home, id, &honeycomb(home)?)
 }
 
 fn uninstall_using(home: &Path, id: &str, binary: &Path) -> Result<Value> {

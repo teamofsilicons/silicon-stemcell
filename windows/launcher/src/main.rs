@@ -20,6 +20,7 @@ const COMMANDS: &[&str] = &[
     "commit",
     "remind",
     "hook",
+    "ting",
 ];
 
 fn forwarded(name: &str) -> bool {
@@ -35,6 +36,7 @@ fn forwarded(name: &str) -> bool {
         "COMMIT_",
         "REMIND_",
         "HOOK_",
+        "TING_",
         "IAM_",
         "ANTHROPIC_",
         "OPENAI_",
@@ -149,5 +151,7 @@ mod tests {
         assert!(forwarded("SILICON_TELEMETRY"));
         assert!(forwarded("SILICON_HOME"));
         assert!(forwarded("SPACE_STATION_TABLE_KEY"));
+        assert!(forwarded("TING_HOME"));
+        assert!(COMMANDS.contains(&"ting"));
     }
 }

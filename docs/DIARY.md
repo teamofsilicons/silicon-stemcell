@@ -1,6 +1,14 @@
 # Building Silicon
 
 
+## 4.1.0: Omni 0.9.0 and Ting delivery
+
+The interpreter now uses Omni 0.9.0 and registers its local event endpoint only with Ting. IAM and Ting are implicit Honeycomb applications even when omitted from `apps`. Ting's stable hook ID survives reconnects, and incoming `tings` batches are acknowledged only after their private inbox journal is durable. Duplicate delivery IDs are retained for 100 days; queued batches resume after restart and use the current flow source.
+
+Remove legacy per-app `webhooks` or `webhook` configuration before upgrading and adapt event flows to `request.tings`. `SILICON_ORG` defaults to the identity's org, `app_configs` sends private typed JSON to each app, and `si app install/uninstall` updates the source configuration. The reference template and CEL list helpers handle batches without evaluating notification text as expressions.
+
+Local validation passed 54 unit tests and the bundle-path integration test, formatting, and Clippy. The complete source-built bundle passed the real Omni/Caddy end-to-end suite with isolated Honeycomb, IAM, and Ting fixtures. A real Ting 0.1.2 CLI was installed through Honeycomb and its registration documentation checked; production Ting authentication was not exercised with the reference template's placeholder token. Release and public installation evidence follows after publication.
+
 ## 4.0.9: Retained ephemeral sessions and clearer logs
 
 Session-addressed ephemeral work now keeps its record and Omni event history, archives on retirement, and remains reachable through archived-session commands. Only global ephemeral work is discarded. Log origins distinguish CLI and daemon processes, ISI-to-ISI sends name their sender, and flow entries name the condition, assignment, or send target without evaluating expressions twice.

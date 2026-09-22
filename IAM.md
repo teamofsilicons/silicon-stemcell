@@ -6,7 +6,7 @@ CLI is the primary way to interact with IAM Apps. It should be built for both Ca
 
 The cli should never ask for credentials from either silicon or carbon. it should just ask for short lived tokens that the user can generate from the official iam cli, or from the web where the the user is sent to auth concent screen.
 
-CLIs get SILICON_HOME env variable where it should store all the details. Its home, so you should use that as base, and make their own hidden folders to keep their information.
+CLIs get SILICON_HOME & SILICON_ORG env variable where it should store all the details. Its home, so you should use that as base, and make their own hidden folders to keep their information. SILICON_ORG serves as the default org to run org specific commands unless specifid otherwise.
 
 Specific apps that could benefit from using ISI env variable should do that. eg: dm.
 
@@ -20,9 +20,10 @@ every app cli must support the following commands:
 
 `app login status --json` tells if its {authenticated: true, ...}
 
-If your app is not just reactive, but also proactive (sends msg upfront to a silicon), it must also support the following commands:
-`app webhook "..."` takes in the URL to send updates to. optionally a secret.
-`app unhook` to remove receiving updates.
+If your app is not just reactive, but also proactive (sends msg upfront to a silicon), it must use ting to send notifications to a silicon. Ting handles delivery, retries and everything else.
+
+If your apps needs / supports configs eg. api key, timeouts, etc
+`app config set "{key: value, ...}"` can be passed to set all configs. store the configs inside the dir of this app, or remote server (whichever is prefered for the config).
 
 App Internals:
 All apps are suggested to make a rust library which is stateless. then 2 things that uses the rust library: always running daemon, and a cli interface that talks to the daemon.
@@ -47,14 +48,14 @@ Give the information of the github repo, online docs, rust package, etc inside t
 
 The CLI as i told before is a tree of documentation. Show possible paths, and then let someone go deeper along with documentation.
 
-for webhooks, the daemon prewarms ONE websocket with server and subscribes to updates for all the silicons that have registered with the daemon. DO NOT CONNECT MULTIPLE WEBSOCKETS FOR SILICONS ON THE SAME SYSTEM.
+Apps publish notifications through Ting. Ting owns the shared daemon connection and webhook delivery; individual apps do not register interpreter webhooks. The interpreter always installs and registers Ting, even when Ting is omitted from `apps`.
 
-send the request to the silicon over at the webhook link in the following shape:
+Ting sends batches to the Silicon's local webhook in the following shape:
 {
-	"type": "...",
-	"data": {...},
-	"metadata": {...}
+	"tings": [{"id": "...", "type": "...", "data": {...}, "metadata": {...}}]
 }
+
+The interpreter durably stores the complete batch, returns an empty HTTP 204, and runs the latest flow from disk. It retains the Ting webhook ID across disconnects and reconnects.
 
 
 ### Telemetry

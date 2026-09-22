@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 
 def provider():
@@ -53,6 +54,10 @@ def provider():
             file.write(json.dumps({"isi": address, "message": message, "at": time.time()}) + "\n")
         emit({"type": "system", "subtype": "init", "session_id": native, "model": "scripted"})
         emit({"type": "user", "isReplay": True, "session_id": native, "message": {"content": message}})
+        if message == "overflow context":
+            emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                  "errors": ["Prompt is too long", "context_window_exceeded"]})
+            continue
         holding = (holding or message.startswith("hold")) and message != "finish"
         if message == "hold pulse":
             streaming.set()
@@ -129,16 +134,23 @@ if settings.exists() and "auto_update" not in json.loads(settings.read_text()):
 args = sys.argv[1:]
 if args == ["installed", "--json"]:
     print(json.dumps(records))
+elif args[:2] == ["uninstall", "test>dynamic"]:
+    assert args == ["uninstall", "test>dynamic", "--json"], args
+    records.pop("test>dynamic")
+    registry.write_text(json.dumps(records))
+    print(json.dumps({"status": "uninstalled"}))
 else:
     assert len(args) == 3 and args[0] == "install" and args[2] == "--json", args
     assert "PATH" not in os.environ, "private installs must not collide with global app commands"
     app_id = args[1]
-    assert app_id in ["tos>iam", "test>progress"], app_id
+    assert app_id in ["tos>iam", "tos>ting", "test>progress", "test>dynamic"], app_id
     with (root / "install-calls").open("a") as log: log.write(app_id + "\\n")
-    command = "iam" if app_id == "tos>iam" else "progress"
-    path = root / ("iam-stub" if app_id == "tos>iam" else "progress-app")
+    command = {"tos>iam": "iam", "tos>ting": "ting", "test>progress": "progress", "test>dynamic": "dynamic"}[app_id]
+    path = pathlib.Path(__file__).with_name("ting-stub") if app_id == "tos>ting" else root / ("iam-stub" if app_id == "tos>iam" else "progress-app")
+    if app_id == "test>dynamic":
+        path = pathlib.Path(__file__).with_name("dynamic-stub")
     if app_id == "tos>iam":
-        path.write_text("#!/bin/sh\\nexit 0\\n")
+        path.write_text("#!/bin/sh\\nprintf '%s\\\\n' '{\\\"slt\\\":\\\"isolated-test-slt\\\",\\\"expires_in\\\":60}'\\n")
         path.chmod(0o755)
     records[app_id] = {"app_id": app_id, "commands": {command: str(path)}}
     registry.write_text(json.dumps(records))
@@ -146,6 +158,68 @@ else:
 ''')
     honeycomb.chmod(0o755)
     env["SILICON_HONEYCOMB"] = str(honeycomb)
+    ting = binaries / "ting-stub"
+    ting.write_text("#!" + sys.executable + "\n" + '''import json, os, pathlib, sys
+home = pathlib.Path(os.environ["SILICON_HOME"])
+args = sys.argv[1:]
+if args == ["iam", "--json"]:
+    result = {"app_id": "tos>ting"}
+elif args in (["login", "status", "--json"], ["auth", "status", "--json"]):
+    result = {"authenticated": True}
+else:
+    with (home / "ting-calls.jsonl").open("a") as log:
+        log.write(json.dumps(args) + "\\n")
+    saved = home / "ting-hook.json"
+    hook = json.loads(saved.read_text()) if saved.exists() else None
+    if args[:2] == ["webhook", "list"]:
+        result = {"items": [hook] if hook else []}
+    elif args[0] == "webhook":
+        assert "--json" in args, args
+        if "--id" in args:
+            assert hook and args[args.index("--id") + 1] == hook["id"], args
+        else:
+            assert hook is None, "reconnect must reattach the saved hook"
+        result = {"id": "hook_e2e", "url": args[1], "state": "connected"}
+        saved.write_text(json.dumps(result))
+    elif args[0] == "unhook":
+        assert args == ["unhook", hook["id"], "--json"], args
+        hook["state"] = "detached"
+        saved.write_text(json.dumps(hook))
+        result = {"id": hook["id"], "removed": True}
+    elif args == ["list", "--json"]:
+        result = {"items": [hook] if hook else []}
+    else:
+        sys.exit("unexpected Ting arguments: " + repr(args))
+print(json.dumps(result))
+''')
+    ting.chmod(0o755)
+    dynamic = binaries / "dynamic-stub"
+    dynamic.write_text("#!" + sys.executable + "\n" + '''import json, os, pathlib, sys
+home = pathlib.Path(os.environ["SILICON_HOME"])
+assert os.environ["SILICON_ORG"] == "local"
+args = sys.argv[1:]
+token = home / "dynamic-authenticated"
+if args == ["iam", "--json"]:
+    result = {"app_id": "test>dynamic"}
+elif args == ["login", "status", "--json"]:
+    result = {"authenticated": token.exists()}
+elif args == ["login", "isolated-test-slt"]:
+    token.touch()
+    result = {"authenticated": True}
+elif args == ["logout", "--help"]:
+    result = {}
+elif args == ["logout"]:
+    token.unlink()
+    result = {"authenticated": False}
+elif args[:2] == ["config", "set"]:
+    assert len(args) == 3, args
+    result = json.loads(args[2])
+    (home / "dynamic-config.json").write_text(json.dumps(result))
+else:
+    sys.exit("unexpected dynamic app arguments: " + repr(args))
+print(json.dumps(result))
+''')
+    dynamic.chmod(0o755)
     config = home / "silicon.yaml"
     config.write_text(f'''silicon:
   id: e2e:local
@@ -206,30 +280,41 @@ access:
   restricted: []
   pulse: [source]
 flow:
+  - if:
+      condition: '{{request.tings[0].type == "gated"}}'
+      then:
+        - log:
+            message: '! touch "$SILICON_HOME/flow-started"; while ! test -f "$SILICON_HOME/flow-release"; do sleep 0.05; done; printf gate-released'
   - var:
       name: payload
-      value: '{{request.data}}'
+      value: '{{request.tings[0].data}}'
   - send:
       isi: source
       message: '{{var.payload.message}}'
   - log:
-      message: 'flow finished {{request.type}}'
+      message: 'flow finished {{request.tings[0].type}}'
   - if:
-      condition: '{{request.type == "new_message"}}'
+      condition: '{{request.tings[0].type == "batch"}}'
+      then:
+        - send:
+            isi: source
+            message: '{{request.tings[1].data.message}}'
+  - if:
+      condition: '{{request.tings[0].type == "new_message"}}'
       then:
         - var:
             name: new_message
-            value: '{{make_readable(request)}}'
+            value: '{{make_readable(request.tings[0])}}'
         - send:
             isi: source
             message: '{{var.new_message}}'
   - if:
-      condition: '{{request.type == "ephemeral"}}'
+      condition: '{{request.tings[0].type == "ephemeral"}}'
       then:
         - send:
             isi: ephemeral_session
-            session_id: '{{request.data.session_id}}'
-            message: '{{request.data.message}}'
+            session_id: '{{request.tings[0].data.session_id}}'
+            message: '{{request.tings[0].data.message}}'
 ''')
     original = config.read_bytes()
     binary = binary_dir / "silicon"
@@ -265,11 +350,21 @@ flow:
                 response = urllib.request.urlopen(request, timeout=35)
             except urllib.error.HTTPError as error:
                 response = error
-            result = json.loads(response.read())
+            body = response.read()
+            result = json.loads(body) if body else None
             assert response.status == status, (response.status, result)
             return result
         def control(action, **args):
             return post("/control", {"action": action, "args": args}, daemon["token"])
+        def event(value, host="e2e.local.localhost", status=204):
+            value = {"id": str(uuid.uuid4()), **value}
+            return post("/events", {"tings": [value]}, host=host, status=status)
+        def source_event(text, kind="injected", contains=False):
+            if not control("sessions", silicon="e2e:local", isi="source"):
+                return None
+            progress = control("show", silicon="e2e:local", isi="source")
+            return next((row for row in progress["events"] if row["type"] == kind
+                         and (text in row.get("text", "") if contains else row.get("text") == text)), None)
         # A gated app status check proves connect reports authentication before it finishes.
         progress_home = work / "progress"
         progress_home.mkdir()
@@ -315,7 +410,8 @@ esac
             if connecting.poll() is None:
                 connecting.terminate()
                 connecting.wait(timeout=15)
-        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"]
+        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress", "tos>ting"]
+        assert json.loads((progress_home / "ting-hook.json").read_text())["url"] == "http://progress.local.localhost/events"
         assert json.loads((progress_home / ".silicon/packages/.honeycomb/dir/config.json").read_text()) == {"auto_update": True, "telemetry": True}, "a package home left without Honeycomb's required setting must be repaired"
         cli("disconnect", "progress:local")
         (progress_home / "auth-fail").touch()
@@ -323,7 +419,12 @@ esac
         result = json.loads(cli("--json", "connect", str(progress_config)))
         assert result["connection"]["id"] == "progress:local"
         assert not (progress_home / "auth-started").exists(), "reconnect must reuse the cached auth check"
-        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"] * 2, "every connect must install without a version even while auth is cached"
+        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress", "tos>ting"] * 2, "every connect must install without a version even while auth is cached"
+        hook_calls = [json.loads(line) for line in (progress_home / "ting-calls.jsonl").read_text().splitlines()]
+        attaches = [args for args in hook_calls if args[:2] == ["webhook", "http://progress.local.localhost/events"]]
+        assert len(attaches) == 2 and "--id" not in attaches[0], hook_calls
+        assert attaches[1][attaches[1].index("--id") + 1] == "hook_e2e", hook_calls
+        assert ["unhook", "hook_e2e", "--json"] in hook_calls
         cli("disconnect", "progress:local")
         checked = progress_home / ".silicon/auth-checked.json"
         checked.write_text(json.dumps({key: int(time.time()) - 48 * 60 * 60 for key in json.loads(checked.read_text())}))
@@ -367,18 +468,33 @@ esac
         cli("disconnect", "./alias.yaml", cwd=other_home)
         assert [row["id"] for row in control("list")] == ["e2e:local"]
         post("/control", {"action": "list", "args": {}}, status=401)
-        post("/", {"type": "ping", "data": [], "metadata": {}}, host="e2e.local.localhost", status=400)
-        post("/", {"type": "ping", "data": {}, "metadata": {}}, host="other.local.localhost", status=404)
+        post("/events", {"type": "ping", "data": {}, "metadata": {}}, host="e2e.local.localhost", status=400)
+        event({"type": "ping", "data": [], "metadata": {}}, host="e2e.local.localhost", status=400)
+        event({"type": "ping", "data": {}, "metadata": {}}, host="other.local.localhost", status=404)
+        # A Ting acknowledgement means durable receipt; a blocked flow must not hold it open.
+        gate_batch = {"tings": [{"id": "gate-event", "type": "gated", "data": {"message": "gated delivery"}, "metadata": {}}]}
         start = time.monotonic()
-        post("/", {"type": "ping", "data": {"message": "hold first"}, "metadata": {}}, host="e2e.local.localhost")
-        assert time.monotonic() - start < 20, "event waited for model completion"
+        try:
+            post("/events", gate_batch, host="e2e.local.localhost", status=204)
+            assert time.monotonic() - start < 5, "Ting receipt waited for the blocked flow"
+            eventually(lambda: (home / "flow-started").exists())
+            post("/events", gate_batch, host="e2e.local.localhost", status=204)
+            assert not control("sessions", silicon="e2e:local", isi="source"), "flow gate did not block sending"
+        finally:
+            (home / "flow-release").touch()
+        eventually(lambda: source_event("gated delivery", "start"))
+        eventually(lambda: control("sessions", silicon="e2e:local", isi="source")[0]["status"] == "idle")
+        event({"type": "ping", "data": {"message": "hold first"}, "metadata": {}}, host="e2e.local.localhost")
+        eventually(lambda: source_event("hold first", "start"))
         record = control("sessions", silicon="e2e:local", isi="source")[0]
         assert record["status"] == "running"
-        post("/", {"type": "ping", "data": {"message": "mid-turn"}, "metadata": {}}, host="e2e.local.localhost")
+        event({"type": "ping", "data": {"message": "mid-turn"}, "metadata": {}}, host="e2e.local.localhost")
+        eventually(lambda: source_event("mid-turn"))
         progress = control("show", silicon="e2e:local", isi="source")
         assert any(event["type"] == "injected" and event["text"] == "mid-turn" for event in progress["events"]), progress
-        assert not any(event["type"] == "end" for event in progress["events"])
-        post("/", {"type": "new_message", "data": {"message": "hola", "sender": {"id": "shubham", "type": "carbon"}, "reply_to": None}, "metadata": {}}, host="e2e.local.localhost")
+        assert not any(row["type"] == "end" and row["turn"] == source_event("hold first", "start")["turn"] for row in progress["events"])
+        event({"type": "new_message", "data": {"message": "hola", "sender": {"id": "shubham", "type": "carbon"}, "reply_to": None}, "metadata": {}}, host="e2e.local.localhost")
+        eventually(lambda: source_event("message: hola", contains=True))
         progress = control("show", silicon="e2e:local", isi="source")
         assert any(event["type"] == "injected" and "message: hola" in event["text"] and "  sender:\n    id: shubham\n    type: carbon" in event["text"] for event in progress["events"]), progress
         provider_info = eventually(lambda: next((json.loads(file.read_text()) for file in home.glob("*.provider.json") if json.loads(file.read_text())["ISI"] == "source"), None))
@@ -392,11 +508,30 @@ esac
             result = subprocess.run([str(binary_dir / "si"), *args], env=context, capture_output=True, text=True, timeout=35)
             assert (result.returncode == 0) == ok, result.stdout + result.stderr
             return result.stdout
+        si("app", "uninstall", "tos>ting", ok=False)
+        si("app", "install", "test>dynamic")
+        assert "test>dynamic" in config.read_text() and (home / ".silicon/bin/dynamic").is_symlink()
+        assert (home / "dynamic-authenticated").exists()
+        config.write_text(config.read_text().replace("silicon:\n", '''silicon:
+  app_configs:
+    test>dynamic:
+      org: '{silicon.SILICON_ORG}'
+      nested: [true, 3, 'quoted space']
+''', 1))
+        si("app", "install", "test>dynamic")
+        assert json.loads((home / "dynamic-config.json").read_text()) == {"org": "local", "nested": [True, 3, "quoted space"]}
+        si("app", "uninstall", "test>dynamic")
+        assert "test>dynamic" not in config.read_text(), "uninstall must remove both app and configuration"
+        assert not (home / ".silicon/bin/dynamic").exists() and not (home / "dynamic-authenticated").exists()
+        cli("compile", str(config))
+        original = config.read_bytes()  # Subsequent operations must preserve the deliberately edited YAML.
         si("isi", "send", "restricted", "forbidden", ok=False)
         si("isi", "send", "ephemeral_session", "missing title", "--id", "untitled", "--new", ok=False)
         post("/control", {"action": "send", "args": {"silicon": "e2e:local", "isi": "ephemeral_session", "id": "untitled", "new": True, "message": "missing title"}}, daemon["token"], status=400)
         assert not control("sessions", silicon="e2e:local", isi="ephemeral_session")
-        post("/", {"type": "ephemeral", "data": {"session_id": "flow-job", "message": "hold ephemeral"}, "metadata": {}}, host="e2e.local.localhost")
+        event({"type": "ephemeral", "data": {"session_id": "flow-job", "message": "hold ephemeral"}, "metadata": {}}, host="e2e.local.localhost")
+        eventually(lambda: any(row["id"] == "flow-job" and row["status"] == "running"
+                               for row in control("sessions", silicon="e2e:local", isi="ephemeral_session")))
         ephemeral_session = control("show", silicon="e2e:local", isi="ephemeral_session", id="flow-job")["session"]
         assert ephemeral_session["title"] == "flow-job" and ephemeral_session["status"] == "running"
         si("isi", "send", "ephemeral_session", "follow-up", "--id", "flow-job")
@@ -415,7 +550,7 @@ esac
         si("isi", "send", "ephemeral", "short task")
         eventually(lambda: not control("sessions", silicon="e2e:local", isi="ephemeral"))
         eventually(lambda: any(event["type"] == "injected" and "ephemeral completed:" in event["text"] for event in control("show", silicon="e2e:local", isi="source")["events"]))
-        post("/", {"type": "ping", "data": {"message": "finish"}, "metadata": {}}, host="e2e.local.localhost")
+        event({"type": "ping", "data": {"message": "finish"}, "metadata": {}}, host="e2e.local.localhost")
         eventually(lambda: control("sessions", silicon="e2e:local", isi="source")[0]["status"] == "idle")
 
         def messages(address, text=None):
@@ -427,6 +562,26 @@ esac
         def lines(name):
             path = home / name
             return path.read_text().splitlines() if path.exists() else []
+
+        # The flow sees the whole batch, and acknowledged retries never send it twice.
+        batch = {"tings": [{"id": "batch-first", "type": "batch", "data": {"message": "batch first"}, "metadata": {}},
+                            {"id": "batch-second", "type": "ping", "data": {"message": "batch second"}, "metadata": {}}]}
+        post("/events", batch, host="e2e.local.localhost", status=204)
+        eventually(lambda: messages("source", "batch second"))
+        post("/events", batch, host="e2e.local.localhost", status=204)
+        eventually(lambda: session("source")["status"] == "idle")
+        assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
+        assert len(messages("source", "gated delivery")) == 1
+
+        # Omni 0.9 rotates the provider twice after a context limit while retaining this ISI session.
+        before_recovery = session("source")["session_id"]
+        control("send", silicon="e2e:local", isi="source", message="overflow context")
+        eventually(lambda: any("New session was auto-started due to context limit" in row["message"] for row in messages("source")))
+        eventually(lambda: session("source")["status"] == "idle")
+        assert session("source")["session_id"] == before_recovery
+        recovery_events = control("show", silicon="e2e:local", isi="source")["events"]
+        assert any(row["type"] == "error" and row["kind"] == "context_limit" for row in recovery_events), recovery_events
+        assert any("Session Limit was hit" in row["message"] and "overflow context" in row["message"] for row in messages("source"))
 
         si("isi", "send", "pulse", "hold pulse", "--id", "alpha", "--new")
         eventually(lambda: messages("pulse:alpha", "hold pulse"))
@@ -496,7 +651,8 @@ esac
             post("/si", {"action": "sessions", "args": {"isi": name}}, token=context["SI_TOKEN"], status=401)
 
         # The successor can ask its own archive and receives the answer without self access.
-        post("/", {"type": "ping", "data": {"message": "hold successor"}, "metadata": {}}, host="e2e.local.localhost")
+        event({"type": "ping", "data": {"message": "hold successor"}, "metadata": {}}, host="e2e.local.localhost")
+        eventually(lambda: source_event("hold successor", "start"))
         next_info = eventually(lambda: next((json.loads(file.read_text()) for file in home.glob("*.provider.json") if json.loads(file.read_text())["ISI"] == "source" and json.loads(file.read_text())["SI_TOKEN"] != child_env["SI_TOKEN"]), None))
         next_env = dict(env, **{key: next_info[key] for key in ("SILICON_HOME", "ISI", "SI_URL", "SI_TOKEN", "TZ")})
         si("isi", "send", "source", "archive question", "--archived", "--id", "source-history", context=next_env)
@@ -504,7 +660,7 @@ esac
         archived_progress = control("show", silicon="e2e:local", isi="source", id="source-history")
         assert any("archive question" in event.get("text", "") for event in archived_progress["events"])
         assert (home / ".silicon/omni" / archived_progress["session"]["session_id"]).is_dir(), "archive query discarded its history"
-        post("/", {"type": "ping", "data": {"message": "finish"}, "metadata": {}}, host="e2e.local.localhost")
+        event({"type": "ping", "data": {"message": "finish"}, "metadata": {}}, host="e2e.local.localhost")
         eventually(lambda: session("source")["status"] == "idle")
 
         control("send", silicon="e2e:local", isi="target", id="end-after-restart", new=True, message="save before restart")
@@ -513,12 +669,15 @@ esac
         control("shutdown")
         process.wait(timeout=15)
         assert process.returncode == 0, (work / "server.log").read_text()
+        assert json.loads((home / "ting-hook.json").read_text())["state"] == "detached", "shutdown must detach Ting before exiting"
         assert not (state / "daemon.json").exists()
         assert config.read_bytes() == original
         process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, cwd=home, stdout=log, stderr=log)
         daemon = eventually(started)
         base = f'http://127.0.0.1:{daemon["port"]}'
         assert len(control("list")) == 1
+        post("/events", batch, host="e2e.local.localhost", status=204)
+        assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
         for name, records in restored.items():
             assert {row["session_id"] for row in control("sessions", silicon="e2e:local", isi=name)} == {row["session_id"] for row in records}
             assert any(row["id"] == name + "-history" for row in control("sessions", silicon="e2e:local", isi=name, archived=True))
@@ -526,18 +685,22 @@ esac
         control("end", silicon="e2e:local", isi="target", id=unloaded["session_id"])
         assert not any(row["id"] == "end-after-restart" for row in control("sessions", silicon="e2e:local", isi="target"))
         assert any(row["session_id"] == unloaded["session_id"] for row in control("sessions", silicon="e2e:local", isi="target", archived=True))
-        post("/", {"type": "ping", "data": {"message": "after restart"}, "metadata": {}}, host="e2e.local.localhost")
+        event({"type": "ping", "data": {"message": "after restart"}, "metadata": {}}, host="e2e.local.localhost")
+        eventually(lambda: messages("source", "after restart"))
         eventually(lambda: session("source")["status"] == "idle")
+        assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
         assert config.read_bytes() == original
         cli("disconnect", "e2e:local")
+        assert json.loads((home / "ting-hook.json").read_text())["state"] == "detached"
         assert not control("list")
         assert config.read_bytes() == original
         control("shutdown")
         process.wait(timeout=15)
         assert process.returncode == 0, (work / "server.log").read_text()
         assert not (state / "daemon.json").exists()
-        print("E2E passed: setup output/exactly-once, settings, redacted configuration, local ping, bug report preview, port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
+        print("E2E passed: si app install/config/uninstall, org propagation, implicit Ting install/auth/register, durable batch acknowledgement, dedup/reconnect, Omni context recovery, setup output/exactly-once, settings, redacted configuration, local ping, bug report preview, port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
     finally:
+        (home / "flow-release").touch()
         if process.poll() is None:
             process.terminate()
             try:
