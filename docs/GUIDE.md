@@ -105,6 +105,8 @@ Ting receives an empty HTTP 204 after the complete batch is durably saved, befor
 
 ### Windows installation and project files
 
+Existing Windows installations should rerun this release's PowerShell installer to add the native `ting.exe` entry point. `silicon update` updates the WSL2 runtime but does not add Windows launcher files.
+
 In PowerShell:
 
 ```powershell
@@ -923,7 +925,7 @@ Use `SILICON_HONEYCOMB` to select a particular Honeycomb executable for an integ
 
 ## Verification and requirement-to-evidence map
 
-Historical version 4.0.9 has verified native bundles for macOS and Linux on ARM64 and x86-64, plus native Windows launchers. Windows x64 passes the complete WSL2 runtime and native-command suites. Windows ARM64 remains a preview because a physical ARM64 WSL2 run has not been completed. The release rows below distinguish platform, public installation, and dependency evidence; older rows retain historical checks.
+Version 4.1.0 has verified native bundles for macOS and Linux on ARM64 and x86-64, plus native Windows launchers. Windows x64 passes the complete WSL2 runtime and native-command suites. Windows ARM64 remains a preview because a physical ARM64 WSL2 run has not been completed. The release rows below distinguish platform, public installation, and dependency evidence; older rows retain historical checks.
 
 The 3.6-series configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. Version 3.6.1 carries the verified dependency corrections after the unpublished 3.6.0 candidate failed its release discovery gate; the original tag remains immutable. The release record below distinguishes candidate checks from completed publication and historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
 
@@ -933,6 +935,7 @@ The recorded 4.0.8–4.0.9 protocol E2E used the real pinned Omni daemon (0.8.0)
 
 | Requirement | Evidence and scope |
 | --- | --- |
+| 4.1.0 Omni 0.9.0 and Ting delivery | [All six platform jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35743295086) passed on `66df3faa2be61543a336fa3f4e5bb632724a22b9`: four Unix installed-bundle Omni/Caddy suites, Windows x64 WSL2/native commands, Windows ARM64 launcher checks, Rust tests, formatting, and Clippy. Local validation passed 54 unit tests and the bundle-path integration test, including organization-switch grants, durable Ting batches, reconnects, and private app configuration. All nine release asset sizes/digests and eight checksum entries matched the verified CI files. IAM/Ting service behavior uses isolated CLI fixtures; Windows ARM64 physical WSL2 remains preview. |
 | 4.0.3 release assets | [Version 4.0.3](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.3) contains six platform archives, two installers, and `SHA256SUMS`. All nine asset sizes and GitHub digests matched the verified CI files; all eight checksum entries and all six archive content/architecture checks passed. Every public asset URL returned HTTP 200 without authentication. |
 | 4.0.3 public Unix installation | The exact public curl one-liner installed into a fresh macOS ARM64 prefix without source, version, or mirror overrides. All 34 installed payload files matched the verified native archive, including the intended compiled telemetry configuration; the installed interpreter reports 4.0.3. |
 | 4.0.9 session retention and log attribution | [All six platform jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35516307701) passed on `468ff5d0842b0edb8e42b94a9f41dc09b14932b9`: native Unix installed-bundle Omni/Caddy E2E, Windows x64 WSL2/native commands, Windows ARM64 launcher checks, Rust tests, formatting, and Clippy. Local checks passed 49 unit tests plus the bundle-path integration test and the real Omni/Caddy protocol suite. All nine release asset sizes and GitHub SHA-256 digests matched the verified CI files; all eight checksum entries matched; every public URL answered with the expected size. A fresh macOS ARM64 public installation reported 4.0.9 and all 14 payload files matched the verified archive. Windows ARM64 WSL2 remains preview. |
