@@ -15,6 +15,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Silicon {
     pub id: Option<String>,
+    pub org_id: Option<String>,
     pub token: Option<String>,
     pub timezone: Option<String>,
     #[serde(rename = "SILICON_HOME")]
@@ -48,7 +49,7 @@ impl Silicon {
             .iter()
             .chain(&self.login)
             .cloned()
-            .chain(std::iter::once("tos>ting".to_owned()))
+            .chain(std::iter::once("ting".to_owned()))
             .filter(|app| seen.insert(app.clone()))
             .collect()
     }
@@ -131,19 +132,14 @@ impl Config {
         }
         document["silicon"]["SILICON_HOME"] = Yaml::String(home.to_string_lossy().into_owned());
         env["silicon"]["SILICON_HOME"] = json!(home);
-        for key in ["id", "token", "timezone", "SILICON_ORG"] {
+        for key in ["id", "org_id", "token", "timezone", "SILICON_ORG"] {
             evaluate_field(&mut document["silicon"], key, &env, &home, "interpreter")?;
             env["silicon"][key] = serde_json::to_value(&document["silicon"][key])?;
         }
         if document["silicon"]["SILICON_ORG"].is_null() {
-            if let Some((_, org)) = document["silicon"]["id"]
-                .as_str()
-                .and_then(|id| id.split_once(':'))
-            {
-                document["silicon"]["SILICON_ORG"] = Yaml::String(org.to_owned());
-                env["silicon"]["SILICON_ORG"] =
-                    serde_json::to_value(&document["silicon"]["SILICON_ORG"])?;
-            }
+            document["silicon"]["SILICON_ORG"] = document["silicon"]["org_id"].clone();
+            env["silicon"]["SILICON_ORG"] =
+                serde_json::to_value(&document["silicon"]["SILICON_ORG"])?;
         }
         evaluate_provider_values(&mut document["silicon"]["inference_providers"], &env, &home)?;
         env["silicon"]["inference_providers"] =
@@ -241,15 +237,15 @@ impl Config {
 
     fn validate(&mut self) -> Result<()> {
         let id = required(&self.silicon.id, "silicon.id")?;
-        let (local, org) = id
-            .split_once(':')
-            .ok_or_else(|| anyhow!("silicon.id must be local-id:org-id"))?;
-        if !host_label(local) || !host_label(org) {
-            bail!("silicon.id must contain two DNS labels separated by one colon");
+        if !valid_silicon_id(id) {
+            bail!("silicon.id must be si:<handle> (3–50 lowercase letters, digits, underscores or hyphens); migrate old IDs using IAM's verified mapping and set silicon.org_id separately");
+        }
+        if !valid_org(required(&self.silicon.org_id, "silicon.org_id")?) {
+            bail!("silicon.org_id must be a canonical IAM organization handle");
         }
         required(&self.silicon.token, "silicon.token")?;
-        if !host_label(required(&self.silicon.silicon_org, "silicon.SILICON_ORG")?) {
-            bail!("silicon.SILICON_ORG must be a DNS label");
+        if !valid_org(required(&self.silicon.silicon_org, "silicon.SILICON_ORG")?) {
+            bail!("silicon.SILICON_ORG must be a canonical IAM organization handle");
         }
         required(&self.silicon.timezone, "silicon.timezone")?
             .parse::<Tz>()
@@ -258,7 +254,7 @@ impl Config {
         let mut seen = HashSet::new();
         for app in &self.silicon.apps {
             if !crate::apps::valid_id(app) {
-                bail!("silicon.apps entries must be IAM app IDs, e.g. tos>dm");
+                bail!("silicon.apps entries must be bare IAM app IDs, e.g. dm; migrate old org>app IDs using IAM's verified mapping");
             }
             if !seen.insert(app) {
                 bail!("silicon.apps repeats {app}");
@@ -266,7 +262,7 @@ impl Config {
         }
         for (app, config) in &self.silicon.app_configs {
             if !crate::apps::valid_id(app) || !self.silicon.managed_apps().contains(app) {
-                bail!("silicon.app_configs keys must be managed IAM app IDs, e.g. tos>dm");
+                bail!("silicon.app_configs keys must be managed bare IAM app IDs, e.g. dm");
             }
             if !config.is_object() {
                 bail!("silicon.app_configs.{app} must be a key-value mapping");
@@ -289,6 +285,13 @@ impl Config {
             }
         }
         for command in &self.silicon.login {
+            if !command.trim().starts_with('!')
+                && command.contains('>')
+                && !command.contains('/')
+                && !command.chars().any(char::is_whitespace)
+            {
+                bail!("silicon.login contains a legacy org>app ID; migrate it using IAM's verified mapping");
+            }
             let command = command.trim().strip_prefix('!').unwrap_or(command).trim();
             if command.is_empty() || command.contains(['\n', '\0']) {
                 bail!("silicon.login commands must be nonempty single lines");
@@ -362,6 +365,7 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                 "silicon",
                 &[
                     "id",
+                    "org_id",
                     "token",
                     "timezone",
                     "SILICON_HOME",
@@ -487,9 +491,9 @@ fn evaluate_app_config(value: &mut Yaml, env: &Json, home: &Path) -> Result<()> 
 pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> {
     use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
     if !crate::apps::valid_id(id) {
-        bail!("expected a Honeycomb org>app ID");
+        bail!("expected a bare Honeycomb app ID (e.g. dm)");
     }
-    if !installed && ["tos>iam", "tos>ting"].contains(&id) {
+    if !installed && ["iam", "ting"].contains(&id) {
         bail!("{id} is required by the interpreter and cannot be uninstalled");
     }
     let path = path.canonicalize()?;
@@ -592,7 +596,23 @@ fn required<'a>(value: &'a Option<String>, path: &str) -> Result<&'a str> {
     Ok(value)
 }
 
-fn host_label(value: &str) -> bool {
+pub(crate) fn valid_silicon_id(id: &str) -> bool {
+    id.strip_prefix("si:").is_some_and(|handle| {
+        (3..=50).contains(&handle.len())
+            && handle
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
+    })
+}
+
+pub(crate) fn valid_org(value: &str) -> bool {
+    (3..=50).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+}
+
+pub(crate) fn host_label(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63
         && value
@@ -1208,8 +1228,8 @@ mod tests {
         .unwrap();
         let reply_condition = generated[4]["if"]["condition"].as_str().unwrap();
         for data in [
-            json!({"to":"deliberate@demo"}),
-            json!({"to":"deliberate@demo","reply_to": null}),
+            json!({"to":"deliberate@si:demo"}),
+            json!({"to":"deliberate@si:demo","reply_to": null}),
         ] {
             assert_eq!(
                 crate::eval::evaluate(
@@ -1228,14 +1248,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         for (kind, target, replies) in [
-            ("new_message", "deliberate@demo", 3),
-            ("new_message", "worker:job@demo", 3),
-            ("new_message", "advisor@demo", 2),
-            ("new_message", "intuit@demo", 1),
-            ("tos>dm.msg.received", "deliberate@demo", 3),
-            ("message_sent", "intuit@demo", 1),
-            ("tos>dm.msg.sent", "intuit@demo", 1),
-            ("event", "intuit@demo", 1),
+            ("new_message", "deliberate@si:demo", 3),
+            ("new_message", "worker:job@si:demo", 3),
+            ("new_message", "advisor@si:demo", 2),
+            ("new_message", "intuit@si:demo", 1),
+            ("tos>dm.msg.received", "deliberate@si:demo", 3),
+            ("dm.msg.received", "deliberate@si:demo", 3),
+            ("message_sent", "intuit@si:demo", 1),
+            ("tos>dm.msg.sent", "intuit@si:demo", 1),
+            ("dm.msg.sent", "intuit@si:demo", 1),
+            ("event", "intuit@si:demo", 1),
         ] {
             let mut sent = Vec::new();
             let vars = crate::flow::execute(
@@ -1243,7 +1265,7 @@ mod tests {
                 json!({
                     "silicon": {"timezone": "Asia/Kolkata"},
                     "request": {"tings": [{"type": kind, "data": {
-                        "from": "shubham", "to": target, "message": "hola {untrusted}", "msg_id": "message-1",
+                        "from": "c:shubham", "to": target, "message": "hola {untrusted}", "msg_id": "message-1",
                         "sent_at": "2026-09-17T07:29:04Z", "sender_timezone": "UTC",
                         "timestamp": "2026-09-17T07:29:04Z",
                         "reply_to": {"sent_at": "2026-09-17T07:28:04Z", "sender_timezone": "UTC"}
@@ -1302,7 +1324,7 @@ mod tests {
         let mut warnings = Vec::new();
         let config = parse_document(source, &mut warnings).unwrap();
         assert_eq!(config["silicon"]["SILICON_HOME"].as_str(), Some("! pwd"));
-        assert_eq!(config["silicon"]["apps"][0].as_str(), Some("tos>dm"));
+        assert_eq!(config["silicon"]["apps"][0].as_str(), Some("dm"));
         assert_eq!(
             config["silicon"]["setup"][0].as_str(),
             Some("! ./install_python.sh")
@@ -1367,10 +1389,110 @@ mod tests {
     }
 
     #[test]
+    fn identifiers_require_explicit_authority_and_produce_distinct_dns_hosts() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        let source = "silicon:\n  id: si:chef\n  org_id: acme\n  token: retained-token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker: {model: code, primary_send_mode: global, session_type: persistent, dna: {assemble: [], next_refresh: 30min}}\naccess: {worker: []}\nflow: []\n";
+        fs::write(&path, source)?;
+        let cfg = Config::load(&path)?;
+        assert_eq!(cfg.silicon.silicon_org.as_deref(), Some("acme"));
+        assert_eq!(crate::server::descriptor(&cfg).host, "chef.acme.localhost");
+        let mut hosts = HashSet::new();
+        for handle in [
+            "chef".to_owned(),
+            "head_of_growth".into(),
+            "-chef-".into(),
+            "hex".into(),
+            "_".repeat(50),
+        ] {
+            fs::write(&path, source.replace("si:chef", &format!("si:{handle}")))?;
+            let cfg = Config::load(&path)?;
+            let host = crate::server::descriptor(&cfg).host;
+            assert!(host.split('.').all(host_label));
+            assert!(hosts.insert(host));
+        }
+        for org in ["owner_org".to_owned(), "-owner-".into(), "_".repeat(50)] {
+            fs::write(
+                &path,
+                source.replace(
+                    "org_id: acme",
+                    &format!("org_id: '{org}'\n  SILICON_ORG: '{org}'"),
+                ),
+            )?;
+            let cfg = Config::load(&path)?;
+            assert_eq!(cfg.silicon.org_id.as_deref(), Some(org.as_str()));
+            assert_eq!(cfg.silicon.silicon_org.as_deref(), Some(org.as_str()));
+            assert!(crate::server::descriptor(&cfg)
+                .host
+                .split('.')
+                .all(host_label));
+        }
+        for org in [
+            "ab".to_owned(),
+            "Owner".into(),
+            "owner.org".into(),
+            "a".repeat(51),
+        ] {
+            for field in ["org_id", "SILICON_ORG"] {
+                fs::write(
+                    &path,
+                    if field == "org_id" {
+                        source.replace("org_id: acme", &format!("org_id: '{org}'"))
+                    } else {
+                        source.replace("org_id: acme", &format!("org_id: acme\n  {field}: '{org}'"))
+                    },
+                )?;
+                assert!(Config::load(&path).is_err(), "accepted {field}: {org}");
+            }
+        }
+        for id in [
+            "chef:acme",
+            "c:chef",
+            "si:si:chef",
+            "si:ab",
+            "si:Chef",
+            "si:../chef",
+            &format!("si:{}", "a".repeat(51)),
+        ] {
+            fs::write(&path, source.replace("si:chef", id))?;
+            assert!(Config::load(&path).is_err(), "accepted {id}");
+        }
+        fs::write(&path, source.replace("  org_id: acme\n", ""))?;
+        assert!(format!("{:#}", Config::load(&path).unwrap_err()).contains("silicon.org_id"));
+        fs::write(
+            &path,
+            source.replace("org_id: acme", "org_id: acme\n  SILICON_ORG: selected"),
+        )?;
+        let cfg = Config::load(&path)?;
+        assert_eq!(cfg.silicon.org_id.as_deref(), Some("acme"));
+        assert_eq!(cfg.silicon.silicon_org.as_deref(), Some("selected"));
+        assert_eq!(cfg.silicon.token.as_deref(), Some("retained-token"));
+        fs::write(
+            &path,
+            source.replace("  token:", "  login: [acme>dm]\n  token:"),
+        )?;
+        assert!(format!("{:#}", Config::load(&path).unwrap_err()).contains("legacy org>app"));
+        fs::write(
+            &path,
+            source.replace("  token:", "  login: ['! helper']\n  token:"),
+        )?;
+        assert_eq!(Config::load(&path)?.silicon.login, ["! helper"]);
+        let old_inbox = cfg.home.join(".silicon/ting/chef:acme/selected/inbox.json");
+        crate::state::write_json(
+            &old_inbox,
+            &json!({"pending": [{"unchanged": "chef:acme"}]}),
+        )?;
+        let bytes = fs::read(&old_inbox)?;
+        assert!(crate::ting::Inbox::new(&cfg).is_err());
+        assert_eq!(fs::read(&old_inbox)?, bytes);
+        Ok(())
+    }
+
+    #[test]
     fn removed_legacy_mode_fields_name_their_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
-        let base = "silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: session\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
+        let base = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: session\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
         fs::write(&path, base).unwrap();
         Config::load(&path).unwrap();
         for (removed, line, canonical) in [
@@ -1399,7 +1521,7 @@ mod tests {
     fn load_resolves_home_and_validates_template_and_modes() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
-        let source = "silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: session\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
+        let source = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: session\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
         fs::write(&path, source).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(config.home, temp.path().canonicalize().unwrap());
@@ -1411,7 +1533,7 @@ mod tests {
             config.isi["worker"].session_type.as_deref(),
             Some("persistent")
         );
-        fs::write(&path, source.replace("id: test:org", "id: ...")).unwrap();
+        fs::write(&path, source.replace("id: si:test", "id: ...")).unwrap();
         assert!(Config::load(&path)
             .unwrap_err()
             .to_string()
@@ -1464,12 +1586,12 @@ mod tests {
         fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
         let app = shell_words::quote(app.to_str().unwrap());
         let login = format!("! {app} --title \"hello {{silicon.id}}\" --literal '!>>'");
-        let source = format!("silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\n  login: [{}]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n", serde_json::to_string(&login).unwrap());
+        let source = format!("silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\n  login: [{}]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n", serde_json::to_string(&login).unwrap());
         fs::write(&path, &source).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(
             config.silicon.login,
-            [format!("{app} --title \"hello test:org\" --literal '!>>'")]
+            [format!("! {app} --title \"hello si:test\" --literal '!>>'")]
         );
         assert!(!temp.path().join("app-was-invoked").exists());
         let source = source.replace(
@@ -1481,8 +1603,8 @@ mod tests {
         assert_eq!(
             config.silicon.login,
             [
-                app.to_string(),
-                format!("{app} --title \"hello test:org\" --literal '!>>'")
+                format!("! {app}"),
+                format!("! {app} --title \"hello si:test\" --literal '!>>'")
             ]
         );
         assert!(!temp.path().join("app-was-invoked").exists());
@@ -1493,7 +1615,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
         let source = r#"silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: token
   timezone: UTC
   SILICON_HOME: ! pwd
@@ -1501,7 +1624,7 @@ mod tests {
   setup:
     - ! touch must-not-exist; printf '{silicon.id}'
     - printf 'plain shell command'
-  apps: ['tos>{"dm"}', tos>hook]
+  apps: ['{"dm"}', hook]
   login: [legacy-app]
   space_station:
     table_name: 'events-{silicon.id}'
@@ -1523,29 +1646,29 @@ flow: []
                 "! touch must-not-exist; printf '{silicon.id}'"
             );
             assert_eq!(cfg.silicon.setup[1], "printf 'plain shell command'");
-            assert_eq!(cfg.silicon.apps, ["tos>dm", "tos>hook"]);
+            assert_eq!(cfg.silicon.apps, ["dm", "hook"]);
             assert_eq!(
                 cfg.silicon.managed_apps(),
-                ["tos>dm", "tos>hook", "legacy-app", "tos>ting"]
+                ["dm", "hook", "legacy-app", "ting"]
             );
             let station = cfg.silicon.space_station.unwrap();
-            assert_eq!(station.table_name, "events-test:org");
+            assert_eq!(station.table_name, "events-si:test");
             assert_eq!(station.table_key, "test-key");
             assert!(!temp.path().join("must-not-exist").exists());
             assert_eq!(fs::read_to_string(&path).unwrap(), source);
         }
         for invalid in [
-            "tos>dm>bad",
+            "dm>bad",
             "tos>DM",
             "tos>bad_app",
             "tos>bad.app",
             "tos>-dm",
             "tos>",
-            "dm",
+            "tos>dm",
             "'! touch must-not-exist'",
-            "tos>dm, tos>dm",
+            "dm, dm",
         ] {
-            fs::write(&path, source.replace("'tos>{\"dm\"}', tos>hook", invalid)).unwrap();
+            fs::write(&path, source.replace("'{\"dm\"}', hook", invalid)).unwrap();
             assert!(
                 Config::load(&path).is_err(),
                 "accepted invalid app {invalid}"
@@ -1557,7 +1680,7 @@ flow: []
             source.replace("table_key: test-key", "table_key: ..."),
             source.replace("table_key: test-key", "table_key: test-key\n    unknown: nope"),
             source.replace("table_key: test-key", "table_key: test-key\n    table_key: duplicate"),
-            source.replace("apps: ['tos>{\"dm\"}', tos>hook]", "apps: [12]"),
+            source.replace("apps: ['{\"dm\"}', hook]", "apps: [12]"),
             source.replace("setup:\n    - ! touch must-not-exist; printf '{silicon.id}'\n    - printf 'plain shell command'", "setup: [true]"),
             source.replace("printf 'plain shell command'", "!"),
         ] {
@@ -1588,15 +1711,16 @@ flow: []
         let path = dir.path().join("silicon.yaml");
         let source = r#"# leave the source expressions intact
 silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: '! printf private-token'
   timezone: UTC
   SILICON_HOME: ! pwd
   SILICON_ORG: '{"another-org"}'
   inference_providers: [all-available-providers]
-  apps: ['tos>{"waveform"}']
+  apps: ['{"waveform"}']
   app_configs:
-    tos>waveform:
+    waveform:
       default_tts_provider: google
       api_key: '! printf private-api-key'
       retries: 2
@@ -1618,26 +1742,26 @@ flow:
         let cfg = Config::load(&path)?;
         assert_eq!(cfg.silicon.silicon_org.as_deref(), Some("another-org"));
         assert_eq!(
-            cfg.silicon.app_configs["tos>waveform"],
+            cfg.silicon.app_configs["waveform"],
             json!({
                 "default_tts_provider": "google", "api_key": "private-api-key", "retries": 2,
                 "enabled": true, "nested": [null, "another-org"]
             })
         );
-        assert_eq!(cfg.silicon.managed_apps(), ["tos>waveform", "tos>ting"]);
-        let added = set_app(&path, "tos>dm", true)?;
+        assert_eq!(cfg.silicon.managed_apps(), ["waveform", "ting"]);
+        let added = set_app(&path, "dm", true)?;
         assert_eq!(added.path, path.canonicalize()?);
-        assert_eq!(added.silicon.apps, ["tos>waveform", "tos>dm"]);
-        assert_eq!(set_app(&path, "tos>dm", true)?.silicon.apps.len(), 2);
-        let removed = set_app(&path, "tos>waveform", false)?;
-        assert_eq!(removed.silicon.apps, ["tos>dm"]);
+        assert_eq!(added.silicon.apps, ["waveform", "dm"]);
+        assert_eq!(set_app(&path, "dm", true)?.silicon.apps.len(), 2);
+        let removed = set_app(&path, "waveform", false)?;
+        assert_eq!(removed.silicon.apps, ["dm"]);
         assert!(removed.silicon.app_configs.is_empty());
         let updated = fs::read_to_string(&path)?;
         assert!(updated.starts_with("# leave the source expressions intact\n"));
         assert!(updated.ends_with(source.split_once("isi:\n").unwrap().1));
         assert!(updated.contains("! printf private-token"));
         assert!(!updated.contains("token: private-token"));
-        for id in ["tos>ting", "tos>iam", "not-an-id"] {
+        for id in ["ting", "iam", "not>an-id"] {
             assert!(set_app(&path, id, false).is_err());
             assert_eq!(fs::read_to_string(&path)?, updated);
         }
@@ -1664,11 +1788,11 @@ flow:
             source.replace("  app_configs:", "  webhooks: []\n  app_configs:"),
             source.replace("  app_configs:", "  webhook: []\n  app_configs:"),
             source.replace(
-                "  app_configs:\n    tos>waveform:",
-                "  app_configs:\n    tos>unknown:",
+                "  app_configs:\n    waveform:",
+                "  app_configs:\n    unknown:",
             ),
             source.replace(
-                "  app_configs:\n    tos>waveform:",
+                "  app_configs:\n    waveform:",
                 "  app_configs: []\n  unused:",
             ),
             source.replace(
@@ -1681,7 +1805,7 @@ flow:
             ),
             source.replace(
                 "access: {worker: []}",
-                "access: {worker: ['{silicon.app_configs[\"tos>waveform\"].api_key}']}",
+                "access: {worker: ['{silicon.app_configs[\"waveform\"].api_key}']}",
             ),
         ] {
             fs::write(&path, invalid)?;
@@ -1698,7 +1822,8 @@ flow:
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
         let source = r#"silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: "! printf compile-private-token"
   timezone: UTC
   SILICON_HOME: ! pwd

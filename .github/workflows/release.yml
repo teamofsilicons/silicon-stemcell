@@ -60,6 +60,8 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo test --locked
+          python3 tests/ting_migration.py
+          python3 scripts/test-migrate-identifiers.py
           cargo clippy --locked --all-targets -- -D warnings
       - name: Build the complete bundle
         env:
@@ -90,6 +92,7 @@ jobs:
           mkdir -p dist
           tar -czf "dist/silicon-$TARGET.tar.gz" -C "$RUNNER_TEMP/silicon-bundle/lib/silicon/current" bin VERSION installer.sh LICENSE LICENSES
           cp install.sh dist/install.sh
+          cp scripts/migrate-identifiers.py scripts/migrate-ting-state.py docs/PUBLIC-IDENTIFIER-MIGRATION.md dist/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.target }}
@@ -125,6 +128,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           cd dist
-          sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
-          printf '%s\n' 'Rust interpreter runtime: silicon, si, Omni, and Caddy. Honeycomb is installed independently; configured apps install their latest Honeycomb releases on each connect without version pins.' 'Upgrade from 4.0.6–4.0.8: replace sticky true/false with primary_send_mode global/session and archive_on_end true/false with session_type ephemeral/persistent, then run silicon update and restart the interpreter; no reinstallation is needed.' 'Upgrade from 4.0.5 or earlier: rerun this release’s installer into the same prefix; older embedded updaters require the former bundled app inventory. YAML, credentials, and session state are preserved.' 'Windows x64 uses WSL2 and passes the real runtime suite. Windows ARM64 is preview: native launcher and Linux ARM64 tests pass, but physical Windows ARM64 WSL2 E2E is not yet verified.' 'Windows requires WSL2 and hardware virtualization. Restart and resume installation if Windows requests it. YAML and credentials stay on the Linux filesystem; /mnt/c accesses Windows data.' 'Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.' > release-notes.md
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS
+          sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 migrate-identifiers.py migrate-ting-state.py PUBLIC-IDENTIFIER-MIGRATION.md > SHA256SUMS
+          cat > release-notes.md <<'NOTES'
+          Silicon 5.0.1 completes the IAM and Honeycomb identifier migration: `si:handle`, explicit `silicon.org_id`, and bare application IDs. It preserves 5.0.0 organization handles and local hostnames, binds cached authentication to the full identity and organization, and refreshes saved routing descriptors on reconnect.
+
+          **Existing homes:** disconnect and stop the interpreter, then follow `PUBLIC-IDENTIFIER-MIGRATION.md` from this release before upgrading or reconnecting. The offline mapper requires verified backups, preserves sessions, Ting receipts and webhook IDs, and clears stale authentication caches. Honeycomb's installed registry uses its own migration tool. Installers do not migrate YAML or local state. Earlier 4.x configuration migrations also remain required; see the README.
+
+          Bundles include Silicon, Omni 0.9.0, and Caddy. Honeycomb is installed independently; IAM, Ting, and configured applications install their latest Honeycomb releases on connect.
+
+          Windows x64 uses WSL2 and passes the real runtime suite. Windows ARM64 remains preview: native launcher and Linux ARM64 tests pass, but physical Windows ARM64 WSL2 E2E is not yet verified. Windows requires hardware virtualization; restart and resume installation if requested. YAML and credentials stay on the Linux filesystem.
+
+          Verify downloads against `SHA256SUMS`. Binaries are verified before activation; Silicon YAML and runtime data are never part of the bundle.
+          NOTES
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 migrate-identifiers.py migrate-ting-state.py PUBLIC-IDENTIFIER-MIGRATION.md SHA256SUMS

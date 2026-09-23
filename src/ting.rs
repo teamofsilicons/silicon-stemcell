@@ -19,14 +19,32 @@ struct Queue {
 }
 
 impl Inbox {
-    pub fn new(cfg: &Config) -> Self {
-        Self {
+    pub fn new(cfg: &Config) -> Result<Self> {
+        let root = cfg.home.join(".silicon/ting");
+        if fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!("Ting state directory must not be a symlink");
+        }
+        match fs::read_dir(&root) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_dir()
+                        || entry.file_name().to_str() != cfg.silicon.id.as_deref()
+                    {
+                        bail!("Ting state belongs to a different Silicon ID or is not an ordinary directory; stop the interpreter and follow docs/PUBLIC-IDENTIFIER-MIGRATION.md before reconnecting");
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("inspect retained Ting namespaces"),
+        }
+        Ok(Self {
             directory: cfg
                 .home
                 .join(".silicon/ting")
                 .join(cfg.silicon.id.as_deref().unwrap_or_default())
                 .join(cfg.silicon.silicon_org.as_deref().unwrap_or_default()),
-        }
+        })
     }
 
     fn read(&self) -> Result<Queue> {
@@ -134,7 +152,7 @@ impl Inbox {
                 if let Some(cursor) = &cursor {
                     args.extend(["--cursor", cursor]);
                 }
-                let result = auth::run_app(&cfg.home, "tos>ting", &args)?;
+                let result = auth::run_app(&cfg.home, "ting", &args)?;
                 if !result.status.success() {
                     bail!("could not inspect Ting registrations");
                 }
@@ -169,7 +187,7 @@ impl Inbox {
         if let Some(id) = &id {
             args.extend(["--id", id]);
         }
-        let result = auth::run_app(&cfg.home, "tos>ting", &args)?;
+        let result = auth::run_app(&cfg.home, "ting", &args)?;
         let value: Value = serde_json::from_slice(if result.status.success() {
             &result.stdout
         } else {
@@ -197,7 +215,7 @@ impl Inbox {
 
     pub fn unhook(&self, cfg: &Config) -> Result<()> {
         if let Some(id) = self.hook()? {
-            if !auth::run_app(&cfg.home, "tos>ting", &["unhook", &id, "--json"])?
+            if !auth::run_app(&cfg.home, "ting", &["unhook", &id, "--json"])?
                 .status
                 .success()
             {
@@ -219,7 +237,7 @@ mod tests {
         for mode in ["new", "error", "lost"] {
             let home = tempfile::tempdir()?;
             let mut cfg: Config = serde_json::from_value(json!({
-                "silicon":{"id":"test:org", "SILICON_ORG":"selected-org"},
+                "silicon":{"id":"si:test", "org_id":"org", "SILICON_ORG":"selected-org"},
                 "isi":{}, "access":{}, "flow":[]
             }))?;
             cfg.home = home.path().to_owned();
@@ -232,7 +250,7 @@ mod tests {
                 r#"#!/bin/sh
 set -eu
 [ "$SILICON_ORG" = selected-org ]
-if [ "$*" = 'iam --json' ]; then echo '{"app_id":"tos>ting"}'; exit 0; fi
+if [ "$*" = 'iam --json' ]; then echo '{"app_id":"ting"}'; exit 0; fi
 printf '%s\n' "$*" >> calls
 case "$*" in
   'webhook list --limit 100 --json')
@@ -260,7 +278,7 @@ esac
 "#,
             )?;
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
-            let inbox = Inbox::new(&cfg);
+            let inbox = Inbox::new(&cfg)?;
             let first = inbox.register(&cfg, "http://test.org.localhost/");
             assert_eq!(first.is_ok(), mode == "new", "{mode}: {first:?}");
             assert_eq!(
@@ -269,13 +287,13 @@ esac
             );
 
             // A fresh instance models reconnect after the CLI reply or interpreter was lost.
-            let reconnected = Inbox::new(&cfg);
+            let reconnected = Inbox::new(&cfg)?;
             reconnected.register(&cfg, "http://test.org.localhost/")?;
             assert_eq!(reconnected.hook()?.as_deref(), Some("stable-hook"));
             assert_eq!(
                 serde_json::from_slice::<String>(&fs::read(
                     home.path()
-                        .join(".silicon/ting/test:org/selected-org/hook.json")
+                        .join(".silicon/ting/si:test/selected-org/hook.json")
                 )?)?,
                 "stable-hook"
             );
@@ -305,6 +323,43 @@ esac
             );
             assert_eq!(reconnected.hook()?.as_deref(), Some("stable-hook"));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_namespace_cannot_silently_orphan_pending_deliveries() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let mut cfg: Config = serde_json::from_value(json!({
+            "silicon":{"id":"si:test", "org_id":"org", "SILICON_ORG":"org"},
+            "isi":{}, "access":{}, "flow":[]
+        }))?;
+        cfg.home = home.path().to_owned();
+        Inbox::new(&cfg)?;
+        let root = cfg.home.join(".silicon/ting");
+        let legacy = root.join("test:org");
+        state::write_json(
+            &legacy.join("org/inbox.json"),
+            &json!({"pending":["untouched"]}),
+        )?;
+        let bytes = fs::read(legacy.join("org/inbox.json"))?;
+        assert!(Inbox::new(&cfg).is_err());
+        let canonical = root.join("si:test");
+        fs::rename(&legacy, &canonical)?;
+        Inbox::new(&cfg)?;
+        assert_eq!(fs::read(canonical.join("org/inbox.json"))?, bytes);
+
+        let retained = cfg.home.join("retained");
+        fs::rename(&canonical, &retained)?;
+        std::os::unix::fs::symlink(&retained, &canonical)?;
+        assert!(Inbox::new(&cfg).is_err());
+        fs::remove_file(&canonical)?;
+        fs::remove_dir(&root)?;
+        std::os::unix::fs::symlink(cfg.home.join("missing"), &root)?;
+        assert!(Inbox::new(&cfg).is_err());
+        fs::remove_file(&root)?;
+        fs::write(&root, "not a directory")?;
+        assert!(Inbox::new(&cfg).is_err());
+        assert_eq!(fs::read(retained.join("org/inbox.json"))?, bytes);
         Ok(())
     }
 

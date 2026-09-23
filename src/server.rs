@@ -58,11 +58,43 @@ pub fn saved() -> Result<Vec<Connection>> {
 pub fn descriptor(cfg: &Config) -> Connection {
     let id = cfg.silicon.id.clone().unwrap();
     Connection {
-        host: format!("{}.localhost", id.replace(':', ".")),
+        host: identity_host(
+            id.strip_prefix("si:").unwrap(),
+            cfg.silicon.org_id.as_deref().unwrap(),
+        ),
         id,
         yaml: cfg.path.clone(),
         home: cfg.home.clone(),
     }
+}
+
+// Preserve readable existing hosts where possible. Encode both components for
+// IAM handles which are not DNS labels; no lossy underscore/hyphen substitution.
+fn identity_host(handle: &str, org: &str) -> String {
+    if crate::config::host_label(handle) && crate::config::host_label(org) {
+        return format!("{handle}.{org}.localhost");
+    }
+    let encode = |value: &str| {
+        let hex: String = value.bytes().map(|b| format!("{b:02x}")).collect();
+        hex.as_bytes()
+            .chunks(60)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    format!("{}.si.{}.org.localhost", encode(handle), encode(org))
+}
+
+#[test]
+fn identifier_hosts_preserve_distinct_iam_handles_and_dns_limits() {
+    assert_eq!(identity_host("worker", "tos"), "worker.tos.localhost");
+    assert_ne!(
+        identity_host("worker_name", "tos"),
+        identity_host("worker--name", "tos")
+    );
+    let maximum = identity_host(&"_".repeat(50), &"_".repeat(50));
+    assert!(maximum.len() <= 253);
+    assert!(maximum.split('.').all(crate::config::host_label));
 }
 
 pub fn compile(path: impl AsRef<Path>) -> Result<Config> {
@@ -223,14 +255,20 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
         }
     };
     let runtime = Runtime::new(format!("http://127.0.0.1:{selected}"));
-    for connection in saved()? {
-        match compile(&connection.yaml).and_then(|cfg| runtime.connect(cfg)) {
-            Ok(()) => {}
+    let mut connections = saved()?;
+    for connection in &mut connections {
+        match compile(&connection.yaml).and_then(|cfg| {
+            let current = descriptor(&cfg);
+            runtime.connect(cfg)?;
+            Ok(current)
+        }) {
+            Ok(current) => *connection = current,
             Err(error) => {
                 eprintln!("restore {} failed: {error:#}", connection.id);
             }
         }
     }
+    state::write_json(&dir.join("connections.json"), &connections)?;
     let hosts = runtime
         .silicons
         .read()
@@ -705,7 +743,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         "auth-setup" => {
             let c = app.runtime.get(text(args, "silicon")?)?;
             Ok(
-                json!({"app_id":auth::setup_scoped(&c.cfg.home,c.cfg.silicon.id.as_deref().unwrap(),c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?,c.cfg.generation)?}),
+                json!({"app_id":auth::setup_scoped(&c.cfg.home,c.cfg.silicon.id.as_deref().unwrap(),c.cfg.silicon.org_id.as_deref().unwrap(),c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?,c.cfg.generation)?}),
             )
         }
         "auth-remove" => {
@@ -776,10 +814,10 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             app.runtime.caller_connection(caller)?;
             let id = text(args, "app_id")?;
             if !crate::apps::valid_id(id) {
-                bail!("expected a Honeycomb org>app ID");
+                bail!("expected a bare Honeycomb app ID (e.g. dm)");
             }
             let install = action == "app-install";
-            if !install && ["tos>iam", "tos>ting"].contains(&id) {
+            if !install && ["iam", "ting"].contains(&id) {
                 bail!("IAM and Ting are required interpreter dependencies");
             }
             let cfg = &connected.cfg;
@@ -788,6 +826,7 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
                 auth::setup_scoped(
                     &cfg.home,
                     &caller.silicon,
+                    cfg.silicon.org_id.as_deref().unwrap(),
                     cfg.silicon.token.as_deref().unwrap(),
                     id,
                     cfg.generation,
@@ -841,7 +880,7 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
         "auth-setup" => {
             let c = &connected;
             Ok(
-                json!({"app_id":auth::setup_scoped(&c.cfg.home,&caller.silicon,c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?,c.cfg.generation)?}),
+                json!({"app_id":auth::setup_scoped(&c.cfg.home,&caller.silicon,c.cfg.silicon.org_id.as_deref().unwrap(),c.cfg.silicon.token.as_deref().unwrap(),text(args,"app")?,c.cfg.generation)?}),
             )
         }
         "auth-remove" => {
@@ -913,9 +952,9 @@ mod tests {
     fn configuration_redacts_credentials_and_their_interpolated_copies() {
         let cfg: Config = serde_json::from_value(json!({
             "silicon": {
-                "id": "test:org", "token": "private-silicon-value", "timezone": "UTC",
+                "id": "si:test", "org_id": "org", "token": "private-silicon-value", "timezone": "UTC",
                 "SILICON_HOME": "/home/silicon/project", "inference_providers": [],
-                "app_configs": {"tos>app": {"nested": {"custom": "private-app-value"}}},
+                "app_configs": {"app": {"nested": {"custom": "private-app-value"}}},
                 "space_station": {"table_name": "activity", "table_key": "private-table-value"}
             },
             "isi": {"worker": {"model": "fast", "dna": {
@@ -938,7 +977,7 @@ mod tests {
             snapshot["flow"][0]["value"],
             "[redacted]/[redacted]/[redacted]"
         );
-        assert_eq!(snapshot["silicon"]["app_configs"]["tos>app"], "[redacted]");
+        assert_eq!(snapshot["silicon"]["app_configs"]["app"], "[redacted]");
         assert_eq!(
             snapshot["silicon"]["space_station"]["table_name"],
             "activity"
@@ -956,7 +995,8 @@ mod tests {
             format!(
                 r#"
 silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: test
   timezone: UTC
   SILICON_HOME: {}

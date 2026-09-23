@@ -1,5 +1,6 @@
 silicon:
   id: ...
+  org_id: ...
   token: ...
   timezone: America/Los_Angeles
   SILICON_HOME: ! pwd
@@ -16,14 +17,14 @@ silicon:
     - ! ./install_python.sh
   
   apps:
-    - tos>dm
-    - tos>briefcase
-    - tos>hook
-    - tos>browser
-    - tos>waveform
+    - dm
+    - briefcase
+    - hook
+    - browser
+    - waveform
   
   app_configs:
-    tos>waveform:
+    waveform:
       default_tts_provider: google
 
 
@@ -146,29 +147,29 @@ access:
   worker.browser: [deliberate]
   worker.creative: [deliberate]
 
-# run everytime silicon is pinged at {sid}.{org}.localhost
+# run everytime silicon is pinged at its connection URL ({handle}.{org_id}.localhost when both are DNS labels)
 # Ting delivers these objects inside request.tings; each also includes an id.
 # {
 #   type: "new_message", # message_sent, event, or anything else.
 #   data: {
 #     msg_id: "msg-1234567890",
 #     message: "Where are we?",
-#     from: "@shubham",
-#     to: "deliberate@silicon:org",
+#     from: "@c:shubham",
+#     to: "deliberate@si:assistant",
 #     sender_timezone: "Asia/Kolkata",
 #     sent_at: "2026-09-10T03:12:34Z",
 
 #     reply_to: {
 #       msg_id: "msg-0987654321",
 #       message: "I'm close to finishing the task. Will update you soon.",
-#       from: "deliberate@silicon:org", # worker.terminal:session-id@silicon:org for non sticky isi
-#       to: "@shubham",
+#       from: "deliberate@si:assistant", # worker.terminal:session-id@si:assistant for non sticky isi
+#       to: "@c:shubham",
 #       sender_timezone: "Asia/Kolkata",
 #       sent_at: "2026-09-10T03:12:11Z",
 #     },
 #   },
 #   metadata: {
-#     app: "tos>dm",
+#     app: "dm",
 #     timestamp: "2024-06-10T12:00:00Z",
 #   }
 # }
@@ -181,7 +182,7 @@ flow:
         {
           "var": {
             "name": "ting_kind",
-            "value": "{(var.ting.type in [\"new_message\", \"tos>dm.msg.received\"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message) && has(var.ting.data.sender_timezone)) ? \"new_message\" : (var.ting.type in [\"message_sent\", \"tos>dm.msg.sent\"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message)) ? \"message_sent\" : (var.ting.type == \"event\" && has(var.ting.data.timestamp)) ? \"event\" : \"other\"}"
+            "value": "{(var.ting.type in [\"new_message\", \"dm.msg.received\", \"tos>dm.msg.received\"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message) && has(var.ting.data.sender_timezone)) ? \"new_message\" : (var.ting.type in [\"message_sent\", \"dm.msg.sent\", \"tos>dm.msg.sent\"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message)) ? \"message_sent\" : (var.ting.type == \"event\" && has(var.ting.data.timestamp)) ? \"event\" : \"other\"}"
           }
         },
         {

@@ -24,14 +24,14 @@ fn bundle_tools_resolve_through_public_symlink_and_keep_home_priority() {
     fs::write(bin.parent().unwrap().join("PREFIX"), root.to_str().unwrap()).unwrap();
     let old_bin = root.join("lib/silicon/releases/old/bin");
     fs::create_dir_all(&old_bin).unwrap();
-    let probe = "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$HONEYCOMB_AUTO_UPDATE\" \"$PATH\" > \"$TEST_RECEIPT\"\nprintf 'bundled:org\\n'\n";
+    let probe = "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$HONEYCOMB_AUTO_UPDATE\" \"$PATH\" > \"$TEST_RECEIPT\"\nprintf 'si:bundled\\n'\n";
     fs::write(bin.join("bundle-probe"), probe).unwrap();
     fs::set_permissions(bin.join("bundle-probe"), fs::Permissions::from_mode(0o755)).unwrap();
     let yaml = root.join("silicon.yaml");
     fs::write(
         &yaml,
         format!(
-            "silicon:\n  id: ! bundle-probe\n  token: test\n  timezone: UTC\n  SILICON_HOME: {}\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n",
+            "silicon:\n  id: ! bundle-probe\n  org_id: org\n  token: test\n  timezone: UTC\n  SILICON_HOME: {}\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n",
             home.display()
         ),
     )
@@ -57,7 +57,7 @@ fn bundle_tools_resolve_through_public_symlink_and_keep_home_priority() {
         String::from_utf8_lossy(&result.stderr)
     );
     let output: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(output["silicon"], "bundled:org");
+    assert_eq!(output["silicon"], "si:bundled");
     assert!(fs::read_to_string(root.join("receipt"))
         .unwrap()
         .starts_with(&format!("{}\nuser-choice\n", home.display())));
@@ -77,7 +77,7 @@ fn bundle_tools_resolve_through_public_symlink_and_keep_home_priority() {
     fs::create_dir_all(&home_bin).unwrap();
     fs::write(
         home_bin.join("bundle-probe"),
-        probe.replace("bundled:org", "home:org"),
+        probe.replace("si:bundled", "si:home"),
     )
     .unwrap();
     fs::set_permissions(
@@ -92,7 +92,7 @@ fn bundle_tools_resolve_through_public_symlink_and_keep_home_priority() {
         String::from_utf8_lossy(&result.stderr)
     );
     let output: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(output["silicon"], "home:org");
+    assert_eq!(output["silicon"], "si:home");
 
     fs::remove_file(home_bin.join("bundle-probe")).unwrap();
     fs::remove_file(bin.parent().unwrap().join("VERSION")).unwrap();

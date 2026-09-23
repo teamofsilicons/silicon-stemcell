@@ -1,6 +1,18 @@
 # Building Silicon
 
 
+## 5.0.1: Completing the identifier migration
+
+Following 5.0.0, Silicon IDs use `si:handle`, with the IAM owning organization supplied separately in `silicon.org_id`. Application selectors and discovery IDs are bare handles; Carbon examples use `c:handle`. `SILICON_ORG` still selects the application organization and defaults to the explicit owner. Authentication caches bind the complete identity and organization, and stale grants require fresh IAM issuance.
+
+The interpreter rejects old public identifiers and retained legacy Ting state with migration guidance. The offline mapping tool backs up and converts exact managed-app references and Ting actor directories, preserving webhook IDs, inbox receipts and payloads, credentials, and session UUIDs. Bare executable aliases can be retained explicitly with `--command`. Honeycomb's registry uses its own approved IAM mapping tool. The [migration procedure](https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md) requires disconnecting and stopping before edits, preserving the same YAML path and home, then compiling and reconnecting.
+
+Local hosts preserve 5.0.0’s `handle.org-id.localhost` form when both components are DNS labels, and its collision-free encoding for other valid IAM handles or organizations. The reference flow accepts canonical DM event namespaces alongside legacy aliases for retained batches. Documentation and `UNDERSTANDING.md` use the new identity contract; historical release evidence remains unchanged.
+
+## 5.0.0: Public identifier contract
+
+[Silicon 5.0.0](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.0) was published on 23 September 2026 at 15:24 UTC from `18d48112ae0285a8c5dc972fcec0f0296767218e`. It introduced typed Silicon and Carbon IDs, bare application IDs, and explicit organization ownership. The original release and its assets remain unchanged; 5.0.1 builds on that contract with the migration and authentication corrections above.
+
 ## 4.1.0: Omni 0.9.0 and Ting delivery
 
 The interpreter now uses Omni 0.9.0 and registers its local event endpoint only with Ting. IAM and Ting are implicit Honeycomb applications even when omitted from `apps`. Ting's stable hook ID survives reconnects, and incoming `tings` batches are acknowledged only after their private inbox journal is durable. Duplicate delivery IDs are retained for 100 days; queued batches resume after restart and use the current flow source.

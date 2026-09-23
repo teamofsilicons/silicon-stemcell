@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Silicon 4.1 — Documentation</title>
+<title>Silicon 5.0 — Documentation</title>
 <meta name="description" content="Install and build your own Silicon. The complete guide to configuration, ISIs, event flows, sessions, IAM apps, and the Rust interpreter.">
 <meta name="theme-color" content="#f7f7f2">
 <style>
@@ -14,11 +14,11 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
 </style></head>
 <body><a class="skip" href="#content">Skip to documentation</a>
-<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v4.1.0</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="#implementation-diary">The diary</a></div></header>
-<div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></details></aside>
-<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter and runtime. Honeycomb installs IAM, Ting, and configured apps independently.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#ting-migration">Upgrade to 4.1 →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
+<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v5.0.1</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="#implementation-diary">The diary</a></div></header>
+<div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</a><a href="#500-public-identifier-contract">5.0.0: Public identifier contract</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</a><a href="#500-public-identifier-contract">5.0.0: Public identifier contract</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></details></aside>
+<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter and runtime. Honeycomb installs IAM, Ting, and configured apps independently.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#identifier-migration">Migrate to 5.0 →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
 <section class="chapter"><h2 id="start-here">Start here</h2>
-<p>Silicon 4.1.0 uses Omni 0.9.0 and Ting for notification delivery. Existing Silicons need the <a href="#ting-migration">Ting migration</a> before reconnecting.</p>
+<p>Silicon 5.0.1 uses the new IAM and Honeycomb identifier contract, Omni 0.9.0, and Ting for notification delivery. Existing 4.x Silicons must complete the <a href="#identifier-migration">identifier migration</a> before upgrading or reconnecting.</p>
 <ol>
 <li><a href="#installation">Install Silicon and its dependencies</a> with the one-line command below.</li>
 <li><a href="#first-silicon">Create your first Silicon</a> in a new directory, with your own IAM identity and token.</li>
@@ -26,24 +26,28 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <li>Use <code>silicon web</code> for the dashboard or <code>silicon --help</code> for the command tree.</li>
 </ol>
 <p>For configuration details, read the <a href="#configuration-reference">field reference</a>. To integrate an application, follow the <a href="#iam-application-contract">IAM contract</a>. To build clients, use the <a href="#local-dashboard-and-http-interface">HTTP interface</a>. Source and contribution details are in <a href="#development-and-compatibility">development and compatibility</a>.</p>
+<p>Existing configurations using <code>handle:org</code> Silicon IDs or <code>org&gt;app</code> application IDs require the <a href="#identifier-migration">identifier migration</a>.</p>
 </section><section class="chapter"><h2 id="what-runs-on-your-machine">What runs on your machine</h2>
 <p>Silicon is a local interpreter for a <code>silicon.yaml</code> file. One interpreter can connect several Silicons. Each Silicon has its own identity, home directory, internal Silicons (ISIs), access rules, event flow, sessions, and logs.</p>
 <p>The <code>silicon</code> command manages the interpreter from your terminal. The <code>si</code> command is provided inside an ISI so it can communicate with permitted ISIs, inspect work, manage its session, install or remove applications, and ask the interpreter to authenticate an application. The local dashboard exposes the same management operations through the interpreter's control API.</p>
-<p>The interpreter listens on <code>127.0.0.1:1823</code>. If that port is occupied, it tries 1822, 1821, and so on, down through 1024. A dedicated Caddy process provides <code>http://silicon.localhost</code> for the dashboard and <code>http://&lt;local-id&gt;.&lt;org-id&gt;.localhost</code> for each connected Silicon. Caddy uses HTTP port 80; it does not search for an alternative proxy port.</p>
+<p>The interpreter listens on <code>127.0.0.1:1823</code>. If that port is occupied, it tries 1822, 1821, and so on, down through 1024. A dedicated Caddy process provides <code>http://silicon.localhost</code> for the dashboard and <code>http://&lt;handle&gt;.&lt;org-id&gt;.localhost</code> for each connected Silicon whose handle and owning organization are DNS labels. Other valid handles or organizations use a collision-free encoded host; use the hostname returned by <code>connect</code>. Caddy uses HTTP port 80; it does not search for an alternative proxy port.</p>
 <p>Each active ISI session has an owned Omni daemon and uses Silicon Omni's Rust package. Omni starts and communicates with the selected inference provider. Silicon subscribes to Omni events, delivers new messages, assembles DNA, tracks sessions, and records progress. These are real provider processes; the interpreter does not simulate model output in normal use.</p>
 <p>No terminal window is opened for each ISI. Each receives an independent process context, an Omni session, and the environment needed by its commands. Persistent session data survives stopping the interpreter. Global ephemeral work is discarded when it finishes.</p>
 </section><section class="chapter"><h2 id="installation">Installation</h2>
 <h3 id="public-binary-installation">Public binary installation</h3>
 <blockquote>
-<p>Upgrading to 4.1.0: migrate per-app webhook configuration and event flows using the <a href="#ting-migration">Ting migration</a>. IAM and Ting are implicit dependencies; the interpreter installs both through Honeycomb.</p>
+<p>Upgrading from 4.x to 5.0.1: disconnect and stop the old interpreter, then follow the <a href="#identifier-migration">identifier migration</a>. It changes Silicon IDs, adds <code>silicon.org_id</code>, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.</p>
+<p>Upgrading from 4.0.x or earlier: also migrate per-app webhook configuration and event flows using the <a href="#ting-migration">Ting migration</a>. IAM and Ting are implicit dependencies; the interpreter installs both through Honeycomb.</p>
 <p>Upgrading from 4.0.6–4.0.8: replace any <code>sticky</code> and <code>archive_on_end</code> fields using the <a href="#legacy-mode-fields-removed">migration table</a>, then run <code>silicon update</code> and restart the interpreter. No reinstallation is needed.</p>
-<p>Upgrading from 4.0.5 or earlier: rerun the 4.1.0 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.</p>
+<p>Upgrading from 4.0.5 or earlier: rerun the 5.0.1 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.</p>
 </blockquote>
-<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v4.1.0</code> with:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.sh | sh
+<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v5.0.1</code> with:</p>
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.sh | sh
 </code></pre>
-<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.1.0">v4.1.0 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
+<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.1">v5.0.1 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
 <p>Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.</p>
+<p><strong>5.0.1</strong> strengthens the identifier migration introduced in 5.0.0. Its mapping tool preserves sessions, explicit executable aliases and Ting delivery state; authentication checks bind the full Silicon identity, owning organization and selected grant. Existing 5.0.0 YAML and local hostnames remain compatible.</p>
+<p><strong>5.0.0</strong> adopts <code>si:handle</code> Silicon IDs, a required explicit <code>silicon.org_id</code>, and bare Honeycomb app IDs. Owning and selected organizations are explicit. Old identifiers require the <a href="#identifier-migration">identifier migration</a>.</p>
 <p><strong>4.1.0</strong> upgrades Omni to 0.9.0 and replaces per-app webhooks with Ting batches. It adds <code>SILICON_ORG</code>, private <code>app_configs</code>, <code>si app install</code>/<code>uninstall</code>, live flow loading, and CEL list helpers. Ting batches are durably accepted before an empty HTTP 204; the retained hook and pending inbox survive restarts.</p>
 <p><strong>4.0.9</strong> retains session-addressed ephemeral records and event history, archiving them when work retires. Only global ephemeral work is discarded. Logs identify the CLI or daemon, the sending ISI, and the flow branch or assignment. The legacy <code>sticky</code> and <code>archive_on_end</code> fields are removed; use <code>primary_send_mode</code> and <code>session_type</code> as described in the <a href="#legacy-mode-fields-removed">migration table</a>.</p>
 <p><strong>4.0.8</strong> moves to Omni 0.8.0. A provider that crashes, hits a rate limit, becomes unavailable, or will not start no longer keeps the chat: Omni closes the turn, sets that provider aside for the rest of the live session, and resolves the same ask over the providers left. The interpreter logs each removal with its reason and the remaining providers. Omni also finds CLIs on the <code>PATH</code> the user's login shell reports, so a CLI visible only to a terminal, or installed after the daemon started, is found.</p>
@@ -52,13 +56,13 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p><strong>4.0.5</strong> caches successful automatic app-auth checks for 48 hours across reconnects and restarts. Checks run only on YAML connects and new session creation; heartbeats reuse authentication, and explicit <code>si auth setup</code> bypasses the cache.</p>
 <p><strong>4.0.3</strong> adds <code>make_readable</code> and <code>convert_time</code>, fixes the reference YAML expressions, and streams connection progress with completion checkmarks.</p>
 <p><strong>4.0.0</strong> focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.</p>
-<p><strong>Upgrading from 3.5.x requires running this complete installer once into the same prefix</strong>, even when the old updater has already changed the reported Silicon version to 4.1.0. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the <a href="#upgrading-from-35x">migration instructions</a> below before using the new package features.</p>
+<p><strong>Upgrading from 3.5.x requires running this complete installer once into the same prefix</strong>, even when the old updater has already changed the reported Silicon version to 5.0.1. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the <a href="#upgrading-from-35x">migration instructions</a> below before using the new package features.</p>
 <p>The default installation prefix is <code>~/.local/share/silicon</code>. Add its <code>bin</code> directory to your shell's <code>PATH</code>:</p>
 <pre><code class="language-sh">export PATH=&quot;$HOME/.local/share/silicon/bin:$PATH&quot;
 </code></pre>
 <p>For the default prefix, the installer adds this path once to the startup file for your detected shell. Open a new terminal, or run the printed export command in your current terminal. Set <code>SILICON_NO_PATH=1</code> to leave shell startup files alone. Custom prefixes print the path without changing startup files.</p>
 <p>To choose another dedicated prefix, set the variable on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>The target matrix covers macOS, Linux, and Windows on ARM64 and x86-64. Windows runs the Linux bundle through WSL2. Native Unix bundles target macOS 15 and Ubuntu 24.04; the Linux binaries require glibc 2.39 or newer. Platform verification is recorded in the release evidence below; testing one architecture does not verify another.</p>
@@ -73,7 +77,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <tbody>
 <tr>
 <td><code>silicon</code>, <code>si</code></td>
-<td>Interpreter and internal CLI, 4.1.0</td>
+<td>Interpreter and internal CLI, 5.0.1</td>
 </tr>
 <tr>
 <td><code>omnid</code>, <code>silicon-omni</code>, <code>omni</code>, <code>so</code></td>
@@ -85,21 +89,23 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </tr>
 </tbody>
 </table>
-<p>Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs <code>honeycomb install 'org&gt;app' --json</code> for configured and registered canonical app IDs, the IAM issuer (<code>tos&gt;iam</code>), and Ting (<code>tos&gt;ting</code>). Omitting <code>--version</code> selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.</p>
+<p>Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs <code>honeycomb install 'app' --json</code> for configured and registered canonical app IDs, the IAM issuer (<code>iam</code>), and Ting (<code>ting</code>). Omitting <code>--version</code> selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.</p>
 <p>Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create an IAM identity or grant provider access.</p>
+<h3 id="identifier-migration">Identifier migration</h3>
+<p>Use <code>silicon.id: si:handle</code>, an explicit <code>silicon.org_id</code>, and bare IDs in <code>apps</code> and <code>app_configs</code>. Carbon recipients use <code>c:handle</code>; ISI recipients use <code>isi@si:handle</code>. Bundle IDs remain <code>org&gt;bundle</code>. Follow the <a href="https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md">state-preserving migration procedure</a> before reconnecting an existing home. It uses IAM's verified mapping, preserves sessions and Ting delivery state, and migrates Honeycomb's registry without moving package bytes.</p>
 <h3 id="ting-migration">Ting migration</h3>
-<p>Before reconnecting an existing Silicon on 4.1.0:</p>
+<p>For configurations from 4.0.x or earlier, before reconnecting on 5.0.1:</p>
 <ol>
 <li>Remove <code>silicon.webhooks</code> and <code>silicon.webhook</code>. Keep application IDs in <code>silicon.apps</code>; applications publish notifications through Ting and no longer register separate interpreter webhooks.</li>
 <li>Change the flow to read <code>request.tings</code>, a list of notification objects with <code>id</code>, <code>type</code>, <code>data</code>, and <code>metadata</code>. The old top-level <code>{type, data, metadata}</code> HTTP envelope is rejected. Use CEL <code>map</code>, <code>filter</code>, and the list helpers to process a whole batch; the <a href="#first-silicon">first Silicon example</a> shows a minimal flow.</li>
-<li>Check that the Silicon identity can authenticate IAM and Ting. Both are installed through Honeycomb automatically, even with an empty <code>apps</code> list. The interpreter registers only Ting at <code>http://LOCAL.ORG.localhost/events</code>, retaining its hook ID for reconnects.</li>
+<li>Check that the Silicon identity can authenticate IAM and Ting. Both are installed through Honeycomb automatically, even with an empty <code>apps</code> list. The interpreter registers only Ting at <code>http://HANDLE.OWNER_ORG.localhost/events</code>, retaining its hook ID for reconnects.</li>
 <li>Run <code>silicon compile /path/to/silicon.yaml</code>, then reconnect or restart the interpreter. The updater and installer do not rewrite your YAML.</li>
 </ol>
 <p>Ting receives an empty HTTP 204 after the complete batch is durably saved, before the flow runs. Follow logs or session progress to inspect processing. The interpreter loads the latest flow from the YAML for every batch. Other manual configuration changes require reconnecting; <code>si app install</code> and <code>si app uninstall</code> update connected app settings immediately.</p>
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>Existing Windows installations should rerun this release's PowerShell installer to add the native <code>ting.exe</code> entry point. <code>silicon update</code> updates the WSL2 runtime but does not add Windows launcher files.</p>
 <p>In PowerShell:</p>
-<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.ps1 | iex
+<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.ps1 | iex
 </code></pre>
 <p>Windows uses a native launcher and a dedicated WSL2 distribution named <code>Silicon</code>, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user <code>silicon</code>.</p>
 <p>Keep each project, its YAML, and its <code>SILICON_HOME</code> inside the distribution's Linux filesystem. Open <code>\\wsl.localhost\Silicon\home\silicon</code> in File Explorer and copy or create your project folder there. For example:</p>
@@ -115,16 +121,16 @@ silicon web
 <p>Version 4 removes the remote <code>login</code>, <code>logout</code>, and <code>watch</code> commands and the <code>realtime</code> setting. Use local <code>silicon logs</code>, <code>silicon config</code>, and <code>silicon ping</code>. Saved Silicon configurations, sessions, and managed-app authentication are retained. The interpreter no longer connects to the retired relay.</p>
 <h3 id="upgrading-from-35x">Upgrading from 3.5.x</h3>
 <p>The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new <code>install.sh</code> as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.</p>
-<p>When you are ready to restart, stop the old interpreter and rerun the <strong>4.1.0 public installer into the same prefix</strong>:</p>
+<p>First complete the <a href="#identifier-migration">identifier migration</a>, including disconnecting the old YAML paths and stopping the interpreter. Rerun the <strong>5.0.1 public installer into the same prefix</strong>:</p>
 <pre><code class="language-sh">silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.sh | sh
 silicon serve
 </code></pre>
-<p>Skip <code>silicon stop</code> if no interpreter is running. <code>silicon serve</code> runs the new interpreter and restores its saved connections. The default command uses <code>~/.local/share/silicon</code>; if your existing installation uses another prefix, preserve it on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.1.0/install.sh \
+<p>Skip <code>silicon stop</code> if no interpreter is running. <code>silicon serve</code> runs the new interpreter; reconnect each migrated YAML path after compiling it. The default command uses <code>~/.local/share/silicon</code>; if your existing installation uses another prefix, preserve it on the <code>sh</code> side of the pipeline:</p>
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.1/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
-<p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 4.1.0. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
+<p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 5.0.1. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
 <h3 id="linux-and-port-80">Linux and port 80</h3>
 <p>On Linux, the installer checks whether unprivileged processes can bind port 80. If not, it grants only the bundled Caddy binary <code>cap_net_bind_service=ep</code> using <code>setcap</code>. This requires the system's libcap tools and suitable privileges; it can ask for <code>sudo</code> in an interactive terminal. Silicon itself does not need to run as root.</p>
 <p>An automatic, noninteractive update cannot prompt for privileges. When the Caddy binary is unchanged, the installer can reuse the existing capability. If a new Caddy binary needs a capability and unattended privilege is unavailable, activation fails with an explanation and leaves the current release selected. Rerun the installation or update interactively.</p>
@@ -148,7 +154,8 @@ silicon serve
 </section><section class="chapter"><h2 id="first-silicon">First Silicon</h2>
 <p>Create your own directory and your own <code>silicon.yaml</code>. Keep it separate from the repository's reference fixture. The following is a complete schema example. Replace the identity and token with your values and ensure Omni has an authenticated provider that can satisfy the <code>fast</code> model key.</p>
 <pre><code class="language-yaml">silicon:
-  id: assistant:my-org
+  id: si:assistant
+  org_id: my-org
   token: REPLACE_WITH_YOUR_SILICON_TOKEN
   timezone: Asia/Kolkata
   SILICON_HOME: ! pwd
@@ -181,13 +188,13 @@ flow:
 <pre><code class="language-sh">silicon compile /absolute/path/to/silicon.yaml
 silicon connect /absolute/path/to/silicon.yaml
 silicon ls
-silicon send assistant:my-org assistant &quot;Hello&quot;
-silicon show assistant:my-org assistant
+silicon send si:assistant assistant &quot;Hello&quot;
+silicon show si:assistant assistant
 silicon web
 </code></pre>
 <p><code>compile</code> validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including <code>SILICON_HOME</code>, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. <code>setup</code>, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.</p>
-<p><code>connect</code> starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, <code>… Authenticating tos&gt;dm</code> changes to <code>✓ Authenticated tos&gt;dm</code>; failures use <code>✗</code>. Redirected output uses separate lines without terminal control codes. <code>--json</code> returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical <code>SILICON_HOME</code> are rejected.</p>
-<p>The local identity is the canonical YAML path. The global identity is <code>silicon.id</code>. Moving a file changes its local identity. The interpreter reads <code>flow</code> from disk for each incoming batch, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. <code>si app install</code> and <code>si app uninstall</code> update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.</p>
+<p><code>connect</code> starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, <code>… Authenticating dm</code> changes to <code>✓ Authenticated dm</code>; failures use <code>✗</code>. Redirected output uses separate lines without terminal control codes. <code>--json</code> returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical <code>SILICON_HOME</code> are rejected.</p>
+<p>The local identity is the canonical YAML path. The global identity is <code>silicon.id</code>; <code>silicon.org_id</code> supplies its owning organization separately. Moving a file changes its local identity. The interpreter reads <code>flow</code> from disk for each incoming batch, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. <code>si app install</code> and <code>si app uninstall</code> update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.</p>
 <p><code>silicon disconnect ./silicon.yaml</code> resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.</p>
 <p>Send an event through the Silicon's host:</p>
 <pre><code class="language-sh">curl --fail-with-body \
@@ -209,7 +216,11 @@ silicon web
 <tbody>
 <tr>
 <td><code>id</code></td>
-<td>Required <code>local-id:org-id</code>. Each part must be a DNS label: 1–63 ASCII letters, digits, or hyphens, beginning and ending with a letter or digit.</td>
+<td>Required complete Silicon public ID, <code>si:handle</code>. The handle is 3–50 lowercase ASCII letters, digits, underscores, or hyphens; the prefix does not count toward that limit.</td>
+</tr>
+<tr>
+<td><code>org_id</code></td>
+<td>Required explicit IAM owning organization: 3–50 lowercase ASCII letters, digits, underscores, or hyphens. It is never inferred from <code>id</code>.</td>
 </tr>
 <tr>
 <td><code>token</code></td>
@@ -225,7 +236,7 @@ silicon web
 </tr>
 <tr>
 <td><code>SILICON_ORG</code></td>
-<td>Organization passed to app CLIs, Bash, and provider sessions. Defaults to the organization in <code>silicon.id</code>; an explicit value must be a DNS label.</td>
+<td>Organization passed to app CLIs, Bash, and provider sessions. Defaults to <code>silicon.org_id</code>; an explicit value uses the same 3–50-character IAM organization grammar.</td>
 </tr>
 <tr>
 <td><code>inference_providers</code></td>
@@ -237,7 +248,7 @@ silicon web
 </tr>
 <tr>
 <td><code>apps</code></td>
-<td>Optional list of Honeycomb IAM application IDs, such as <code>tos&gt;dm</code>. Installed when needed and authenticated for this Silicon.</td>
+<td>Optional list of Honeycomb IAM application IDs, such as <code>dm</code>. Installed when needed and authenticated for this Silicon.</td>
 </tr>
 <tr>
 <td><code>app_configs</code></td>
@@ -265,24 +276,24 @@ silicon web
 <pre><code class="language-yaml">setup:
   - ! mkdir -p workspace
 apps:
-  - tos&gt;dm
-  - tos&gt;briefcase
-  - tos&gt;waveform
+  - dm
+  - briefcase
+  - waveform
 app_configs:
-  tos&gt;waveform:
+  waveform:
     default_tts_provider: google
 space_station:
   table_name: my-silicon-events
   table_key: REPLACE_WITH_YOUR_TABLE_KEY
 </code></pre>
-<p>Each application ID has exactly one <code>&gt;</code> separating its organization and app. Each part is 1–64 lowercase ASCII letters, digits, or hyphens, beginning with a letter or digit. Duplicate IDs within one list are errors. <code>tos&gt;ting</code> is always managed and registered, even when omitted from <code>apps</code>. The removed <code>webhooks</code> and <code>webhook</code> keys are configuration errors; delete them and keep application IDs in <code>apps</code>. App configuration keys must name a managed canonical ID, including implicit <code>tos&gt;ting</code>.</p>
+<p>Each application ID is a bare handle of 1–80 lowercase ASCII letters, digits, underscores, or hyphens, beginning with a letter. The owning organization is explicit IAM/Honeycomb data, not part of the app ID. Bundle IDs retain <code>org&gt;bundle</code>; Honeycomb release selectors such as <code>briefcase&gt;test@2.1.0</code> keep their existing meaning. Duplicate IDs within one list are errors. <code>ting</code> is always managed and registered, even when omitted from <code>apps</code>. The removed <code>webhooks</code> and <code>webhook</code> keys are configuration errors; delete them and keep application IDs in <code>apps</code>. App configuration keys must name a managed canonical ID, including implicit <code>ting</code>.</p>
 <p>Setup commands run from <code>SILICON_HOME</code> with <code>ISI=interpreter</code>. A leading <code>!</code> is accepted; the first command may also be ordinary shell text. Each shell fallback must have its own <code>!</code>; a quoted fallback is literal text. CEL is evaluated before Bash. Command stdout and stderr are captured in the connection log after each command finishes. Setup is connection work, so reconnecting runs it again. Make commands safe to repeat. Setup does not run during <code>silicon compile</code>, before each message, or on every DNA refresh. An exhausted fallback chain aborts the connection; completed shell side effects are not rolled back.</p>
 <p><code>login</code> contains executable names and arguments, not shell programs to run while compiling:</p>
 <pre><code class="language-yaml">login:
   - ! dm
   - 'hook --profile work'
 </code></pre>
-<p>This field expands CEL and <code>!&gt;&gt;</code> fallbacks, preserves argument quotes, and removes an original leading <code>!</code> as a legacy app-command marker. It does not execute Bash during evaluation. For example, <code>! dm</code> identifies the app to which Silicon later appends <code>iam --json</code>, or a login command; it does not launch bare <code>dm</code> during compilation. Command arguments are parsed with shell-style quoting and executed directly as argv. Shell pipelines, redirections, and environment assignments are not command wrappers; use a real executable wrapper when one is required.</p>
+<p>This field expands CEL and <code>!&gt;&gt;</code> fallbacks, preserves argument quotes, and retains an original leading <code>!</code> to distinguish an explicit executable command from a bare managed app ID. The marker is removed before execution; it does not execute Bash during evaluation. For example, <code>! dm</code> identifies the command to which Silicon later appends <code>iam --json</code>, or a login command; it does not launch bare <code>dm</code> during compilation. Command arguments are parsed with shell-style quoting and executed directly as argv. Shell pipelines, redirections, and environment assignments are not command wrappers; use a real executable wrapper when one is required.</p>
 <h3 id="isi"><code>isi</code></h3>
 <p>Define at least one ISI. Names may contain ASCII letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>, up to 128 bytes; <code>.</code> and <code>..</code> alone are not allowed.</p>
 <table>
@@ -496,7 +507,7 @@ No contacts are available.
 <p>Ting delivers batches to the connected Silicon’s local URL:</p>
 <pre><code class="language-json">{
   &quot;tings&quot;: [
-    {&quot;id&quot;: &quot;event-1&quot;, &quot;type&quot;: &quot;tos&gt;dm.new_message&quot;, &quot;data&quot;: {&quot;message&quot;: &quot;Hello&quot;}, &quot;metadata&quot;: {}}
+    {&quot;id&quot;: &quot;event-1&quot;, &quot;type&quot;: &quot;dm.new_message&quot;, &quot;data&quot;: {&quot;message&quot;: &quot;Hello&quot;}, &quot;metadata&quot;: {}}
   ]
 }
 </code></pre>
@@ -560,39 +571,38 @@ No contacts are available.
 silicon connect PATH
 silicon disconnect ID_OR_PATH
 silicon disconnect
-silicon ls '*:my-org'
-silicon logs show assistant:my-org
-silicon logs show assistant:my-org --lines 200 --no-follow
+silicon ls 'si:assistant*'
+silicon logs show si:assistant
+silicon logs show si:assistant --lines 200 --no-follow
 silicon web
 silicon web --no-open
 silicon serve
 silicon serve --port 1810 --no-proxy
 silicon stop
 silicon update
-silicon install 'tos&gt;dm'
-silicon uninstall 'tos&gt;dm'
-silicon ping assistant:my-org
-silicon config assistant:my-org
+silicon install 'dm'
+silicon uninstall 'dm'
+silicon ping si:assistant
+silicon config si:assistant
 silicon settings get
 silicon info
 </code></pre>
 <p>Without a command, <code>silicon</code> lists connections. <code>silicon list</code> is an alias for <code>silicon ls</code>. Quote globs so your shell does not expand them. <code>disconnect</code> without a target lists choices and prints the command to use; it does not disconnect everything.</p>
-<p>Quote Honeycomb IDs because <code>&gt;</code> is a shell redirection operator. <code>install</code> and <code>uninstall</code> operate on Honeycomb-managed applications. <code>ping</code> checks the local interpreter's connection without prompting a model. <code>config</code> returns the connected configuration with credentials redacted. <code>info</code> returns version, protocol, source, documentation, and dependency details.</p>
+<p><code>install</code> and <code>uninstall</code> operate on Honeycomb-managed applications using bare app IDs. <code>ping</code> checks the local interpreter's connection without prompting a model. <code>config</code> returns the connected configuration with credentials redacted. <code>info</code> returns version, protocol, source, documentation, and dependency details.</p>
 <p>Application installation uses the current <code>SILICON_HOME</code>, or your ordinary home when it is unset. Set <code>SILICON_HOME=/path/to/home</code> when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer and Ting. Explicit <code>silicon install</code> also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath <code>&lt;home&gt;/.silicon/packages</code>. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences. It restores Honeycomb's default once where an older interpreter forced this private home's <code>auto_update</code> off, and it repairs a home left without that required setting, which Honeycomb otherwise rejects as invalid configuration. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.</p>
 <p>Commands are exposed through owned links under <code>&lt;home&gt;/.silicon/bin</code>; the interpreter adds those to its command environment. <code>uninstall</code> removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured <code>apps</code> entries before reconnecting if you do not want an application installed again, or use <code>si app uninstall</code> from the running Silicon to update the YAML too.</p>
 <p><code>serve</code> stays in the foreground and is useful with a process manager. <code>connect</code> normally starts it automatically. <code>--no-proxy</code> is a development mode with direct localhost access and no Caddy aliases. This release does not install a login item, launch agent, or systemd service. After a reboot, use <code>silicon serve</code> or <code>silicon connect</code> to start the interpreter again.</p>
 <p>Public work commands specify the Silicon identity first:</p>
-<pre><code class="language-sh">silicon send assistant:my-org coordinator &quot;Please review this&quot;
-silicon send assistant:my-org worker.terminal &quot;Build it&quot; --id build-17 --new
-silicon sessions assistant:my-org worker.terminal
-silicon sessions assistant:my-org worker.terminal --archived '*release*'
-silicon show assistant:my-org worker.terminal --id build-17
-silicon end assistant:my-org worker.terminal --id build-17
+<pre><code class="language-sh">silicon send si:assistant coordinator &quot;Please review this&quot;
+silicon send si:assistant worker.terminal &quot;Build it&quot; --id build-17 --new
+silicon sessions si:assistant worker.terminal
+silicon sessions si:assistant worker.terminal --archived '*release*'
+silicon show si:assistant worker.terminal --id build-17
+silicon end si:assistant worker.terminal --id build-17
 </code></pre>
 <h3 id="internal-commands">Internal commands</h3>
-<pre><code class="language-sh">si app install 'tos&gt;dm'
-si app uninstall 'tos&gt;dm'
-si auth setup 'tos&gt;dm'
+<pre><code class="language-sh">si app install 'dm'
+si app uninstall 'dm'
 si auth setup dm
 si auth setup 'hook --profile work'
 si auth remove dm
@@ -666,18 +676,18 @@ si isi send worker.terminal &quot;Explain the deployment decision&quot; --id com
 <p>Bare <code>--archived</code> selects the previous 72 hours. With explicit filters, the search covers all archive history. Filters intersect: a result must match every supplied date/range and text filter. Dates use <code>DD:MM:YYYY</code>; both ends of a range are inclusive. Text filters search title and description case-insensitively and support <code>*</code> and <code>?</code>. A plain keyword can match a substring. Filters apply to the archive timestamp, using the Silicon's configured timezone unless <code>--timezone IANA</code> overrides it. They do not use the invoking shell's <code>TZ</code> by default.</p>
 </section><section class="chapter"><h2 id="iam-application-contract">IAM application contract</h2>
 <p>The interpreter owns orchestration of authentication. IAM issues short-lived application tokens. Each app exchanges and stores its own access/refresh tokens and maintains them afterward.</p>
-<p>Applications from <code>apps</code>, implicit Ting, and legacy <code>login</code> are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app and Silicon identity in <code>.silicon/auth-checked.json</code>, so reconnects and interpreter restarts reuse them. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit <code>si auth setup APP</code> always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with <code>si auth setup</code> are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.</p>
+<p>Applications from <code>apps</code>, implicit Ting, and legacy <code>login</code> are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app, full Silicon identity, and owning organization in <code>.silicon/auth-checked.json</code>; reuse also requires a matching selected organization grant, so reconnects and interpreter restarts can reuse valid checks. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit <code>si auth setup APP</code> always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with <code>si auth setup</code> are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused only with a current matching grant; a changed identity or organization requires a fresh IAM grant. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.</p>
 <p>The supported discovery contract is:</p>
 <pre><code class="language-sh">APP iam --json
 </code></pre>
-<p>It must succeed and return a JSON object with a nonempty string <code>app_id</code>, for example <code>{"app_id":"tos&gt;dm"}</code>. Extra public discovery fields are allowed. Secrets must not be returned as ordinary discovery data.</p>
+<p>It must succeed and return a JSON object with a valid bare string <code>app_id</code>, for example <code>{"app_id":"dm"}</code>. Extra public discovery fields are allowed. Secrets must not be returned as ordinary discovery data.</p>
 <p>The interpreter probes status in this order:</p>
 <pre><code class="language-sh">APP login status --json
 APP auth status --json
 </code></pre>
 <p>One must provide a boolean <code>authenticated</code>. A false state can be reported with a nonzero exit code. A true state must also have a successful exit status. Invalid JSON, an absent boolean, or a transport error must not masquerade as successful authentication.</p>
-<p>When authentication is needed, Silicon invokes IAM with its own identity:</p>
-<pre><code class="language-text">iam --output json --org ORG silicon-login --sid LOCAL:ORG --stk SILICON_TOKEN --app-id APP_ID --grant-org ORG
+<p>When authentication is needed, Silicon invokes IAM with its complete identity, owning organization (<code>silicon.org_id</code>), and selected application organization (<code>SILICON_ORG</code>, defaulting to <code>silicon.org_id</code>):</p>
+<pre><code class="language-text">iam --output json --org OWNER_ORG silicon-login --sid si:HANDLE --stk SILICON_TOKEN --app-id APP_ID --grant-org SELECTED_ORG
 </code></pre>
 <p>For IAM versions that expose the flag, Silicon adds <code>--approve-scopes</code> after detecting support in local command help. IAM must return <code>slt</code> and a positive <code>expires_in</code> of at most 120 seconds. Only IAM receives the long-lived Silicon credential. Depending on the working status contract, the interpreter then invokes exactly one of:</p>
 <pre><code class="language-text">APP login SLT
@@ -693,7 +703,7 @@ APP auth token SLT
 <p>Separate Silicon homes isolate application state, but an application's local relay may also need a distinct TCP port. A DM testing login saved valid credentials and then failed because a production-test relay still occupied its port. A retry with a separate available relay port passed; the owned test relays were stopped afterward.</p>
 <h3 id="ting-registration-and-app-notifications">Ting registration and app notifications</h3>
 <p>Proactive IAM apps publish notifications through <a href="https://ting.teamofsilicons.com/">Ting</a>. Only Ting delivers to the interpreter; application CLIs no longer need their own <code>webhook</code> or <code>unhook</code> commands.</p>
-<p>The interpreter installs <code>tos&gt;ting</code> through Honeycomb and authenticates its CLI just like other IAM apps. After the Silicon route is ready, it inspects <code>ting webhook list --limit 100 --json</code> and registers with <code>ting webhook http://LOCAL.ORG.localhost/events --json</code>. A saved hook is reused with <code>--id WEBHOOK_ID</code>; the stable ID is retained across reconnects and restarts. Ting delivers <code>tings</code> batches to that endpoint with an empty HTTP 204 acknowledgment after durable acceptance.</p>
+<p>The interpreter installs <code>ting</code> through Honeycomb and authenticates its CLI just like other IAM apps. After the Silicon route is ready, it inspects <code>ting webhook list --limit 100 --json</code> and registers with <code>ting webhook http://HANDLE.OWNER_ORG.localhost/events --json</code>. A saved hook is reused with <code>--id WEBHOOK_ID</code>; the stable ID is retained across reconnects and restarts. Ting delivers <code>tings</code> batches to that endpoint with an empty HTTP 204 acknowledgment after durable acceptance.</p>
 <p>Disconnect runs <code>ting unhook WEBHOOK_ID --json</code>. It still removes the local connection and ISI capabilities if unhooking fails, reporting the cleanup error. A failed registration rolls back the local connection and routing. Ting owns remote delivery, retries, and its local bridge; app-specific transport daemons are not registered with Silicon.</p>
 <p>Apps that accept configuration expose <code>APP config set JSON</code>. The interpreter sends each configured object after authentication and omits its arguments and captured output from logs. Apps store credentials and configuration in their own state beneath <code>SILICON_HOME</code> (or their chosen remote configuration service), respect <code>SILICON_ORG</code>, and work when <code>ISI</code> is absent.</p>
 </section><section class="chapter"><h2 id="settings-and-telemetry">Settings and telemetry</h2>
@@ -782,7 +792,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td><code>.silicon/auth-checked.json</code>, <code>.silicon/auth-grants.json</code></td>
-<td>Recent authentication checks and granted organizations; changing <code>SILICON_ORG</code> renews the application grant.</td>
+<td>Recent authentication checks and granted organizations bound to the complete Silicon identity and owning organization; changing <code>SILICON_ORG</code> renews the application grant.</td>
 </tr>
 <tr>
 <td><code>.silicon/bin/</code></td>
@@ -828,7 +838,7 @@ silicon settings set auto_update --off
 <p>Log entries have this shape:</p>
 <pre><code class="language-text">[type] [origin/process] [UTC timestamp] [message]
 </code></pre>
-<p>The origin names who produced the entry — <code>interpreter</code>, an ISI name, or an app — and is followed by the process that wrote it: <code>daemon</code> for the interpreter started by <code>silicon serve</code>, <code>cli</code> for any other <code>silicon</code> or <code>si</code> invocation. Both append to the same file, so the suffix tells apart, for example, the configuration compile <code>silicon connect</code> performs before contacting the interpreter from the interpreter's own compile of the same YAML. Entries written before this release carry no suffix.</p>
+<p>The origin names who produced the entry — <code>interpreter</code>, an ISI name, or an app — and is followed by the process that wrote it: <code>daemon</code> for the interpreter started by <code>silicon serve</code>, <code>cli</code> for any other <code>silicon</code> or <code>si</code> invocation. Both append to the same file, so the suffix tells apart, for example, the configuration compile <code>silicon connect</code> performs before contacting the interpreter from the interpreter's own compile of the same YAML. Entries written before 4.0.9 carry no suffix.</p>
 <p>Embedded message newlines are escaped so an entry stays on one line. <code>silicon logs show ID</code> prints the latest 100 entries and follows new ones. On a terminal, the type/origin prefix is colored, and the Silicon ID and log location remain in a footer. Ctrl-C restores the terminal and exits the viewer. <code>--no-follow</code> prints the tail and exits.</p>
 <p>With <code>--json --no-follow</code>, the result is an object with <code>silicon</code>, <code>path</code>, and <code>lines</code>. With <code>--json</code> while following, each line is emitted as an independent JSON object containing <code>silicon</code>, <code>path</code>, and <code>line</code>. The follower handles appends, file replacement/truncation, and partial lines. There is no automatic Silicon log rotation or retention policy in this release.</p>
 </section><section class="chapter"><h2 id="local-dashboard-and-http-interface">Local dashboard and HTTP interface</h2>
@@ -1010,7 +1020,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Honeycomb cannot resolve a configured app</td>
-<td>Check the quoted <code>org&gt;app</code> ID, CLI discovery, package availability for this platform, and the selected IAM organization.</td>
+<td>Check the bare app ID, CLI discovery, package availability for this platform, and the selected IAM organization.</td>
 </tr>
 <tr>
 <td>Space Station asks for an organization</td>
@@ -1039,7 +1049,7 @@ silicon settings set auto_update --off
 <p><code>stemcell/silicon</code>, <code>stemcell/memories</code>, and <code>stemcell/workspace</code> are reference/testing material. The installer does not distribute them into user homes, and they still require your own credentials and supporting scripts.</p>
 <p><code>stemcell/silicon/silicon.yaml</code> is the supplied source of intent, with its CEL expressions corrected and its helper functions supported. It is not a ready-to-connect configuration. Its current issues include:</p>
 <ul>
-<li><code>silicon.id</code>, <code>silicon.token</code>, <code>SILICON_ORG</code>, and the optional Space Station fields are <code>...</code> placeholders.</li>
+<li><code>silicon.id</code>, <code>silicon.org_id</code>, <code>silicon.token</code>, <code>SILICON_ORG</code>, and the optional Space Station fields are <code>...</code> placeholders.</li>
 <li>It refers to missing scripts/files including <code>install_python.sh</code>, <code>contacts.sh</code>, <code>tools.sh</code>, <code>team.sh</code>, <code>time_delay.sh</code>, and <code>learn.sh</code>. The repository has <code>CONTACTS.md</code>, <code>tools.md</code>, and <code>learn.md</code>; those names do not make the scripts exist automatically.</li>
 <li>Some suggestion messages still show old command forms. Current rollover uses <code>si session new --archive-current-session --id ... --title ... --description ...</code>.</li>
 <li>Its flow expands the batch into ordered per-ting routing using CEL <code>map</code> and <code>flatten</code>. The per-ting lookup keeps notification data separate from executable flow expressions.</li>
@@ -1055,17 +1065,17 @@ silicon settings set auto_update --off
 <thead>
 <tr>
 <th>Consumer or dependency</th>
-<th>Silicon 4.1.0 contract</th>
+<th>Silicon 5.0.1 contract</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>Existing 3.5 configurations</td>
-<td><code>login</code> remains accepted. Remove <code>webhook</code> and <code>webhooks</code>; Ting is registered automatically. <code>sticky</code> and <code>archive_on_end</code> have been removed; replace them with <code>primary_send_mode</code> and <code>session_type</code> using the table above.</td>
+<td>Migrate to <code>silicon.id: si:handle</code>, explicit <code>silicon.org_id</code>, and bare app IDs. <code>login</code> remains accepted. Remove <code>webhook</code> and <code>webhooks</code>; Ting is registered automatically. <code>sticky</code> and <code>archive_on_end</code> have been removed; replace them with <code>primary_send_mode</code> and <code>session_type</code> using the table above.</td>
 </tr>
 <tr>
 <td>IAM application discovery</td>
-<td>JSON <code>app_id</code>; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted.</td>
+<td>JSON bare <code>app_id</code>; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted.</td>
 </tr>
 <tr>
 <td>Authentication</td>
@@ -1098,7 +1108,7 @@ silicon settings set auto_update --off
 <p>Release builds provide the TOS interpreter and runtime table keys using <code>SILICON_INTERPRETER_TABLE_KEY</code> and <code>SILICON_RUNTIME_TABLE_KEY</code> at build time. Environment values with the same names override those defaults for a controlled deployment. Documentation ingestion has a separate destination. Table credentials are supplied through deployment secrets and are never placed in website JavaScript. The documentation sends to <code>/api/telemetry</code>; its server forwards permitted events to Space Station.</p>
 <p>Use <code>SILICON_HONEYCOMB</code> to select a particular Honeycomb executable for an integration test. Use temporary homes and dedicated state directories for tests so personal IAM state, app credentials, and existing connections remain independent.</p>
 </section><section class="chapter"><h2 id="verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</h2>
-<p>Version 4.1.0 has verified native bundles for macOS and Linux on ARM64 and x86-64, plus native Windows launchers. Windows x64 passes the complete WSL2 runtime and native-command suites. Windows ARM64 remains a preview because a physical ARM64 WSL2 run has not been completed. The release rows below distinguish platform, public installation, and dependency evidence; older rows retain historical checks.</p>
+<p>The historical 4.1.0 release has verified native bundles for macOS and Linux on ARM64 and x86-64, plus native Windows launchers. Windows x64 passes the complete WSL2 runtime and native-command suites. Windows ARM64 remains a preview because a physical ARM64 WSL2 run has not been completed. The release rows below distinguish platform, public installation, and dependency evidence; older rows retain historical checks.</p>
 <p>The 3.6-series configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. Version 3.6.1 carries the verified dependency corrections after the unpublished 3.6.0 candidate failed its release discovery gate; the original tag remains immutable. The release record below distinguishes candidate checks from completed publication and historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; <code>cargo test</code> alone does not verify them.</p>
 <p>The recorded 3.6.0 local interpreter run passed 40 tests, with two Caddy integration tests explicitly ignored in that run; Clippy passed with warnings denied. The full protocol E2E passed with real Omni and Caddy, including the new 3.6 checks. Four credential-focused regressions also passed, including the two new compile-diagnostic tests. The documentation telemetry endpoint passed its Node regression. Installer regressions covered the new required binaries, Honeycomb failure retaining the existing release, and copying the native Space Station executable rather than a machine-specific launcher. Chrome layout checks covered desktop and a 390-pixel mobile viewport, including mobile navigation; all 60 internal documentation anchors resolved after the migration update.</p>
 <p>The recorded 4.0.8–4.0.9 protocol E2E used the real pinned Omni daemon (0.8.0) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated <code>claude-code-cli</code> provider returned <code>SILICON_SMOKE_OK</code> and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.</p>
@@ -1110,6 +1120,10 @@ silicon settings set auto_update --off
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>5.0.0 public identifier release</td>
+<td><a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.0">Version 5.0.0</a> was published on 23 September 2026 from <code>18d48112ae0285a8c5dc972fcec0f0296767218e</code>. It introduced the canonical identifier contract. Its existing assets remain unchanged; they are historical evidence, not verification of 5.0.1.</td>
+</tr>
 <tr>
 <td>4.1.0 Omni 0.9.0 and Ting delivery</td>
 <td><a href="https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35743295086">All six platform jobs</a> passed on <code>66df3faa2be61543a336fa3f4e5bb632724a22b9</code>: four Unix installed-bundle Omni/Caddy suites, Windows x64 WSL2/native commands, Windows ARM64 launcher checks, Rust tests, formatting, and Clippy. Local validation passed 54 unit tests and the bundle-path integration test, including organization-switch grants, durable Ting batches, reconnects, and private app configuration. All nine release asset sizes/digests and eight checksum entries matched the verified CI files. IAM/Ting service behavior uses isolated CLI fixtures; Windows ARM64 physical WSL2 remains preview.</td>
@@ -1486,7 +1500,7 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <h3 id="retired-realtime-app-still-requires-an-iam-operator-to-delete-its-record">Retired realtime app still requires an IAM operator to delete its record</h3>
 <p>Honeycomb exposes configuration, release, publication, and reconciliation operations, but no app deletion or retirement operation. IAM's documented terminal deletion endpoint, <code>POST /api/v1/admin/applications/{app_id}/decisions</code> with <code>decision: "delete"</code>, requires platform-administrator authority, all application administration capabilities, and verified-channel step-up. The signed-in owning-organization administrator received HTTP 403 from the read-only platform inventory endpoint (request <code>01a0ab65-e9a2-7540-8cd2-93f6d25cee85</code>). Organization administration does not grant platform administration, and no access-control workaround was attempted.</p>
 <p>The supported cleanup completed on 16 September 2026: <code>tos&gt;silicon-realtime</code> was renamed <strong>Silicon Realtime (retired)</strong> at Honeycomb revision 3 / IAM revision 14; its OBO endpoints and external scopes were removed, membership access was removed, and its webhook subscription was reduced to updates only. The mandatory <code>self.identity.read</code> scope remains because IAM rejects removing the final scope. The record remains private and IAM-verified; this is a retired registration, not a deleted or platform-disabled app. All 23 retained access/refresh tokens received successful revocation responses and subsequently introspected as inactive. The two dedicated realtime test environments, <code>01a0aae6-4422-7543-a548-00dfaef436be</code> and <code>01a0aaf6-daa6-7c31-a124-12e0add582b7</code>, are deleted with their normal 30-day recovery window.</p>
-<p>An authorized IAM platform operator must apply terminal deletion to <code>tos&gt;silicon-realtime</code> (application UUID <code>01a0aae0-60b7-7462-9c06-854ccbd6baf7</code>) and then reconcile its Honeycomb record. The owning-organization session cannot perform that final operation.</p>
+<p>An authorized IAM platform operator must apply terminal deletion to <code>silicon-realtime</code> (application UUID <code>01a0aae0-60b7-7462-9c06-854ccbd6baf7</code>) and then reconcile its Honeycomb record. The owning-organization session cannot perform that final operation.</p>
 <p>One production test Silicon created for realtime verification remains to be removed. IAM requires a fresh email verification code for that action. During cleanup, Chrome reported that another extension interface was blocking automation, so the code could not be retrieved and the pending prompt was cancelled. Retry removal when browser access is available; this is a temporary cleanup blocker, not a permanent IAM limitation. The exact test identity and cleanup details remain in private task records.</p>
 <h3 id="iam-honeycomb-binary-license-differs-from-its-cli-source-license">IAM Honeycomb binary license differs from its CLI source license</h3>
 <p>The public Honeycomb package <code>tos&gt;iam</code> 1.11.0 (archive SHA-256 <code>0e662f15d9b0d1b18346a15f65f349d12dc959e3115031bcae6ce9777cee374f</code>) includes the same proprietary <code>LICENSE</code> in all six target directories. It requires a separate written agreement with Team of Silicons for use or redistribution. The <a href="https://github.com/teamofsilicons/silicon-iam/blob/c79508255244f0d9390c765ce9f92b95228e0353/crates/cli/LICENSE">CLI source license</a> and adjacent Cargo metadata instead specify Apache-2.0. Extracting <code>targets/macos-aarch64/LICENSE</code> from the published archive reproduces the mismatch; that file's SHA-256 is <code>2efea1dc6d5f696b7bf76bcd58efc01344d8949f780e0fcf021d654e450a4290</code>.</p>
@@ -1495,6 +1509,12 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <p>The Windows x64 <a href="https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35139664235">verification run</a> imported the checksum-pinned Ubuntu 24.04 image, upgraded systemd from <code>255.4-1ubuntu8</code> to <code>255.4-1ubuntu8.17</code>, and reloaded the dedicated distribution. The full interpreter E2E passed, but <code>silicon web</code> failed to execute Windows PowerShell with <code>Exec format error</code>. This matches the registration-loss mechanism described in <a href="https://ubuntu.com/wsl/docs/stable/explanation/binfmt/">Canonical's binfmt documentation</a> and <a href="https://wsl.dev/technical-documentation/interop/">Microsoft's WSL interoperability architecture</a>.</p>
 <p>The Windows installer now probes real Windows process execution after provisioning. If that fails, it restores only a missing WSL interoperability registration using <a href="https://github.com/microsoft/WSL/blob/40f18621d54abc1472657c07cc9fbb50cb9f2351/src/linux/init/binfmt.h">Microsoft's exact WSL2 <code>FP</code> registration</a>, then probes again. It refuses to replace an existing registration or enable globally disabled binfmt, and it does not shut down other WSL distributions. A persistent distribution configuration preserves the registration for future service starts. The native integration test additionally checks Windows PowerShell output and exit status after the distribution reload. Final hosted verification is recorded in the implementation diary; the patch does not change WSL or Ubuntu source.</p>
 </section><section class="chapter"><h2 id="implementation-diary">Implementation diary</h2>
+</section><section class="chapter"><h2 id="501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</h2>
+<p>Following 5.0.0, Silicon IDs use <code>si:handle</code>, with the IAM owning organization supplied separately in <code>silicon.org_id</code>. Application selectors and discovery IDs are bare handles; Carbon examples use <code>c:handle</code>. <code>SILICON_ORG</code> still selects the application organization and defaults to the explicit owner. Authentication caches bind the complete identity and organization, and stale grants require fresh IAM issuance.</p>
+<p>The interpreter rejects old public identifiers and retained legacy Ting state with migration guidance. The offline mapping tool backs up and converts exact managed-app references and Ting actor directories, preserving webhook IDs, inbox receipts and payloads, credentials, and session UUIDs. Bare executable aliases can be retained explicitly with <code>--command</code>. Honeycomb's registry uses its own approved IAM mapping tool. The <a href="https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md">migration procedure</a> requires disconnecting and stopping before edits, preserving the same YAML path and home, then compiling and reconnecting.</p>
+<p>Local hosts preserve 5.0.0’s <code>handle.org-id.localhost</code> form when both components are DNS labels, and its collision-free encoding for other valid IAM handles or organizations. The reference flow accepts canonical DM event namespaces alongside legacy aliases for retained batches. Documentation and <code>UNDERSTANDING.md</code> use the new identity contract; historical release evidence remains unchanged.</p>
+</section><section class="chapter"><h2 id="500-public-identifier-contract">5.0.0: Public identifier contract</h2>
+<p><a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.0">Silicon 5.0.0</a> was published on 23 September 2026 at 15:24 UTC from <code>18d48112ae0285a8c5dc972fcec0f0296767218e</code>. It introduced typed Silicon and Carbon IDs, bare application IDs, and explicit organization ownership. The original release and its assets remain unchanged; 5.0.1 builds on that contract with the migration and authentication corrections above.</p>
 </section><section class="chapter"><h2 id="410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</h2>
 <p>The interpreter now uses Omni 0.9.0 and registers its local event endpoint only with Ting. IAM and Ting are implicit Honeycomb applications even when omitted from <code>apps</code>. Ting's stable hook ID survives reconnects, and incoming <code>tings</code> batches are acknowledged only after their private inbox journal is durable. Duplicate delivery IDs are retained for 100 days; queued batches resume after restart and use the current flow source.</p>
 <p>Remove legacy per-app <code>webhooks</code> or <code>webhook</code> configuration before upgrading and adapt event flows to <code>request.tings</code>. <code>SILICON_ORG</code> defaults to the identity's org, <code>app_configs</code> sends private typed JSON to each app, and <code>si app install/uninstall</code> updates the source configuration. The reference template and CEL list helpers handle batches without evaluating notification text as expressions.</p>
@@ -1613,7 +1633,7 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <p>The six verified artifacts were uploaded to a draft release. Every uploaded size and GitHub SHA-256 digest matched the local files. The release workflow was disabled only while pushing the tag to promote those already-verified native builds, and was immediately restored to its active state. <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.5.1">Silicon 3.5.1</a> was published as the latest stable release on 10 September 2026 at 09:13:38 UTC. The earlier 3.5.0 release and its assets were retained unchanged.</p>
 <p>All six canonical release URLs were then downloaded without GitHub authentication. Every request returned HTTP 200, and every downloaded file matched both the verified local artifact and GitHub's recorded digest and size. A separate run fetched the public installer with the system curl and installed into a fresh macOS ARM64 prefix, with source/version/mirror overrides removed and Cargo absent from <code>PATH</code>. The initial requests were slow but completed successfully. The interpreter reported <code>silicon 3.5.1</code>, all 30 installed payload files matched the native CI archive byte for byte, and the installed Commit wrapper exposed logout. This verified the actual public download and installation path without changing the user's shell profile or existing installation.</p>
 <p>The documentation uses the existing <code>silicon-docs</code> Vercel project at <code>docs.teamofsilicons.com</code>. Its version badge, installation command, guide, and diary now describe 3.5.1 and these release checks. The deployment contains the committed static <code>docs/site</code> output; the interpreter continues to run on each user's machine. No new runtime server or backend rollout was needed for this release.</p></section>
-<footer><span>Silicon 4.1 · Built in Rust · <a href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">Open source, MIT</a></span><label><input type="checkbox" id="docs-telemetry" checked> Share documentation usage with TOS</label><a class="page-top" href="#">Back to top ↑</a></footer>
+<footer><span>Silicon 5.0 · Built in Rust · <a href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">Open source, MIT</a></span><label><input type="checkbox" id="docs-telemetry" checked> Share documentation usage with TOS</label><a class="page-top" href="#">Back to top ↑</a></footer>
 </main></div>
 <script>
 document.querySelectorAll('[data-copy]').forEach(button=>button.onclick=async function(){try{await navigator.clipboard.writeText(document.getElementById(this.dataset.copy).textContent);this.textContent='Copied';setTimeout(()=>this.textContent='Copy',2000)}catch{this.textContent='Select & copy'}});

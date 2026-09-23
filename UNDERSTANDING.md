@@ -14,12 +14,12 @@ any new silicon wanting to join silicon interpreter needs to pass the silicon.ya
 silicon interpreter offers a way for silicons to connect & disconnect.
 silicon interpreter is a command line first interface. i will be showing all thigns on the command line, but same should be possible to do on the web as well.
 
-silicon_id is like this `{lsid}:{orgid}` local silicon id : org id
+silicon_id is like this `si:{handle}`. `silicon.org_id` carries the owning org separately; never infer it from the id. Carbon ids use `c:{handle}`, and app ids are bare handles like `dm`. Bundle ids retain `org>bundle`.
 
 connect:
 `silicon connect {path to yaml}`
 compiles the silicon.yaml and throws errors if any, or connect if all is good.
-create a local listening url ({lsid}.{orgid}.localhost) for this silicon and maps that url to silicon interpreter's web server link.
+create a local listening url ({handle}.{org_id}.localhost when both are DNS labels) for this silicon and maps that url to silicon interpreter's web server link. Use the connection's returned host for handles or organizations that need DNS encoding.
 
 Once the local route is ready, register its URL with Ting using the Honeycomb-installed `ting` CLI. Ting is implicit, like IAM, even when absent from apps.
 
@@ -32,7 +32,7 @@ disconnect:
 
 list:
 `silicon ls` lists all connected silicons
-`silicon ls *:abc` list all matching
+`silicon ls 'si:abc*'` list all matching
 
 logs:
 `silicon logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
@@ -88,17 +88,18 @@ silicon, isi and access are compile time accessed.
 flow is runtime.
 
 silicon:
-    id                      silicon id
+    id                      full silicon id, si:handle
+    org_id                  explicit IAM owning organization
     token                   silicon token, used for authentication
     timezone                timezone silicon operates in
     SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
-    SILICON_ORG             env variables passed for all ISI
+    SILICON_ORG             env variables passed for all ISI; defaults to org_id
     space_station           optional; for telemetry
         table_name          space station table name
         table_key           space station table key
     inference_providers     omni supported inference providers
     setup                   optional; list of shell command that is run once during connecting silicon
-    apps                    optional; list of iam apps, automatically logged in using silicon token
+    apps                    optional; list of bare iam app ids, automatically logged in using silicon token
     app_configs             optional; sets key value pairs for apps
 
 inference_providers can take in either a list of inference providers that omni supports.
@@ -220,7 +221,7 @@ inputs the file's content
 #### evals
 evaluation order: CEL -> Bash -> String
 any string with non excaped {...} should be evaluated using CEL. Pass the following to it:
-- request (this is json that was received on http://sid.org.localhost/)
+- request (this is json that was received on the Silicon's local URL, such as http://assistant.my-org.localhost/)
 - silicon, isi and access as json
 - tz_time function which takes in a UTC time, and a timezone in IANA, and outputs time in that timezone. {HH:MM:SS DD:MM:YY IANA}
 - to_yaml takes in json, and prints it with tabs & new lines (yaml).

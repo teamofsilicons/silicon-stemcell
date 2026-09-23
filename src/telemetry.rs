@@ -268,8 +268,8 @@ mod tests {
     fn interpreter_requests_redact_known_secrets_even_after_disconnect() {
         let home = PathBuf::from(format!("/test/{}", Uuid::new_v4()));
         let mut cfg: Config = serde_json::from_value(json!({
-            "silicon": {"id":"test:org", "token":"private-token", "app_configs":{
-                "tos>app":{"nested":["custom-configured-secret", {"value":"nested-app-secret"}]}
+            "silicon": {"id":"si:test", "org_id":"org", "token":"private-token", "app_configs":{
+                "app":{"nested":["custom-configured-secret", {"value":"nested-app-secret"}]}
             }}, "isi":{}, "access":{}, "flow":[]
         }))
         .unwrap();

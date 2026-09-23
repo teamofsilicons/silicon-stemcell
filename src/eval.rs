@@ -402,7 +402,11 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
         if argv.first().is_none_or(|arg| arg.is_empty()) || command.contains(['\n', '\0']) {
             bail!("app command must contain an executable and valid single-line arguments");
         }
-        return Ok(command.to_owned());
+        return Ok(if source.trim_start().starts_with('!') {
+            format!("! {command}")
+        } else {
+            command.to_owned()
+        });
     }
     // A request value beginning with `!` is data, never an implicit shell command.
     if let Some(command) = expanded
@@ -809,32 +813,35 @@ mod tests {
     #[test]
     fn app_commands_preserve_argv_and_use_fallbacks_without_running_commands() {
         let dir = tempfile::tempdir().unwrap();
-        let env = json!({"silicon": {"id": "test:org"}});
+        let env = json!({"silicon": {"id": "si:test"}});
         let source = r#""app with spaces" --title "hello {silicon.id}" --literal '!>>'"#;
         validate_app_command(source).unwrap();
         let command = app_command(source, &env, dir.path()).unwrap();
         assert_eq!(
             command,
-            r#""app with spaces" --title "hello test:org" --literal '!>>'"#
+            r#""app with spaces" --title "hello si:test" --literal '!>>'"#
         );
         assert_eq!(
             shell_words::split(&command).unwrap(),
             [
                 "app with spaces",
                 "--title",
-                "hello test:org",
+                "hello si:test",
                 "--literal",
                 "!>>"
             ]
         );
         assert_eq!(
             app_command("{missing.command} !>> {error} !>> ! dm", &env, dir.path()).unwrap(),
-            "dm"
+            "! dm"
         );
-        assert_eq!(app_command("'' !>> ! dm", &env, dir.path()).unwrap(), "dm");
+        assert_eq!(
+            app_command("'' !>> ! dm", &env, dir.path()).unwrap(),
+            "! dm"
+        );
         assert_eq!(
             app_command("! false !>> dm", &env, dir.path()).unwrap(),
-            "false"
+            "! false"
         );
         assert!(app_command("! touch should-not-run", &env, dir.path()).is_ok());
         assert!(!dir.path().join("should-not-run").exists());
@@ -846,7 +853,7 @@ mod tests {
     fn credential_expressions_and_compile_diagnostics_do_not_disclose_secrets() {
         let dir = tempfile::tempdir().unwrap();
         let env = json!({"silicon": {"token": "private-token-value",
-            "app_configs": {"tos>app": {"credentials": ["private-application-value"]}},
+            "app_configs": {"app": {"credentials": ["private-application-value"]}},
             "space_station": {"table_key": "private-table-value"}}});
         let log_path = dir.path().join(".silicon/silicon.log");
         assert_eq!(
@@ -881,7 +888,7 @@ mod tests {
         for source in [
             "! printf '{silicon.token}' >&2; exit 1",
             "! printf '{silicon.space_station.table_key}' >&2; exit 1",
-            "! printf '{silicon.app_configs['tos>app'].credentials[0]}' >&2; exit 1",
+            "! printf '{silicon.app_configs['app'].credentials[0]}' >&2; exit 1",
             "{missing['private-application-value']}",
             "{to_json(silicon.token)}",
         ] {

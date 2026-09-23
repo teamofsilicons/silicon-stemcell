@@ -42,7 +42,7 @@ enum SiliconCommand {
     Connect { yaml: PathBuf },
     /// Disconnect by silicon id or YAML path. Without a target, list choices.
     Disconnect { target: Option<String> },
-    /// List connected Silicons, optionally matching a quoted glob such as '*:org'.
+    /// List connected Silicons, optionally matching a quoted glob such as 'si:*'.
     #[command(alias = "list")]
     Ls { pattern: Option<String> },
     /// Read the append-only Silicon log.
@@ -62,7 +62,7 @@ enum SiliconCommand {
     Stop,
     /// Install a newer stable GitHub release into a managed bundle installation.
     Update,
-    /// Install an app for this system through Honeycomb, for example 'tos>dm'.
+    /// Install an app for this system through Honeycomb, for example 'dm'.
     Install { app_id: String },
     /// Remove a Honeycomb-managed app from this home.
     Uninstall { app_id: String },
@@ -188,7 +188,7 @@ enum SiCommand {
 }
 #[derive(Subcommand)]
 enum AppCommand {
-    /// Install a Honeycomb app and add its canonical org>app ID to silicon.apps.
+    /// Install a Honeycomb app and add its canonical bare app ID to silicon.apps.
     Install { app_id: String },
     /// Uninstall a Honeycomb app and remove its app entry and configuration.
     Uninstall { app_id: String },
@@ -294,7 +294,7 @@ pub fn silicon() -> Result<()> {
     let cli = SiliconCli::parse();
     match cli.command.unwrap_or(SiliconCommand::Ls { pattern: None }) {
         SiliconCommand::Iam => print_json(
-            &json!({"app_id":"tos>silicon","docs_url":"https://docs.teamofsilicons.com","repository":"https://github.com/teamofsilicons/silicon-stemcell"}),
+            &json!({"app_id":"silicon","docs_url":"https://docs.teamofsilicons.com","repository":"https://github.com/teamofsilicons/silicon-stemcell"}),
         )?,
         SiliconCommand::Compile { yaml } => {
             let cfg = server::compile(yaml)?;
@@ -328,9 +328,12 @@ pub fn silicon() -> Result<()> {
         SiliconCommand::Disconnect {
             target: Some(target),
         } => {
-            let target = if target.contains(':') && !target.contains('/') {
+            let target = if crate::config::valid_silicon_id(&target) {
                 target
             } else {
+                if target.contains(':') && !target.contains('/') {
+                    bail!("expected a canonical Silicon ID si:<handle> or a YAML path; migrate legacy IDs using IAM's verified mapping");
+                }
                 Path::new(&target)
                     .canonicalize()
                     .with_context(|| format!("resolve disconnect YAML path {target:?}"))?
@@ -741,6 +744,9 @@ fn show_sessions(value: Value, json: bool) -> Result<()> {
     Ok(())
 }
 fn log_path(id: &str) -> Result<PathBuf> {
+    if !crate::config::valid_silicon_id(id) {
+        bail!("expected a canonical Silicon ID si:<handle>; migrate legacy IDs using IAM's verified mapping");
+    }
     if let Some(connection) = server::saved()?
         .into_iter()
         .find(|connection| connection.id == id)
@@ -968,7 +974,7 @@ mod tests {
         SiliconCli::command().debug_assert();
         SiCli::command().debug_assert();
         for verb in ["install", "uninstall"] {
-            assert!(SiCli::try_parse_from(["si", "app", verb, "tos>dm"]).is_ok());
+            assert!(SiCli::try_parse_from(["si", "app", verb, "dm"]).is_ok());
             assert!(SiCli::try_parse_from(["si", "app", verb]).is_err());
         }
         let bare = SiCli::try_parse_from(["si", "isi", "ls", "worker", "--archived"]).unwrap();
@@ -1030,7 +1036,7 @@ mod tests {
             "Summary"
         ])
         .is_ok());
-        assert!(glob("*:org", true, false).unwrap().is_match("hello:org"));
+        assert!(glob("si:*", true, false).unwrap().is_match("si:hello"));
         assert!(!glob("a*b*c", true, false).unwrap().is_match("ac"));
         assert!(!glob("foo.bar", true, false).unwrap().is_match("fooXbar"));
     }

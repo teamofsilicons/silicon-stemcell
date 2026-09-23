@@ -174,6 +174,7 @@ impl Runtime {
 
     pub fn connect(self: &Arc<Self>, mut cfg: Config) -> Result<()> {
         let _activity = self.activity()?;
+        crate::ting::Inbox::new(&cfg)?;
         let id = cfg
             .silicon
             .id
@@ -218,6 +219,7 @@ impl Runtime {
             auth::ensure_all_scoped(
                 &cfg.home,
                 &id,
+                cfg.silicon.org_id.as_deref().unwrap_or_default(),
                 cfg.silicon.token.as_deref().unwrap_or_default(),
                 &cfg.silicon.managed_apps(),
                 cfg.generation,
@@ -235,7 +237,7 @@ impl Runtime {
 
     fn connect_prepared(self: &Arc<Self>, mut cfg: Config) -> Result<()> {
         let id = cfg.silicon.id.clone().context("silicon.id missing")?;
-        let ting = crate::ting::Inbox::new(&cfg);
+        let ting = crate::ting::Inbox::new(&cfg)?;
         let app_settings = RwLock::new(cfg.silicon.clone());
         // Flows belong to the source file and are reloaded for every accepted batch.
         cfg.flow = serde_yaml::Value::Null;
@@ -568,6 +570,7 @@ impl Runtime {
             auth::ensure_all_scoped(
                 &connected.cfg.home,
                 connected.cfg.silicon.id.as_deref().unwrap(),
+                connected.cfg.silicon.org_id.as_deref().unwrap(),
                 connected.cfg.silicon.token.as_deref().unwrap(),
                 &connected.app_settings.read().unwrap().managed_apps(),
                 connected.cfg.generation,
@@ -1907,7 +1910,8 @@ mod tests {
         let mut cfg: Config = serde_yaml::from_str(
             r#"
 silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: private-setup-credential
   timezone: UTC
   setup:
@@ -1923,7 +1927,7 @@ flow: []
         let error = runtime.connect(cfg).unwrap_err().to_string();
         assert!(error.contains("setup[0]") && error.contains("9"));
         assert!(!error.contains("private-setup-credential"));
-        assert!(runtime.get("test:org").is_err());
+        assert!(runtime.get("si:test").is_err());
         let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
         assert!(log.contains("[stdout/") && log.contains("[stderr/"));
         assert!(log.contains("setup output") && !log.contains("private-setup-credential"));
@@ -1939,7 +1943,7 @@ flow: []
         std::fs::write(dir.path().join("prompt.md"), "file contents").unwrap();
         let mut cfg: Config = serde_yaml::from_str(
             r#"
-silicon: {id: 'test:org', token: test, timezone: UTC}
+silicon: {id: 'si:test', org_id: org, SILICON_ORG: org, token: test, timezone: UTC}
 isi:
   a:
     model: fast
@@ -1973,7 +1977,17 @@ flow: []
             cfg.flow = serde_yaml::Value::Sequence(Vec::new());
         }
         fs::write(&cfg.path, serde_yaml::to_string(&cfg).unwrap()).unwrap();
-        let key = serde_json::to_string(&(cfg.silicon.id.as_deref().unwrap(), "tos>ting")).unwrap();
+        let key = serde_json::to_string(&(
+            cfg.silicon.id.as_deref().unwrap(),
+            cfg.silicon.org_id.as_deref().unwrap(),
+            "ting",
+        ))
+        .unwrap();
+        state::write_json(
+            &cfg.home.join(".silicon/auth-grants.json"),
+            &BTreeMap::from([(key.clone(), cfg.silicon.silicon_org.as_deref().unwrap())]),
+        )
+        .unwrap();
         state::write_json(
             &cfg.home.join(".silicon/auth-checked.json"),
             &BTreeMap::from([(key, Utc::now().timestamp())]),
@@ -2001,7 +2015,7 @@ flow: []
         let dir = tempfile::tempdir().unwrap();
         let mut cfg: Config = serde_yaml::from_str(&format!(
             r#"
-silicon: {{id: 'test:org', token: test, timezone: UTC}}
+silicon: {{id: 'si:test', org_id: org, SILICON_ORG: org, token: test, timezone: UTC}}
 isi:
   a: {{model: fast, primary_send_mode: {}, session_type: {}}}
 access: {{a: []}}
@@ -2016,7 +2030,7 @@ flow: []
         cfg.flow = flow;
         let runtime = Runtime::new("http://127.0.0.1:1823".into());
         connect(&runtime, cfg);
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         // Session addressing needs an id; global addressing must not be given one.
         let options = SendOptions {
             id: (send_mode == "session").then(|| "job".to_owned()),
@@ -2107,8 +2121,8 @@ flow: []
         let mut cfg = original.cfg.clone();
         // The helper's global worker must not become a third session heartbeat
         // backed by a real Omni process after changing to session addressing.
-        runtime.end("test:org", "a", None).unwrap();
-        runtime.disconnect("test:org").unwrap();
+        runtime.end("si:test", "a", None).unwrap();
+        runtime.disconnect("si:test").unwrap();
         let isi = cfg.isi.get_mut("a").unwrap();
         isi.primary_send_mode = Some("session".into());
         isi.heartbeat = Some(serde_yaml::to_value(json!({
@@ -2117,7 +2131,7 @@ flow: []
         })).unwrap());
         fs::write(home.path().join("heartbeat-interval"), "0.01s").unwrap();
         connect(&runtime, cfg);
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let options = |id: &str| SendOptions {
             id: Some(id.into()),
             new: true,
@@ -2131,7 +2145,7 @@ flow: []
             &vec!["/missing-heartbeat-app"],
         )
         .unwrap();
-        assert_eq!(runtime.list("test:org", "a", false).unwrap().len(), 2);
+        assert_eq!(runtime.list("si:test", "a", false).unwrap().len(), 2);
         let fast_transport = transport(&fast);
         let (client, mut daemon) = UnixStream::pair().unwrap();
         daemon
@@ -2193,7 +2207,7 @@ flow: []
         let sending = thread::spawn(move || {
             let result = foreground
                 .send(
-                    "test:org",
+                    "si:test",
                     None,
                     "a",
                     "foreground",
@@ -2228,7 +2242,7 @@ flow: []
         for heartbeat in [false, true] {
             let (old_home, runtime, first, _worker) = worker(false);
             let mut cfg = first.cfg.clone();
-            runtime.disconnect("test:org").unwrap();
+            runtime.disconnect("si:test").unwrap();
             let message =
                 "! touch started; while ! test -f release; do sleep 0.01; done; printf old-message";
             if heartbeat {
@@ -2243,18 +2257,18 @@ flow: []
                 ])).unwrap();
             }
             connect(&runtime, cfg.clone());
-            let old = runtime.get("test:org").unwrap();
+            let old = runtime.get("si:test").unwrap();
             let event = if heartbeat {
                 runtime.start_scheduler();
                 None
             } else {
                 let runtime = runtime.clone();
                 Some(thread::spawn(move || {
-                    runtime.event("test:org", json!({"tings":[{"id":"test-event", "type":"test", "data":{}, "metadata":{}}]}))
+                    runtime.event("si:test", json!({"tings":[{"id":"test-event", "type":"test", "data":{}, "metadata":{}}]}))
                 }))
             };
             let started = wait_until(|| old_home.path().join("started").exists());
-            runtime.disconnect("test:org").unwrap();
+            runtime.disconnect("si:test").unwrap();
             let new_home = tempfile::tempdir().unwrap();
             cfg.home = new_home.path().to_owned();
             cfg.path = cfg.home.join("silicon.yaml");
@@ -2267,7 +2281,7 @@ flow: []
                 );
             }
             connect(&runtime, cfg);
-            let replacement = runtime.get("test:org").unwrap();
+            let replacement = runtime.get("si:test").unwrap();
             let worker = runtime
                 .worker(&replacement, "a", &SendOptions::default())
                 .unwrap();
@@ -2437,9 +2451,9 @@ flow: []
         assert!(runtime.caller_connection(&caller).is_err());
         let fresh = runtime.caller(&replacement.capability).unwrap();
         assert!(runtime.caller_connection(&fresh).is_ok());
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         connect(&runtime, connected.cfg.clone());
-        let reconnected = runtime.get("test:org").unwrap();
+        let reconnected = runtime.get("si:test").unwrap();
         let resumed = runtime
             .worker(&reconnected, "a", &SendOptions::default())
             .unwrap();
@@ -2456,12 +2470,12 @@ flow: []
     fn session_ephemeral_creation_requires_title_even_with_new_but_active_sends_do_not() {
         let (_dir, runtime, original, _worker) = worker(false);
         let mut cfg = original.cfg.clone();
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         let isi = cfg.isi.get_mut("a").unwrap();
         isi.primary_send_mode = Some("session".into());
         isi.session_type = Some("ephemeral".into());
         connect(&runtime, cfg);
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let mut options = SendOptions {
             id: Some("job".into()),
             new: true,
@@ -2487,7 +2501,7 @@ flow: []
     #[test]
     fn stale_disconnected_connection_cannot_create_workers_or_capabilities() {
         let (_dir, runtime, connected, worker) = worker(false);
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         assert!(worker.stopped.load(Ordering::SeqCst));
         assert!(runtime
             .worker(&connected, "a", &SendOptions::default())
@@ -2548,7 +2562,7 @@ flow: []
             let event_runtime = runtime.clone();
             let event = thread::spawn(move || {
                 ack.send(event_runtime.event(
-                    "test:org",
+                    "si:test",
                     json!({"tings":[{"id":"test-event", "type": "test", "data": {}, "metadata": {}}]}),
                 ))
                 .unwrap();
@@ -2716,7 +2730,7 @@ flow: []
         assert!(runtime.begin_restart_if_idle());
         assert!(runtime
             .send(
-                "test:org",
+                "si:test",
                 None,
                 "a",
                 "too late",
@@ -2776,7 +2790,7 @@ flow: []
     fn disconnect_ting_unhook_failure_still_removes_connection_and_capabilities() {
         let (_dir, runtime, connected, first) = worker(false);
         let cfg = connected.cfg.clone();
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         assert!(first.stopped.load(Ordering::SeqCst));
         use std::os::unix::fs::PermissionsExt;
         let app = cfg.home.join(".silicon/bin/ting");
@@ -2785,7 +2799,7 @@ flow: []
             &app,
             r#"#!/bin/sh
 case "$*" in
-  'iam --json') echo '{"app_id":"tos>ting"}' ;;
+  'iam --json') echo '{"app_id":"ting"}' ;;
   'unhook retained-hook --json') exit 1 ;;
   *) exit 2 ;;
 esac
@@ -2795,20 +2809,20 @@ esac
         std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o700)).unwrap();
         state::write_json(
             &cfg.home
-                .join(".silicon/ting/test:org")
+                .join(".silicon/ting/si:test")
                 .join(cfg.silicon.silicon_org.as_deref().unwrap_or_default())
                 .join("hook.json"),
             &"retained-hook",
         )
         .unwrap();
         connect(&runtime, cfg);
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let second = runtime
             .worker(&connected, "a", &SendOptions::default())
             .unwrap();
         let delivery = pending(&second, "will be cancelled");
-        assert!(runtime.disconnect("test:org").is_err());
-        assert!(runtime.get("test:org").is_err());
+        assert!(runtime.disconnect("si:test").is_err());
+        assert!(runtime.get("si:test").is_err());
         assert!(runtime.caller(&second.capability).is_none());
         assert!(delivery.wait_started().is_err());
     }

@@ -12,16 +12,14 @@ use std::{
 // ponytail: serialize auth exchanges; use per-home/app locks if authentication throughput matters.
 static AUTH_LOCK: Mutex<()> = Mutex::new(());
 
-fn identity_org(sid: &str) -> Result<&str> {
-    sid.split_once(':')
-        .filter(|(local, org)| {
-            !local.is_empty()
-                && !org.is_empty()
-                && !org.contains(':')
-                && !sid.chars().any(char::is_whitespace)
-        })
-        .map(|(_, org)| org)
-        .ok_or_else(|| anyhow!("silicon.id must be in local-id:organization form"))
+fn validate_identity(sid: &str, org_id: &str) -> Result<()> {
+    if !crate::config::valid_silicon_id(sid) {
+        bail!("silicon.id must be si:<handle>; migrate old IDs using IAM's verified mapping");
+    }
+    if !crate::config::valid_org(org_id) {
+        bail!("silicon.org_id must be an explicit canonical IAM organization handle");
+    }
+    Ok(())
 }
 
 fn selected_org(home: &Path, default: &str) -> Result<String> {
@@ -38,13 +36,8 @@ fn selected_org(home: &Path, default: &str) -> Result<String> {
         })
         .transpose()?
         .unwrap_or_else(|| default.to_owned());
-    if org.is_empty()
-        || org.len() > 63
-        || org.starts_with('-')
-        || org.ends_with('-')
-        || !org.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
-        bail!("SILICON_ORG must be an organization DNS label");
+    if !crate::config::valid_org(&org) {
+        bail!("SILICON_ORG must be a canonical IAM organization handle");
     }
     Ok(org)
 }
@@ -77,30 +70,38 @@ fn remember(home: &Path, app: &App, present: bool) -> Result<()> {
 }
 
 /// Check managed apps at connect/session creation, reusing successful checks for 48 hours.
-pub fn ensure_all(home: &Path, sid: &str, stk: &str, configured: &[String]) -> Result<()> {
-    ensure_all_using(home, sid, stk, configured, None)
+pub fn ensure_all(
+    home: &Path,
+    sid: &str,
+    org_id: &str,
+    stk: &str,
+    configured: &[String],
+) -> Result<()> {
+    ensure_all_using(home, sid, org_id, stk, configured, None)
 }
 
 pub fn ensure_all_scoped(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     configured: &[String],
     generation: uuid::Uuid,
 ) -> Result<()> {
-    ensure_all_using(home, sid, stk, configured, Some(generation))
+    ensure_all_using(home, sid, org_id, stk, configured, Some(generation))
 }
 
 fn ensure_all_using(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     configured: &[String],
     generation: Option<uuid::Uuid>,
 ) -> Result<()> {
     let _guard = AUTH_LOCK.lock().unwrap();
-    let identity_org = identity_org(sid)?;
-    let grant_org = selected_org(home, identity_org)?;
+    validate_identity(sid, org_id)?;
+    let grant_org = selected_org(home, org_id)?;
     let grants = grants(home)?;
     let path = home.join(".silicon/auth-checked.json");
     let mut checked: BTreeMap<String, i64> = match fs::read(&path) {
@@ -113,16 +114,16 @@ fn ensure_all_using(
         let command = if crate::apps::valid_id(command) {
             command.clone()
         } else {
-            shell_words::join(&App::new(home, command)?.argv)
+            App::new(home, command)?.reference
         };
         if !commands.contains(&command) {
             commands.push(command);
         }
     }
     for command in commands {
-        let key = serde_json::to_string(&(sid, &command))?;
+        let key = serde_json::to_string(&(sid, org_id, &command))?;
         let now = chrono::Utc::now().timestamp();
-        if grants.get(&key).map(String::as_str).unwrap_or(identity_org) == grant_org
+        if grants.get(&key).map(String::as_str) == Some(grant_org.as_str())
             && checked
                 .get(&key)
                 .and_then(|last| now.checked_sub(*last))
@@ -130,7 +131,16 @@ fn ensure_all_using(
         {
             continue;
         }
-        setup_locked(home, sid, stk, &command, Path::new("iam"), true, generation)?;
+        setup_locked(
+            home,
+            sid,
+            org_id,
+            stk,
+            &command,
+            Path::new("iam"),
+            true,
+            generation,
+        )?;
         checked.insert(key, chrono::Utc::now().timestamp());
         crate::state::write_json(&path, &checked)?;
     }
@@ -161,11 +171,19 @@ impl Contract {
 
 impl App {
     fn new(home: &Path, command: &str) -> Result<Self> {
+        let explicit = command.trim().starts_with('!');
         let command = command
             .trim()
             .strip_prefix('!')
             .unwrap_or(command.trim())
             .trim();
+        if !explicit
+            && command.contains('>')
+            && !command.contains('/')
+            && !command.chars().any(char::is_whitespace)
+        {
+            bail!("legacy org>app ID requires migration using IAM's verified mapping");
+        }
         let argv =
             shell_words::split(command).map_err(|_| anyhow!("invalid app command quoting"))?;
         if argv.first().is_none_or(|arg| arg.is_empty())
@@ -178,7 +196,11 @@ impl App {
         {
             bail!("the Silicon IAM credential directory must not be a symlink");
         }
-        let reference = shell_words::join(&argv);
+        let reference = if explicit {
+            format!("! {}", shell_words::join(&argv))
+        } else {
+            shell_words::join(&argv)
+        };
         Ok(Self {
             home,
             argv,
@@ -233,12 +255,8 @@ impl App {
         let app_id = info
             .get("app_id")
             .and_then(Value::as_str)
-            .filter(|id| {
-                !id.is_empty()
-                    && !id.chars().any(char::is_whitespace)
-                    && !id.chars().any(char::is_control)
-            })
-            .ok_or_else(|| anyhow!("app `iam --json` must return a nonempty app_id string"))?;
+            .filter(|id| crate::apps::valid_id(id))
+            .ok_or_else(|| anyhow!("app `iam --json` must return a bare app_id; update or migrate the app using IAM's verified mapping"))?;
         if self
             .expected_id
             .as_deref()
@@ -282,13 +300,14 @@ impl App {
 
 /// Log an application in using this Silicon's credential, never a Carbon session.
 /// Returns only the public application ID, not the issued token.
-pub fn setup(home: &Path, sid: &str, stk: &str, app: &str) -> Result<String> {
-    setup_using(home, sid, stk, app, Path::new("iam"), false)
+pub fn setup(home: &Path, sid: &str, org_id: &str, stk: &str, app: &str) -> Result<String> {
+    setup_using(home, sid, org_id, stk, app, Path::new("iam"), false)
 }
 
 pub fn setup_scoped(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     app: &str,
     generation: uuid::Uuid,
@@ -296,6 +315,7 @@ pub fn setup_scoped(
     setup_using_scoped(
         home,
         sid,
+        org_id,
         stk,
         app,
         Path::new("iam"),
@@ -305,24 +325,27 @@ pub fn setup_scoped(
 }
 
 /// Check an application's session immediately, bypassing automatic check timestamps.
-pub fn ensure(home: &Path, sid: &str, stk: &str, app: &str) -> Result<String> {
-    setup_using(home, sid, stk, app, Path::new("iam"), true)
+pub fn ensure(home: &Path, sid: &str, org_id: &str, stk: &str, app: &str) -> Result<String> {
+    setup_using(home, sid, org_id, stk, app, Path::new("iam"), true)
 }
 
 fn setup_using(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     command: &str,
     iam: &Path,
     only_if_needed: bool,
 ) -> Result<String> {
-    setup_using_scoped(home, sid, stk, command, iam, only_if_needed, None)
+    setup_using_scoped(home, sid, org_id, stk, command, iam, only_if_needed, None)
 }
 
+#[allow(clippy::too_many_arguments)] // Keep explicit identity/organization context without an auth wrapper.
 fn setup_using_scoped(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     command: &str,
     iam: &Path,
@@ -330,18 +353,30 @@ fn setup_using_scoped(
     generation: Option<uuid::Uuid>,
 ) -> Result<String> {
     let _guard = AUTH_LOCK.lock().unwrap();
-    setup_locked(home, sid, stk, command, iam, only_if_needed, generation)
+    setup_locked(
+        home,
+        sid,
+        org_id,
+        stk,
+        command,
+        iam,
+        only_if_needed,
+        generation,
+    )
 }
 
+#[allow(clippy::too_many_arguments)] // Keep explicit identity/organization context without an auth wrapper.
 fn setup_locked(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     command: &str,
     iam: &Path,
     only_if_needed: bool,
     generation: Option<uuid::Uuid>,
 ) -> Result<String> {
+    validate_identity(sid, org_id)?;
     let app = if crate::apps::valid_id(command) {
         let path = match crate::apps::resolve(home, command)? {
             Some(path) => {
@@ -380,12 +415,14 @@ fn setup_locked(
     } else {
         App::new(home, command)?
     };
-    authenticate(home, sid, stk, app, iam, only_if_needed, generation)
+    authenticate(home, sid, org_id, stk, app, iam, only_if_needed, generation)
 }
 
+#[allow(clippy::too_many_arguments)] // Keep explicit identity/organization context without an auth wrapper.
 fn authenticate(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     app: App,
     iam: &Path,
@@ -405,13 +442,15 @@ fn authenticate(
         generation,
         &format!("Authenticating {label}"),
         &format!("Authenticated {label}"),
-        || authenticate_inner(home, sid, stk, app, iam, only_if_needed, generation),
+        || authenticate_inner(home, sid, org_id, stk, app, iam, only_if_needed, generation),
     )
 }
 
+#[allow(clippy::too_many_arguments)] // Keep explicit identity/organization context without an auth wrapper.
 fn authenticate_inner(
     home: &Path,
     sid: &str,
+    org_id: &str,
     stk: &str,
     app: App,
     iam: &Path,
@@ -420,14 +459,12 @@ fn authenticate_inner(
 ) -> Result<String> {
     let app_id = app.discover()?;
     let (contract, authenticated) = app.status()?;
-    let org = identity_org(sid)?;
-    let grant_org = selected_org(home, org)?;
+    let grant_org = selected_org(home, org_id)?;
     let mut grants = grants(home)?;
-    let key = serde_json::to_string(&(sid, &app.reference))?;
-    // Legacy sessions were granted the identity's org; a different selected org
-    // requires fresh consent even if the app still reports authenticated:true.
-    let granted = grants.get(&key).map(String::as_str).unwrap_or(org);
-    if only_if_needed && authenticated && granted == grant_org {
+    let key = serde_json::to_string(&(sid, org_id, &app.reference))?;
+    // Only a grant recorded for this exact canonical identity and explicit owner
+    // can reuse a session. Legacy identity/cache entries require a fresh IAM login.
+    if only_if_needed && authenticated && grants.get(&key) == Some(&grant_org) {
         remember(home, &app, true)?;
         crate::log_line_scoped(home, generation, "auth", &app_id, "already authenticated")?;
         return Ok(app_id);
@@ -457,7 +494,7 @@ fn authenticate_inner(
     };
     let help = match inspect() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && iam == Path::new("iam") => {
-            crate::apps::install_at(&home, "tos>iam")?;
+            crate::apps::install_at(&home, "iam")?;
             inspect()
         }
         result => result,
@@ -467,7 +504,7 @@ fn authenticate_inner(
         "--output",
         "json",
         "--org",
-        org,
+        org_id,
         "silicon-login",
         "--sid",
         sid,
@@ -512,7 +549,7 @@ fn authenticate_inner(
         Contract::Login => vec!["login", slt],
     };
     // Space Station binds terminal sessions to an organization, including a first login.
-    let app_org = (app_id == "tos>spacestation").then_some(grant_org.as_str());
+    let app_org = (app_id == "spacestation").then_some(grant_org.as_str());
     if !app.run_in_org(&args, app_org)?.status.success() {
         // Never retry another login spelling with a possibly consumed SLT.
         bail!("app rejected the IAM short-lived token; start authentication again after fixing the app's login failure");
@@ -577,6 +614,31 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn legacy_ids_fail_closed_without_rewriting_registrations() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path();
+        for (sid, org_id) in [
+            ("silicon:test", "test"),
+            ("c:alice", "test"),
+            ("si:silicon", ""),
+        ] {
+            assert!(ensure_all(home, sid, org_id, "secret", &[]).is_err());
+        }
+        let path = home.join(".silicon/auth-apps.json");
+        crate::state::write_json(&path, &["test>app"])?;
+        let original = fs::read(&path)?;
+        assert!(ensure_all(home, "si:silicon", "test", "secret", &[])
+            .unwrap_err()
+            .to_string()
+            .contains("verified mapping"));
+        assert_eq!(fs::read(&path)?, original);
+        let explicit = App::new(home, "! legacy-app --flag")?;
+        assert_eq!(explicit.reference, "! legacy-app --flag");
+        assert_eq!(App::new(home, &explicit.reference)?.argv, explicit.argv);
+        Ok(())
+    }
+
+    #[test]
     fn selected_org_changes_force_new_grants_despite_fresh_checks_and_active_sessions() -> Result<()>
     {
         let dir = tempfile::tempdir()?;
@@ -590,8 +652,8 @@ mod tests {
             r#"#!/bin/sh
 set -eu
 if [ "$*" = 'silicon-login --help' ]; then echo --approve-scopes; exit 0; fi
-[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '--output json --org home-org silicon-login --sid silicon:home-org --stk stk-secret' ]
-[ "${10} ${11} ${12} ${13} ${14}" = "--app-id test>app --grant-org $SILICON_ORG --approve-scopes" ]
+[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '--output json --org home-org silicon-login --sid si:silicon --stk stk-secret' ]
+[ "${10} ${11} ${12} ${13} ${14}" = "--app-id app --grant-org $SILICON_ORG --approve-scopes" ]
 printf '%s\n' "$SILICON_ORG" >> minted
 printf '{"slt":"issued-%s","expires_in":120}\n' "$SILICON_ORG"
 "#,
@@ -601,7 +663,7 @@ printf '{"slt":"issued-%s","expires_in":120}\n' "$SILICON_ORG"
             r#"#!/bin/sh
 set -eu
 case "$*" in
-  'iam --json') echo '{"app_id":"test>app"}' ;;
+  'iam --json') echo '{"app_id":"app"}' ;;
   'login status --json') echo '{"authenticated":true}' ;;
   'login issued-'*) [ "$2" = "issued-$SILICON_ORG" ]; printf '%s' "$SILICON_ORG" > active-org ;;
   *) exit 1 ;;
@@ -611,16 +673,38 @@ esac
         for path in [&iam, &app] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
         }
-        let key = serde_json::to_string(&("silicon:home-org", "test>app"))?;
+        let key = serde_json::to_string(&("si:silicon", "home-org", "app"))?;
         crate::state::write_json(
             &home.join(".silicon/auth-checked.json"),
-            &BTreeMap::from([(key.clone(), chrono::Utc::now().timestamp())]),
+            &BTreeMap::from([(
+                serde_json::to_string(&("silicon:home-org", "test>app"))?,
+                chrono::Utc::now().timestamp(),
+            )]),
+        )?;
+        crate::state::write_json(
+            &home.join(".silicon/auth-grants.json"),
+            &BTreeMap::from([(
+                serde_json::to_string(&("silicon:home-org", "test>app"))?,
+                "work-org",
+            )]),
         )?;
         let mut expected = Vec::new();
-        for org in ["work-org", "another-org", "home-org", "work-org"] {
+        for org in [
+            "work-org",
+            "another_org",
+            "-selected-",
+            "home-org",
+            "work-org",
+        ] {
             crate::state::write_json(&home.join(".silicon/org.json"), &org)?;
             for _ in 0..2 {
-                ensure_all(home, "silicon:home-org", "stk-secret", &["test>app".into()])?;
+                ensure_all(
+                    home,
+                    "si:silicon",
+                    "home-org",
+                    "stk-secret",
+                    &["app".into()],
+                )?;
             }
             expected.push(org);
             assert_eq!(
@@ -646,7 +730,7 @@ esac
 echo "$*" >> calls
 [ ! -f fail ] || exit 1
 case "$*" in
-  'iam --json') echo '{"app_id":"test>app"}' ;;
+  'iam --json') echo '{"app_id":"app"}' ;;
   'login status --json') echo '{"authenticated":true}' ;;
   *) exit 1 ;;
 esac
@@ -655,37 +739,56 @@ esac
         fs::set_permissions(&app, fs::Permissions::from_mode(0o700))?;
         let command = app.to_str().unwrap().to_owned();
         let configured = vec![command.clone()];
-        ensure_all(home, "silicon:test", "", &configured)?;
+        let key = serde_json::to_string(&("si:silicon", "test", &command))?;
+        crate::state::write_json(
+            &home.join(".silicon/auth-grants.json"),
+            &BTreeMap::from([(key.clone(), "test")]),
+        )?;
+        ensure_all(home, "si:silicon", "test", "", &configured)?;
         let calls = fs::read_to_string(home.join("calls"))?;
         let path = home.join(".silicon/auth-checked.json");
         let original = fs::read(&path)?;
 
         // A cached check must skip even discovery, including across connection generations.
         fs::write(home.join("fail"), "")?;
-        ensure_all_scoped(home, "silicon:test", "", &configured, uuid::Uuid::new_v4())?;
+        ensure_all_scoped(
+            home,
+            "si:silicon",
+            "test",
+            "",
+            &configured,
+            uuid::Uuid::new_v4(),
+        )?;
         assert_eq!(fs::read_to_string(home.join("calls"))?, calls);
-        assert!(setup(home, "silicon:test", "", &command).is_err());
-        assert!(ensure_all(home, "other:test", "", &configured).is_err());
+        assert!(setup(home, "si:silicon", "test", "", &command).is_err());
+        assert!(ensure_all(home, "si:other", "test", "", &configured).is_err());
+        assert!(ensure_all(home, "si:silicon", "other-org", "", &configured).is_err());
         let other = home.join("other-app");
         fs::copy(&app, &other)?;
-        assert!(ensure_all(home, "silicon:test", "", &[other.to_str().unwrap().into()]).is_err());
+        assert!(ensure_all(
+            home,
+            "si:silicon",
+            "test",
+            "",
+            &[other.to_str().unwrap().into()]
+        )
+        .is_err());
         assert_eq!(fs::read(&path)?, original);
 
-        let key = serde_json::to_string(&("silicon:test", &command))?;
         for timestamp in [
             chrono::Utc::now().timestamp() - 48 * 60 * 60,
             chrono::Utc::now().timestamp() + 3600,
         ] {
             let stale = BTreeMap::from([(key.clone(), timestamp)]);
             crate::state::write_json(&path, &stale)?;
-            assert!(ensure_all(home, "silicon:test", "", &configured).is_err());
+            assert!(ensure_all(home, "si:silicon", "test", "", &configured).is_err());
             let after: BTreeMap<String, i64> = serde_json::from_slice(&fs::read(&path)?)?;
             assert_eq!(after, stale); // Failed checks must not advance the timestamp.
         }
         fs::remove_file(home.join("fail"))?;
-        ensure_all(home, "silicon:test", "", &configured)?;
+        ensure_all(home, "si:silicon", "test", "", &configured)?;
         let calls = fs::read_to_string(home.join("calls"))?;
-        ensure_all(home, "silicon:test", "", &configured)?;
+        ensure_all(home, "si:silicon", "test", "", &configured)?;
         assert_eq!(fs::read_to_string(home.join("calls"))?, calls);
         Ok(())
     }
@@ -703,10 +806,10 @@ set -eu
 if [ "$1 $2" = "silicon-login --help" ]; then echo --approve-scopes; exit 0; fi
 [ "$PWD" = "$SILICON_HOME" ]
 [ "$SILICON_IAM_HOME" = "$SILICON_HOME/.silicon-iam" ]
-[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '--output json --org test silicon-login --sid silicon:test --stk stk-secret' ]
+[ "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '--output json --org test silicon-login --sid si:silicon --stk stk-secret' ]
 [ "${12} ${13} ${14}" = '--grant-org test --approve-scopes' ]
 shift 9
-if [ -f space-app ]; then expected='tos>spacestation'; else expected='test>app'; fi
+if [ -f space-app ]; then expected='spacestation'; else expected='app'; fi
 [ "$1 $2" = "--app-id $expected" ]
 echo minted >> "$SILICON_HOME/minted"
 if [ -f bad-mint ]; then echo '{"slt":"iam-issued-secret"}'; exit 0; fi
@@ -725,8 +828,9 @@ esac
 case "$*" in
   'iam --json')
     if [ -f bad-discovery ]; then echo '{"app_id":null}'
-    elif [ -f space-app ]; then echo '{"app_id":"tos>spacestation"}'
-    else echo '{"app_id":"test>app"}'; fi ;;
+    elif [ -f old-discovery ]; then echo '{"app_id":"test>app"}'
+    elif [ -f space-app ]; then echo '{"app_id":"spacestation"}'
+    else echo '{"app_id":"app"}'; fi ;;
   'auth status --json')
     [ "$mode" = modern ] || exit 2
     if [ -f bad-status ]; then echo '{"authenticated":"true"}'; exit 0; fi
@@ -752,14 +856,23 @@ esac
         for mode in ["modern", "legacy"] {
             let command = format!("! {} {mode}", shell_words::quote(app.to_str().unwrap()));
             assert_eq!(
-                setup_using(home, "silicon:test", "stk-secret", &command, &iam, false)?,
-                "test>app"
+                setup_using(
+                    home,
+                    "si:silicon",
+                    "test",
+                    "stk-secret",
+                    &command,
+                    &iam,
+                    false
+                )?,
+                "app"
             );
             let minted = fs::read_to_string(home.join("minted"))?;
-            assert_eq!(registered(home)?.len(), 1);
+            assert_eq!(registered(home)?, std::slice::from_ref(&command));
             setup_using(
                 home,
-                "silicon:test",
+                "si:silicon",
+                "test",
                 "stk-secret",
                 &command,
                 Path::new("missing-iam"),
@@ -770,9 +883,17 @@ esac
             assert!(registered(home)?.is_empty());
             assert!(!home.join("active").exists());
             fs::write(home.join("fail"), "")?;
-            let error = setup_using(home, "silicon:test", "stk-secret", &command, &iam, false)
-                .unwrap_err()
-                .to_string();
+            let error = setup_using(
+                home,
+                "si:silicon",
+                "test",
+                "stk-secret",
+                &command,
+                &iam,
+                false,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(!error.contains("stk-secret") && !error.contains("iam-issued-secret"));
             fs::remove_file(home.join("fail"))?;
         }
@@ -785,30 +906,31 @@ esac
         )?;
         fs::set_permissions(&canonical_app, fs::Permissions::from_mode(0o700))?;
         assert_eq!(
-            setup_using(home, "silicon:test", "stk-secret", "test>app", &iam, false)?,
-            "test>app"
+            setup_using(home, "si:silicon", "test", "stk-secret", "app", &iam, false)?,
+            "app"
         );
-        assert_eq!(registered(home)?, ["test>app"]);
+        assert_eq!(registered(home)?, ["app"]);
         let config = serde_json::json!({"silicon_org": "test", "nested": {"enabled": true}});
-        configure(home, &BTreeMap::from([("test>app".into(), config.clone())]))?;
+        configure(home, &BTreeMap::from([("app".into(), config.clone())]))?;
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(home.join("configured"))?)?,
             config
         );
-        remove(home, "test>app")?;
+        remove(home, "app")?;
         assert!(registered(home)?.is_empty());
         fs::write(home.join("space-app"), "")?;
         let space_command = format!("{} legacy", shell_words::quote(app.to_str().unwrap()));
         assert_eq!(
             setup_using(
                 home,
-                "silicon:test",
+                "si:silicon",
+                "test",
                 "stk-secret",
                 &space_command,
                 &iam,
                 false
             )?,
-            "tos>spacestation"
+            "spacestation"
         );
         remove(home, &space_command)?;
         fs::remove_file(home.join("space-app"))?;
@@ -818,11 +940,18 @@ esac
         assert_eq!(literal.argv, ["app", "$(touch injected)", ";"]);
         assert!(!home.join("injected").exists());
         let command = format!("{} modern", shell_words::quote(app.to_str().unwrap()));
-        for invalid in ["bad-discovery", "bad-status", "bad-mint"] {
+        for invalid in ["bad-discovery", "old-discovery", "bad-status", "bad-mint"] {
             fs::write(home.join(invalid), "")?;
-            assert!(
-                setup_using(home, "silicon:test", "stk-secret", &command, &iam, false).is_err()
-            );
+            assert!(setup_using(
+                home,
+                "si:silicon",
+                "test",
+                "stk-secret",
+                &command,
+                &iam,
+                false
+            )
+            .is_err());
             assert!(!home.join("active").exists());
             fs::remove_file(home.join(invalid))?;
         }
