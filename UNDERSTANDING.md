@@ -14,14 +14,14 @@ any new silicon wanting to join silicon interpreter needs to pass the silicon.ya
 silicon interpreter offers a way for silicons to connect & disconnect.
 silicon interpreter is a command line first interface. i will be showing all thigns on the command line, but same should be possible to do on the web as well.
 
-silicon_id is like this `{lsid}:{orgid}` local silicon id : org id
+silicon_id is `si:{silicon_id}`, for example `si:cos`. The handle is globally unique and the owning organisation is stored separately as `org_id`.
 
 connect:
 `silicon connect {path to yaml}`
 compiles the silicon.yaml and throws errors if any, or connect if all is good.
-create a local listening url ({lsid}.{orgid}.localhost) for this silicon and maps that url to silicon interpreter's web server link.
+create a local listening url ({handle}.{org_id}.localhost) for this silicon and maps that url to silicon interpreter's web server link. Use the handle after `si:` and the separately stored owning `org_id`; do not derive the organisation from the Silicon ID. This hostname is a local routing address, not a public Silicon ID.
 
-for the items in webhooks, run `app webhook "{lsid}.{orgid}.localhost"`
+for the items in webhooks, run `app webhook "{handle}.{org_id}.localhost"`
 
 show the output of all scripts inside setup, tell when each app is installed and logged in, and when webhooks are setup.
 
@@ -32,7 +32,7 @@ disconnect:
 
 list:
 `silicon ls` lists all connected silicons
-`silicon ls *:abc` list all matching
+`silicon ls 'si:abc*'` list all matching Silicon IDs
 
 logs:
 `silicon logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
@@ -214,7 +214,7 @@ inputs the file's content
 #### evals
 evaluation order: CEL -> Bash -> String
 any string with non excaped {...} should be evaluated using CEL. Pass the following to it:
-- request (this is json that was received on http://sid.org.localhost/)
+- request (this is json that was received on http://{handle}.{org_id}.localhost/)
 - silicon, isi and access as json
 - tz_time function which takes in a UTC time, and a timezone in IANA, and outputs time in that timezone. {HH:MM:SS DD:MM:YY IANA}
 - to_yaml takes in json, and prints it with tabs & new lines (yaml).
@@ -357,3 +357,9 @@ you can create a test iam env and use it to test things.
 this project has 2 constriansts we are optimising: simplicity to create & use a silicon with extendibility.
 
 introduce a way to do ping pong with a silicon locally to know if its online or offline. pass that as part of updates as well.
+
+# Identifier schema
+
+Silicon IDs use `si:{silicon_id}` (for example `si:cos`), Carbon IDs use `c:{carbon_id}` (for example `c:saket`), and application IDs use the bare `{app_id}` (for example `briefcase`). The components after `si:` and `c:` are handles; each prefix appears exactly once. Silicon IDs and application IDs do not contain an organisation component. Organisation membership and application ownership are stored separately under `org_id`.
+
+Outside the schema patterns above, fields and standalone placeholders named `silicon_id`, `sid`, `carbon_id`, or `cid` carry the complete prefixed public ID; `app_id` carries the bare application ID. This applies to authentication, API and CLI inputs and outputs, configuration, permissions, URLs, events and stored identity references. Where a CLI selector uses `@`, it precedes the complete ID, such as `@si:cos` or `@c:saket`.

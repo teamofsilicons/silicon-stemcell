@@ -59,7 +59,8 @@ try {
     $fixture = Join-Path $env:RUNNER_TEMP 'windows-fixture.yaml'
     $yaml = @'
 silicon:
-  id: windows-test:tos
+  id: si:windows-test
+  org_id: tos
   token: fixture-not-a-real-token
   timezone: UTC
   SILICON_HOME: ! pwd

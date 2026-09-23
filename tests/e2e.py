@@ -135,7 +135,8 @@ else:
     env["SILICON_HONEYCOMB"] = str(honeycomb)
     config = home / "silicon.yaml"
     config.write_text(f'''silicon:
-  id: e2e:local
+  id: si:e2e
+  org_id: local
   token: isolated-e2e-token
   timezone: Asia/Kolkata
   SILICON_HOME: {json.dumps(str(home))}
@@ -261,7 +262,8 @@ flow:
         progress_home = work / "progress"
         progress_home.mkdir()
         progress_config = progress_home / "silicon.yaml"
-        progress_config.write_text(original.decode().replace("id: e2e:local", "id: progress:local")
+        progress_config.write_text(original.decode().replace("id: si:e2e
+  org_id: local", "id: progress:local")
             .replace(json.dumps(str(home)), json.dumps(str(progress_home)))
             .replace("  inference_providers:", "  apps: ['test>progress']\n  inference_providers:"))
         progress_app = progress_home / "progress-app"
@@ -332,7 +334,8 @@ esac
         other_home = work / "other home"
         other_home.mkdir()
         other_config = other_home / "silicon.yaml"
-        other_config.write_text(original.decode().replace("id: e2e:local", "id: path:local").replace(json.dumps(str(home)), json.dumps(str(other_home))))
+        other_config.write_text(original.decode().replace("id: si:e2e
+  org_id: local", "id: path:local").replace(json.dumps(str(home)), json.dumps(str(other_home))))
         cli("connect", "./silicon.yaml", cwd=other_home)
         assert {row["id"] for row in control("list")} == {"e2e:local", "path:local"}
         missing_home = work / "missing"

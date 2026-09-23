@@ -1,20 +1,22 @@
-# Silicon 4.0.6
+# Silicon 5.0.0
+
+Version 5 requires `silicon.id: si:handle`, an explicit `silicon.org_id`, and bare application IDs. Migrate the YAML using the IAM identity mapping before reconnecting; use this release only with the coordinated IAM 4 and Honeycomb 0.4 deployment. Existing runtime homes and session state remain in place.
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route events through CEL flows, run ISIs with Silicon Omni, and manage their sessions and IAM applications.
 
 macOS and Linux:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.ps1 | iex
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.6).
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.0).
 
 **Upgrading from 4.0.5 or earlier:** rerun the installer above once into your existing installation prefix, even if an older update has already changed the reported version. The old updater requires bundled app executables; 4.0.6 installs apps independently through Honeycomb. Stop the running interpreter with `silicon stop` before reinstalling, then restart with `silicon serve`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
 

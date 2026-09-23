@@ -652,20 +652,20 @@ mod tests {
     #[test]
     fn app_commands_preserve_argv_and_use_fallbacks_without_running_commands() {
         let dir = tempfile::tempdir().unwrap();
-        let env = json!({"silicon": {"id": "test:org"}});
+        let env = json!({"silicon": {"id": "si:test"}});
         let source = r#""app with spaces" --title "hello {silicon.id}" --literal '!>>'"#;
         validate_app_command(source).unwrap();
         let command = app_command(source, &env, dir.path()).unwrap();
         assert_eq!(
             command,
-            r#""app with spaces" --title "hello test:org" --literal '!>>'"#
+            r#""app with spaces" --title "hello si:test" --literal '!>>'"#
         );
         assert_eq!(
             shell_words::split(&command).unwrap(),
             [
                 "app with spaces",
                 "--title",
-                "hello test:org",
+                "hello si:test",
                 "--literal",
                 "!>>"
             ]

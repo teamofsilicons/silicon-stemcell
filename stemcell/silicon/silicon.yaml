@@ -1,5 +1,6 @@
 silicon:
   id: ...
+  org_id: ...
   token: ...
   timezone: America/Los_Angeles
   SILICON_HOME: ! pwd
@@ -15,15 +16,15 @@ silicon:
     - ! ./install_python.sh
   
   apps:
-    - tos>dm
-    - tos>briefcase
-    - tos>hook
-    - tos>browser
-    - tos>waveform
+    - dm
+    - briefcase
+    - hook
+    - browser
+    - waveform
   
   webhooks:
-    - tos>hook
-    - tos>dm
+    - hook
+    - dm
 
 
 isi:
@@ -166,7 +167,7 @@ access:
 #     },
 #   },
 #   metadata: {
-#     app: "tos>dm",
+#     app: "dm",
 #     timestamp: "2024-06-10T12:00:00Z",
 #   }
 # }

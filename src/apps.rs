@@ -8,23 +8,18 @@ use std::{
     process::Stdio,
 };
 
-/// Honeycomb's org>app handle grammar; these values are arguments, never shell text.
+/// Honeycomb's bare application handle; values are arguments, never shell text.
 pub fn valid_id(id: &str) -> bool {
-    id.split_once('>').is_some_and(|(org, app)| {
-        [org, app].iter().all(|part| {
-            !part.is_empty()
-                && part.len() <= 64
-                && part.as_bytes()[0].is_ascii_alphanumeric()
-                && part
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    (1..=80).contains(&id.len())
+        && id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
         })
-    })
 }
 
 fn validate(id: &str) -> Result<()> {
     if !valid_id(id) {
-        bail!("expected a Honeycomb org>app ID with lowercase letters, digits and hyphens; quote it in your shell");
+        bail!("expected a bare Honeycomb app ID with lowercase letters, digits, underscores and hyphens");
     }
     Ok(())
 }
@@ -188,7 +183,7 @@ pub(crate) fn resolve(home: &Path, id: &str) -> Result<Option<PathBuf>> {
     validate(id)?;
     let canonical = home.canonicalize().context("SILICON_HOME must exist")?;
     let home = canonical.as_path();
-    let name = id.split_once('>').unwrap().1;
+    let name = id;
     for path in [Some(home.join(".silicon/bin").join(name)), on_path(name)]
         .into_iter()
         .flatten()
@@ -291,8 +286,8 @@ pub(crate) fn install_all(
     if ids.is_empty() {
         return Ok(());
     }
-    if !ids.iter().any(|id| id == "tos>iam") {
-        ids.insert(0, "tos>iam".into());
+    if !ids.iter().any(|id| id == "iam") {
+        ids.insert(0, "iam".into());
     }
     for id in ids {
         crate::progress::step(
@@ -337,12 +332,9 @@ mod tests {
         let canonical = dir.path().canonicalize()?;
         let home = canonical.as_path();
         let app = home.join("app with spaces");
-        fs::write(
-            &app,
-            "#!/bin/sh\nprintf '%s\\n' '{\"app_id\":\"test>app\"}'\n",
-        )?;
+        fs::write(&app, "#!/bin/sh\nprintf '%s\\n' '{\"app_id\":\"app\"}'\n")?;
         fs::set_permissions(&app, fs::Permissions::from_mode(0o700))?;
-        let records = json!({"test>app":{"app_id":"test>app","commands":{"renamed":app}}});
+        let records = json!({"app":{"app_id":"app","commands":{"renamed":app}}});
         fs::write(home.join("records.json"), records.to_string())?;
         let cli = home.join("honeycomb");
         fs::write(
@@ -351,9 +343,9 @@ mod tests {
 set -eu
 [ "$PWD" = "$SILICON_HOME" ]
 case "$1" in
-install) [ "$*" = 'install test>app --json' ]; echo install >> calls; touch installed; mkdir -p .honeycomb; echo '{"status":"installed"}' ;;
+install) [ "$*" = 'install app --json' ]; echo install >> calls; touch installed; mkdir -p .honeycomb; echo '{"status":"installed"}' ;;
 installed) if [ -f installed ]; then cat ../../records.json; else echo '{}'; fi ;;
-uninstall) rm installed; echo '{"uninstalled":"test>app"}' ;;
+uninstall) rm installed; echo '{"uninstalled":"app"}' ;;
 *) exit 2 ;;
 esac
 "#,
@@ -375,53 +367,53 @@ esac
             false
         );
         fs::remove_file(&config)?;
-        assert!(valid_id("tos>space-station"));
+        assert!(valid_id("space-station"));
         for id in [
             "../>app",
             "Tos>app",
-            "tos>app;touch x",
-            "tos>app>other",
+            "app;touch x",
+            "app>other",
             "tos>",
-            "-tos>app",
+            "-app",
         ] {
             assert!(!valid_id(id));
         }
-        install_using(home, "test>app", &cli)?;
+        install_using(home, "app", &cli)?;
         assert!(!home.join(".honeycomb").exists());
         assert!(!home
             .join(".silicon/packages/.honeycomb/dir/config.json")
             .exists());
         assert_eq!(fs::read_link(home.join(".silicon/bin/renamed"))?, app);
-        assert!(matches(home, &app, "test>app"));
+        assert!(matches(home, &app, "app"));
         assert!(!matches(home, &app, "test>other"));
         std::os::unix::fs::symlink(&app, home.join(".silicon/bin/app"))?;
         fs::remove_file(home.join(".silicon/bin/app"))?;
-        install_using(home, "test>app", &cli)?;
+        install_using(home, "app", &cli)?;
         assert_eq!(
             fs::read_to_string(home.join(".silicon/packages/calls"))?,
             "install\ninstall\n"
         );
-        uninstall_using(home, "test>app", &cli)?;
+        uninstall_using(home, "app", &cli)?;
         assert!(!home.join(".silicon/bin/renamed").exists());
         fs::write(home.join(".silicon/bin/renamed"), "unmanaged")?;
-        assert!(install_using(home, "test>app", &cli).is_err());
-        uninstall_using(home, "test>app", &cli)?;
+        assert!(install_using(home, "app", &cli).is_err());
+        uninstall_using(home, "app", &cli)?;
         assert_eq!(
             fs::read_to_string(home.join(".silicon/bin/renamed"))?,
             "unmanaged"
         );
         fs::remove_file(home.join(".silicon/bin/renamed"))?;
-        install_using(home, "test>app", &cli)?;
+        install_using(home, "app", &cli)?;
         fs::remove_file(&app)?;
-        uninstall_using(home, "test>app", &cli)?;
+        uninstall_using(home, "app", &cli)?;
         assert!(fs::symlink_metadata(home.join(".silicon/bin/renamed")).is_err());
         for records in [
             json!([]),
-            json!({"test>app":{"app_id":"other>app","commands":{"cli":app}}}),
-            json!({"test>app":{"app_id":"test>app","commands":{"../cli":app}}}),
-            json!({"test>app":{"app_id":"test>app","commands":{"cli":"relative"}}}),
+            json!({"app":{"app_id":"other>app","commands":{"cli":app}}}),
+            json!({"app":{"app_id":"app","commands":{"../cli":app}}}),
+            json!({"app":{"app_id":"app","commands":{"cli":"relative"}}}),
         ] {
-            assert!(commands(&records, "test>app").is_err());
+            assert!(commands(&records, "app").is_err());
         }
         Ok(())
     }

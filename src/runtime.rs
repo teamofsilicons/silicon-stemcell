@@ -212,6 +212,7 @@ impl Runtime {
             auth::ensure_all_scoped(
                 &cfg.home,
                 &id,
+                cfg.silicon.org_id.as_deref().unwrap(),
                 cfg.silicon.token.as_deref().unwrap_or_default(),
                 &cfg.silicon.managed_apps(),
                 cfg.generation,
@@ -503,6 +504,7 @@ impl Runtime {
             auth::ensure_all_scoped(
                 &connected.cfg.home,
                 connected.cfg.silicon.id.as_deref().unwrap(),
+                connected.cfg.silicon.org_id.as_deref().unwrap(),
                 connected.cfg.silicon.token.as_deref().unwrap(),
                 &connected.cfg.silicon.managed_apps(),
                 connected.cfg.generation,
@@ -1763,7 +1765,8 @@ mod tests {
         let mut cfg: Config = serde_yaml::from_str(
             r#"
 silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: private-setup-credential
   timezone: UTC
   setup:
@@ -1779,7 +1782,7 @@ flow: []
         let error = runtime.connect(cfg).unwrap_err().to_string();
         assert!(error.contains("setup[0]") && error.contains("9"));
         assert!(!error.contains("private-setup-credential"));
-        assert!(runtime.get("test:org").is_err());
+        assert!(runtime.get("si:test").is_err());
         let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
         assert!(log.contains("[stdout]") && log.contains("[stderr]"));
         assert!(log.contains("setup output") && !log.contains("private-setup-credential"));
@@ -1795,7 +1798,7 @@ flow: []
         std::fs::write(dir.path().join("prompt.md"), "file contents").unwrap();
         let mut cfg: Config = serde_yaml::from_str(
             r#"
-silicon: {id: 'test:org', token: test, timezone: UTC}
+silicon: {id: 'si:test', org_id: org, token: test, timezone: UTC}
 isi:
   a:
     model: fast
@@ -1834,7 +1837,7 @@ flow: []
         let dir = tempfile::tempdir().unwrap();
         let mut cfg: Config = serde_yaml::from_str(&format!(
             r#"
-silicon: {{id: 'test:org', token: test, timezone: UTC}}
+silicon: {{id: 'si:test', org_id: org, token: test, timezone: UTC}}
 isi:
   a: {{model: fast, primary_send_mode: global, session_type: {}}}
 access: {{a: []}}
@@ -1848,7 +1851,7 @@ flow: []
         cfg.flow = flow;
         let runtime = Runtime::new("http://127.0.0.1:1823".into());
         runtime.connect(cfg).unwrap();
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let worker = runtime
             .worker(&connected, "a", &SendOptions::default())
             .unwrap();
@@ -1934,8 +1937,8 @@ flow: []
         let mut cfg = original.cfg.clone();
         // The helper's global worker must not become a third session heartbeat
         // backed by a real Omni process after changing to session addressing.
-        runtime.end("test:org", "a", None).unwrap();
-        runtime.disconnect("test:org").unwrap();
+        runtime.end("si:test", "a", None).unwrap();
+        runtime.disconnect("si:test").unwrap();
         let isi = cfg.isi.get_mut("a").unwrap();
         isi.primary_send_mode = Some("session".into());
         isi.heartbeat = Some(serde_yaml::to_value(json!({
@@ -1944,7 +1947,7 @@ flow: []
         })).unwrap());
         fs::write(home.path().join("heartbeat-interval"), "0.01s").unwrap();
         runtime.connect(cfg).unwrap();
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let options = |id: &str| SendOptions {
             id: Some(id.into()),
             new: true,
@@ -1958,7 +1961,7 @@ flow: []
             &vec!["/missing-heartbeat-app"],
         )
         .unwrap();
-        assert_eq!(runtime.list("test:org", "a", false).unwrap().len(), 2);
+        assert_eq!(runtime.list("si:test", "a", false).unwrap().len(), 2);
         let fast_transport = transport(&fast);
         let (client, mut daemon) = UnixStream::pair().unwrap();
         daemon
@@ -2020,7 +2023,7 @@ flow: []
         let sending = thread::spawn(move || {
             let result = foreground
                 .send(
-                    "test:org",
+                    "si:test",
                     None,
                     "a",
                     "foreground",
@@ -2055,7 +2058,7 @@ flow: []
         for heartbeat in [false, true] {
             let (old_home, runtime, first, _worker) = worker(false);
             let mut cfg = first.cfg.clone();
-            runtime.disconnect("test:org").unwrap();
+            runtime.disconnect("si:test").unwrap();
             let message =
                 "! touch started; while ! test -f release; do sleep 0.01; done; printf old-message";
             if heartbeat {
@@ -2070,18 +2073,18 @@ flow: []
                 ])).unwrap();
             }
             runtime.connect(cfg.clone()).unwrap();
-            let old = runtime.get("test:org").unwrap();
+            let old = runtime.get("si:test").unwrap();
             let event = if heartbeat {
                 runtime.start_scheduler();
                 None
             } else {
                 let runtime = runtime.clone();
                 Some(thread::spawn(move || {
-                    runtime.event("test:org", json!({"type":"test", "data":{}, "metadata":{}}))
+                    runtime.event("si:test", json!({"type":"test", "data":{}, "metadata":{}}))
                 }))
             };
             let started = wait_until(|| old_home.path().join("started").exists());
-            runtime.disconnect("test:org").unwrap();
+            runtime.disconnect("si:test").unwrap();
             let new_home = tempfile::tempdir().unwrap();
             cfg.home = new_home.path().to_owned();
             cfg.path = cfg.home.join("silicon.yaml");
@@ -2094,7 +2097,7 @@ flow: []
                 );
             }
             runtime.connect(cfg).unwrap();
-            let replacement = runtime.get("test:org").unwrap();
+            let replacement = runtime.get("si:test").unwrap();
             let worker = runtime
                 .worker(&replacement, "a", &SendOptions::default())
                 .unwrap();
@@ -2142,9 +2145,9 @@ flow: []
         assert!(runtime.caller_connection(&caller).is_err());
         let fresh = runtime.caller(&replacement.capability).unwrap();
         assert!(runtime.caller_connection(&fresh).is_ok());
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         runtime.connect(connected.cfg.clone()).unwrap();
-        let reconnected = runtime.get("test:org").unwrap();
+        let reconnected = runtime.get("si:test").unwrap();
         let resumed = runtime
             .worker(&reconnected, "a", &SendOptions::default())
             .unwrap();
@@ -2161,12 +2164,12 @@ flow: []
     fn session_ephemeral_creation_requires_title_even_with_new_but_active_sends_do_not() {
         let (_dir, runtime, original, _worker) = worker(false);
         let mut cfg = original.cfg.clone();
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         let isi = cfg.isi.get_mut("a").unwrap();
         isi.primary_send_mode = Some("session".into());
         isi.session_type = Some("ephemeral".into());
         runtime.connect(cfg).unwrap();
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let mut options = SendOptions {
             id: Some("job".into()),
             new: true,
@@ -2192,7 +2195,7 @@ flow: []
     #[test]
     fn stale_disconnected_connection_cannot_create_workers_or_capabilities() {
         let (_dir, runtime, connected, worker) = worker(false);
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         assert!(worker.stopped.load(Ordering::SeqCst));
         assert!(runtime
             .worker(&connected, "a", &SendOptions::default())
@@ -2253,7 +2256,7 @@ flow: []
             let event_runtime = runtime.clone();
             let event = thread::spawn(move || {
                 ack.send(event_runtime.event(
-                    "test:org",
+                    "si:test",
                     json!({"type": "test", "data": {}, "metadata": {}}),
                 ))
                 .unwrap();
@@ -2379,7 +2382,7 @@ flow: []
         assert!(runtime.begin_restart_if_idle());
         assert!(runtime
             .send(
-                "test:org",
+                "si:test",
                 None,
                 "a",
                 "too late",
@@ -2439,7 +2442,7 @@ flow: []
     fn disconnect_unhook_failure_still_removes_connection_and_capabilities() {
         let (_dir, runtime, connected, first) = worker(false);
         let mut cfg = connected.cfg.clone();
-        runtime.disconnect("test:org").unwrap();
+        runtime.disconnect("si:test").unwrap();
         assert!(first.stopped.load(Ordering::SeqCst));
         use std::os::unix::fs::PermissionsExt;
         let app = cfg.home.join("unhook-failure-app");
@@ -2447,7 +2450,7 @@ flow: []
             &app,
             r#"#!/bin/sh
 case "$*" in
-  'iam --json') echo '{"app_id":"test>app"}' ;;
+  'iam --json') echo '{"app_id":"app"}' ;;
   'login status --json') echo '{"authenticated":true}' ;;
   unhook) exit 1 ;;
   *) exit 2 ;;
@@ -2458,13 +2461,13 @@ esac
         std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o700)).unwrap();
         cfg.silicon.webhook = vec![shell_words::quote(&app.to_string_lossy()).into_owned()];
         runtime.connect(cfg).unwrap();
-        let connected = runtime.get("test:org").unwrap();
+        let connected = runtime.get("si:test").unwrap();
         let second = runtime
             .worker(&connected, "a", &SendOptions::default())
             .unwrap();
         let delivery = pending(&second, "will be cancelled");
-        assert!(runtime.disconnect("test:org").is_err());
-        assert!(runtime.get("test:org").is_err());
+        assert!(runtime.disconnect("si:test").is_err());
+        assert!(runtime.get("si:test").is_err());
         assert!(runtime.caller(&second.capability).is_none());
         assert!(delivery.wait_started().is_err());
     }

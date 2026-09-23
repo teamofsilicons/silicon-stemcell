@@ -36,10 +36,10 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <blockquote>
 <p>Upgrading from 4.0.5 or earlier: rerun the 4.0.6 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.</p>
 </blockquote>
-<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v4.0.6</code> with:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh | sh
+<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v5.0.0</code> with:</p>
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.sh | sh
 </code></pre>
-<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.6">v4.0.6 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
+<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.0">v5.0.0 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
 <p>Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.</p>
 <p><strong>4.0.6</strong> removes bundled Honeycomb app versions. Every connection installs configured apps with no version argument, and app automatic updates remain enabled according to their own settings.</p>
 <p><strong>4.0.5</strong> caches successful automatic app-auth checks for 48 hours across reconnects and restarts. Checks run only on YAML connects and new session creation; heartbeats reuse authentication, and explicit <code>si auth setup</code> bypasses the cache.</p>
@@ -51,7 +51,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </code></pre>
 <p>For the default prefix, the installer adds this path once to the startup file for your detected shell. Open a new terminal, or run the printed export command in your current terminal. Set <code>SILICON_NO_PATH=1</code> to leave shell startup files alone. Custom prefixes print the path without changing startup files.</p>
 <p>To choose another dedicated prefix, set the variable on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>The target matrix covers macOS, Linux, and Windows on ARM64 and x86-64. Windows runs the Linux bundle through WSL2. Native Unix bundles target macOS 15 and Ubuntu 24.04; the Linux binaries require glibc 2.39 or newer. Platform verification is recorded in the release evidence below; testing one architecture does not verify another.</p>
@@ -66,7 +66,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <tbody>
 <tr>
 <td><code>silicon</code>, <code>si</code></td>
-<td>Interpreter and internal CLI, 4.0.6</td>
+<td>Interpreter and internal CLI, 5.0.0</td>
 </tr>
 <tr>
 <td><code>omnid</code>, <code>silicon-omni</code>, <code>omni</code>, <code>so</code></td>
@@ -78,11 +78,11 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </tr>
 </tbody>
 </table>
-<p>Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs <code>honeycomb install 'org&gt;app' --json</code> for configured and registered canonical app IDs and for the IAM issuer. Omitting <code>--version</code> selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.</p>
+<p>Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs <code>honeycomb install 'app' --json</code> for configured and registered canonical app IDs and for the IAM issuer. Omitting <code>--version</code> selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.</p>
 <p>Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create an IAM identity or grant provider access.</p>
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>In PowerShell:</p>
-<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.ps1 | iex
+<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.ps1 | iex
 </code></pre>
 <p>Windows uses a native launcher and a dedicated WSL2 distribution named <code>Silicon</code>, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user <code>silicon</code>.</p>
 <p>Keep each project, its YAML, and its <code>SILICON_HOME</code> inside the distribution's Linux filesystem. Open <code>\\wsl.localhost\Silicon\home\silicon</code> in File Explorer and copy or create your project folder there. For example:</p>
@@ -100,11 +100,11 @@ silicon web
 <p>The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new <code>install.sh</code> as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.</p>
 <p>When you are ready to restart, stop the old interpreter and rerun the <strong>4.0.6 public installer into the same prefix</strong>:</p>
 <pre><code class="language-sh">silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.sh | sh
 silicon serve
 </code></pre>
 <p>Skip <code>silicon stop</code> if no interpreter is running. <code>silicon serve</code> runs the new interpreter and restores its saved connections. The default command uses <code>~/.local/share/silicon</code>; if your existing installation uses another prefix, preserve it on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v4.0.6/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.0/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 4.0.6. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
@@ -131,7 +131,8 @@ silicon serve
 </section><section class="chapter"><h2 id="first-silicon">First Silicon</h2>
 <p>Create your own directory and your own <code>silicon.yaml</code>. Keep it separate from the repository's reference fixture. The following is a complete schema example. Replace the identity and token with your values and ensure Omni has an authenticated provider that can satisfy the <code>fast</code> model key.</p>
 <pre><code class="language-yaml">silicon:
-  id: assistant:my-org
+  id: si:assistant
+  org_id: my-org
   token: REPLACE_WITH_YOUR_SILICON_TOKEN
   timezone: Asia/Kolkata
   SILICON_HOME: ! pwd
@@ -164,12 +165,12 @@ flow:
 <pre><code class="language-sh">silicon compile /absolute/path/to/silicon.yaml
 silicon connect /absolute/path/to/silicon.yaml
 silicon ls
-silicon send assistant:my-org assistant &quot;Hello&quot;
-silicon show assistant:my-org assistant
+silicon send si:assistant assistant &quot;Hello&quot;
+silicon show si:assistant assistant
 silicon web
 </code></pre>
 <p><code>compile</code> validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including <code>SILICON_HOME</code>, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. <code>setup</code>, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.</p>
-<p><code>connect</code> starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, registers configured webhooks, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, <code>… Authenticating tos&gt;dm</code> changes to <code>✓ Authenticated tos&gt;dm</code>; failures use <code>✗</code>. Redirected output uses separate lines without terminal control codes. <code>--json</code> returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical <code>SILICON_HOME</code> are rejected.</p>
+<p><code>connect</code> starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, registers configured webhooks, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, <code>… Authenticating dm</code> changes to <code>✓ Authenticated dm</code>; failures use <code>✗</code>. Redirected output uses separate lines without terminal control codes. <code>--json</code> returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical <code>SILICON_HOME</code> are rejected.</p>
 <p>The local identity is the canonical YAML path. The global identity is <code>silicon.id</code>. Moving a file changes its local identity. Editing a connected file does not live-reload it. Disconnect and reconnect to apply changes; restart restoration also recompiles the saved path. The interpreter never rewrites the file for you.</p>
 <p><code>silicon disconnect ./silicon.yaml</code> resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.</p>
 <p>Send an event through the Silicon's host:</p>
@@ -192,7 +193,11 @@ silicon web
 <tbody>
 <tr>
 <td><code>id</code></td>
-<td>Required <code>local-id:org-id</code>. Each part must be a DNS label: 1–63 ASCII letters, digits, or hyphens, beginning and ending with a letter or digit.</td>
+<td>Required <code>si:&lt;handle&gt;</code>. The handle has 3–50 lowercase letters, digits, underscores or hyphens.</td>
+</tr>
+<tr>
+<td><code>org_id</code></td>
+<td>Required IAM organization ID selected for authentication; it is not encoded in the Silicon ID.</td>
 </tr>
 <tr>
 <td><code>token</code></td>
@@ -216,7 +221,7 @@ silicon web
 </tr>
 <tr>
 <td><code>apps</code></td>
-<td>Optional list of Honeycomb IAM application IDs, such as <code>tos&gt;dm</code>. Installed when needed and authenticated for this Silicon.</td>
+<td>Optional list of Honeycomb IAM application IDs, such as <code>dm</code>. Installed when needed and authenticated for this Silicon.</td>
 </tr>
 <tr>
 <td><code>webhooks</code></td>
@@ -248,11 +253,11 @@ silicon web
 <pre><code class="language-yaml">setup:
   - ! mkdir -p workspace
 apps:
-  - tos&gt;dm
-  - tos&gt;briefcase
+  - dm
+  - briefcase
 webhooks:
-  - tos&gt;dm
-  - tos&gt;hook
+  - dm
+  - hook
 space_station:
   table_name: my-silicon-events
   table_key: REPLACE_WITH_YOUR_TABLE_KEY
@@ -543,19 +548,19 @@ No contacts are available.
 silicon connect PATH
 silicon disconnect ID_OR_PATH
 silicon disconnect
-silicon ls '*:my-org'
-silicon logs show assistant:my-org
-silicon logs show assistant:my-org --lines 200 --no-follow
+silicon ls 'si:*'
+silicon logs show si:assistant
+silicon logs show si:assistant --lines 200 --no-follow
 silicon web
 silicon web --no-open
 silicon serve
 silicon serve --port 1810 --no-proxy
 silicon stop
 silicon update
-silicon install 'tos&gt;dm'
-silicon uninstall 'tos&gt;dm'
-silicon ping assistant:my-org
-silicon config assistant:my-org
+silicon install 'dm'
+silicon uninstall 'dm'
+silicon ping si:assistant
+silicon config si:assistant
 silicon settings get
 silicon info
 </code></pre>
@@ -565,15 +570,15 @@ silicon info
 <p>Commands are exposed through owned links under <code>&lt;home&gt;/.silicon/bin</code>; the interpreter adds those to its command environment. <code>uninstall</code> removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured <code>apps</code>/<code>webhooks</code> entries before reconnecting if you do not want an application installed again.</p>
 <p><code>serve</code> stays in the foreground and is useful with a process manager. <code>connect</code> normally starts it automatically. <code>--no-proxy</code> is a development mode with direct localhost access and no Caddy aliases. This release does not install a login item, launch agent, or systemd service. After a reboot, use <code>silicon serve</code> or <code>silicon connect</code> to start the interpreter again.</p>
 <p>Public work commands specify the Silicon identity first:</p>
-<pre><code class="language-sh">silicon send assistant:my-org coordinator &quot;Please review this&quot;
-silicon send assistant:my-org worker.terminal &quot;Build it&quot; --id build-17 --new
-silicon sessions assistant:my-org worker.terminal
-silicon sessions assistant:my-org worker.terminal --archived '*release*'
-silicon show assistant:my-org worker.terminal --id build-17
-silicon end assistant:my-org worker.terminal --id build-17
+<pre><code class="language-sh">silicon send si:assistant coordinator &quot;Please review this&quot;
+silicon send si:assistant worker.terminal &quot;Build it&quot; --id build-17 --new
+silicon sessions si:assistant worker.terminal
+silicon sessions si:assistant worker.terminal --archived '*release*'
+silicon show si:assistant worker.terminal --id build-17
+silicon end si:assistant worker.terminal --id build-17
 </code></pre>
 <h3 id="internal-commands">Internal commands</h3>
-<pre><code class="language-sh">si auth setup 'tos&gt;dm'
+<pre><code class="language-sh">si auth setup 'dm'
 si auth setup dm
 si auth setup 'hook --profile work'
 si auth remove dm
@@ -649,7 +654,7 @@ si isi send worker.terminal &quot;Explain the deployment decision&quot; --id com
 <p>The supported discovery contract is:</p>
 <pre><code class="language-sh">APP iam --json
 </code></pre>
-<p>It must succeed and return a JSON object with a nonempty string <code>app_id</code>, for example <code>{"app_id":"tos&gt;dm"}</code>. Extra public discovery fields are allowed. Secrets must not be returned as ordinary discovery data.</p>
+<p>It must succeed and return a JSON object with a nonempty string <code>app_id</code>, for example <code>{"app_id":"dm"}</code>. Extra public discovery fields are allowed. Secrets must not be returned as ordinary discovery data.</p>
 <p>The interpreter probes status in this order:</p>
 <pre><code class="language-sh">APP login status --json
 APP auth status --json
@@ -975,7 +980,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Honeycomb cannot resolve a configured app</td>
-<td>Check the quoted <code>org&gt;app</code> ID, CLI discovery, package availability for this platform, and the selected IAM organization.</td>
+<td>Check the bare <code>app</code> ID, CLI discovery, package availability for this platform, and the selected IAM organization.</td>
 </tr>
 <tr>
 <td>Space Station asks for an organization</td>
@@ -1138,7 +1143,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Real Space Station installation and auth</td>
-<td>Honeycomb 0.2.0 anonymously installed public <code>tos&gt;spacestation</code> 0.1.3 into a clean home. A separate freshly created Silicon home with no saved organization then passed real IAM SLT exchange, canonical-ID login, exact Silicon identity/org checks, logout, and false authenticated status against the retained production test identity.</td>
+<td>Honeycomb 0.2.0 anonymously installed public <code>spacestation</code> 0.1.3 into a clean home. A separate freshly created Silicon home with no saved organization then passed real IAM SLT exchange, canonical-ID login, exact Silicon identity/org checks, logout, and false authenticated status against the retained production test identity.</td>
 </tr>
 <tr>
 <td>DM's published replacement matches the live API</td>
@@ -1146,7 +1151,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Briefcase's published replacement matches the live contract</td>
-<td>Published Briefcase 1.1.0 reported matching client, server, and contract versions and discovered <code>tos&gt;briefcase</code>. Real IAM SLT login returned the correct Silicon identity/org; authenticated status, logout, and final unauthenticated status passed without content writes. The pin replaces the incompatible 0.2.4 client.</td>
+<td>Published Briefcase 1.1.0 reported matching client, server, and contract versions and discovered <code>briefcase</code>. Real IAM SLT login returned the correct Silicon identity/org; authenticated status, logout, and final unauthenticated status passed without content writes. The pin replaces the incompatible 0.2.4 client.</td>
 </tr>
 <tr>
 <td>Runnable documentation examples</td>

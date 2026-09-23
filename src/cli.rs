@@ -62,7 +62,7 @@ enum SiliconCommand {
     Stop,
     /// Install a newer stable GitHub release into a managed bundle installation.
     Update,
-    /// Install an app for this system through Honeycomb, for example 'tos>dm'.
+    /// Install an app for this system through Honeycomb, for example 'dm'.
     Install { app_id: String },
     /// Remove a Honeycomb-managed app from this home.
     Uninstall { app_id: String },
@@ -282,7 +282,7 @@ pub fn silicon() -> Result<()> {
     let cli = SiliconCli::parse();
     match cli.command.unwrap_or(SiliconCommand::Ls { pattern: None }) {
         SiliconCommand::Iam => print_json(
-            &json!({"app_id":"tos>silicon","docs_url":"https://docs.teamofsilicons.com","repository":"https://github.com/teamofsilicons/silicon-stemcell"}),
+            &json!({"app_id":"silicon","docs_url":"https://docs.teamofsilicons.com","repository":"https://github.com/teamofsilicons/silicon-stemcell"}),
         )?,
         SiliconCommand::Compile { yaml } => {
             let cfg = server::compile(yaml)?;

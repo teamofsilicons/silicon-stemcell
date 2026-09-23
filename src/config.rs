@@ -15,6 +15,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Silicon {
     pub id: Option<String>,
+    pub org_id: Option<String>,
     pub token: Option<String>,
     pub timezone: Option<String>,
     #[serde(rename = "SILICON_HOME")]
@@ -135,7 +136,7 @@ impl Config {
         }
         document["silicon"]["SILICON_HOME"] = Yaml::String(home.to_string_lossy().into_owned());
         env["silicon"]["SILICON_HOME"] = json!(home);
-        for key in ["id", "token", "timezone"] {
+        for key in ["id", "org_id", "token", "timezone"] {
             evaluate_field(&mut document["silicon"], key, &env, &home, "interpreter")?;
             env["silicon"][key] = serde_json::to_value(&document["silicon"][key])?;
         }
@@ -210,11 +211,23 @@ impl Config {
 
     fn validate(&mut self) -> Result<()> {
         let id = required(&self.silicon.id, "silicon.id")?;
-        let (local, org) = id
-            .split_once(':')
-            .ok_or_else(|| anyhow!("silicon.id must be local-id:org-id"))?;
-        if !host_label(local) || !host_label(org) {
-            bail!("silicon.id must contain two DNS labels separated by one colon");
+        id.strip_prefix("si:")
+            .filter(|handle| {
+                (3..=50).contains(&handle.len())
+                    && handle.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'_' | b'-')
+                    })
+            })
+            .ok_or_else(|| anyhow!("silicon.id must be si:<handle>"))?;
+        let org = required(&self.silicon.org_id, "silicon.org_id")?;
+        if !(3..=50).contains(&org.len())
+            || !org
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+        {
+            bail!("silicon.org_id must be a canonical IAM organization handle");
         }
         required(&self.silicon.token, "silicon.token")?;
         required(&self.silicon.timezone, "silicon.timezone")?
@@ -227,16 +240,8 @@ impl Config {
         ] {
             let mut seen = HashSet::new();
             for app in apps {
-                if !app.split_once('>').is_some_and(|(org, app)| {
-                    [org, app].iter().all(|part| {
-                        (1..=64).contains(&part.len())
-                            && part.as_bytes()[0].is_ascii_alphanumeric()
-                            && part
-                                .bytes()
-                                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    })
-                }) {
-                    bail!("silicon.{name} entries must be IAM app IDs, e.g. tos>dm");
+                if !crate::apps::valid_id(app) {
+                    bail!("silicon.{name} entries must be bare IAM app IDs, e.g. dm");
                 }
                 if !seen.insert(app) {
                     bail!("silicon.{name} repeats {app}");
@@ -358,6 +363,7 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                 "silicon",
                 &[
                     "id",
+                    "org_id",
                     "token",
                     "timezone",
                     "SILICON_HOME",
@@ -460,7 +466,7 @@ fn required<'a>(value: &'a Option<String>, path: &str) -> Result<&'a str> {
     Ok(value)
 }
 
-fn host_label(value: &str) -> bool {
+pub(crate) fn host_label(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63
         && value
@@ -1145,7 +1151,7 @@ mod tests {
         let mut warnings = Vec::new();
         let config = parse_document(source, &mut warnings).unwrap();
         assert_eq!(config["silicon"]["SILICON_HOME"].as_str(), Some("! pwd"));
-        assert_eq!(config["silicon"]["apps"][0].as_str(), Some("tos>dm"));
+        assert_eq!(config["silicon"]["apps"][0].as_str(), Some("dm"));
         assert_eq!(
             config["silicon"]["setup"][0].as_str(),
             Some("! ./install_python.sh")
@@ -1210,7 +1216,7 @@ mod tests {
     fn load_resolves_home_and_validates_template_and_modes() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
-        let source = "silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    sticky: false\n    archive_on_end: false\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
+        let source = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    sticky: false\n    archive_on_end: false\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
         fs::write(&path, source).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(config.home, temp.path().canonicalize().unwrap());
@@ -1222,7 +1228,7 @@ mod tests {
             config.isi["worker"].session_type.as_deref(),
             Some("persistent")
         );
-        fs::write(&path, source.replace("id: test:org", "id: ...")).unwrap();
+        fs::write(&path, source.replace("id: si:test", "id: ...")).unwrap();
         assert!(Config::load(&path)
             .unwrap_err()
             .to_string()
@@ -1276,12 +1282,12 @@ mod tests {
         let app = shell_words::quote(app.to_str().unwrap());
         let login = format!("! {app} --title \"hello {{silicon.id}}\" --literal '!>>'");
         let webhook = format!("{{missing.command}} !>> ! {app} --zone \"{{silicon.timezone}}\"");
-        let source = format!("silicon:\n  id: test:org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\n  login: [{}]\n  webhook: [{}]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n", serde_json::to_string(&login).unwrap(), serde_json::to_string(&webhook).unwrap());
+        let source = format!("silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\n  login: [{}]\n  webhook: [{}]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {{assemble: [], next_refresh: 30min}}\naccess: {{worker: []}}\nflow: []\n", serde_json::to_string(&login).unwrap(), serde_json::to_string(&webhook).unwrap());
         fs::write(&path, &source).unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(
             config.silicon.login,
-            [format!("{app} --title \"hello test:org\" --literal '!>>'")]
+            [format!("{app} --title \"hello si:test\" --literal '!>>'")]
         );
         assert_eq!(config.silicon.webhook, [format!("{app} --zone \"UTC\"")]);
         assert!(!temp.path().join("app-was-invoked").exists());
@@ -1295,7 +1301,7 @@ mod tests {
             config.silicon.login,
             [
                 app.to_string(),
-                format!("{app} --title \"hello test:org\" --literal '!>>'")
+                format!("{app} --title \"hello si:test\" --literal '!>>'")
             ]
         );
         assert!(!temp.path().join("app-was-invoked").exists());
@@ -1306,7 +1312,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
         let source = r#"silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: token
   timezone: UTC
   SILICON_HOME: ! pwd
@@ -1314,8 +1321,8 @@ mod tests {
   setup:
     - ! touch must-not-exist; printf '{silicon.id}'
     - printf 'plain shell command'
-  apps: ['tos>{"dm"}', tos>hook]
-  webhooks: [tos>hook, tos>remind]
+  apps: ['{"dm"}', hook]
+  webhooks: [hook, remind]
   login: [legacy-app]
   webhook: [legacy-app]
   space_station:
@@ -1338,33 +1345,30 @@ flow: []
                 "! touch must-not-exist; printf '{silicon.id}'"
             );
             assert_eq!(cfg.silicon.setup[1], "printf 'plain shell command'");
-            assert_eq!(cfg.silicon.apps, ["tos>dm", "tos>hook"]);
+            assert_eq!(cfg.silicon.apps, ["dm", "hook"]);
             assert_eq!(
                 cfg.silicon.managed_apps(),
-                ["tos>dm", "tos>hook", "legacy-app", "tos>remind"]
+                ["dm", "hook", "legacy-app", "remind"]
             );
-            assert_eq!(
-                cfg.silicon.hooked_apps(),
-                ["tos>hook", "tos>remind", "legacy-app"]
-            );
+            assert_eq!(cfg.silicon.hooked_apps(), ["hook", "remind", "legacy-app"]);
             let station = cfg.silicon.space_station.unwrap();
-            assert_eq!(station.table_name, "events-test:org");
+            assert_eq!(station.table_name, "events-si:test");
             assert_eq!(station.table_key, "test-key");
             assert!(!temp.path().join("must-not-exist").exists());
             assert_eq!(fs::read_to_string(&path).unwrap(), source);
         }
         for invalid in [
-            "tos>dm>bad",
+            "dm>bad",
             "tos>DM",
-            "tos>bad_app",
-            "tos>bad.app",
+            "bad:app",
+            "bad.app",
             "tos>-dm",
             "tos>",
-            "dm",
+            "tos>dm",
             "'! touch must-not-exist'",
-            "tos>dm, tos>dm",
+            "dm, dm",
         ] {
-            fs::write(&path, source.replace("'tos>{\"dm\"}', tos>hook", invalid)).unwrap();
+            fs::write(&path, source.replace("'{\"dm\"}', hook", invalid)).unwrap();
             assert!(
                 Config::load(&path).is_err(),
                 "accepted invalid app {invalid}"
@@ -1376,7 +1380,7 @@ flow: []
             source.replace("table_key: test-key", "table_key: ..."),
             source.replace("table_key: test-key", "table_key: test-key\n    unknown: nope"),
             source.replace("table_key: test-key", "table_key: test-key\n    table_key: duplicate"),
-            source.replace("apps: ['tos>{\"dm\"}', tos>hook]", "apps: [12]"),
+            source.replace("apps: ['{\"dm\"}', hook]", "apps: [12]"),
             source.replace("setup:\n    - ! touch must-not-exist; printf '{silicon.id}'\n    - printf 'plain shell command'", "setup: [true]"),
             source.replace("printf 'plain shell command'", "!"),
         ] {
@@ -1406,7 +1410,8 @@ flow: []
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
         let source = r#"silicon:
-  id: test:org
+  id: si:test
+  org_id: org
   token: "! printf compile-private-token"
   timezone: UTC
   SILICON_HOME: ! pwd
