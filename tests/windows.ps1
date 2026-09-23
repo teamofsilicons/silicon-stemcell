@@ -126,12 +126,12 @@ flow: []
         & $exe web
         if ($LASTEXITCODE -ne 0) { throw 'Windows browser bridge failed.' }
         $connected = & $exe --json connect silicon.yaml | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $connected.connection.id -ne 'windows-test:tos') { throw 'Native connect failed.' }
-        & $exe ping windows-test:tos
+        if ($LASTEXITCODE -ne 0 -or $connected.connection.id -ne 'si:windows-test') { throw 'Native connect failed.' }
+        & $exe ping si:windows-test
         if ($LASTEXITCODE -ne 0) { throw 'Native ping failed.' }
-        $configuration = & $exe --json config windows-test:tos
+        $configuration = & $exe --json config si:windows-test
         if ($LASTEXITCODE -ne 0 -or "$configuration" -match 'fixture-not-a-real-token') { throw 'Config failed to redact token.' }
-        & $exe disconnect windows-test:tos
+        & $exe disconnect si:windows-test
         if ($LASTEXITCODE -ne 0) { throw 'Native disconnect failed.' }
     } finally {
         & $exe stop
