@@ -28,6 +28,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo test --locked
+          python3 tests/ting_migration.py
           cargo clippy --locked --all-targets -- -D warnings
       - name: Check installer syntax and isolated atomic activation
         run: |

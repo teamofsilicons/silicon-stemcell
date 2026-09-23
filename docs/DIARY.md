@@ -1,5 +1,62 @@
 # Building Silicon
 
+
+## 4.1.0: Omni 0.9.0 and Ting delivery
+
+The interpreter now uses Omni 0.9.0 and registers its local event endpoint only with Ting. IAM and Ting are implicit Honeycomb applications even when omitted from `apps`. Ting's stable hook ID survives reconnects, and incoming `tings` batches are acknowledged only after their private inbox journal is durable. Duplicate delivery IDs are retained for 100 days; queued batches resume after restart and use the current flow source.
+
+Remove legacy per-app `webhooks` or `webhook` configuration before upgrading and adapt event flows to `request.tings`. `SILICON_ORG` defaults to the identity's org, `app_configs` sends private typed JSON to each app, and `si app install/uninstall` updates the source configuration. The reference template and CEL list helpers handle batches without evaluating notification text as expressions.
+
+Local validation passed 54 unit tests and the bundle-path integration test, formatting, and Clippy. The complete source-built bundle passed the real Omni/Caddy end-to-end suite with isolated Honeycomb, IAM, and Ting fixtures. A real Ting 0.1.2 CLI was installed through Honeycomb and its registration documentation checked; production Ting authentication was not exercised with the reference template's placeholder token.
+
+[Silicon 4.1.0](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.1.0) was published as latest stable on 22 September 2026 at 15:07 UTC. [All six platform jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35743295086) passed on `66df3faa2be61543a336fa3f4e5bb632724a22b9`, including every Unix installed-bundle Omni/Caddy suite and Windows x64 WSL2/native-command checks. All nine release assets matched the verified CI files by size and SHA-256 digest; all eight checksum entries matched. Windows archives contain the identical tested Linux runtimes and 17 native entry points, including `ting.exe`. Windows ARM64 retains its physical WSL2 testing boundary. Existing Windows installations should rerun the PowerShell installer to add the new native Ting entry point.
+
+## 4.0.9: Retained ephemeral sessions and clearer logs
+
+Session-addressed ephemeral work now keeps its record and Omni event history, archives on retirement, and remains reachable through archived-session commands. Only global ephemeral work is discarded. Log origins distinguish CLI and daemon processes, ISI-to-ISI sends name their sender, and flow entries name the condition, assignment, or send target without evaluating expressions twice.
+
+The legacy `sticky` and `archive_on_end` configuration fields are removed. Replace `sticky: true/false` with `primary_send_mode: global/session`, and `archive_on_end: true/false` with `session_type: ephemeral/persistent` before upgrading. The reference YAML and guide use the canonical fields.
+
+Local validation passed 49 unit tests and the bundle-path integration test, formatting, and Clippy. Two Caddy-only unit tests remain separately gated; the release workflow exercises the real Omni/Caddy protocol suite on each Unix platform.
+
+[Silicon 4.0.9](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.9) was published as latest stable on 20 September 2026 at 14:38 UTC. [All six platform jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35516307701) passed on `468ff5d0842b0edb8e42b94a9f41dc09b14932b9`, including each Unix installed-bundle Omni/Caddy E2E and Windows x64 WSL2/native-command checks. All nine uploaded files matched the verified CI assets by size and SHA-256 digest, and all eight checksum entries matched. Every public asset URL answered with its expected size. The public installer installed into a fresh macOS ARM64 prefix, reported 4.0.9, and preserved all 14 verified payload files byte for byte. Windows ARM64 retains its documented physical WSL2 testing boundary.
+
+## 4.0.8: Omni 0.8.0 and provider removal logging
+
+Silicon Omni 0.8.0 takes a failing provider off the chat. A crash, a rate limit, an outage the provider ends the turn on, or a CLI that will not start now closes the turn, sets that provider aside while the chat is live, and resolves the same ask over whoever is left, announced by a `CONFIG` event whose text is `provider_removed`. The interpreter now pins that release for its Rust client and the bundled daemon, and writes each removal to the Silicon log as a `provider_removed` line naming the provider, the reason, and the providers left, alongside the raw event it already recorded. A unit test covers a removal with providers left, the last removal, and other configuration events staying quiet.
+
+Omni 0.8.0 also starts CLIs on the `PATH` the user's login shell reports, ahead of the daemon's own. On a development machine with a real `claude` on that PATH, the protocol E2E's scripted provider would have been shadowed by it. The E2E now points `SHELL` at a profile-free wrapper so the daemon's probe answers with the test's own environment; the guide records why.
+
+The local interpreter passed 42 unit tests, formatting, and Clippy against the new client, and the complete protocol E2E passed with a daemon built from the pinned 0.8.0 revision the way the installer builds it, with real Caddy. Upgrading from 4.0.6 or 4.0.7 needs only `silicon update` and an interpreter restart; the bundle layout is unchanged.
+
+[Silicon 4.0.8](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.8) was published as latest stable on 19 September 2026 at 06:49 UTC. [All six platform builds and checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35426793090) passed on `9d3c61cad1c05e1fb69f94a0b713b4a4edd9d10c` before the tag existed. Every archive reported `v4.0.8`, the seven-binary runtime inventory, and the Omni 0.8.0 notices; the macOS ARM64 bundle ran `silicon 4.0.8`, `omnid 0.8.0`, and Caddy 2.11.4 natively; and all nine asset digests and sizes matched the verified CI files before publication, with every public download URL answering at its verified size afterwards. The local interpreter updated through `silicon update`, restarted on 4.0.8, and restored its Silicon with every configured app reinstalled at its latest Honeycomb release.
+
+
+
+## 4.0.7: Repairing the package home 4.0.6 left unconfigurable
+
+4.0.6 returned update policy to Honeycomb by deleting `auto_update` from each Silicon's private package home. Honeycomb requires that setting, so every package command in a migrated home failed with `config.json is invalid JSON; repair it before continuing`. The first upgraded connection could not install `tos>iam` and the Silicon stayed disconnected; the interpreter's restore reported the Honeycomb failure with the command needed to reproduce it.
+
+The migration now writes Honeycomb's own default instead of removing the setting, and a home already left without it is repaired before any package command runs. Later app and user preferences remain untouched, and a configuration the interpreter cannot parse is left for Honeycomb to report. The repair was verified against a copy of the affected home using the real Honeycomb CLI, and the regression is covered twice: a unit test for migration, repair, and unparsable configuration, and an end-to-end connection that starts from the exact state 4.0.6 produced, with the mock Honeycomb enforcing the real CLI's required setting.
+
+Upgrading from 4.0.6 needs only `silicon update` and an interpreter restart; the bundle layout is unchanged.
+
+[Silicon 4.0.7](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.7) was published as latest stable on 17 September 2026 at 21:30 UTC. All six archives reported `v4.0.7` and the intended runtime-only inventory, and all eight asset digests matched the verified CI files before publication. The local interpreter updated through `silicon update`, restarted on 4.0.7, and restored its Silicon: every configured app reinstalled at its latest Honeycomb release, with IAM 2.0.0, DM 0.9.2, Briefcase 1.1.0, Browser 0.2.4, and Waveform 0.1.2 all satisfying the `iam --json` contract.
+
+
+
+## 4.0.6: Independent Honeycomb applications
+
+Configured and registered canonical app IDs now install through Honeycomb on every connection with no version argument. Application executables, version selections, and update-suppressing wrappers have been removed from the interpreter bundle. Honeycomb itself is downloaded independently from its latest release with checksum verification, preserving existing update settings and services. Omni and Caddy remain runtime dependencies.
+
+The per-Silicon package registry can coexist with unrelated global commands. Existing files inside the private command directory remain protected against collisions. An old interpreter-imposed Honeycomb update preference is removed once; subsequent preferences belong to the app or user. The 48-hour authentication cache remains separate from installation.
+
+[All six platform builds](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35270308880) passed for runtime source `0116c15c31bb7564d55cff901bb008b4478fa9de`, including the real Omni/Caddy Unix suite and Windows x64 WSL2/native-command suite. Windows ARM64 remains preview pending physical ARM64 WSL2 testing. Local checks also installed IAM, DM, Briefcase, Browser, and Waveform without version arguments alongside existing global commands and verified their required CLI contracts. The reconnect regression proves installation runs again while a fresh authentication cache avoids reauthentication.
+
+Upgrading from 4.0.5 or earlier requires running the new installer once because older embedded updaters require the former bundled app inventory.
+
+[Silicon 4.0.6](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.6) was published as latest stable on 17 September 2026 at 20:53 UTC. All six archives passed version, inventory, native architecture, installer, and notice checks. All nine uploaded assets matched the verified files and GitHub’s SHA-256 digests. Transient upload failures left incomplete Windows assets; only those incomplete records were removed, and the verified Windows artifacts were uploaded from a temporary GitHub workflow, then rechecked before publication.
+
 9–17 September 2026 · implementation diary
 
 ### 17 September: verified 4.0.3 bundles

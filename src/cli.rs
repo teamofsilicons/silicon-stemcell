@@ -42,7 +42,7 @@ enum SiliconCommand {
     Connect { yaml: PathBuf },
     /// Disconnect by silicon id or YAML path. Without a target, list choices.
     Disconnect { target: Option<String> },
-    /// List connected Silicons, optionally matching a quoted glob such as '*:org'.
+    /// List connected Silicons, optionally matching a quoted glob such as 'si:*'.
     #[command(alias = "list")]
     Ls { pattern: Option<String> },
     /// Read the append-only Silicon log.
@@ -160,6 +160,11 @@ struct SiCli {
 }
 #[derive(Subcommand)]
 enum SiCommand {
+    /// Install or uninstall an app and update this Silicon's YAML configuration.
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
     /// Set up an IAM application; alias for `si auth setup APP`.
     Setup {
         #[command(subcommand)]
@@ -180,6 +185,13 @@ enum SiCommand {
         #[command(subcommand)]
         command: SessionCommand,
     },
+}
+#[derive(Subcommand)]
+enum AppCommand {
+    /// Install a Honeycomb app and add its canonical app ID to silicon.apps.
+    Install { app_id: String },
+    /// Uninstall a Honeycomb app and remove its app entry and configuration.
+    Uninstall { app_id: String },
 }
 #[derive(Subcommand)]
 enum SetupCommand {
@@ -440,7 +452,7 @@ pub fn silicon() -> Result<()> {
             print_json(&json!({"version":env!("CARGO_PKG_VERSION"),"protocol":1,
             "source":"https://github.com/teamofsilicons/silicon-stemcell",
             "docs":"https://docs.teamofsilicons.com", "rust_package":"silicon",
-            "dependencies":["silicon-omni","iam","honeycomb","space-station","caddy"],
+            "dependencies":["silicon-omni","iam","ting","honeycomb","space-station","caddy"],
             "bugs":"https://github.com/teamofsilicons/silicon-stemcell/issues"}))?
         }
         SiliconCommand::BugReport {
@@ -504,7 +516,7 @@ pub fn si() -> Result<()> {
     let Some(command) = cli.command else {
         if cli.json {
             return print_json(
-                &json!({"isi":std::env::var("ISI").ok(),"services":["auth","isi","session"]}),
+                &json!({"isi":std::env::var("ISI").ok(),"services":["app","auth","isi","session"]}),
             );
         }
         if let Ok(isi) = std::env::var("ISI") {
@@ -515,6 +527,12 @@ pub fn si() -> Result<()> {
         return Ok(());
     };
     let (action, args) = match command {
+        SiCommand::App {
+            command: AppCommand::Install { app_id },
+        } => ("app-install", json!({"app_id":app_id})),
+        SiCommand::App {
+            command: AppCommand::Uninstall { app_id },
+        } => ("app-uninstall", json!({"app_id":app_id})),
         SiCommand::Setup {
             command: SetupCommand::Auth { app },
         } => ("auth-setup", json!({"app":app})),
@@ -610,6 +628,14 @@ fn show_result(action: &str, value: Value, json: bool) -> Result<()> {
         "new-session" => println!("started session {}", field(&value, "id")?),
         "auth-setup" => println!("authenticated {}", field(&value, "app_id")?),
         "auth-remove" => println!("authentication removed"),
+        "app-install" => println!(
+            "installed {} and updated silicon.yaml",
+            field(&value, "app_id")?
+        ),
+        "app-uninstall" => println!(
+            "uninstalled {} and updated silicon.yaml",
+            field(&value, "app_id")?
+        ),
         _ => return print_json(&value),
     }
     Ok(())
@@ -941,6 +967,10 @@ mod tests {
     fn command_shapes_and_archive_filters_preserve_scope() {
         SiliconCli::command().debug_assert();
         SiCli::command().debug_assert();
+        for verb in ["install", "uninstall"] {
+            assert!(SiCli::try_parse_from(["si", "app", verb, "dm"]).is_ok());
+            assert!(SiCli::try_parse_from(["si", "app", verb]).is_err());
+        }
         let bare = SiCli::try_parse_from(["si", "isi", "ls", "worker", "--archived"]).unwrap();
         let Some(SiCommand::Isi {
             command: IsiCommand::Ls { archive, .. },

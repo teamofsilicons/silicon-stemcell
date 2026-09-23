@@ -21,7 +21,7 @@ connect:
 compiles the silicon.yaml and throws errors if any, or connect if all is good.
 create a local listening url ({handle}.{org_id}.localhost) for this silicon and maps that url to silicon interpreter's web server link. Use the handle after `si:` and the separately stored owning `org_id`; do not derive the organisation from the Silicon ID. This hostname is a local routing address, not a public Silicon ID.
 
-for the items in webhooks, run `app webhook "{handle}.{org_id}.localhost"`
+Once the local route is ready, register its URL with Ting using the Honeycomb-installed `ting` CLI. Ting is implicit, like IAM, even when absent from apps.
 
 show the output of all scripts inside setup, tell when each app is installed and logged in, and when webhooks are setup.
 
@@ -45,7 +45,7 @@ uninstall
 
 
 Events:
-for anything that silicon interpreter receives from any of the silicon's url, has to be of the shape {type: str, data: obj, metadata: obj}, and only send an ack when the entire flow is finished. not when all the send turn finishes... but when all has happened and things are running.
+Ting delivers {tings: [{id: str, type: str, data: obj, metadata: obj}, ...]} to each Silicon URL. Persist the whole batch, return empty HTTP 204, then execute its flow. Individual flow sends wait for provider delivery receipts, without waiting for inference turns. The previous single-event HTTP envelope is replaced by Ting batches.
 
 send always sends a msg mid turn. no msg is ever queued, its passed as soon as it comes in.
 
@@ -92,13 +92,14 @@ silicon:
     token                   silicon token, used for authentication
     timezone                timezone silicon operates in
     SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
+    SILICON_ORG             env variables passed for all ISI
     space_station           optional; for telemetry
         table_name          space station table name
         table_key           space station table key
     inference_providers     omni supported inference providers
     setup                   optional; list of shell command that is run once during connecting silicon
     apps                    optional; list of iam apps, automatically logged in using silicon token
-    webhooks                optional; list of iam apps to register for webhook
+    app_configs             optional; sets key value pairs for apps
 
 inference_providers can take in either a list of inference providers that omni supports.
 it can take - all-available-providers
@@ -114,19 +115,24 @@ now, ideally all-available-providers should already have claude code cli, but la
 move from top to bottom, and add / remove from the group.
 if only all-available-providers is written, use the native option instead of computing.
 
-apps mentioned inside `apps` & `webhooks` should be automatically installed from honeycomb & logged in using iam cli.
+apps mentioned inside `apps`, plus implicit IAM and Ting, should be automatically installed from honeycomb. Apps and Ting are logged in using the IAM CLI.
 
 app's follow iam auth methods.
 `app iam --json` -> extract app_id -> generate a short lived auth token for this app_id -> `app login "..."` -> check -> `app login status --json` and check authenticated: true
+
+app config setup:
+every app with configs supports running `app config set "{key: value, ...}"`
+
+once a silicon is ready to receive messages, register it on ting.
 
 apps themselves manage access & refresh tokens.
 any isi can login to an app assisted by `si setup auth app_id` cli
 before heartbeats & new sessions, all auths are checked and authenticated if needed.
 
-when disconnecting a silicon, run unhook for all iam apps that had webhooks running.
+when disconnecting a silicon, run `ting unhook {webhook_id}`. Retain the ID and reuse it when reconnecting.
 
 isi:
-each isi is run on its own terminal with 2 env variables: SILICON_HOME & ISI
+each isi is run on its own terminal with SILICON_HOME, SILICON_ORG & ISI
 if isi has primary send mode global, its just the isi name, if it is session, then its name:id
 
     isi_name:                       name that other allowed isi can call this isi by. min 1 req.
@@ -193,7 +199,7 @@ log:
     message             logs message inside append only silicon.log
 
 
-
+flow should never be stored by the interpretter as it can change from run to run by silicon.
 
 
 # logging
@@ -219,6 +225,7 @@ any string with non excaped {...} should be evaluated using CEL. Pass the follow
 - tz_time function which takes in a UTC time, and a timezone in IANA, and outputs time in that timezone. {HH:MM:SS DD:MM:YY IANA}
 - to_yaml takes in json, and prints it with tabs & new lines (yaml).
 - to_json takes in string, and evaluates it so it can become a json and be evaluatable.
+- .sortBy, .join, .distinct, .slice, .reverse, .flatten should all be extended to CEL to work with lists because all request.tings are lists.
 
 
 
@@ -259,8 +266,7 @@ All iam apps' authentication is managed by silicon interpretter.
 `app login status --json` tells if its {authenticated: true}
 
 Events:
-`app webhook "..."`
-`app unhook`
+Apps publish notifications through Ting. Ting alone registers the Silicon local webhook and delivers `{"tings": [...]}` batches. Each ting carries id, type, data and metadata. The interpreter durably accepts the whole batch before returning empty HTTP 204, then executes the current flow from disk.
 
 
 # si cli
@@ -315,6 +321,12 @@ when starting a new session it inherits the session id from the one running befo
 
 session & emphemeral:
 never starts a new session. --id is always passed when creating a new isi of this kind.
+
+> install & uninstall apps
+`si app install {honeycomb_app_id}` to install an app and append its app_id inside silicon.yaml apps list
+`si app uninstall {honeycomb_app_id}` to remove that app from the list along with its config.
+
+if a config needs to be added for a newly installed app, then it should be added directly into the silicon.yaml file by silicon.
 
 
 # telemetry

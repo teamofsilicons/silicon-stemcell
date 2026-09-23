@@ -4,9 +4,13 @@ Silicon itself is distributed through [GitHub Releases](https://github.com/teamo
 
 Honeycomb is installed independently from its checksum-verified latest release. Application CLIs are not copied into interpreter release bundles.
 
-On every connection, Silicon runs `honeycomb install 'app' --json` for each configured or previously registered canonical app ID, plus `iam` for token issuance. No version argument or persistent pin is written. Honeycomb selects the latest published package and handles verification and installation. Legacy explicit executable commands stay under the user's control.
+On every connection, Silicon runs `honeycomb install 'app' --json` for each configured or previously registered canonical app ID, plus `iam` for token issuance and `ting` for notification delivery. Ting is installed, authenticated, and registered even when it is absent from `silicon.apps`. No version argument or persistent pin is written. Honeycomb selects the latest published package and handles verification and installation. Legacy explicit executable commands stay under the user's control.
 
-The package registry is isolated beneath `<SILICON_HOME>/.silicon/packages`; app credentials remain under the original Silicon home. Interpreter updates do not disable app updates or wrap app commands to suppress updates. An old interpreter-imposed `auto_update: false` setting in the private package home is removed once; later preferences are preserved. Authentication still uses the separate 48-hour check cache.
+The package registry is isolated beneath `<SILICON_HOME>/.silicon/packages`; app credentials remain under the original Silicon home. Interpreter updates do not disable app updates or wrap app commands to suppress updates. An old interpreter-imposed `auto_update: false` setting in the private package home is restored to Honeycomb's default once; later preferences are preserved. Honeycomb requires that setting, so a home left without it — as 4.0.6 did when it deleted the setting — is repaired before any package command runs. Authentication still uses the separate 48-hour check cache.
+
+After authentication, `silicon.app_configs` objects are passed to the matching CLI with `config set JSON`. Commands receive `SILICON_HOME` and `SILICON_ORG`. Inside an ISI, `si app install 'app'` adds the canonical ID to the current YAML after installation and authentication; `si app uninstall 'app'` removes its package, app entry, and config. IAM and Ting remain required dependencies.
+
+Only Ting is registered to the local Silicon URL. The interpreter retains and reuses its webhook ID, acknowledges durably stored `request.tings` batches with an empty 204, and runs `ting unhook ID --json` on disconnect. Applications publish through Ting instead of managing separate interpreter webhooks. See the [Ting registration contract](GUIDE.md#ting-registration-and-app-notifications).
 
 Those applications keep their own IAM identities and authentication flows. The interpreter uses them on behalf of the configured Silicon identity; it does not need a separate application identity for distribution.
 

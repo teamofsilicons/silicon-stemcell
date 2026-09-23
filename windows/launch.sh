@@ -5,7 +5,7 @@ export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.local/bin:
 command=$1
 windows_cwd=$2
 shift 2
-case "$command" in silicon|si|omnid|silicon-omni|omni|so|caddy|iam|honeycomb|spacestation|dm|briefcase|waveform|commit|remind|hook) ;; *) echo 'Unknown Silicon command' >&2; exit 2 ;; esac
+case "$command" in silicon|si|omnid|silicon-omni|omni|so|caddy|iam|honeycomb|spacestation|dm|briefcase|waveform|commit|remind|hook|ting) ;; *) echo 'Unknown Silicon command' >&2; exit 2 ;; esac
 if [ -n "${SILICON_HOME:-}" ]; then
     case "$SILICON_HOME" in /*) ;; *) echo 'Windows SILICON_HOME must name an absolute path inside the Silicon WSL2 distribution.' >&2; exit 2 ;; esac
     cd -- "$SILICON_HOME"
@@ -17,7 +17,7 @@ else
 fi
 homes=("$HOME" "${SILICON_HOME:-$HOME}" "${SILICON_INTERPRETER_HOME:-$HOME/.silicon-interpreter}")
 while IFS= read -r name; do
-    case "$name" in SILICON_*|OMNI_*|SPACE_STATION_*|HONEYCOMB_*|BRIEFCASE_*|DM_*|WAVEFORM_*|COMMIT_*|REMIND_*|HOOK_*|IAM_*)
+    case "$name" in SILICON_*|OMNI_*|SPACE_STATION_*|HONEYCOMB_*|BRIEFCASE_*|DM_*|WAVEFORM_*|COMMIT_*|REMIND_*|HOOK_*|TING_*|IAM_*)
         case "$name" in *_HOME|*_DIR) [ -z "${!name}" ] || homes+=("${!name}") ;; esac
     esac
 done < <(compgen -e)

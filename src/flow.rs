@@ -11,6 +11,41 @@ fn required<'a>(map: &'a Mapping, name: &str) -> Result<&'a Yaml> {
     get(map, name).ok_or_else(|| anyhow!("missing {name}"))
 }
 
+/// Flow sources include multi-line message templates; keep one entry readable.
+fn summarize(source: &str) -> String {
+    let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    const LIMIT: usize = 160;
+    if flat.chars().count() <= LIMIT {
+        flat
+    } else {
+        format!("{}…", flat.chars().take(LIMIT).collect::<String>())
+    }
+}
+
+/// What the step about to run says in the configuration, so the log names the
+/// branch or assignment rather than only its operation. These are unevaluated
+/// sources on purpose: rendering here would run any `!` expression a second
+/// time. Anything without a readable source logs as the bare operation.
+fn describe(name: &str, body: &Yaml) -> String {
+    let Some(map) = body.as_mapping() else {
+        return name.to_owned();
+    };
+    let source = |key: &str| get(map, key).and_then(Yaml::as_str).map(summarize);
+    match name {
+        "if" => source("condition").map(|condition| format!("if {condition}")),
+        "var" => source("name").map(|target| match source("value") {
+            Some(value) => format!("var {target} = {value}"),
+            None => format!("var {target}"),
+        }),
+        "send" => source("isi").map(|isi| match source("session_id") {
+            Some(session) => format!("send {isi} session {session}"),
+            None => format!("send {isi}"),
+        }),
+        _ => None,
+    }
+    .unwrap_or_else(|| name.to_owned())
+}
+
 fn operation(step: &Yaml) -> Result<(&str, &Yaml, Option<&Yaml>)> {
     let map = step
         .as_mapping()
@@ -189,7 +224,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     .and_then(|id| id.parse().ok()),
                 "flow",
                 self.origin,
-                name,
+                &describe(name, body),
             )?;
             match self.step(name, body) {
                 Ok(matched) if name == "if" => {
@@ -327,6 +362,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn flows_keep_json_variables_run_all_matching_ifs_scope_catches_and_continue() {
@@ -395,6 +431,64 @@ mod tests {
         assert_eq!(vars["inner"], "failed nested");
         assert_eq!(vars["restored"], vars["outer"]);
         assert!(vars.get("leaked").is_none());
+    }
+
+    #[test]
+    fn flow_entries_name_the_branch_and_assignment_they_ran() {
+        let flow: Yaml = serde_yaml::from_str(
+            r#"
+- var: {name: sender, value: '{request.who}'}
+- if:
+    condition: '{request.who == "saket"}'
+    then:
+      - send: {isi: intuit, message: hello}
+- if:
+    condition: '{request.who == "nobody"}'
+    then:
+      - send: {isi: wrong, message: wrong}
+- var: {name: shape, value: {nested: value}}
+- send: {isi: intuit, session_id: job, message: bye}
+"#,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        execute(
+            &flow,
+            json!({"request": {"who": "saket"}}),
+            dir.path(),
+            "interpreter",
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+        let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        let flow_lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.starts_with("[flow] "))
+            .filter_map(|line| line.rsplit_once("] [").map(|(_, body)| body))
+            .map(|body| body.trim_end_matches(']'))
+            .collect();
+        assert_eq!(
+            flow_lines,
+            vec![
+                "var sender = {request.who}",
+                r#"if {request.who == "saket"}"#,
+                "send intuit",
+                r#"if {request.who == "nobody"}"#,
+                // A non-string value has no readable source, so the name alone.
+                "var shape",
+                "send intuit session job",
+            ],
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn long_flow_sources_are_flattened_and_truncated() {
+        let long = "x".repeat(300);
+        assert_eq!(summarize("a\n  b\tc"), "a b c");
+        let short = summarize(&long);
+        assert_eq!(short.chars().count(), 161);
+        assert!(short.ends_with('…'));
     }
 
     #[test]

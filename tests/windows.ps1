@@ -52,6 +52,9 @@ try {
         & $wsl -d Silicon -u silicon --exec sh -ec 'find /home/silicon/silicon-interpreter-testing -type f \( -name server.log -o -name silicon.log -o -name provider-messages.jsonl -o -path "*/.silicon/sessions/events/*.jsonl" -o -name "dna-*" -o -name "refresh-*" \) -print0 | tar --null -T - -czf "$1"' sh $linuxDiagnostics
         throw 'Real WSL2 interpreter + Omni + Caddy E2E failed; available diagnostics were retained.'
     }
+    # Reuse that run's private app stubs: native connect now always installs and registers Ting.
+    $env:SILICON_HONEYCOMB = (& $wsl -d Silicon -u silicon --exec find /home/silicon/silicon-interpreter-testing -path '*/bin/honeycomb' -type f -print -quit).Trim()
+    if ($LASTEXITCODE -ne 0 -or !$env:SILICON_HONEYCOMB) { throw 'Could not locate the isolated Honeycomb/Ting fixtures.' }
     # The actual PE entry points, quoted arguments, Unicode, pipes and exit codes.
     $env:SILICON_HOME = '/home/silicon/native project Ω'
     & $wsl -d Silicon -u silicon --exec mkdir -p $env:SILICON_HOME
@@ -140,5 +143,6 @@ flow: []
     Write-Host 'Windows native launcher + real WSL2 runtime E2E passed.'
 } finally {
     Remove-Item Env:SILICON_HOME -ErrorAction SilentlyContinue
+    Remove-Item Env:SILICON_HONEYCOMB -ErrorAction SilentlyContinue
     & $wsl --unregister Silicon
 }

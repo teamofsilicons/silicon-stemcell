@@ -96,11 +96,25 @@ pub struct Session {
     pub new_messages: u64,
     pub last_suggestion: Option<DateTime<Utc>>,
     pub messages_at_suggestion: u64,
+    /// Ephemeral work returns its final output to the calling ISI and retires when
+    /// idle, whether or not the session is kept.
     pub ephemeral: bool,
+    /// Use-and-throw: global ephemeral work only. Session-addressed ephemeral work
+    /// is created and reached by an id its caller holds, so it is retained and
+    /// archived like a persistent session. Records written before this field
+    /// existed are all persistent, so defaulting to kept is correct.
+    #[serde(default)]
+    pub disposable: bool,
 }
 
 impl Session {
-    pub fn new(isi: &str, id: Option<&str>, title: &str, ephemeral: bool) -> Self {
+    pub fn new(
+        isi: &str,
+        id: Option<&str>,
+        title: &str,
+        ephemeral: bool,
+        disposable: bool,
+    ) -> Self {
         let session_id = Uuid::new_v4();
         Self {
             id: id
@@ -118,6 +132,7 @@ impl Session {
             last_suggestion: None,
             messages_at_suggestion: 0,
             ephemeral,
+            disposable,
         }
     }
     pub fn path(&self, home: &Path) -> PathBuf {
@@ -131,7 +146,7 @@ impl Session {
             .join(format!("{}.json", self.session_id))
     }
     pub fn save(&self, home: &Path) -> Result<()> {
-        if !self.ephemeral || self.archived_at.is_some() {
+        if !self.disposable || self.archived_at.is_some() {
             write_json(&self.path(home), self)?;
         }
         Ok(())
@@ -226,7 +241,13 @@ mod tests {
     #[test]
     fn archive_keeps_original_time_and_safe_disk_identity() {
         let dir = tempfile::tempdir().unwrap();
-        let mut session = Session::new("worker", Some("job/with arbitrary text"), "Build", false);
+        let mut session = Session::new(
+            "worker",
+            Some("job/with arbitrary text"),
+            "Build",
+            false,
+            false,
+        );
         let first = session.first;
         session.save(dir.path()).unwrap();
         session

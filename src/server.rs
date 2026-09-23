@@ -242,6 +242,7 @@ struct App {
 }
 
 pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
+    crate::mark_daemon();
     let dir = directory();
     state::private_dir(&dir)?;
     let _lock = lock(&dir.join("daemon.lock"), true)?;
@@ -286,6 +287,32 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
         daemon,
         mutation: Mutex::new(()),
         proxy: Mutex::new(proxy),
+    });
+    // Listen while restored hooks attach: Ting may immediately replay pending batches.
+    let restore = app.clone();
+    thread::spawn(move || {
+        let _guard = restore.mutation.lock().unwrap();
+        let connections: Vec<_> = restore
+            .runtime
+            .silicons
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
+        for connected in connections {
+            restore.runtime.start_inbox(&connected);
+            if let Err(error) = register_ting(&connected) {
+                eprintln!(
+                    "restore Ting for {} failed: {error:#}",
+                    connected.cfg.silicon.id.as_deref().unwrap()
+                );
+                let _ = restore
+                    .runtime
+                    .disconnect(connected.cfg.silicon.id.as_deref().unwrap());
+                let _ = update_proxy(&restore);
+            }
+        }
     });
     let update_ready = Arc::new(AtomicBool::new(false));
     crate::update::start(&runtime, update_ready.clone());
@@ -334,15 +361,14 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
 
 fn configuration(cfg: &Config) -> Value {
     let mut value = serde_json::to_value(cfg).unwrap_or(Value::Null);
-    let mut secrets = Vec::new();
-    if let Some(token) = &cfg.silicon.token {
-        secrets.push(token.clone());
-    }
-    if let Some(key) = value
-        .pointer("/silicon/space_station/table_key")
-        .and_then(Value::as_str)
+    let secrets = crate::telemetry::silicon_secrets(&value["silicon"]);
+    if let Some(configs) = value
+        .pointer_mut("/silicon/app_configs")
+        .and_then(Value::as_object_mut)
     {
-        secrets.push(key.into());
+        for config in configs.values_mut() {
+            *config = json!("[redacted]");
+        }
     }
     crate::telemetry::redact_value(&mut value, &secrets);
     value
@@ -447,16 +473,19 @@ fn handle(app: Arc<App>, mut request: Request) {
         respond(request, 401, json!({"error":"interpreter token required"}));
         return;
     }
+    let event_request = path == "/" || path == "/events";
+    let limit = if event_request {
+        1024 * 1024
+    } else {
+        16 * 1024 * 1024
+    };
     let mut body = Vec::new();
-    let read = request
-        .as_reader()
-        .take(16 * 1024 * 1024 + 1)
-        .read_to_end(&mut body);
-    if read.is_err() || body.len() > 16 * 1024 * 1024 {
+    let read = request.as_reader().take(limit + 1).read_to_end(&mut body);
+    if read.is_err() || body.len() as u64 > limit {
         respond(
             request,
             413,
-            json!({"error":"event body exceeds 16 MiB or could not be read"}),
+            json!({"error":"request body exceeds endpoint limit or could not be read"}),
         );
         return;
     }
@@ -488,7 +517,13 @@ fn handle(app: Arc<App>, mut request: Request) {
             .find(|(_, c)| descriptor(&c.cfg).host == host)
             .map(|(id, _)| id.clone());
         if let Some(id) = id {
-            app.runtime.event(&id, body)
+            app.runtime.get(&id).and_then(|connected| {
+                if !connected.enabled.load(Ordering::SeqCst) {
+                    bail!("silicon disconnected");
+                }
+                connected.ting.accept(body)?;
+                Ok(Value::Null)
+            })
         } else {
             respond(request, 404, json!({"error":"unknown silicon host"}));
             return;
@@ -498,6 +533,9 @@ fn handle(app: Arc<App>, mut request: Request) {
         return;
     };
     match result {
+        Ok(_) if event_request => {
+            let _ = request.respond(Response::empty(204));
+        }
         Ok(value) => respond(request, 200, value),
         Err(error) => respond(request, 400, json!({"error":format!("{error:#}")})),
     }
@@ -535,7 +573,13 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 json!({"silicon":id,"online":app.runtime.get(id).is_ok(),"timestamp":chrono::Utc::now().to_rfc3339()}),
             )
         }
-        "configuration" => Ok(configuration(&app.runtime.get(text(args, "silicon")?)?.cfg)),
+        "configuration" => {
+            let connected = app.runtime.get(text(args, "silicon")?)?;
+            let mut cfg = connected.cfg.clone();
+            cfg.silicon = connected.app_settings.read().unwrap().clone();
+            cfg.flow = cfg.load_flow()?;
+            Ok(configuration(&cfg))
+        }
         "install" => crate::apps::install(text(args, "app_id")?),
         "uninstall" => crate::apps::uninstall(text(args, "app_id")?),
         "ping" => Ok(json!({"version":env!("CARGO_PKG_VERSION"),"pid":app.daemon.pid})),
@@ -573,33 +617,8 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                     "Configured local routing",
                     || update_proxy(app),
                 )?;
-                for command in &connected.cfg.silicon.hooked_apps() {
-                    let label = if crate::apps::valid_id(command) {
-                        command.clone()
-                    } else {
-                        "application".to_owned()
-                    };
-                    crate::progress::step(
-                        &connected.cfg.home,
-                        Some(connected.cfg.generation),
-                        &format!("Registering {label} webhook"),
-                        &format!("Registered {label} webhook"),
-                        || {
-                            auth::webhook(
-                                &connected.cfg.home,
-                                command,
-                                &format!("http://{}", connection.host),
-                            )
-                        },
-                    )?;
-                    crate::log_line_scoped(
-                        &connected.cfg.home,
-                        Some(connected.cfg.generation),
-                        "webhook",
-                        command,
-                        "registered",
-                    )?;
-                }
+                app.runtime.start_inbox(&connected);
+                register_ting(&connected)?;
                 state::write_json(
                     &directory().join("connections.json"),
                     &app.runtime
@@ -760,6 +779,21 @@ fn update_proxy(app: &App) -> Result<()> {
     Ok(())
 }
 
+fn register_ting(connected: &crate::runtime::Connected) -> Result<()> {
+    crate::progress::step(
+        &connected.cfg.home,
+        Some(connected.cfg.generation),
+        "Registering Ting webhook",
+        "Registered Ting webhook",
+        || {
+            connected.ting.register(
+                &connected.cfg,
+                &format!("http://{}/events", descriptor(&connected.cfg).host),
+            )
+        },
+    )
+}
+
 fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value) -> Result<Value> {
     let args = &body["args"];
     let action = text(body, "action")?;
@@ -769,6 +803,48 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             .authorize_target(&connected, caller, text(args, "isi")?)?;
     }
     match action {
+        "app-install" | "app-uninstall" => {
+            let _guard = app.mutation.lock().unwrap();
+            app.runtime.caller_connection(caller)?;
+            let id = text(args, "app_id")?;
+            if !crate::apps::valid_id(id) {
+                bail!("expected a bare Honeycomb app ID");
+            }
+            let install = action == "app-install";
+            if !install && ["iam", "ting"].contains(&id) {
+                bail!("IAM and Ting are required interpreter dependencies");
+            }
+            let cfg = &connected.cfg;
+            if install {
+                crate::apps::install_at(&cfg.home, id)?;
+                auth::setup_scoped(
+                    &cfg.home,
+                    &caller.silicon,
+                    cfg.silicon.org_id.as_deref().unwrap(),
+                    cfg.silicon.token.as_deref().unwrap(),
+                    id,
+                    cfg.generation,
+                )?;
+            } else {
+                auth::remove(&cfg.home, id)?;
+                crate::apps::uninstall_at(&cfg.home, id)?;
+            }
+            let updated = crate::config::set_app(&cfg.path, id, install)?;
+            let mut redactions = cfg.clone();
+            redactions.silicon.app_configs = updated.silicon.app_configs.clone();
+            crate::telemetry::register(&redactions);
+            *connected.app_settings.write().unwrap() = updated.silicon.clone();
+            if install {
+                let configs = updated
+                    .silicon
+                    .app_configs
+                    .into_iter()
+                    .filter(|(app, _)| app == id)
+                    .collect();
+                auth::configure(&cfg.home, &configs)?;
+            }
+            Ok(json!({"app_id":id,"installed":install}))
+        }
         "send" => {
             let options: SendOptions = serde_json::from_value(args.clone())?;
             let sent = app.runtime.send_connected(
@@ -872,12 +948,13 @@ mod tests {
             "silicon": {
                 "id": "si:test", "token": "private-silicon-value", "timezone": "UTC",
                 "SILICON_HOME": "/home/silicon/project", "inference_providers": [],
+                "app_configs": {"app": {"nested": {"custom": "private-app-value"}}},
                 "space_station": {"table_name": "activity", "table_key": "private-table-value"}
             },
             "isi": {"worker": {"model": "fast", "dna": {
                 "assemble": ["token=private-silicon-value key=private-table-value"]
             }}},
-            "access": {}, "flow": [{"value": "private-table-value/private-silicon-value"}]
+            "access": {}, "flow": [{"value": "private-table-value/private-silicon-value/private-app-value"}]
         }))
         .unwrap();
         let snapshot = configuration(&cfg);
@@ -890,7 +967,11 @@ mod tests {
             snapshot["isi"]["worker"]["dna"]["assemble"][0],
             "token=[redacted] key=[redacted]"
         );
-        assert_eq!(snapshot["flow"][0]["value"], "[redacted]/[redacted]");
+        assert_eq!(
+            snapshot["flow"][0]["value"],
+            "[redacted]/[redacted]/[redacted]"
+        );
+        assert_eq!(snapshot["silicon"]["app_configs"]["app"], "[redacted]");
         assert_eq!(
             snapshot["silicon"]["space_station"]["table_name"],
             "activity"

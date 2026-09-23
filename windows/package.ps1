@@ -9,7 +9,7 @@ cargo build --manifest-path "$PSScriptRoot/launcher/Cargo.toml" --locked --relea
 if ($LASTEXITCODE -ne 0) { throw 'Native Windows launcher build failed' }
 $stage = Join-Path $env:RUNNER_TEMP "silicon-$target"
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-foreach ($command in 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook'.Split(' ')) {
+foreach ($command in 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook ting'.Split(' ')) {
     Copy-Item "$PSScriptRoot/launcher/target/$target/release/silicon-windows-launcher.exe" "$stage/$command.exe"
 }
 Copy-Item $LinuxArchive "$stage/runtime.tar.gz"

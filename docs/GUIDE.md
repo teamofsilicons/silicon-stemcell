@@ -1,14 +1,14 @@
 # Silicon 5.0.0
 
-Version 5 requires `silicon.id: si:handle`, an explicit `silicon.org_id`, and bare application IDs. Migrate the YAML using the IAM identity mapping before reconnecting; use this release only with the coordinated IAM 4 and Honeycomb 0.4 deployment. Existing runtime homes and session state remain in place.
-
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
 ## Start here
 
+Silicon 5.0.0 uses Omni 0.9.0 and Ting for notification delivery. Existing Silicons need the [identifier migration](#identifier-migration) before reconnecting; versions before 4.1 also need the [Ting migration](#ting-migration).
+
 1. [Install Silicon and its dependencies](#installation) with the one-line command below.
 2. [Create your first Silicon](#first-silicon) in a new directory, with your own IAM identity and token.
-3. Run `silicon compile PATH`, then `silicon connect PATH`. Connection output shows setup results, app installation and authentication, and webhook registration.
+3. Run `silicon compile PATH`, then `silicon connect PATH`. Connection output shows setup results, app installation and authentication, and Ting registration.
 4. Use `silicon web` for the dashboard or `silicon --help` for the command tree.
 
 For configuration details, read the [field reference](#configuration-reference). To integrate an application, follow the [IAM contract](#iam-application-contract). To build clients, use the [HTTP interface](#local-dashboard-and-http-interface). Source and contribution details are in [development and compatibility](#development-and-compatibility).
@@ -17,7 +17,7 @@ For configuration details, read the [field reference](#configuration-reference).
 
 Silicon is a local interpreter for a `silicon.yaml` file. One interpreter can connect several Silicons. Each Silicon has its own identity, home directory, internal Silicons (ISIs), access rules, event flow, sessions, and logs.
 
-The `silicon` command manages the interpreter from your terminal. The `si` command is provided inside an ISI so it can communicate with permitted ISIs, inspect work, manage its session, and ask the interpreter to authenticate an application. The local dashboard exposes the same management operations through the interpreter's control API.
+The `silicon` command manages the interpreter from your terminal. The `si` command is provided inside an ISI so it can communicate with permitted ISIs, inspect work, manage its session, install or remove applications, and ask the interpreter to authenticate an application. The local dashboard exposes the same management operations through the interpreter's control API.
 
 The interpreter listens on `127.0.0.1:1823`. If that port is occupied, it tries 1822, 1821, and so on, down through 1024. A dedicated Caddy process provides `http://silicon.localhost` for the dashboard and `http://<local-id>.<org-id>.localhost` for each connected Silicon. Caddy uses HTTP port 80; it does not search for an alternative proxy port.
 
@@ -29,7 +29,11 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-> Upgrading from 4.0.5 or earlier: rerun the 4.0.6 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
+> Upgrading to 5.0.0: follow the [identifier migration](#identifier-migration) to update IDs, ownership, app references, and retained Ting state. If upgrading from before 4.1, also follow the [Ting migration](#ting-migration). IAM and Ting are implicit dependencies; the interpreter installs both through Honeycomb.
+>
+> Upgrading from 4.0.6–4.0.8: replace any `sticky` and `archive_on_end` fields using the [migration table](#legacy-mode-fields-removed), then run `silicon update` and restart the interpreter. No reinstallation is needed.
+>
+> Upgrading from 4.0.5 or earlier: rerun the 5.0.0 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
 
 The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v5.0.0` with:
 
@@ -41,6 +45,16 @@ Find the platform bundles and their checksums on the [v5.0.0 release page](https
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
 
+**5.0.0** adopts globally unique `si:<handle>` Silicon IDs and bare application IDs. YAML requires the owning `silicon.org_id` separately; `SILICON_ORG` selects the organization for app grants. Back up and migrate existing identity/configuration state before reconnecting; see the [identifier migration](#identifier-migration).
+
+**4.1.0** upgrades Omni to 0.9.0 and replaces per-app webhooks with Ting batches. It adds `SILICON_ORG`, private `app_configs`, `si app install`/`uninstall`, live flow loading, and CEL list helpers. Ting batches are durably accepted before an empty HTTP 204; the retained hook and pending inbox survive restarts.
+
+**4.0.9** retains session-addressed ephemeral records and event history, archiving them when work retires. Only global ephemeral work is discarded. Logs identify the CLI or daemon, the sending ISI, and the flow branch or assignment. The legacy `sticky` and `archive_on_end` fields are removed; use `primary_send_mode` and `session_type` as described in the [migration table](#legacy-mode-fields-removed).
+
+**4.0.8** moves to Omni 0.8.0. A provider that crashes, hits a rate limit, becomes unavailable, or will not start no longer keeps the chat: Omni closes the turn, sets that provider aside for the rest of the live session, and resolves the same ask over the providers left. The interpreter logs each removal with its reason and the remaining providers. Omni also finds CLIs on the `PATH` the user's login shell reports, so a CLI visible only to a terminal, or installed after the daemon started, is found.
+
+**4.0.7** repairs a package home whose Honeycomb `auto_update` setting 4.0.6 removed. Honeycomb requires that setting, so those homes rejected every command and could not connect or install apps. The interpreter now restores Honeycomb's own default instead of deleting the setting, and leaves later preferences alone.
+
 **4.0.6** removes bundled Honeycomb app versions. Every connection installs configured apps with no version argument, and app automatic updates remain enabled according to their own settings.
 
 **4.0.5** caches successful automatic app-auth checks for 48 hours across reconnects and restarts. Checks run only on YAML connects and new session creation; heartbeats reuse authentication, and explicit `si auth setup` bypasses the cache.
@@ -49,7 +63,7 @@ Silicon is distributed through GitHub Releases using the installers above. It do
 
 **4.0.0** focuses on the local interpreter and adds a Windows launcher using WSL2. The hosted realtime publisher, remote reader commands, and relay service have been removed. Local ping, configuration inspection, logs, the dashboard, and Space Station telemetry remain available. The installer includes every local component needed by the interpreter, including Space Station installed through Honeycomb when the release bundle is built.
 
-**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 4.0.6. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
+**Upgrading from 3.5.x requires running this complete installer once into the same prefix**, even when the old updater has already changed the reported Silicon version to 5.0.0. Its fixed dependency inventory cannot add Honeycomb or Space Station. Follow the [migration instructions](#upgrading-from-35x) below before using the new package features.
 
 The default installation prefix is `~/.local/share/silicon`. Add its `bin` directory to your shell's `PATH`:
 
@@ -73,14 +87,33 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | Command | Bundled component |
 | --- | --- |
 | `silicon`, `si` | Interpreter and internal CLI, 5.0.0 |
-| `omnid`, `silicon-omni`, `omni`, `so` | Omni pinned to commit `d52f5416cd33b363554d2300b5603dc0b6c43545` |
+| `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.9.0 pinned to commit `c23d80a7251a1f6a77e76172a197126e693c00f1` |
 | `caddy` | Caddy 2.11.4 |
 
-Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs `honeycomb install 'app' --json` for configured and registered canonical app IDs and for the IAM issuer. Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.
+Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs `honeycomb install 'app' --json` for configured and registered canonical app IDs, the IAM issuer (`iam`), and Ting (`ting`). Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.
 
 Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create an IAM identity or grant provider access.
 
+### Identifier migration
+
+Stop the interpreter and back up each YAML, interpreter state directory, and Silicon home. Use the IAM-verified old-to-new mapping, then change `silicon.id` to `si:<handle>`, add the owning `silicon.org_id`, and change application IDs in `apps`, `login`, and `app_configs` to bare IDs. Keep `SILICON_ORG` as the intended app-grant organization; it may differ from the owning organization. Preserve ISI names, session UUIDs, tokens, and application data.
+
+Migrate the Honeycomb local registry and the retained Ting inbox/hook namespace before reconnecting; the [complete offline migration rules](https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md) describe collision checks, cached grants, and pending-delivery preservation. Do not reset a nonempty Ting inbox. `silicon compile` validates the new YAML without connecting. Existing authentication caches use different identity keys and require fresh verification.
+
+### Ting migration
+
+Before reconnecting an existing Silicon on 5.0.0:
+
+1. Remove `silicon.webhooks` and `silicon.webhook`. Keep application IDs in `silicon.apps`; applications publish notifications through Ting and no longer register separate interpreter webhooks.
+2. Change the flow to read `request.tings`, a list of notification objects with `id`, `type`, `data`, and `metadata`. The old top-level `{type, data, metadata}` HTTP envelope is rejected. Use CEL `map`, `filter`, and the list helpers to process a whole batch; the [first Silicon example](#first-silicon) shows a minimal flow.
+3. Check that the Silicon identity can authenticate IAM and Ting. Both are installed through Honeycomb automatically, even with an empty `apps` list. The interpreter registers only Ting at `http://LOCAL.ORG.localhost/events`, retaining its hook ID for reconnects.
+4. Run `silicon compile /path/to/silicon.yaml`, then reconnect or restart the interpreter. The updater and installer do not rewrite your YAML.
+
+Ting receives an empty HTTP 204 after the complete batch is durably saved, before the flow runs. Follow logs or session progress to inspect processing. The interpreter loads the latest flow from the YAML for every batch. Other manual configuration changes require reconnecting; `si app install` and `si app uninstall` update connected app settings immediately.
+
 ### Windows installation and project files
+
+Existing Windows installations should rerun this release's PowerShell installer to add the native `ting.exe` entry point. `silicon update` updates the WSL2 runtime but does not add Windows launcher files.
 
 In PowerShell:
 
@@ -114,7 +147,7 @@ Version 4 removes the remote `login`, `logout`, and `watch` commands and the `re
 
 The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
 
-When you are ready to restart, stop the old interpreter and rerun the **4.0.6 public installer into the same prefix**:
+When you are ready to restart, stop the old interpreter and rerun the **5.0.0 public installer into the same prefix**:
 
 ```sh
 silicon stop
@@ -129,7 +162,7 @@ curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
-Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 4.0.6. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.
+Replace that example path with your existing prefix. Run this migration once even if an automatic update or `silicon update` already reports 5.0.0. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.
 
 ### Linux and port 80
 
@@ -180,12 +213,12 @@ silicon:
   token: REPLACE_WITH_YOUR_SILICON_TOKEN
   timezone: Asia/Kolkata
   SILICON_HOME: ! pwd
+  SILICON_ORG: my-org
   inference_providers:
     - all-available-providers
   setup:
     - ! mkdir -p workspace
   apps: []
-  webhooks: []
 
 isi:
   assistant:
@@ -203,10 +236,10 @@ access:
 flow:
   - send:
       isi: assistant
-      message: '{request.data.message}'
+      message: '{request.tings.map(ting, make_readable(ting)).join("\n\n")}'
 ```
 
-Setup creates a workspace directory on each connection; `mkdir -p` is safe to repeat. No application login is configured in this example. Add application IDs under `apps` and `webhooks` when the corresponding Silicon identity and application permissions are ready. Add the optional `space_station` fields shown below only after creating your table and obtaining its key. `token` remains required even if the first test does not use an IAM application.
+Setup creates a workspace directory on each connection; `mkdir -p` is safe to repeat. IAM and Ting are implicit dependencies, even with an empty `apps` list. Add other application IDs under `apps` when the corresponding Silicon identity and application permissions are ready. Add the optional `space_station` fields shown below only after creating your table and obtaining its key. `token` remains required even if the first test does not use an IAM application.
 
 ```sh
 silicon compile /absolute/path/to/silicon.yaml
@@ -219,9 +252,9 @@ silicon web
 
 `compile` validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including `SILICON_HOME`, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. `setup`, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.
 
-`connect` starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, registers configured webhooks, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, `… Authenticating dm` changes to `✓ Authenticated dm`; failures use `✗`. Redirected output uses separate lines without terminal control codes. `--json` returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
+`connect` starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, `… Authenticating dm` changes to `✓ Authenticated dm`; failures use `✗`. Redirected output uses separate lines without terminal control codes. `--json` returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
 
-The local identity is the canonical YAML path. The global identity is `silicon.id`. Moving a file changes its local identity. Editing a connected file does not live-reload it. Disconnect and reconnect to apply changes; restart restoration also recompiles the saved path. The interpreter never rewrites the file for you.
+The local identity is the canonical YAML path. The global identity is `silicon.id`. Moving a file changes its local identity. The interpreter reads `flow` from disk for each incoming batch, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. `si app install` and `si app uninstall` update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.
 
 `silicon disconnect ./silicon.yaml` resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.
 
@@ -230,7 +263,7 @@ Send an event through the Silicon's host:
 ```sh
 curl --fail-with-body \
   --header 'Content-Type: application/json' \
-  --data '{"type":"new_message","data":{"message":"Hello from an event"},"metadata":{}}' \
+  --data '{"tings":[{"id":"local-test-1","type":"new_message","data":{"message":"Hello from an event"},"metadata":{}}]}' \
   http://assistant.my-org.localhost/events
 ```
 
@@ -249,13 +282,13 @@ The four required top-level keys are `silicon`, `isi`, `access`, and `flow`. Unk
 | `token` | Required Silicon credential for IAM. Empty strings, NUL bytes, and the exact placeholder `...` are rejected. It is not an ISI capability or a dashboard token. |
 | `timezone` | Required IANA timezone, such as `UTC`, `Asia/Kolkata`, or `America/Los_Angeles`. |
 | `SILICON_HOME` | Required existing directory, or an expression producing one. Relative paths resolve against the YAML file's directory. The final path is canonicalized. |
+| `SILICON_ORG` | Organization passed to app CLIs, Bash, and provider sessions. Defaults to `silicon.org_id`; an explicit value follows IAM’s 3–50 lowercase letter, digit, underscore, or hyphen organization grammar. |
 | `inference_providers` | Required nonempty list of provider names, `all-available-providers`, exclusions, or nested lists. |
 | `setup` | Optional ordered list of shell commands. Runs once during each connection attempt; compilation validates expressions without running these commands. |
 | `apps` | Optional list of Honeycomb IAM application IDs, such as `dm`. Installed when needed and authenticated for this Silicon. |
-| `webhooks` | Optional list of Honeycomb IAM application IDs that support `webhook URL` and `unhook`. These apps also join installation and authentication checks. |
+| `app_configs` | Optional mapping from managed app IDs to configuration objects. Native YAML numbers, booleans, lists, maps, and null retain their types; string values support private compile-time expressions. Applied with `APP config set JSON` after authentication. |
 | `space_station` | Optional object with nonempty `table_name` and `table_key` for a user-owned telemetry destination. This destination remains enabled when TOS telemetry is turned off. |
 | `login` | Legacy list of deferred IAM application commands; retained for existing configurations. |
-| `webhook` | Legacy list of application commands supporting `webhook URL` and `unhook`. |
 
 `SILICON_HOME: ! pwd` runs `pwd` with the YAML's parent directory as its working directory. Once home is resolved, later compile-time commands and runtime scripts use that home. Setup, DNA scripts, flow expressions, managed application commands, and Omni sessions all start with `SILICON_HOME` as their working directory. Use `./tool` or `./scripts/tool` for executables stored there; bare command names resolve through `PATH`, with the home's `.silicon/bin` first. Compile-time fields are evaluated once per compilation, not on every incoming event.
 
@@ -278,30 +311,28 @@ setup:
 apps:
   - dm
   - briefcase
-webhooks:
-  - dm
-  - hook
+  - waveform
+app_configs:
+  waveform:
+    default_tts_provider: google
 space_station:
   table_name: my-silicon-events
   table_key: REPLACE_WITH_YOUR_TABLE_KEY
 ```
 
-Each application ID has exactly one `>` separating its organization and app. Each part is 1–64 lowercase ASCII letters, digits, or hyphens, beginning with a letter or digit. Duplicate IDs within one list are errors. An app may appear in both `apps` and `webhooks`; the interpreter combines the lists with the legacy fields without repeating the same entry.
+Application IDs are bare, globally unique handles: 1–80 lowercase ASCII letters, digits, underscores, or hyphens, beginning with a letter. Owning organizations are stored separately. Duplicate IDs within one list are errors. `ting` is always managed and registered, even when omitted from `apps`. The removed `webhooks` and `webhook` keys are configuration errors; delete them and keep application IDs in `apps`. App configuration keys must name a managed canonical ID, including implicit `ting`.
 
 Setup commands run from `SILICON_HOME` with `ISI=interpreter`. A leading `!` is accepted; the first command may also be ordinary shell text. Each shell fallback must have its own `!`; a quoted fallback is literal text. CEL is evaluated before Bash. Command stdout and stderr are captured in the connection log after each command finishes. Setup is connection work, so reconnecting runs it again. Make commands safe to repeat. Setup does not run during `silicon compile`, before each message, or on every DNA refresh. An exhausted fallback chain aborts the connection; completed shell side effects are not rolled back.
 
-`login` and `webhook` contain executable names and arguments, not shell programs to run while compiling:
+`login` contains executable names and arguments, not shell programs to run while compiling:
 
 ```yaml
 login:
   - ! dm
   - 'hook --profile work'
-webhook:
-  - ! dm
-  - 'hook --profile work'
 ```
 
-These fields expand CEL and `!>>` fallbacks, preserve argument quotes, and remove an original leading `!` as a legacy app-command marker. They do not execute Bash during evaluation. For example, `! dm` identifies the app to which Silicon later appends `iam --json`, a login command, or a webhook command; it does not launch bare `dm` during compilation. Command arguments are parsed with shell-style quoting and executed directly as argv. Shell pipelines, redirections, and environment assignments are not command wrappers; use a real executable wrapper when one is required.
+This field expands CEL and `!>>` fallbacks, preserves argument quotes, and removes an original leading `!` as a legacy app-command marker. It does not execute Bash during evaluation. For example, `! dm` identifies the app to which Silicon later appends `iam --json`, or a login command; it does not launch bare `dm` during compilation. Command arguments are parsed with shell-style quoting and executed directly as argv. Shell pipelines, redirections, and environment assignments are not command wrappers; use a real executable wrapper when one is required.
 
 ### `isi`
 
@@ -311,21 +342,23 @@ Define at least one ISI. Names may contain ASCII letters, digits, `.`, `_`, and 
 | --- | --- |
 | `model` | Required Omni model key, passed using `Ask::key`. A key such as `fast` or `code` is resolved by Omni. |
 | `primary_send_mode` | Required `global` or `session`. It controls addressing, not retention. |
-| `session_type` | Required `persistent` or `ephemeral`. It controls retention and completion behavior. |
+| `session_type` | Required `persistent` or `ephemeral`. It controls completion behavior, and retention together with `primary_send_mode`: only `global` + `ephemeral` is discarded. |
 | `dna` | Required mapping with `assemble` and `next_refresh`. An empty assembly list is permitted; the internal instruction footer is still appended. |
 | `heartbeat` | Optional mapping with `next` and a nonempty string `message`. Omit it for no heartbeat. |
 | `new_session_suggestion` | Optional mapping with `cooldown_minutes`, `min_new_messages`, and a nonempty string `suggestion_message`. Omit it for no suggestions. |
 
-Legacy fields are accepted with warnings:
+#### Legacy mode fields removed
 
-| Legacy field | Canonical interpretation |
+Addressing and retention are set only by `primary_send_mode` and `session_type`. The former `sticky` and `archive_on_end` fields have been removed; a configuration that still uses one is rejected with the replacement named:
+
+| Removed field | Write instead |
 | --- | --- |
 | `sticky: true` | `primary_send_mode: global` |
 | `sticky: false` | `primary_send_mode: session` |
 | `archive_on_end: true` | `session_type: ephemeral` |
 | `archive_on_end: false` | `session_type: persistent` |
 
-Conflicting legacy and canonical settings are rejected. In particular, `archive_on_end: false` does not mean ephemeral. Use canonical names in new configurations.
+Note the last row when migrating: `archive_on_end: false` meant persistent, not ephemeral.
 
 ### Intervals and scheduled work
 
@@ -395,7 +428,7 @@ The runtime CEL environment contains:
 | Name | Value |
 | --- | --- |
 | `request` | The event JSON for this flow invocation. |
-| `silicon` | Compiled Silicon settings, with the Silicon token and Space Station table key removed at runtime. |
+| `silicon` | Compiled Silicon settings, with the Silicon token, app configuration, and Space Station table key removed at runtime. |
 | `isi` | The configured ISI map. |
 | `access` | The configured access map. |
 | `var` | Variables created during this flow; starts empty for each event. |
@@ -408,12 +441,16 @@ Supported helper functions include:
 | Expression | Result |
 | --- | --- |
 | `{tz_time('2026-01-01T00:00:00Z', 'Asia/Kolkata')}` | `05:30:00 01:01:26 Asia/Kolkata` |
-| `{convert_time(request.data.sent_at, silicon.timezone)}` | Alias of `tz_time`, with the same RFC 3339 input and IANA timezone. |
+| `{convert_time(request.tings[0].data.sent_at, silicon.timezone)}` | Alias of `tz_time`, with the same RFC 3339 input and IANA timezone. |
 | `{make_readable(request)}` | Serialize any JSON-shaped value as readable YAML, including nested objects, arrays, and nulls. Alias of `to_yaml`. |
-| `{to_json(request.data.raw).name}` | Parse a JSON string, then select a field. |
-| `{to_yaml(request.data)}` | Serialize JSON-shaped data as YAML using standard YAML indentation and newlines. |
-| `{request.data.to.startswith('worker')}` | The supported Python-style spelling of CEL's string-prefix helper. |
-| `{request.data.to.split('@')[0]}` | Split a string into a list. |
+| `{to_json(request.tings[0].data.raw).name}` | Parse a JSON string, then select a field. |
+| `{to_yaml(request.tings[0].data)}` | Serialize JSON-shaped data as YAML using standard YAML indentation and newlines. |
+| `{request.tings[0].data.to.startswith('worker')}` | The supported Python-style spelling of CEL's string-prefix helper. |
+| `{request.tings[0].data.to.split('@')[0]}` | Split a string into a list. |
+| `{request.tings.sortBy(ting, ting.id)}` | Stable ascending sort by a CEL key expression; equal keys retain input order. |
+| `{request.tings.map(ting, ting.type).distinct().join(", ")}` | Keep first occurrences and join string elements. |
+| `{request.tings.slice(0, 2).reverse()}` | Select a half-open range, then reverse it. Indices must be in bounds. |
+| `{[[1], [2, [3]]].flatten()}` | Flatten one list level; `.flatten(2)` accepts an explicit nonnegative depth. |
 
 Use CEL syntax, including `null`, `&&`, and `!=`. Python expressions such as `is not None` are not valid CEL.
 
@@ -437,21 +474,21 @@ assemble: ["! pwd"]
 
 `assemble: [! pwd]` is rejected with a diagnostic because YAML would otherwise discard the anonymous tag. Multiline quoted strings and literal/folded YAML blocks are preserved by the parser. Avoid changing quotation just to silence an error without understanding whether it is YAML syntax, a CEL expression, a literal fallback, or shell argument quoting.
 
-Bash runs as the current operating-system user, with the resolved home as its working directory. It receives `SILICON_HOME` and `ISI`. The runtime also gives Omni/provider sessions the configured `TZ`, `SI_URL`, and an ISI capability in `SI_TOKEN`.
+Bash runs as the current operating-system user, with the resolved home as its working directory. It receives `SILICON_HOME`, `SILICON_ORG`, and `ISI`. The runtime also gives Omni/provider sessions the configured `TZ`, `SI_URL`, and an ISI capability in `SI_TOKEN`.
 
 ## Event flow
 
-Every event requires this JSON shape:
+Ting delivers batches to the connected Silicon’s local URL:
 
 ```json
 {
-  "type": "new_message",
-  "data": {"message": "Hello"},
-  "metadata": {"app": "example>app"}
+  "tings": [
+    {"id": "event-1", "type": "dm.new_message", "data": {"message": "Hello"}, "metadata": {}}
+  ]
 }
 ```
 
-`type` must be a string; `data` and `metadata` must be objects. Applications choose event types and fields. There is no special built-in routing for `new_message`, `message_sent`, or `event`; your flow decides what those types mean.
+A batch contains 1–100 tings and is at most 1 MiB. Each ting requires a nonempty string `id` and `type`, plus object `data` and `metadata`. Apps choose their event types; flow sees the complete `request.tings` list and decides how to route it. The previous top-level `{type, data, metadata}` envelope is rejected; wrap notifications in `tings`.
 
 A flow is an ordered list of steps, or an expression producing a step or list. Steps can also appear in branches. A generated flow is validated before execution.
 
@@ -467,26 +504,12 @@ Consecutive `if` steps are independent. More than one can run. A trailing standa
 
 ```yaml
 flow:
-  - var:
-      name: incoming
-      value: '{request.data}'
-
-  - if:
-      condition: '{request.type == "new_message"}'
-      then:
-        - send:
-            isi: coordinator
-            message: '{var.incoming.message}'
-            catch:
-              - log:
-                  message: 'Delivery failed: {error}'
+  - send:
+      isi: coordinator
+      message: '{request.tings.sortBy(ting, ting.id).map(ting, make_readable(ting)).join("\n\n")}'
       catch:
         - log:
-            message: 'Condition failed: {error}'
-
-  - else:
-      - log:
-          message: 'Unhandled event type: {request.type}'
+            message: 'Delivery failed: {error}'
 ```
 
 Catch branches receive a scoped string named `error`. Nested catches temporarily replace it and restore the outer error afterward. A catch does not leak `error` into later ordinary steps. Variables intentionally created inside a catch remain ordinary flow variables. Without a catch, an evaluation/action failure is logged and execution continues with the next step.
@@ -495,13 +518,11 @@ A flow send can create a missing session-addressed session automatically. An int
 
 ### Acknowledgment and delivery
 
-Each flow send waits for its provider delivery receipt (`START` or `INJECTED`) before the next step. The event response is sent after the entire flow, including its error handling, finishes. It does not wait for inference turns to finish. Successful responses contain `status: "ok"` and an `event_id`.
+Ting’s batch delivery contract requires a prompt empty HTTP 204. The interpreter validates and durably saves the complete batch before acknowledging it, then processes its flow from the local inbox. Ting IDs are deduplicated across batches and restarts. Invalid batches are rejected as a whole. Flow loading, validation, and other overall processing failures remain in the inbox for retry, and accepted pending batches survive interpreter restarts.
 
-Silicon forwards new messages immediately, including while an addressed session is working. It does not keep an interpreter queue waiting for a turn to end. Provider initialization and actual provider delivery can still take time. Delivery receipts have a 60-second deadline. Omni's provider behavior determines when an injection or native follow-up is acknowledged.
+Each flow send still waits for its provider delivery receipt (`START` or `INJECTED`) before the next step, including its catch branch. This does not wait for the model’s entire turn. The ordinary send CLI returns session and delivery information after dispatch acceptance.
 
-The ordinary send CLI returns session and delivery information after dispatch acceptance. `show`, logs, and Omni events reveal subsequent work. A completed model answer is not returned in the event acknowledgment.
-
-Expression, dispatch, and provider delivery-receipt failures run the send action's scoped catch. Without a catch, they are logged and the flow continues. A successful acknowledgment means the flow was processed; inspect logs and catch results to distinguish handled delivery failures. There is no general event deduplication or transaction rollback. If an upstream app retries an event after an uncertain response, already-completed actions can run again. Design side-effecting flows with that retry behavior in mind.
+Messages are forwarded into active provider work as soon as their flow reaches a send. Ting’s durable transport inbox does not wait for an inference turn to end. Provider startup and delivery can take time; delivery receipts have a 60-second deadline. A crash during processing can replay completed flow actions, so durable side effects should use ting IDs for idempotency. There is no transactional rollback of app actions.
 
 ## CLI reference
 
@@ -535,9 +556,9 @@ Without a command, `silicon` lists connections. `silicon list` is an alias for `
 
 Quote Honeycomb IDs because `>` is a shell redirection operator. `install` and `uninstall` operate on Honeycomb-managed applications. `ping` checks the local interpreter's connection without prompting a model. `config` returns the connected configuration with credentials redacted. `info` returns version, protocol, source, documentation, and dependency details.
 
-Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences and removes its old forced private-home `auto_update: false` setting once. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.
+Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer and Ting. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences. It restores Honeycomb's default once where an older interpreter forced this private home's `auto_update` off, and it repairs a home left without that required setting, which Honeycomb otherwise rejects as invalid configuration. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.
 
-Commands are exposed through owned links under `<home>/.silicon/bin`; the interpreter adds those to its command environment. `uninstall` removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured `apps`/`webhooks` entries before reconnecting if you do not want an application installed again.
+Commands are exposed through owned links under `<home>/.silicon/bin`; the interpreter adds those to its command environment. `uninstall` removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured `apps` entries before reconnecting if you do not want an application installed again, or use `si app uninstall` from the running Silicon to update the YAML too.
 
 `serve` stays in the foreground and is useful with a process manager. `connect` normally starts it automatically. `--no-proxy` is a development mode with direct localhost access and no Caddy aliases. This release does not install a login item, launch agent, or systemd service. After a reboot, use `silicon serve` or `silicon connect` to start the interpreter again.
 
@@ -555,6 +576,8 @@ silicon end si:assistant worker.terminal --id build-17
 ### Internal commands
 
 ```sh
+si app install 'dm'
+si app uninstall 'dm'
 si auth setup 'dm'
 si auth setup dm
 si auth setup 'hook --profile work'
@@ -574,6 +597,8 @@ si session new --archive-current-session \
 
 `si` needs the ISI context supplied by the interpreter. A normal terminal without `SI_URL` and `SI_TOKEN` cannot impersonate an ISI by setting only `ISI`. The server derives the caller from its capability, not from user-provided target fields.
 
+`si app install` installs through Honeycomb, authenticates the canonical app ID, and adds it to this Silicon’s `apps`. `si app uninstall` removes authentication, the managed package, its `apps` entry, and its `app_configs` entry. IAM and Ting cannot be uninstalled through this internal command. App edits validate and atomically replace the `silicon` block, retaining source expressions and the rest of the YAML, including live flow. Compact top-level YAML maps should first be expanded to a normal `silicon:` block. Add new app configuration directly to the YAML; reconnect to apply manual settings changes.
+
 `si session new` applies to the calling persistent session. `--id`, `--title`, `--description`, and `--archive-current-session` are required. `--summary` is an alias for `--description`. There is no `si deliberate start-new-session` command in this release.
 
 ## Session behavior
@@ -585,7 +610,9 @@ Addressing and retention are separate choices:
 | Global + persistent | `si isi send NAME MESSAGE` reuses the active session or creates it. | Retains the session and conversation for later messages. |
 | Global + ephemeral | `si isi send NAME MESSAGE` creates independent disposable work. | Returns final output to an internal caller, then discards recoverable session data. |
 | Session + persistent | Use `--id`; add `--new` to create a missing session. | Retains each addressed session separately. |
-| Session + ephemeral | Use `--id --title` to create; `--id` sends to an existing running address. | Returns final output to an internal caller and retires the disposable session. |
+| Session + ephemeral | Use `--id --title` to create; `--id` sends to an existing running address. | Returns final output to an internal caller, then archives the session under its id. |
+
+Only global ephemeral work is discarded. A session-addressed ephemeral session is created and reached through an id its caller holds, so it keeps its session record and event history and is archived when it retires, exactly like a persistent session; reach it afterwards with `--archived`.
 
 For ephemeral work, an automatic reply goes back to the ISI session that invoked it through `si`, if that caller still exists. An external event or management send has no calling ISI to receive this reply; inspect logs or progress instead. A global ephemeral call always starts independent work, while a session-addressed ephemeral call can address its currently running ID.
 
@@ -625,7 +652,7 @@ Bare `--archived` selects the previous 72 hours. With explicit filters, the sear
 
 The interpreter owns orchestration of authentication. IAM issues short-lived application tokens. Each app exchanges and stores its own access/refresh tokens and maintains them afterward.
 
-Applications from `apps`, `webhooks`, and the legacy `login`/`webhook` fields are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app and Silicon identity in `.silicon/auth-checked.json`, so reconnects and interpreter restarts reuse them. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit `si auth setup APP` always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.
+Applications from `apps`, implicit Ting, and legacy `login` are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app and Silicon identity in `.silicon/auth-checked.json`, so reconnects and interpreter restarts reuse them. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit `si auth setup APP` always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.
 
 The supported discovery contract is:
 
@@ -647,7 +674,7 @@ One must provide a boolean `authenticated`. A false state can be reported with a
 When authentication is needed, Silicon invokes IAM with its own identity:
 
 ```text
-iam --output json --org ORG silicon-login --sid LOCAL:ORG --stk SILICON_TOKEN --app-id APP_ID --grant-org ORG
+iam --output json --org ORG silicon-login --sid si:HANDLE --stk SILICON_TOKEN --app-id APP_ID --grant-org ORG
 ```
 
 For IAM versions that expose the flag, Silicon adds `--approve-scopes` after detecting support in local command help. IAM must return `slt` and a positive `expires_in` of at most 120 seconds. Only IAM receives the long-lived Silicon credential. Depending on the working status contract, the interpreter then invokes exactly one of:
@@ -661,7 +688,7 @@ It checks that the app reports `authenticated: true` afterward. It does not retr
 
 Removal supports `auth remove`, `auth logout`, or `logout`, selected through command help, followed by a false-status check. `si auth setup` returns the public app ID; it does not return the SLT or application tokens.
 
-Application commands receive the Silicon home and the common isolated IAM home. App state should live under `SILICON_HOME` in an app-owned hidden directory. The interpreter sets `SILICON_IAM_HOME` to `<SILICON_HOME>/.silicon-iam` so it does not borrow the user's personal Carbon IAM session. A symlink used to redirect that credential directory is rejected.
+Application commands receive `SILICON_HOME`, `SILICON_ORG`, and the common isolated IAM home. `SILICON_ORG` supplies their default organization; `ISI` is optional context. App state should live under `SILICON_HOME` in an app-owned hidden directory. The interpreter sets `SILICON_IAM_HOME` to `<SILICON_HOME>/.silicon-iam` so it does not borrow the user's personal Carbon IAM session. A symlink used to redirect that credential directory is rejected.
 
 For test worlds, the selected IAM environment and each application's paired test environment must agree. Merely importing an application into IAM does not create the app backend's own test plane. The real app test-plane creation APIs may require an authorized production control-plane identity; do not infer test success from `iam --json` alone.
 
@@ -673,20 +700,15 @@ All six paired hosted testing environments now pass login. [Commit PR #2](https:
 
 Separate Silicon homes isolate application state, but an application's local relay may also need a distinct TCP port. A DM testing login saved valid credentials and then failed because a production-test relay still occupied its port. A retry with a separate available relay port passed; the owned test relays were stopped afterward.
 
-### Webhook expectations
+### Ting registration and app notifications
 
-An app listed in `webhooks` or legacy `webhook` must support:
+Proactive IAM apps publish notifications through [Ting](https://ting.teamofsilicons.com/). Only Ting delivers to the interpreter; application CLIs no longer need their own `webhook` or `unhook` commands.
 
-```text
-APP webhook http://LOCAL.ORG.localhost
-APP unhook
-```
+The interpreter installs `ting` through Honeycomb and authenticates its CLI just like other IAM apps. After the Silicon route is ready, it inspects `ting webhook list --limit 100 --json` and registers with `ting webhook http://LOCAL.ORG.localhost/events --json`. A saved hook is reused with `--id WEBHOOK_ID`; the stable ID is retained across reconnects and restarts. Ting delivers `tings` batches to that endpoint with an empty HTTP 204 acknowledgment after durable acceptance.
 
-Registration happens after the Silicon route is added. A failed registration rolls back the connection and route as far as cleanup permits. Disconnect attempts every configured unhook and removes the Silicon and ISI capabilities even if one app reports an unhook error; it returns the cleanup error so the remaining app state can be investigated.
+Disconnect runs `ting unhook WEBHOOK_ID --json`. It still removes the local connection and ISI capabilities if unhooking fails, reporting the cleanup error. A failed registration rolls back the local connection and routing. Ting owns remote delivery, retries, and its local bridge; app-specific transport daemons are not registered with Silicon.
 
-Apps should deliver the required event shape as JSON and consider the request acknowledged only on a successful response. They own upstream signature verification, session renewal, transport/retry policy, and any app-local relay. The local interpreter does not independently verify each app's remote webhook signature or require the Silicon token on the loopback event endpoint.
-
-An application daemon should maintain one server websocket per machine and subscribe on that connection for all registered Silicons. `SILICON_HOME` scopes credentials and per-Silicon state; `ISI` is optional context for messages and diagnostics. Applications must work when `ISI` is absent. Registration and authentication are separate capabilities: expose webhook commands only when the app proactively delivers events.
+Apps that accept configuration expose `APP config set JSON`. The interpreter sends each configured object after authentication and omits its arguments and captured output from logs. Apps store credentials and configuration in their own state beneath `SILICON_HOME` (or their chosen remote configuration service), respect `SILICON_ORG`, and work when `ISI` is absent.
 
 ## Settings and telemetry
 
@@ -721,7 +743,7 @@ silicon:
 
 `table_key` authorizes ingestion; `table_name` identifies the configured destination. `silicon settings set telemetry --off` disables TOS telemetry and keeps this explicitly configured destination active. Remove `space_station` and reconnect to stop the user destination. The Space Station Rust client handles buffering, its local spool, delivery, and retries. When Space Station itself is a managed app, the interpreter supplies its required organization during login.
 
-The interpreter removes Silicon tokens and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events and logs. Compile-time Bash logs its start and exit status with the command body omitted, because runtime redaction is not yet registered. Credential expressions also omit their source and stderr from parser and evaluation errors. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.
+The interpreter removes Silicon tokens, app configuration, and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events and logs. Compile-time Bash logs its start and exit status with the command body omitted, because runtime redaction is not yet registered. Credential expressions also omit their source and stderr from parser and evaluation errors. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.
 
 The documentation website has its own **Share documentation usage with TOS** checkbox in the footer. Its preference is saved in that browser's local storage and is independent of local interpreter settings. The page submits telemetry to its same-origin `/api/telemetry` endpoint; the destination credential stays on the server.
 
@@ -740,25 +762,30 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 | Interpreter `caddy/` | Owned Caddy configuration, logs, data, and storage. |
 | `<SILICON_HOME>/.silicon/silicon.log` | Append-only Silicon event, flow, send, runtime, error, and provider log. |
 | `.silicon/auth-apps.json` | Commands for configured/dynamically managed application authentication. |
+| `.silicon/auth-checked.json`, `.silicon/auth-grants.json` | Recent authentication checks and granted organizations; changing `SILICON_ORG` renews the application grant. |
 | `.silicon/bin/` | Owned command links for applications installed through Honeycomb. |
-| `.silicon/packages/` | Private Honeycomb package/authentication state, with independent Honeycomb updates disabled. |
+| `.silicon/packages/` | Private Honeycomb package/authentication state, retaining Honeycomb's update settings. |
 | `.silicon/sessions/active/<isi>/<UUID>.json` | Durable active persistent-session records. |
 | `.silicon/sessions/archived/<isi>/<UUID>.json` | Archive metadata. |
 | `.silicon/sessions/events/<UUID>.jsonl` | Persistent-session provider events. |
 | `.silicon/omni/<UUID>/` | Omni's session data and its daemon log. |
+| `<SILICON_HOME>/.silicon/ting/<silicon-id>/<org>/` | Durable Ting inbox, deduplication IDs, and retained webhook ID. |
+| `<SILICON_HOME>/.silicon/org.json` | Default organization propagated to app commands. |
 | `<SILICON_HOME>/.silicon-iam/` | Isolated IAM CLI configuration/state for this Silicon. |
 
 Session metadata includes the logical ID, Omni UUID, ISI, title, description, first/last timestamps, archive timestamp, status, normal-message count, and suggestion counters. Persistent data is saved atomically through a private temporary file and rename, with filesystem synchronization. State directories use mode 0700 and newly written state/log files use mode 0600 on Unix.
 
 Short private aliases under `/tmp/silicon-<uid>/` keep Omni socket paths within macOS's Unix-socket limit; session data remains under the Silicon home. Caddy gets a separate private temporary admin-socket directory. The interpreter never contacts the machine's default Caddy admin API.
 
-Ephemeral work does not leave recoverable session records, event-history files, or its Omni session directory after retirement. Its operational activity can still appear in the append-only Silicon log. “Ephemeral” is a retention choice, not a promise that no log of the work exists.
+Global ephemeral work does not leave recoverable session records, event-history files, or its Omni session directory after retirement. Session-addressed ephemeral work is retained: it writes a session record and an event-history file and is archived when it retires. Discarded work's operational activity can still appear in the append-only Silicon log. “Discarded” is a retention choice, not a promise that no log of the work exists.
 
 Log entries have this shape:
 
 ```text
-[type] [origin] [UTC timestamp] [message]
+[type] [origin/process] [UTC timestamp] [message]
 ```
+
+The origin names who produced the entry — `interpreter`, an ISI name, or an app — and is followed by the process that wrote it: `daemon` for the interpreter started by `silicon serve`, `cli` for any other `silicon` or `si` invocation. Both append to the same file, so the suffix tells apart, for example, the configuration compile `silicon connect` performs before contacting the interpreter from the interpreter's own compile of the same YAML. Entries written before this release carry no suffix.
 
 Embedded message newlines are escaped so an entry stays on one line. `silicon logs show ID` prints the latest 100 entries and follows new ones. On a terminal, the type/origin prefix is colored, and the Silicon ID and log location remain in a footer. Ctrl-C restores the terminal and exits the viewer. `--no-follow` prints the tail and exits.
 
@@ -772,17 +799,18 @@ The dashboard can list, compile, connect, disconnect, send events/messages, insp
 
 The underlying control API is `POST /control` with `Authorization: Bearer <interpreter-token>` and a JSON body of `{ "action": "...", "args": {...} }`. The internal API is `POST /si` with the corresponding ISI capability. Events use `POST /` or `POST /events` on a connected Silicon hostname.
 
-Requests require `Content-Type: application/json` and are limited to 16 MiB. Cross-origin browser requests are rejected. During shutdown/restart, requests are rejected with 503 so callers can retry after the interpreter resumes.
+Requests require `Content-Type: application/json`. Event batches are limited to 1 MiB; control and internal requests are limited to 16 MiB. Cross-origin browser requests are rejected. During shutdown/restart, requests are rejected with 503 so callers can retry after the interpreter resumes.
 
 | HTTP status | Typical cause |
 | --- | --- |
-| 200 | Flow/control operation completed to its documented acknowledgment boundary. |
+| 200 | Control or internal CLI operation completed. |
+| 204 | A validated Ting batch durably saved for processing. |
 | 400 | Invalid JSON, invalid event shape, configuration error, or failed control/runtime operation. |
 | 401 | Invalid management token or ISI capability. |
 | 403 | Cross-origin browser request. |
 | 404 | Unknown route/host; Caddy also rejects non-loopback peers and unknown hosts. |
 | 405 | Unsupported method. |
-| 413 | Body over 16 MiB or a failed body read. |
+| 413 | Body over its endpoint limit or a failed body read. |
 | 415 | Missing/incorrect JSON content type. |
 | 503 | Interpreter stopping or restarting. |
 
@@ -794,7 +822,7 @@ The interpreter listens on loopback, and the owned Caddy configuration only forw
 
 The runtime omits the Silicon token from CEL's `silicon` object and removes `SILICON_TOKEN` and `SILICON_INTERPRETER_TOKEN` from the provider environment. The ISI receives only its own `SI_TOKEN` capability for internal API access. IAM credential state is scoped to the Silicon home, and the application receives a short-lived, app-specific token instead of the long-lived Silicon credential. Protect the original YAML and all credential-bearing files accordingly.
 
-Explicit `silicon stop`, SIGINT, or SIGTERM stops the interpreter's owned workers and Caddy, removes the active daemon descriptor, and leaves saved connections and persistent state for restoration. This is a stop request, not a promise to let every model turn finish. App-owned relay daemons and saved authentication belong to those applications; disconnect calls their `unhook`, while stopping the interpreter preserves the saved connection configuration for later startup.
+Explicit `silicon stop`, SIGINT, or SIGTERM stops the interpreter's owned workers and Caddy, removes the active daemon descriptor, and leaves saved connections and persistent state for restoration. This is a stop request, not a promise to let every model turn finish. App-owned relay daemons and saved authentication belong to those applications; disconnect and interpreter shutdown call Ting’s `unhook`, retaining the hook ID. Stopping preserves saved connection configuration so startup can restore and re-register the same hook.
 
 On startup, each saved YAML path is recompiled and reconnected. Failed restorations are logged and skipped rather than preventing every other Silicon from starting. Persistent session records are loaded when needed; provider processes are initialized lazily. A configuration file that was moved, removed, or made invalid can therefore fail restoration without being edited by the interpreter.
 
@@ -829,21 +857,21 @@ Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic
 | CEL parse error | Check braces, string quotes, and CEL syntax. Use `null`, not Python's `None`; only registered helper functions are available. |
 | No authenticated provider or unknown model/provider | Verify Omni's installed/authenticated providers and model keys with its own help/tools. Configuration compilation alone is not provider readiness. |
 | Omni startup failed | Check `.silicon/omni/<UUID>/daemon.log`, `PATH`, `OMNI_DAEMON`, and the provider's own installation/authentication. |
-| Flow acknowledged but model is still working | Expected: the acknowledgment waits for flow completion and provider delivery, not final inference output. Inspect progress/logs. |
-| Event retry repeats an action | There is no automatic flow transaction or event deduplication. Use app/domain identifiers when your own side effects need idempotency. |
+| Flow acknowledged but model is still working | Ting’s 204 means durable acceptance before flow processing. Individual flow sends wait for provider delivery, not final inference output. Inspect progress/logs. |
+| Event retry repeats an action | Ting IDs are deduplicated, but a crash can replay a partially processed accepted batch. There is no flow transaction; use ting/app IDs for side-effect idempotency. |
 | Session send needs an ID | The target uses `primary_send_mode: session`. Supply `--id`; use `--new` for a missing persistent session. |
-| Ephemeral session has disappeared | Expected after completion. Use a persistent ISI when later recovery/querying is required. |
+| Ephemeral session has disappeared | Expected after completion for a `global` + `ephemeral` ISI, which is the only combination that is discarded. Give the ISI `primary_send_mode: session`, or use a persistent ISI, when later recovery/querying is required. |
 | Archive search seems empty | Bare `--archived` is only 72 hours. Supply explicit filters for older history and check the Silicon timezone. |
 | `si` lacks context or capability | Run it inside an interpreter-created ISI. Setting only the `ISI` variable is insufficient. |
 | An ISI cannot reach another ISI | Check its `access` list and the target spelling. Cross-Silicon sends are not supported by `si`. |
 | App discovery/status fails | Verify `APP iam --json` and one supported status form in the same Silicon home. Update an incompatible app. |
 | IAM cannot mint the SLT | Check the Silicon ID/token, app ID, permissions, and isolated IAM environment configuration. A personal Carbon login is not a substitute. |
 | App rejected the SLT | Fix the app/test-plane issue and start authentication again; the old one-use SLT may already be consumed. |
-| Removed app logs in again | Remove its entry from `apps`, `webhooks`, and any legacy `login`/`webhook` fields if it should no longer be managed, then reconnect. |
+| Removed app logs in again | Use `si app uninstall` or remove its entry from `apps` and legacy `login`, then reconnect. Ting remains implicitly managed. |
 | Setup failed | Read the reported `silicon.setup` index and captured output. Each shell fallback needs `!`; completed shell effects remain even when connection fails. |
 | Honeycomb cannot resolve a configured app | Check the bare `app` ID, CLI discovery, package availability for this platform, and the selected IAM organization. |
 | Space Station asks for an organization | Install the CLI through Honeycomb and supply `--org ORG` or `SPACE_STATION_ORG` when invoking it directly; see the upstream issue ledger. |
-| Disconnect reports cleanup errors | The Silicon/capabilities are removed; inspect the named app's unhook state and Caddy/interpreter logs. |
+| Disconnect reports cleanup errors | The Silicon/capabilities are removed; inspect Ting’s hook state and Caddy/interpreter logs. |
 | Startup skipped a saved connection | Confirm the saved YAML path still exists, compiles, and can authenticate its managed apps. |
 | Automatic update did not restart yet | Inspect update logs and active work. Restart waits until the interpreter can safely stop admitting work. |
 | Automatic update needs Linux privileges | Rerun the installer/update interactively so a changed Caddy binary can receive port 80 capability. |
@@ -856,11 +884,10 @@ Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state
 
 `stemcell/silicon/silicon.yaml` is the supplied source of intent, with its CEL expressions corrected and its helper functions supported. It is not a ready-to-connect configuration. Its current issues include:
 
-- `silicon.id`, `silicon.token`, and the optional Space Station fields are `...` placeholders.
+- `silicon.id`, `silicon.org_id`, `silicon.token`, `SILICON_ORG`, and the optional Space Station fields are `...` placeholders.
 - It refers to missing scripts/files including `install_python.sh`, `contacts.sh`, `tools.sh`, `team.sh`, `time_delay.sh`, and `learn.sh`. The repository has `CONTACTS.md`, `tools.md`, and `learn.md`; those names do not make the scripts exist automatically.
 - Some suggestion messages still show old command forms. Current rollover uses `si session new --archive-current-session --id ... --title ... --description ...`.
-- It mixes canonical settings with `sticky` and `archive_on_end`. The compatibility mappings above describe their actual meaning.
-- Its repeated flow `if` keys and one unambiguously misplaced `var` field block are normalized by the dialect parser with warnings. Prefer an explicit step list and correct indentation in new files.
+- Its flow expands the batch into ordered per-ting routing using CEL `map` and `flatten`. The per-ting lookup keeps notification data separate from executable flow expressions.
 
 Correct a separate copy for your deployment. Compilation can report expression syntax before reaching the placeholder checks because syntax validation runs before any compile-time shell command. The absence of one particular placeholder error does not make the reference configuration valid.
 
@@ -870,22 +897,22 @@ The repository contains the Rust interpreter and internal CLI under `src/`, a Wi
 
 ### Application integration checklist
 
-An IAM app must expose `iam --json`, a short-lived-token login command, and a machine-readable authentication status. It owns refresh and access tokens, stores state beneath `SILICON_HOME`, treats `ISI` as optional context, and must not ask the interpreter or an ISI for a long-lived Carbon credential. Proactive apps additionally expose `webhook URL` and `unhook`, deliver the documented event envelope, and share one server connection across their local Silicon subscriptions. Commands should explain their purpose and failure cause through a navigable `--help` tree.
+An IAM app must expose `iam --json`, a short-lived-token login command, and a machine-readable authentication status. It owns refresh and access tokens, stores state beneath `SILICON_HOME`, treats `ISI` as optional context, and must not ask the interpreter or an ISI for a long-lived Carbon credential. Proactive apps publish to Ting; Ting alone manages interpreter webhook registration, batching, and retries. Apps with configuration expose `config set JSON`. Commands should explain their purpose and failure cause through a navigable `--help` tree.
 
 Keep development and testing on the production authentication paths. An imported IAM test application must be paired with the app backend's test environment; a valid discovery response does not prove that login works. Add a consumer contract check that discovers the app, logs in with a real issued short-lived token, verifies authenticated status, exercises a protected read, removes authentication, and verifies the previous token can no longer be used. Never publish test secrets or local credential state.
 
 ### Contract versions
 
-| Consumer or dependency | Contract in Silicon 4.0.0 |
+| Consumer or dependency | Silicon 5.0.0 contract |
 | --- | --- |
-| Existing 3.5 configurations | `login`, `webhook`, `sticky`, and `archive_on_end` remain accepted. Conflicting mode settings are errors; canonical names are preferred. |
+| Existing 3.5 configurations | `login` remains accepted. Remove `webhook` and `webhooks`; Ting is registered automatically. `sticky` and `archive_on_end` have been removed; replace them with `primary_send_mode` and `session_type` using the table above. |
 | IAM application discovery | JSON `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
 | Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM is installed through Honeycomb without a version constraint; `--approve-scopes` is used only when its CLI exposes support. |
-| Inference | Omni's pinned Rust/client-daemon contract at `d52f5416cd33b363554d2300b5603dc0b6c43545`. |
+| Inference | Omni 0.9.0 Rust/client-daemon contract at `c23d80a7251a1f6a77e76172a197126e693c00f1`. |
 | Local interpreter API | Protocol `1`, reported by `silicon info`; protected `POST /control` and `POST /si`. |
 | Honeycomb / Space Station | Latest standalone Honeycomb; Space Station CLI installed only when configured or explicitly requested. Interpreter telemetry uses its compiled Space Station Rust dependency. |
 
-This release makes additive changes and keeps the legacy paths above. No retirement date is set for those configuration or authentication spellings. A future removal or incompatible wire change must publish a migration and use a new contract version. The current checks negotiate CLI capabilities through command help and discovery; there is no general automatic upgrade negotiation between arbitrary client versions.
+The Ting migration removes per-app webhook configuration. Existing `login` and legacy authentication spellings remain supported; no retirement date is set for those retained paths. A future removal or incompatible wire change must publish a migration and use a new contract version. The current checks negotiate CLI capabilities through command help and discovery; there is no general automatic upgrade negotiation between arbitrary client versions.
 
 ### Reporting a bug
 
@@ -908,18 +935,23 @@ Use `SILICON_HONEYCOMB` to select a particular Honeycomb executable for an integ
 
 ## Verification and requirement-to-evidence map
 
-Version 4.0.3 has verified native bundles for macOS and Linux on ARM64 and x86-64, plus native Windows launchers. Windows x64 passes the complete WSL2 runtime and native-command suites. Windows ARM64 remains a preview because a physical ARM64 WSL2 run has not been completed. The release rows below distinguish platform, public installation, and dependency evidence; older rows retain historical checks.
+Version 4.1.0 has verified native bundles for macOS and Linux on ARM64 and x86-64, plus native Windows launchers. Windows x64 passes the complete WSL2 runtime and native-command suites. Windows ARM64 remains a preview because a physical ARM64 WSL2 run has not been completed. The release rows below distinguish platform, public installation, and dependency evidence; older rows retain historical checks.
 
 The 3.6-series configuration and DNA regressions verify deferred setup, canonical app validation, optional telemetry settings, unchanged YAML bytes, legacy commands, and prompt source attribution. Version 3.6.1 carries the verified dependency corrections after the unpublished 3.6.0 candidate failed its release discovery gate; the original tag remains immutable. The release record below distinguishes candidate checks from completed publication and historical 3.5.0/3.5.1 evidence. Caddy-dependent integration tests run separately; `cargo test` alone does not verify them.
 
 The recorded 3.6.0 local interpreter run passed 40 tests, with two Caddy integration tests explicitly ignored in that run; Clippy passed with warnings denied. The full protocol E2E passed with real Omni and Caddy, including the new 3.6 checks. Four credential-focused regressions also passed, including the two new compile-diagnostic tests. The documentation telemetry endpoint passed its Node regression. Installer regressions covered the new required binaries, Honeycomb failure retaining the existing release, and copying the native Space Station executable rather than a machine-specific launcher. Chrome layout checks covered desktop and a 390-pixel mobile viewport, including mobile navigation; all 60 internal documentation anchors resolved after the migration update.
 
-The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated `claude-code-cli` provider returned `SILICON_SMOKE_OK` and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.
+The recorded 4.0.8–4.0.9 protocol E2E used the real pinned Omni daemon (0.8.0) and real Caddy, with a scripted Claude-compatible provider process for deterministic event behavior. It verifies the interpreter/Omni/Caddy protocol and lifecycle. Separately, a live run using the real authenticated `claude-code-cli` provider returned `SILICON_SMOKE_OK` and reached an idle session. That smoke test validates actual inference connectivity; it does not replace the deterministic concurrency/lifecycle assertions.
 
 | Requirement | Evidence and scope |
 | --- | --- |
+| 4.1.0 Omni 0.9.0 and Ting delivery | [All six platform jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35743295086) passed on `66df3faa2be61543a336fa3f4e5bb632724a22b9`: four Unix installed-bundle Omni/Caddy suites, Windows x64 WSL2/native commands, Windows ARM64 launcher checks, Rust tests, formatting, and Clippy. Local validation passed 54 unit tests and the bundle-path integration test, including organization-switch grants, durable Ting batches, reconnects, and private app configuration. All nine release asset sizes/digests and eight checksum entries matched the verified CI files. IAM/Ting service behavior uses isolated CLI fixtures; Windows ARM64 physical WSL2 remains preview. |
 | 4.0.3 release assets | [Version 4.0.3](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v4.0.3) contains six platform archives, two installers, and `SHA256SUMS`. All nine asset sizes and GitHub digests matched the verified CI files; all eight checksum entries and all six archive content/architecture checks passed. Every public asset URL returned HTTP 200 without authentication. |
 | 4.0.3 public Unix installation | The exact public curl one-liner installed into a fresh macOS ARM64 prefix without source, version, or mirror overrides. All 34 installed payload files matched the verified native archive, including the intended compiled telemetry configuration; the installed interpreter reports 4.0.3. |
+| 4.0.9 session retention and log attribution | [All six platform jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35516307701) passed on `468ff5d0842b0edb8e42b94a9f41dc09b14932b9`: native Unix installed-bundle Omni/Caddy E2E, Windows x64 WSL2/native commands, Windows ARM64 launcher checks, Rust tests, formatting, and Clippy. Local checks passed 49 unit tests plus the bundle-path integration test and the real Omni/Caddy protocol suite. All nine release asset sizes and GitHub SHA-256 digests matched the verified CI files; all eight checksum entries matched; every public URL answered with the expected size. A fresh macOS ARM64 public installation reported 4.0.9 and all 14 payload files matched the verified archive. Windows ARM64 WSL2 remains preview. |
+| 4.0.8 Omni 0.8.0 | [All six builds and checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35426793090) passed on `9d3c61cad1c05e1fb69f94a0b713b4a4edd9d10c` before any tag existed: native Unix installer/E2E with the Omni 0.8.0 daemon, Windows x64 WSL2/native commands, Rust tests, formatting, and Clippy. The unit test covers a provider removal with providers left, the last removal, and other configuration events staying quiet; the E2E resolves its scripted provider through a profile-free shell so the daemon's login-shell PATH probe cannot substitute a real CLI. Every archive reported `v4.0.8`, the seven-binary runtime inventory, and the Omni 0.8.0 notices; the macOS ARM64 bundle ran `silicon 4.0.8`, `omnid 0.8.0`, and Caddy 2.11.4 natively; all nine published assets matched the verified CI files by size and digest; and the local interpreter updated, restarted, and restored its Silicon on 4.0.8. |
+| 4.0.7 package home repair | [All six builds and checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35274873607) passed on `f87e7579d4bd600b3aa5bc0cb690dbd46340f9ec`: native Unix installer/E2E, Windows x64 WSL2/native commands, Rust tests, formatting, and Clippy. The unit test covers migration, repair, and unparsable configuration; the end-to-end connection starts from the package home 4.0.6 left behind, with the mock Honeycomb enforcing the real CLI’s required setting. The repair was also verified against an affected home using the real Honeycomb CLI, and the published release updated, restarted, and restored a live Silicon. |
+| 4.0.6 independent applications | [All six builds and checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35270308880) passed on `0116c15c31bb7564d55cff901bb008b4478fa9de`: native Unix installer/E2E, Windows x64 WSL2/native commands, Rust tests, formatting, and Clippy. The reconnect regression verifies an unversioned install on each connect with cached authentication. Local real-package checks verified latest app installation alongside existing PATH commands. |
 | 4.0.3 source and Unix bundles | [Source checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35197785502) and [all four native Unix jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35197918153) passed on `567894c23515396b14ef8d99354f9bb890cfa69b`: 40 unit tests, bundle-path integration, formatting, Clippy, complete bundle installation, real Omni/Caddy E2E, CLI execution, and live IAM discovery. Duplicate Windows jobs in the Unix workflow were cancelled after all four Unix jobs passed. Hook 0.6.1 is the latest verified Honeycomb package. |
 | 4.0.3 Windows | [Windows x64 and ARM64 jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35198376479) passed on the same source. x64 includes actual WSL2 installation, full runtime E2E, and native-command checks. ARM64 includes native launcher checks and packaging; its WSL2 runtime remains preview. |
 | Reference YAML and live connection progress | The shared evaluator supports `make_readable` and `convert_time`; the reference YAML regression executes every routing branch. Real webhook E2E verifies readable nested data through `var` and `send`. Gated authentication proves progress appears before authentication finishes, with success/failure markers, no captured credential output, and machine-readable JSON. Terminal rendering also has a unit check. |
@@ -954,7 +986,7 @@ The protocol E2E uses the real pinned Omni daemon (0.7.2) and real Caddy, with a
 | Expression-generated flow | `flow::tests::flow_and_branch_expressions_produce_operations`. |
 | CLI command shapes and intersecting archive filters | `cli::tests::command_shapes_and_archive_filters_preserve_scope`. |
 | Log tail/follow boundary and prefix coloring | `cli::tests::tail_snapshot_follows_exact_read_boundary_and_colors_only_prefix`. |
-| Delivery receipts reach flow catches before acknowledgment | `runtime::tests::webhook_ack_waits_for_delivery_and_runs_send_catch_before_continuing` uses the real Omni Rust client over a controlled Unix transport. |
+| Delivery receipts reach flow catches before the next step | `runtime::tests::flow_waits_for_delivery_and_runs_send_catch_before_continuing` uses the real Omni Rust client over a controlled Unix transport. |
 | Delivery acknowledgment precedes turn completion | `runtime::tests::receipts_ack_provider_delivery_before_end_and_native_next_turns_do_not_retire_early`; also `tests/e2e.py`. |
 | Retry/late errors and listener recovery | `runtime::tests::retry_and_late_errors_preserve_receipts_and_failed_listeners_are_recreated`. |
 | Retirement does not race a new send | `runtime::tests::retirement_rechecks_pending_work_after_waiting_for_send_lock`. |
@@ -999,7 +1031,7 @@ SILICON_CADDY=/absolute/path/to/caddy \
 cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_cleanup -- --ignored
 ```
 
-`SILICON_TEST_BIN_DIR` can select a built/installed interpreter directory for the E2E. It expects a real Omni daemon and real Caddy on `PATH` or through the overrides. It uses a free/available local test setup, creates its own YAML outside the template directories, and verifies that YAML's bytes remain unchanged. The LAN Caddy test additionally requires `SILICON_TEST_LAN_IP` set to this machine's non-loopback IPv4 address and port 80 available.
+`SILICON_TEST_BIN_DIR` can select a built/installed interpreter directory for the E2E. It expects a real Omni daemon and real Caddy on `PATH` or through the overrides. It uses a free/available local test setup, creates its own YAML outside the template directories, and verifies that YAML's bytes remain unchanged. The LAN Caddy test additionally requires `SILICON_TEST_LAN_IP` set to this machine's non-loopback IPv4 address and port 80 available. Omni 0.8 starts CLIs on the `PATH` the user's login shell reports, ahead of its own, so the E2E points `SHELL` at a profile-free shell; the scripted provider is then resolved even when a real `claude` is on the developer's shell `PATH`.
 
 Source references for maintainers: `src/apps.rs`, `src/settings.rs`, `src/telemetry.rs`, `src/config.rs`, `src/eval.rs`, `src/flow.rs`, `src/runtime.rs`, `src/auth.rs`, `src/state.rs`, `src/server.rs`, `src/proxy.rs`, `src/cli.rs`, `src/update.rs`, `src/dashboard.html`, `install.sh`, `.github/workflows/release.yml`, and `tests/e2e.py`. The specification is `UNDERSTANDING.md`; the preserved fixture is `stemcell/silicon/silicon.yaml`.
 
