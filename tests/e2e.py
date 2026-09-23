@@ -120,11 +120,11 @@ else:
     assert len(args) == 3 and args[0] == "install" and args[2] == "--json", args
     assert "PATH" not in os.environ, "private installs must not collide with global app commands"
     app_id = args[1]
-    assert app_id in ["tos>iam", "test>progress"], app_id
+    assert app_id in ["iam", "progress"], app_id
     with (root / "install-calls").open("a") as log: log.write(app_id + "\\n")
-    command = "iam" if app_id == "tos>iam" else "progress"
-    path = root / ("iam-stub" if app_id == "tos>iam" else "progress-app")
-    if app_id == "tos>iam":
+    command = "iam" if app_id == "iam" else "progress"
+    path = root / ("iam-stub" if app_id == "iam" else "progress-app")
+    if app_id == "iam":
         path.write_text("#!/bin/sh\\nexit 0\\n")
         path.chmod(0o755)
     records[app_id] = {"app_id": app_id, "commands": {command: str(path)}}
@@ -262,14 +262,13 @@ flow:
         progress_home = work / "progress"
         progress_home.mkdir()
         progress_config = progress_home / "silicon.yaml"
-        progress_config.write_text(original.decode().replace("id: si:e2e
-  org_id: local", "id: progress:local")
+        progress_config.write_text(original.decode().replace("id: si:e2e", "id: si:progress")
             .replace(json.dumps(str(home)), json.dumps(str(progress_home)))
-            .replace("  inference_providers:", "  apps: ['test>progress']\n  inference_providers:"))
+            .replace("  inference_providers:", "  apps: ['progress']\n  inference_providers:"))
         progress_app = progress_home / "progress-app"
         progress_app.write_text('''#!/bin/sh
 case "$*" in
-  'iam --json') echo '{"app_id":"test>progress"}' ;;
+  'iam --json') echo '{"app_id":"progress"}' ;;
   'auth status --json')
     touch auth-started
     while ! test -f auth-release; do sleep 0.05; done
@@ -284,43 +283,43 @@ esac
         reader = threading.Thread(target=lambda: lines.extend(iter(connecting.stdout.readline, "")), daemon=True)
         reader.start()
         try:
-            eventually(lambda: any("… Authenticating test>progress" in line for line in lines))
+            eventually(lambda: any("… Authenticating progress" in line for line in lines))
             assert connecting.poll() is None, "progress was buffered until connect returned"
-            assert not any("✓ Authenticated test>progress" in line for line in lines)
+            assert not any("✓ Authenticated progress" in line for line in lines)
             (progress_home / "auth-release").touch()
             connecting.wait(timeout=35)
             reader.join(timeout=5)
             assert connecting.returncode == 0, connecting.stderr.read()
-            assert any("✓ Authenticated test>progress" in line for line in lines), lines
+            assert any("✓ Authenticated progress" in line for line in lines), lines
             assert not any("\x1b" in line for line in lines), "redirected output must not contain terminal control codes"
         finally:
             (progress_home / "auth-release").touch()
             if connecting.poll() is None:
                 connecting.terminate()
                 connecting.wait(timeout=15)
-        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"]
-        cli("disconnect", "progress:local")
+        assert (progress_home / "install-calls").read_text().splitlines() == ["iam", "progress"]
+        cli("disconnect", "si:progress")
         (progress_home / "auth-fail").touch()
         (progress_home / "auth-started").unlink()
         result = json.loads(cli("--json", "connect", str(progress_config)))
-        assert result["connection"]["id"] == "progress:local"
+        assert result["connection"]["id"] == "si:progress"
         assert not (progress_home / "auth-started").exists(), "reconnect must reuse the cached auth check"
-        assert (progress_home / "install-calls").read_text().splitlines() == ["tos>iam", "test>progress"] * 2, "every connect must install without a version even while auth is cached"
-        cli("disconnect", "progress:local")
+        assert (progress_home / "install-calls").read_text().splitlines() == ["iam", "progress"] * 2, "every connect must install without a version even while auth is cached"
+        cli("disconnect", "si:progress")
         checked = progress_home / ".silicon/auth-checked.json"
         checked.write_text(json.dumps({key: int(time.time()) - 48 * 60 * 60 for key in json.loads(checked.read_text())}))
         failed = subprocess.run([str(binary), "connect", str(progress_config)], env=env, capture_output=True, text=True, timeout=35)
-        assert failed.returncode != 0 and "✗ Authenticating test>progress" in failed.stdout, failed.stdout + failed.stderr
-        assert "✓ Authenticated test>progress" not in failed.stdout
+        assert failed.returncode != 0 and "✗ Authenticating progress" in failed.stdout, failed.stdout + failed.stderr
+        assert "✓ Authenticated progress" not in failed.stdout
         assert "private-auth-error" not in failed.stdout + failed.stderr
         cli("compile", str(config))
         assert not (home / "setup-count").exists(), "compile must not run setup"
         result = cli("connect", str(config))
         assert "setup-out" in result and "setup-err" in result, result
         assert (home / "setup-count").read_text() == "x", "setup must run once per connection"
-        assert json.loads(cli("ping", "e2e:local"))["online"]
-        assert not json.loads(cli("ping", "missing:local"))["online"]
-        assert "isolated-e2e-token" not in cli("config", "e2e:local")
+        assert json.loads(cli("ping", "si:e2e"))["online"]
+        assert not json.loads(cli("ping", "si:missing"))["online"]
+        assert "isolated-e2e-token" not in cli("config", "si:e2e")
         assert json.loads(cli("settings", "set", "telemetry", "--off"))["telemetry"] is False
         assert control("settings")["auto_update"] is True
         assert json.loads(cli("settings", "get", "telemetry")) is False
@@ -329,40 +328,39 @@ esac
         assert "Fix PR:" in report["body"]
         request = urllib.request.Request(base + "/ping", headers={"Host":"e2e.local.localhost"})
         assert json.loads(urllib.request.urlopen(request).read())["online"]
-        assert "e2e:local" in cli("ls", "*:local")
+        assert "si:e2e" in cli("ls", "si:*")
         assert len(control("list")) == 1
         other_home = work / "other home"
         other_home.mkdir()
         other_config = other_home / "silicon.yaml"
-        other_config.write_text(original.decode().replace("id: si:e2e
-  org_id: local", "id: path:local").replace(json.dumps(str(home)), json.dumps(str(other_home))))
+        other_config.write_text(original.decode().replace("id: si:e2e", "id: si:path").replace(json.dumps(str(home)), json.dumps(str(other_home))))
         cli("connect", "./silicon.yaml", cwd=other_home)
-        assert {row["id"] for row in control("list")} == {"e2e:local", "path:local"}
+        assert {row["id"] for row in control("list")} == {"si:e2e", "si:path"}
         missing_home = work / "missing"
         missing_home.mkdir()
         cli("disconnect", "./silicon.yaml", cwd=missing_home, ok=False)
         post("/control", {"action": "disconnect", "args": {"target": "./silicon.yaml"}}, daemon["token"], status=400)
-        assert {row["id"] for row in control("list")} == {"e2e:local", "path:local"}
+        assert {row["id"] for row in control("list")} == {"si:e2e", "si:path"}
         cli("disconnect", "./silicon.yaml", cwd=other_home)
-        assert [row["id"] for row in control("list")] == ["e2e:local"]
+        assert [row["id"] for row in control("list")] == ["si:e2e"]
         cli("connect", "./silicon.yaml", cwd=other_home)
         (other_home / "alias.yaml").symlink_to("silicon.yaml")
         cli("disconnect", "./alias.yaml", cwd=other_home)
-        assert [row["id"] for row in control("list")] == ["e2e:local"]
+        assert [row["id"] for row in control("list")] == ["si:e2e"]
         post("/control", {"action": "list", "args": {}}, status=401)
         post("/", {"type": "ping", "data": [], "metadata": {}}, host="e2e.local.localhost", status=400)
         post("/", {"type": "ping", "data": {}, "metadata": {}}, host="other.local.localhost", status=404)
         start = time.monotonic()
         post("/", {"type": "ping", "data": {"message": "hold first"}, "metadata": {}}, host="e2e.local.localhost")
         assert time.monotonic() - start < 20, "event waited for model completion"
-        record = control("sessions", silicon="e2e:local", isi="source")[0]
+        record = control("sessions", silicon="si:e2e", isi="source")[0]
         assert record["status"] == "running"
         post("/", {"type": "ping", "data": {"message": "mid-turn"}, "metadata": {}}, host="e2e.local.localhost")
-        progress = control("show", silicon="e2e:local", isi="source")
+        progress = control("show", silicon="si:e2e", isi="source")
         assert any(event["type"] == "injected" and event["text"] == "mid-turn" for event in progress["events"]), progress
         assert not any(event["type"] == "end" for event in progress["events"])
         post("/", {"type": "new_message", "data": {"message": "hola", "sender": {"id": "shubham", "type": "carbon"}, "reply_to": None}, "metadata": {}}, host="e2e.local.localhost")
-        progress = control("show", silicon="e2e:local", isi="source")
+        progress = control("show", silicon="si:e2e", isi="source")
         assert any(event["type"] == "injected" and "message: hola" in event["text"] and "  sender:\n    id: shubham\n    type: carbon" in event["text"] for event in progress["events"]), progress
         provider_info = eventually(lambda: next((json.loads(file.read_text()) for file in home.glob("*.provider.json") if json.loads(file.read_text())["ISI"] == "source"), None))
         assert provider_info["SILICON_HOME"] == str(home)
@@ -377,36 +375,36 @@ esac
             return result.stdout
         si("isi", "send", "restricted", "forbidden", ok=False)
         si("isi", "send", "ephemeral_session", "missing title", "--id", "untitled", "--new", ok=False)
-        post("/control", {"action": "send", "args": {"silicon": "e2e:local", "isi": "ephemeral_session", "id": "untitled", "new": True, "message": "missing title"}}, daemon["token"], status=400)
-        assert not control("sessions", silicon="e2e:local", isi="ephemeral_session")
+        post("/control", {"action": "send", "args": {"silicon": "si:e2e", "isi": "ephemeral_session", "id": "untitled", "new": True, "message": "missing title"}}, daemon["token"], status=400)
+        assert not control("sessions", silicon="si:e2e", isi="ephemeral_session")
         post("/", {"type": "ephemeral", "data": {"session_id": "flow-job", "message": "hold ephemeral"}, "metadata": {}}, host="e2e.local.localhost")
-        ephemeral_session = control("show", silicon="e2e:local", isi="ephemeral_session", id="flow-job")["session"]
+        ephemeral_session = control("show", silicon="si:e2e", isi="ephemeral_session", id="flow-job")["session"]
         assert ephemeral_session["title"] == "flow-job" and ephemeral_session["status"] == "running"
         si("isi", "send", "ephemeral_session", "follow-up", "--id", "flow-job")
         si("isi", "send", "ephemeral_session", "finish", "--id", "flow-job")
-        eventually(lambda: not control("sessions", silicon="e2e:local", isi="ephemeral_session"))
+        eventually(lambda: not control("sessions", silicon="si:e2e", isi="ephemeral_session"))
         si("isi", "send", "target", "missing", "--id", "missing", ok=False)
         si("isi", "send", "target", "hold target", "--id", "job", "--new", "--title", "A job")
-        assert control("sessions", silicon="e2e:local", isi="target")[0]["id"] == "job"
+        assert control("sessions", silicon="si:e2e", isi="target")[0]["id"] == "job"
         si("isi", "send", "target", "finish", "--id", "job")
-        eventually(lambda: control("sessions", silicon="e2e:local", isi="target")[0]["status"] == "idle")
+        eventually(lambda: control("sessions", silicon="si:e2e", isi="target")[0]["status"] == "idle")
         si("isi", "end", "target", "--id", "job")
-        assert not control("sessions", silicon="e2e:local", isi="target")
-        archive = control("sessions", silicon="e2e:local", isi="target", archived=True)[0]
+        assert not control("sessions", silicon="si:e2e", isi="target")
+        archive = control("sessions", silicon="si:e2e", isi="target", archived=True)[0]
         assert archive["id"] == "job" and archive["archived_at"]
         si("isi", "send", "target", "history question", "--id", "job", "--archived")
         si("isi", "send", "ephemeral", "short task")
-        eventually(lambda: not control("sessions", silicon="e2e:local", isi="ephemeral"))
-        eventually(lambda: any(event["type"] == "injected" and "ephemeral completed:" in event["text"] for event in control("show", silicon="e2e:local", isi="source")["events"]))
+        eventually(lambda: not control("sessions", silicon="si:e2e", isi="ephemeral"))
+        eventually(lambda: any(event["type"] == "injected" and "ephemeral completed:" in event["text"] for event in control("show", silicon="si:e2e", isi="source")["events"]))
         post("/", {"type": "ping", "data": {"message": "finish"}, "metadata": {}}, host="e2e.local.localhost")
-        eventually(lambda: control("sessions", silicon="e2e:local", isi="source")[0]["status"] == "idle")
+        eventually(lambda: control("sessions", silicon="si:e2e", isi="source")[0]["status"] == "idle")
 
         def messages(address, text=None):
             path = home / "provider-messages.jsonl"
             rows = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
             return [row for row in rows if row["isi"] == address and (text is None or row["message"] == text)]
         def session(isi, session_id=None):
-            return next(row for row in control("sessions", silicon="e2e:local", isi=isi) if session_id is None or row["id"] == session_id)
+            return next(row for row in control("sessions", silicon="si:e2e", isi=isi) if session_id is None or row["id"] == session_id)
         def lines(name):
             path = home / name
             return path.read_text().splitlines() if path.exists() else []
@@ -471,7 +469,7 @@ esac
             old = session(name, logical_id)
             archive_id = name + "-history"
             successor = json.loads(si("--json", "session", "new", "--archive-current-session", "--id", archive_id, "--title", "Finished work", "--description", "Preserved summary", context=context))
-            archived = next(row for row in control("sessions", silicon="e2e:local", isi=name, archived=True) if row["id"] == archive_id)
+            archived = next(row for row in control("sessions", silicon="si:e2e", isi=name, archived=True) if row["id"] == archive_id)
             assert archived["session_id"] == old["session_id"] and archived["first"] == old["first"]
             assert archived["title"] == "Finished work" and archived["description"] == "Preserved summary" and archived["archived_at"]
             assert successor["session_id"] != old["session_id"] and successor["archived_at"] is None
@@ -483,16 +481,16 @@ esac
         next_info = eventually(lambda: next((json.loads(file.read_text()) for file in home.glob("*.provider.json") if json.loads(file.read_text())["ISI"] == "source" and json.loads(file.read_text())["SI_TOKEN"] != child_env["SI_TOKEN"]), None))
         next_env = dict(env, **{key: next_info[key] for key in ("SILICON_HOME", "ISI", "SI_URL", "SI_TOKEN", "TZ")})
         si("isi", "send", "source", "archive question", "--archived", "--id", "source-history", context=next_env)
-        eventually(lambda: any(event["type"] == "injected" and "source completed:" in event.get("text", "") and "archive question" in event["text"] for event in control("show", silicon="e2e:local", isi="source")["events"]))
-        archived_progress = control("show", silicon="e2e:local", isi="source", id="source-history")
+        eventually(lambda: any(event["type"] == "injected" and "source completed:" in event.get("text", "") and "archive question" in event["text"] for event in control("show", silicon="si:e2e", isi="source")["events"]))
+        archived_progress = control("show", silicon="si:e2e", isi="source", id="source-history")
         assert any("archive question" in event.get("text", "") for event in archived_progress["events"])
         assert (home / ".silicon/omni" / archived_progress["session"]["session_id"]).is_dir(), "archive query discarded its history"
         post("/", {"type": "ping", "data": {"message": "finish"}, "metadata": {}}, host="e2e.local.localhost")
         eventually(lambda: session("source")["status"] == "idle")
 
-        control("send", silicon="e2e:local", isi="target", id="end-after-restart", new=True, message="save before restart")
+        control("send", silicon="si:e2e", isi="target", id="end-after-restart", new=True, message="save before restart")
         eventually(lambda: session("target", "end-after-restart")["status"] == "idle")
-        restored = {name: control("sessions", silicon="e2e:local", isi=name) for name in ("source", "pulse")}
+        restored = {name: control("sessions", silicon="si:e2e", isi=name) for name in ("source", "pulse")}
         control("shutdown")
         process.wait(timeout=15)
         assert process.returncode == 0, (work / "server.log").read_text()
@@ -503,16 +501,16 @@ esac
         base = f'http://127.0.0.1:{daemon["port"]}'
         assert len(control("list")) == 1
         for name, records in restored.items():
-            assert {row["session_id"] for row in control("sessions", silicon="e2e:local", isi=name)} == {row["session_id"] for row in records}
-            assert any(row["id"] == name + "-history" for row in control("sessions", silicon="e2e:local", isi=name, archived=True))
+            assert {row["session_id"] for row in control("sessions", silicon="si:e2e", isi=name)} == {row["session_id"] for row in records}
+            assert any(row["id"] == name + "-history" for row in control("sessions", silicon="si:e2e", isi=name, archived=True))
         unloaded = session("target", "end-after-restart")
-        control("end", silicon="e2e:local", isi="target", id=unloaded["session_id"])
-        assert not any(row["id"] == "end-after-restart" for row in control("sessions", silicon="e2e:local", isi="target"))
-        assert any(row["session_id"] == unloaded["session_id"] for row in control("sessions", silicon="e2e:local", isi="target", archived=True))
+        control("end", silicon="si:e2e", isi="target", id=unloaded["session_id"])
+        assert not any(row["id"] == "end-after-restart" for row in control("sessions", silicon="si:e2e", isi="target"))
+        assert any(row["session_id"] == unloaded["session_id"] for row in control("sessions", silicon="si:e2e", isi="target", archived=True))
         post("/", {"type": "ping", "data": {"message": "after restart"}, "metadata": {}}, host="e2e.local.localhost")
         eventually(lambda: session("source")["status"] == "idle")
         assert config.read_bytes() == original
-        cli("disconnect", "e2e:local")
+        cli("disconnect", "si:e2e")
         assert not control("list")
         assert config.read_bytes() == original
         control("shutdown")
