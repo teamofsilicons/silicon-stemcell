@@ -1,7 +1,7 @@
 use crate::{
     auth,
     config::Config,
-    flow,
+    failure, flow,
     runtime::{NewSession, Runtime, SendOptions},
     state,
 };
@@ -48,10 +48,12 @@ pub fn directory() -> PathBuf {
 
 pub fn saved() -> Result<Vec<Connection>> {
     let path = directory().join("connections.json");
-    if path.exists() {
-        serde_json::from_slice(&fs::read(path)?).context("invalid connection registry")
-    } else {
-        Ok(Vec::new())
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .with_context(|| format!("invalid connection registry {}", path.display())),
+        // Nothing connected yet; any other read failure is reported, not taken for "empty".
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
     }
 }
 
@@ -118,56 +120,117 @@ pub fn compile(path: impl AsRef<Path>) -> Result<Config> {
 pub fn daemon(start: bool) -> Result<Daemon> {
     let dir = directory();
     state::private_dir(&dir)?;
-    let read = || -> Result<Daemon> {
-        serde_json::from_slice(&fs::read(dir.join("daemon.json"))?)
-            .context("invalid daemon metadata")
+    // Probing is normal; the reason it failed still explains a stuck or missing interpreter.
+    let last = match running(&dir) {
+        Ok(daemon) => return Ok(daemon),
+        Err(error) => error,
     };
-    if let Ok(daemon) = read() {
-        if call(&daemon, "ping", json!({})).is_ok() {
-            return Ok(daemon);
-        }
-    }
     if !start {
-        bail!("interpreter is not running; run silicon connect YAML");
+        return Err(last.context("interpreter is not running; run silicon connect YAML"));
     }
     let _startup = lock(&dir.join("startup.lock"), false)?;
-    if let Ok(daemon) = read() {
-        if call(&daemon, "ping", json!({})).is_ok() {
-            return Ok(daemon);
-        }
+    if let Ok(daemon) = running(&dir) {
+        return Ok(daemon);
     }
+    let log = dir.join("daemon.log");
     let file = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(dir.join("daemon.log"))?;
-    let mut child = Command::new(std::env::current_exe()?)
+        .open(&log)
+        .with_context(|| format!("open {}", log.display()))?;
+    let start = file
+        .metadata()
+        .with_context(|| format!("read the size of {}", log.display()))?
+        .len();
+    let executable = std::env::current_exe()
+        .context("locate the silicon executable to start the interpreter")?;
+    let mut child = Command::new(&executable)
         .arg("serve")
         .stdin(Stdio::null())
-        .stdout(file.try_clone()?)
+        .stdout(
+            file.try_clone()
+                .with_context(|| format!("share {} with the interpreter", log.display()))?,
+        )
         .stderr(file)
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(30);
+        .spawn()
+        .map_err(|error| failure::spawn(&dir, &failure::argv(&executable, &["serve"]), &error))
+        .with_context(|| format!("start the interpreter from {}", executable.display()))?;
+    await_start(&dir, &mut child, start, Duration::from_secs(30))
+}
+
+/// The interpreter daemon.json describes, once it answers a ping.
+fn running(dir: &Path) -> Result<Daemon> {
+    let path = dir.join("daemon.json");
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let daemon: Daemon = serde_json::from_slice(&bytes)
+        .with_context(|| format!("invalid daemon metadata in {}", path.display()))?;
+    call(&daemon, "ping", json!({}))?;
+    Ok(daemon)
+}
+
+/// Wait for a just-started interpreter. If it dies or stalls, the error carries everything
+/// it wrote to daemon.log since `start` and why the last ping failed.
+fn await_start(
+    dir: &Path,
+    child: &mut std::process::Child,
+    start: u64,
+    patience: Duration,
+) -> Result<Daemon> {
+    let deadline = Instant::now() + patience;
     loop {
-        if let Ok(daemon) = read() {
-            if call(&daemon, "ping", json!({})).is_ok() {
-                return Ok(daemon);
-            }
-        }
-        if let Some(status) = child.try_wait()? {
+        let last = match running(dir) {
+            Ok(daemon) => return Ok(daemon),
+            Err(error) => error,
+        };
+        if let Some(status) = child
+            .try_wait()
+            .context("check on the starting interpreter")?
+        {
             bail!(
-                "interpreter exited {status}; see {}",
-                dir.join("daemon.log").display()
+                "interpreter exited before answering: {status}\n{}\nlast ping: {last:#}",
+                startup_output(dir, start)
             );
         }
         if Instant::now() >= deadline {
             bail!(
-                "interpreter is still starting; see {}",
-                dir.join("daemon.log").display()
+                "interpreter (pid {}) did not answer within {}s\n{}\nlast ping: {last:#}",
+                child.id(),
+                patience.as_secs(),
+                startup_output(dir, start)
             );
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// What a starting interpreter wrote (stdout and stderr) to daemon.log, verbatim.
+fn startup_output(dir: &Path, start: u64) -> String {
+    let path = dir.join("daemon.log");
+    match since(&path, start) {
+        Ok(text) if text.trim().is_empty() => format!("{}: (empty)", path.display()),
+        Ok(text) => failure::mask(
+            dir,
+            &format!("{}:\n{}", path.display(), text.trim_end()),
+            &[],
+        ),
+        Err(error) => format!("could not read {}: {error:#}", path.display()),
+    }
+}
+
+/// Everything appended to `path` after byte `start`; a missing file has nothing yet.
+fn since(path: &Path, start: u64) -> Result<String> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error).with_context(|| format!("open {}", path.display())),
+    };
+    file.seek(SeekFrom::Start(start))
+        .with_context(|| format!("seek {} to byte {start}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn lock(path: &Path, nonblocking: bool) -> Result<File> {
@@ -177,10 +240,16 @@ fn lock(path: &Path, nonblocking: bool) -> Result<File> {
         .read(true)
         .write(true)
         .mode(0o600)
-        .open(path)?;
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
     let flags = libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 };
     if unsafe { libc::flock(file.as_raw_fd(), flags) } != 0 {
-        bail!("another interpreter already holds {}", path.display());
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            return Err(error)
+                .with_context(|| format!("another interpreter already holds {}", path.display()));
+        }
+        return Err(error).with_context(|| format!("could not lock {}", path.display()));
     }
     Ok(file)
 }
@@ -216,20 +285,29 @@ fn request(url: &str, token: &str, action: &str, args: Value) -> Result<Value> {
         .post(url)
         .header("Authorization", &format!("Bearer {token}"))
         .send_json(json!({"action":action,"args":args}))
-        .context("interpreter request failed")?;
-    let status = response.status().as_u16();
-    let value: Value = response
-        .body_mut()
-        .read_json()
-        .context("interpreter response was not JSON")?;
-    if status >= 400 {
-        bail!(
-            "{}",
-            value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("interpreter request failed")
-        );
+        .with_context(|| format!("interpreter request `{action}` to {url} failed"))?;
+    let status = response.status();
+    let body = response.body_mut().read_to_string().with_context(|| {
+        format!("could not read the HTTP {status} answer to `{action}` from {url}")
+    })?;
+    let value: Value = serde_json::from_str(&body).with_context(|| {
+        format!(
+            "interpreter answered `{action}` at {url} with HTTP {status} that is not JSON:\n{}",
+            if body.trim().is_empty() {
+                "(empty body)"
+            } else {
+                &body
+            }
+        )
+    })?;
+    if status.as_u16() >= 400 {
+        // The daemon's `error` is already its full cause chain; anything else is shown whole.
+        match value.get("error").and_then(Value::as_str) {
+            Some(error) => bail!("{error}"),
+            None => bail!(
+                "interpreter answered `{action}` at {url} with HTTP {status} and no error message:\n{body}"
+            ),
+        }
     }
     Ok(value)
 }
@@ -247,13 +325,26 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
     state::private_dir(&dir)?;
     let _lock = lock(&dir.join("daemon.lock"), true)?;
     let mut selected = port;
+    // A busy port is expected, so step down; why the requested one failed is still kept.
+    let mut refused = None;
     let server = loop {
         match Server::http(("127.0.0.1", selected)) {
             Ok(server) => break server,
-            Err(error) if selected <= 1024 => bail!("no available port in 1024..={port}: {error}"),
-            Err(_) => selected -= 1,
+            Err(error) if selected <= 1024 => bail!(
+                "no available port in 1024..={port}: {}port {selected}: {error}",
+                refused
+                    .map(|first| format!("port {port}: {first}; "))
+                    .unwrap_or_default()
+            ),
+            Err(error) => {
+                refused.get_or_insert_with(|| error.to_string());
+                selected -= 1;
+            }
         }
     };
+    if let Some(first) = &refused {
+        eprintln!("port {port} is unavailable ({first}); listening on {selected} instead");
+    }
     let runtime = Runtime::new(format!("http://127.0.0.1:{selected}"));
     let mut connections = saved()?;
     for connection in &mut connections {
@@ -263,9 +354,16 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
             Ok(current)
         }) {
             Ok(current) => *connection = current,
-            Err(error) => {
-                eprintln!("restore {} failed: {error:#}", connection.id);
-            }
+            Err(error) => report(
+                &connection.home,
+                None,
+                "interpreter",
+                &format!(
+                    "restore {} from {} failed: {error:#}",
+                    connection.id,
+                    connection.yaml.display()
+                ),
+            ),
         }
     }
     state::write_json(&dir.join("connections.json"), &connections)?;
@@ -279,7 +377,10 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
     let proxy = if no_proxy {
         None
     } else {
-        Some(crate::proxy::Proxy::start(&dir, selected, &hosts)?)
+        Some(
+            crate::proxy::Proxy::start(&dir, selected, &hosts)
+                .context("start the local routing proxy (use --no-proxy to skip it)")?,
+        )
     };
     let daemon = Daemon {
         pid: std::process::id(),
@@ -309,20 +410,25 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
         for connected in connections {
             restore.runtime.start_inbox(&connected);
             if let Err(error) = register_ting(&connected) {
-                eprintln!(
-                    "restore Ting for {} failed: {error:#}",
-                    connected.cfg.silicon.id.as_deref().unwrap()
+                let id = connected.cfg.silicon.id.as_deref().unwrap();
+                let error = rollback(
+                    &restore,
+                    id,
+                    error.context(format!("restore Ting for {id}")),
                 );
-                let _ = restore
-                    .runtime
-                    .disconnect(connected.cfg.silicon.id.as_deref().unwrap());
-                let _ = update_proxy(&restore);
+                report(
+                    &connected.cfg.home,
+                    Some(connected.cfg.generation),
+                    "ting",
+                    &format!("{error:#}"),
+                );
             }
         }
     });
     let update_ready = Arc::new(AtomicBool::new(false));
     crate::update::start(&runtime, update_ready.clone());
-    let mut signals = signal_hook::iterator::Signals::new([libc::SIGINT, libc::SIGTERM])?;
+    let mut signals = signal_hook::iterator::Signals::new([libc::SIGINT, libc::SIGTERM])
+        .context("listen for SIGINT and SIGTERM")?;
     let signal_handle = signals.handle();
     let stop = runtime.clone();
     let signal_thread = thread::spawn(move || {
@@ -341,7 +447,10 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
                 }
             }
         }
-        if let Some(request) = server.recv_timeout(Duration::from_millis(200))? {
+        if let Some(request) = server
+            .recv_timeout(Duration::from_millis(200))
+            .with_context(|| format!("receive the next request on {}", runtime.url))?
+        {
             let app = app.clone();
             thread::spawn(move || handle(app, request));
         }
@@ -349,24 +458,35 @@ pub fn serve(port: u16, no_proxy: bool) -> Result<()> {
     runtime.shutdown();
     app.proxy.lock().unwrap().take();
     signal_handle.close();
-    let _ = signal_thread.join();
-    fs::remove_file(dir.join("daemon.json"))?;
+    if let Err(panic) = signal_thread.join() {
+        eprintln!(
+            "signal listener panicked: {}",
+            crate::failure::panic_message(&*panic)
+        );
+    }
+    fs::remove_file(dir.join("daemon.json"))
+        .with_context(|| format!("remove {}", dir.join("daemon.json").display()))?;
     if restarting {
         use std::os::unix::process::CommandExt;
         let executable = crate::update::managed_prefix()?.join("bin/silicon");
-        let mut command = Command::new(executable);
+        let mut command = Command::new(&executable);
         command.arg("serve").arg("--port").arg(port.to_string());
         if no_proxy {
             command.arg("--no-proxy");
         }
         drop(_lock);
-        return Err(command.exec()).context("could not restart updated interpreter");
+        return Err(command.exec()).with_context(|| {
+            format!(
+                "could not restart the updated interpreter {}",
+                executable.display()
+            )
+        });
     }
     Ok(())
 }
 
-fn configuration(cfg: &Config) -> Value {
-    let mut value = serde_json::to_value(cfg).unwrap_or(Value::Null);
+fn configuration(cfg: &Config) -> Result<Value> {
+    let mut value = serde_json::to_value(cfg).context("serialize the configuration")?;
     let secrets = crate::telemetry::silicon_secrets(&value["silicon"]);
     if let Some(configs) = value
         .pointer_mut("/silicon/app_configs")
@@ -377,7 +497,7 @@ fn configuration(cfg: &Config) -> Value {
         }
     }
     crate::telemetry::redact_value(&mut value, &secrets);
-    value
+    Ok(value)
 }
 
 fn header<'a>(req: &'a Request, key: &str) -> &'a str {
@@ -391,11 +511,11 @@ fn header<'a>(req: &'a Request, key: &str) -> &'a str {
 fn handle(app: Arc<App>, mut request: Request) {
     let _activity = match app.runtime.activity() {
         Ok(activity) => activity,
-        Err(_) => {
+        Err(error) => {
             respond(
                 request,
                 503,
-                json!({"error":"interpreter is stopping; retry after it restarts"}),
+                json!({"error":format!("{error:#}; retry after it restarts")}),
             );
             return;
         }
@@ -407,28 +527,16 @@ fn handle(app: Arc<App>, mut request: Request) {
         .unwrap_or("")
         .to_owned();
     if request.method() == &Method::Get && path == "/ping" {
-        let online = app
-            .runtime
-            .silicons
-            .read()
-            .unwrap()
-            .values()
-            .find(|c| descriptor(&c.cfg).host == host)
-            .filter(|c| c.enabled.load(Ordering::SeqCst))
-            .map(|c| descriptor(&c.cfg).id);
-        let status = if online.is_some() { 200 } else { 404 };
-        respond(
-            request,
-            status,
-            json!({"online":online.is_some(),"silicon":online,"timestamp":chrono::Utc::now().to_rfc3339()}),
-        );
+        let (status, value) = ping(&app, &host);
+        respond(request, status, value);
         return;
     }
     if request.method() == &Method::Get
         && path == "/"
         && (host == "silicon.localhost" || host == "127.0.0.1")
     {
-        let _ = request.respond(
+        send(
+            request,
             Response::from_string(include_str!("dashboard.html")).with_header(
                 Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
             ),
@@ -436,28 +544,27 @@ fn handle(app: Arc<App>, mut request: Request) {
         return;
     }
     if request.method() != &Method::Post {
-        respond(request, 405, json!({"error":"POST required"}));
+        let error = format!("{} {path} is not supported; use POST", request.method());
+        respond(request, 405, json!({"error":error}));
         return;
     }
-    if !header(&request, "Content-Type")
+    let content_type = header(&request, "Content-Type");
+    if !content_type
         .split(';')
         .next()
         .is_some_and(|v| v.trim() == "application/json")
     {
-        respond(
-            request,
-            415,
-            json!({"error":"Content-Type must be application/json"}),
-        );
+        let error = format!("Content-Type must be application/json, got {content_type:?}");
+        respond(request, 415, json!({"error":error}));
         return;
     }
     let origin = header(&request, "Origin");
     if !origin.is_empty() && origin != format!("http://{host}") && origin != app.runtime.url {
-        respond(
-            request,
-            403,
-            json!({"error":"cross-origin requests are not permitted"}),
+        let error = format!(
+            "cross-origin requests are not permitted: Origin {origin} is neither http://{host} nor {}",
+            app.runtime.url
         );
+        respond(request, 403, json!({"error":error}));
         return;
     }
     let auth = header(&request, "Authorization")
@@ -468,7 +575,12 @@ fn handle(app: Arc<App>, mut request: Request) {
         match app.runtime.caller(&auth) {
             Some(caller) => Some(caller),
             None => {
-                respond(request, 401, json!({"error":"invalid ISI capability"}));
+                let error = if auth.is_empty() {
+                    "ISI capability required: send Authorization: Bearer $SI_TOKEN"
+                } else {
+                    "invalid ISI capability: this interpreter did not issue that SI_TOKEN, or its session has ended"
+                };
+                respond(request, 401, json!({"error":error}));
                 return;
             }
         }
@@ -476,7 +588,19 @@ fn handle(app: Arc<App>, mut request: Request) {
         None
     };
     if path == "/control" && auth != app.daemon.token {
-        respond(request, 401, json!({"error":"interpreter token required"}));
+        let file = directory().join("daemon.json");
+        let error = if auth.is_empty() {
+            format!(
+                "interpreter token required: send Authorization: Bearer <token from {}>",
+                file.display()
+            )
+        } else {
+            format!(
+                "interpreter token rejected: it is not the token in {}; the interpreter may have restarted since it was read",
+                file.display()
+            )
+        };
+        respond(request, 401, json!({"error":error}));
         return;
     }
     let event_request = path == "/" || path == "/events";
@@ -486,13 +610,14 @@ fn handle(app: Arc<App>, mut request: Request) {
         16 * 1024 * 1024
     };
     let mut body = Vec::new();
-    let read = request.as_reader().take(limit + 1).read_to_end(&mut body);
-    if read.is_err() || body.len() as u64 > limit {
-        respond(
-            request,
-            413,
-            json!({"error":"request body exceeds endpoint limit or could not be read"}),
-        );
+    if let Err(error) = request.as_reader().take(limit + 1).read_to_end(&mut body) {
+        let error = format!("could not read the request body for {path}: {error}");
+        respond(request, 400, json!({"error":error}));
+        return;
+    }
+    if body.len() as u64 > limit {
+        let error = format!("request body for {path} exceeds its {limit}-byte limit");
+        respond(request, 413, json!({"error":error}));
         return;
     }
     let body: Value = match serde_json::from_slice(&body) {
@@ -501,7 +626,7 @@ fn handle(app: Arc<App>, mut request: Request) {
             respond(
                 request,
                 400,
-                json!({"error":format!("invalid JSON: {error}")}),
+                json!({"error":format!("invalid JSON request body for {path}: {error}")}),
             );
             return;
         }
@@ -510,10 +635,10 @@ fn handle(app: Arc<App>, mut request: Request) {
         crate::telemetry::interpreter("daemon", "request", json!({"path":path,"body":body}));
     }
     let result = if path == "/control" {
-        control(&app, &body)
+        guarded(|| control(&app, &body))
     } else if let Some(caller) = caller {
-        internal_action(&app, &caller, &body)
-    } else if path == "/" || path == "/events" {
+        guarded(|| internal_action(&app, &caller, &body))
+    } else if event_request {
         let id = app
             .runtime
             .silicons
@@ -522,47 +647,167 @@ fn handle(app: Arc<App>, mut request: Request) {
             .iter()
             .find(|(_, c)| descriptor(&c.cfg).host == host)
             .map(|(id, _)| id.clone());
-        if let Some(id) = id {
-            app.runtime.get(&id).and_then(|connected| {
-                if !connected.enabled.load(Ordering::SeqCst) {
-                    bail!("silicon disconnected");
-                }
-                connected.ting.accept(body)?;
-                Ok(Value::Null)
-            })
-        } else {
-            respond(request, 404, json!({"error":"unknown silicon host"}));
+        let Some(id) = id else {
+            let error = format!("no connected silicon serves host {host:?}");
+            respond(request, 404, json!({"error":error}));
             return;
-        }
+        };
+        guarded(|| deliver(&app, &id, body))
     } else {
-        respond(request, 404, json!({"error":"unknown endpoint"}));
+        let error = format!("unknown endpoint {path}; use /control, /si or /events");
+        respond(request, 404, json!({"error":error}));
         return;
     };
     match result {
-        Ok(_) if event_request => {
-            let _ = request.respond(Response::empty(204));
-        }
+        Ok(_) if event_request => send(request, Response::empty(204)),
         Ok(value) => respond(request, 200, value),
-        Err(error) => respond(request, 400, json!({"error":format!("{error:#}")})),
+        // Errors are masked where they are built; this last pass covers every Silicon's
+        // registered values, because the answer leaves the process.
+        Err(error) => respond(
+            request,
+            400,
+            json!({"error":failure::mask_all(&format!("{error:#}"))}),
+        ),
     }
 }
 
+/// Health for a Silicon host; when it is offline, `error` says why.
+fn ping(app: &App, host: &str) -> (u16, Value) {
+    let silicons = app.runtime.silicons.read().unwrap();
+    let found = silicons.values().find(|c| descriptor(&c.cfg).host == host);
+    let online = found
+        .filter(|c| c.enabled.load(Ordering::SeqCst))
+        .map(|c| descriptor(&c.cfg).id);
+    let mut value = json!({"online":online.is_some(),"silicon":online,"timestamp":chrono::Utc::now().to_rfc3339()});
+    if online.is_some() {
+        return (200, value);
+    }
+    value["error"] = json!(match found {
+        Some(c) => format!("silicon {} is disconnected", descriptor(&c.cfg).id),
+        None => format!("no connected silicon serves host {host:?}"),
+    });
+    (404, value)
+}
+
+/// Queue a Ting batch. Ting alone hears the reply, so a rejection also goes to the Silicon's log
+/// (and, through `respond`, to daemon.log).
+fn deliver(app: &App, id: &str, body: Value) -> Result<Value> {
+    let connected = app.runtime.get(id)?;
+    let home = &connected.cfg.home;
+    connected
+        .ting
+        .accept(body)
+        .map(|()| Value::Null)
+        .map_err(|error| {
+            let reason = failure::mask(home, &format!("{error:#}"), &[]);
+            let message = format!("rejected a Ting delivery: {reason}");
+            log_error(home, Some(connected.cfg.generation), "webhook", &message);
+            anyhow!(reason)
+        })
+}
+
+/// A panic answers the request with its message instead of dropping the connection.
+fn guarded(action: impl FnOnce() -> Result<Value>) -> Result<Value> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)).unwrap_or_else(|panic| {
+        Err(anyhow!(
+            "interpreter panicked: {} (where: {})",
+            crate::failure::panic_message(&*panic),
+            directory().join("daemon.log").display()
+        ))
+    })
+}
+
+/// A failure no caller is waiting on: daemon.log for the operator, silicon.log for the Silicon.
+fn report(home: &Path, generation: Option<Uuid>, origin: &str, message: &str) {
+    let message = failure::mask(home, message, &[]);
+    eprintln!("{message}");
+    log_error(home, generation, origin, &message);
+}
+
+/// An `[error]` line in the Silicon's log. A home whose directory is gone is not recreated
+/// just to hold it; a failed write lands in daemon.log with the line it could not write.
+fn log_error(home: &Path, generation: Option<Uuid>, origin: &str, message: &str) {
+    let gone = fs::metadata(home.join(".silicon"))
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    if gone {
+        return;
+    }
+    if let Err(error) = crate::log_line_scoped(home, generation, "error", origin, message) {
+        eprintln!("{error:#}; the {origin} error it was recording:\n{message}");
+    }
+}
+
+/// Undo a half-made connection; failures here ride along with the error that caused it.
+fn rollback(app: &App, id: &str, error: anyhow::Error) -> anyhow::Error {
+    let error = crate::failure::also(
+        error,
+        app.runtime
+            .disconnect(id)
+            .with_context(|| format!("roll back: disconnect {id}")),
+    );
+    crate::failure::also(
+        error,
+        update_proxy(app).context("roll back: update local routing"),
+    )
+}
+
 fn respond(request: Request, status: u16, value: Value) {
-    let _ = request.respond(
+    let path = request.url().split('?').next().unwrap_or("");
+    // Ting alone hears a rejected delivery; daemon.log keeps why that Silicon's events went missing.
+    if status >= 400 && (path == "/" || path == "/events") {
+        eprintln!(
+            "answered {} {}{path} with HTTP {status}: {}",
+            request.method(),
+            header(&request, "Host"),
+            value["error"].as_str().unwrap_or(&value.to_string())
+        );
+    }
+    send(
+        request,
         Response::from_string(value.to_string())
             .with_status_code(status)
             .with_header(Header::from_bytes("Content-Type", "application/json").unwrap()),
     );
 }
+
+/// A client that left before its answer is not an error to it, but daemon.log says what it missed.
+fn send<R: Read>(request: Request, response: Response<R>) {
+    let path = request.url().split('?').next().unwrap_or("").to_owned();
+    let status = response.status_code().0;
+    if let Err(error) = request.respond(response) {
+        eprintln!("could not send the HTTP {status} answer for {path}: {error}");
+    }
+}
+
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
-    v.get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("{key} is required"))
+    match v.get(key) {
+        Some(Value::String(value)) => Ok(value),
+        None | Some(Value::Null) => bail!("{key} is required"),
+        Some(other) => bail!("{key} must be a string, got {other}"),
+    }
+}
+
+/// An optional string argument; a value of the wrong type is an error, never "absent".
+fn optional<'a>(v: &'a Value, key: &str) -> Result<Option<&'a str>> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => text(v, key).map(Some),
+    }
+}
+
+/// An optional boolean argument, false when absent.
+fn flag(v: &Value, key: &str) -> Result<bool> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(other) => bail!("{key} must be boolean, got {other}"),
+    }
 }
 
 fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
     let args = &body["args"];
-    match text(body, "action")? {
+    let action = text(body, "action")?;
+    match action {
         "settings" => Ok(json!(crate::settings::load()?)),
         "settings-set" => {
             let _guard = app.mutation.lock().unwrap();
@@ -570,21 +815,24 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 text(args, "key")?,
                 args["enabled"]
                     .as_bool()
-                    .ok_or_else(|| anyhow!("enabled must be boolean"))?
+                    .ok_or_else(|| anyhow!("enabled must be boolean, got {}", args["enabled"]))?
             )?))
         }
         "silicon-ping" => {
             let id = text(args, "silicon")?;
-            Ok(
-                json!({"silicon":id,"online":app.runtime.get(id).is_ok(),"timestamp":chrono::Utc::now().to_rfc3339()}),
-            )
+            let online = app.runtime.get(id);
+            let mut value = json!({"silicon":id,"online":online.is_ok(),"timestamp":chrono::Utc::now().to_rfc3339()});
+            if let Err(error) = online {
+                value["error"] = json!(format!("{error:#}"));
+            }
+            Ok(value)
         }
         "configuration" => {
             let connected = app.runtime.get(text(args, "silicon")?)?;
             let mut cfg = connected.cfg.clone();
             cfg.silicon = connected.app_settings.read().unwrap().clone();
             cfg.flow = cfg.load_flow()?;
-            Ok(configuration(&cfg))
+            configuration(&cfg)
         }
         "install" => crate::apps::install(text(args, "app_id")?),
         "uninstall" => crate::apps::uninstall(text(args, "app_id")?),
@@ -609,10 +857,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             let log = cfg.home.join(".silicon/silicon.log");
             let start = fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
             if let Err(error) = app.runtime.connect(cfg) {
-                bail!(
-                    "{error:#}\n{}",
-                    connection_progress(&log, start)?.join("\n")
-                );
+                return Err(with_progress(error, &log, start));
             }
             let result = (|| -> Result<()> {
                 let connected = app.runtime.get(&connection.id)?;
@@ -638,36 +883,23 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 Ok(())
             })();
             if let Err(error) = result {
-                let _ = app.runtime.disconnect(&connection.id);
-                let _ = update_proxy(app);
-                return Err(error);
+                let error = with_progress(error, &log, start);
+                return Err(rollback(app, &connection.id, error));
             }
             Ok(
-                json!({"connection":connection,"warnings":warnings,"progress":connection_progress(&log,start)?}),
+                json!({"connection":connection,"warnings":warnings,"progress":connection_progress(&log,start)}),
             )
         }
         "disconnect" => {
             let _guard = app.mutation.lock().unwrap();
             let target = text(args, "target")?;
-            let id = app
-                .runtime
-                .silicons
-                .read()
-                .unwrap()
-                .iter()
-                .find(|(id, c)| {
-                    id.as_str() == target
-                        || (Path::new(target).is_absolute()
-                            && c.cfg.path == Path::new(target).canonicalize().unwrap_or_default())
-                })
-                .map(|(id, _)| id.clone())
-                .ok_or_else(|| anyhow!("unknown silicon: {target}"))?;
+            let id = resolve(app, target)?;
             let mut errors = Vec::new();
             if let Err(error) = app.runtime.disconnect(&id) {
-                errors.push(format!("{error:#}"));
+                errors.push(format!("disconnect: {error:#}"));
             }
             if let Err(error) = update_proxy(app) {
-                errors.push(format!("{error:#}"));
+                errors.push(format!("update local routing: {error:#}"));
             }
             if let Err(error) = state::write_json(
                 &directory().join("connections.json"),
@@ -679,10 +911,14 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                     .map(|c| descriptor(&c.cfg))
                     .collect::<Vec<_>>(),
             ) {
+                // write_json names the file it could not save.
                 errors.push(format!("{error:#}"));
             }
             if !errors.is_empty() {
-                bail!("disconnected with cleanup errors: {}", errors.join("; "));
+                bail!(
+                    "disconnected {id} with cleanup errors:\n{}",
+                    errors.join("\n")
+                );
             }
             Ok(json!({"disconnected":id}))
         }
@@ -696,18 +932,19 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         "show" => app.runtime.show(
             text(args, "silicon")?,
             text(args, "isi")?,
-            args["id"].as_str(),
+            optional(args, "id")?,
         ),
         "end" => {
             app.runtime.end(
                 text(args, "silicon")?,
                 text(args, "isi")?,
-                args["id"].as_str(),
+                optional(args, "id")?,
             )?;
             Ok(json!({"ended":true}))
         }
         "send" => {
-            let options: SendOptions = serde_json::from_value(args.clone())?;
+            let options: SendOptions =
+                serde_json::from_value(args.clone()).context("invalid send options")?;
             let sent = app.runtime.send(
                 text(args, "silicon")?,
                 None,
@@ -724,15 +961,19 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             let connected = app.runtime.get(id)?;
             let current =
                 app.runtime
-                    .show_connected(&connected, isi, args["current_id"].as_str())?;
+                    .show_connected(&connected, isi, optional(args, "current_id")?)?;
+            let session = &current["session"]["session_id"];
             let caller = app.runtime.session_caller(
                 &connected,
-                serde_json::from_value(current["session"]["session_id"].clone())?,
+                serde_json::from_value(session.clone()).with_context(|| {
+                    format!("{isi}'s current session has an unexpected session_id {session}")
+                })?,
             )?;
             Ok(json!(app.runtime.new_session_connected(
                 &connected,
                 &caller,
-                &serde_json::from_value::<NewSession>(args.clone())?
+                &serde_json::from_value::<NewSession>(args.clone())
+                    .context("invalid new-session arguments")?
             )?))
         }
         "logs" => {
@@ -755,19 +996,50 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             app.runtime.stopping.store(true, Ordering::SeqCst);
             Ok(json!({"stopping":true}))
         }
-        _ => bail!("unknown control action"),
+        _ => bail!("unknown control action {action:?}"),
     }
 }
 
-fn connection_progress(path: &Path, start: u64) -> Result<Vec<String>> {
-    if !path.exists() {
-        return Ok(Vec::new());
+/// The Silicon's log lines since `start`; a read failure becomes the last line, never the answer.
+fn connection_progress(path: &Path, start: u64) -> Vec<String> {
+    match since(path, start) {
+        Ok(text) => text.lines().map(str::to_owned).collect(),
+        Err(error) => vec![format!("could not read progress: {error:#}")],
     }
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(start))?;
-    let mut text = String::new();
-    file.read_to_string(&mut text)?;
-    Ok(text.lines().map(str::to_owned).collect())
+}
+
+/// The failure first, then what the Silicon's log recorded while it happened.
+fn with_progress(error: anyhow::Error, log: &Path, start: u64) -> anyhow::Error {
+    let lines = connection_progress(log, start);
+    if lines.is_empty() {
+        return error;
+    }
+    anyhow!("{error:#}\n{}", lines.join("\n"))
+}
+
+/// A connected Silicon by ID or YAML path; a miss says what was tried and what is connected.
+fn resolve(app: &App, target: &str) -> Result<String> {
+    let path = Path::new(target);
+    let resolved = path.is_absolute().then(|| path.canonicalize());
+    let silicons = app.runtime.silicons.read().unwrap();
+    if let Some(id) = silicons.iter().find_map(|(id, c)| {
+        let by_path = matches!(&resolved, Some(Ok(path)) if c.cfg.path == *path);
+        (id.as_str() == target || by_path).then(|| id.clone())
+    }) {
+        return Ok(id);
+    }
+    let mut message = format!("unknown silicon: {target}");
+    if let Some(Err(error)) = &resolved {
+        message.push_str(&format!(" (resolving it as a YAML path failed: {error})"));
+    }
+    let mut connected: Vec<_> = silicons.keys().map(String::as_str).collect();
+    connected.sort_unstable();
+    message.push_str(&if connected.is_empty() {
+        "; no Silicons are connected".to_owned()
+    } else {
+        format!("; connected: {}", connected.join(", "))
+    });
+    bail!("{message}")
 }
 
 fn update_proxy(app: &App) -> Result<()> {
@@ -814,11 +1086,11 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             app.runtime.caller_connection(caller)?;
             let id = text(args, "app_id")?;
             if !crate::apps::valid_id(id) {
-                bail!("expected a bare Honeycomb app ID (e.g. dm)");
+                bail!("expected a bare Honeycomb app ID (e.g. dm), got {id:?}");
             }
             let install = action == "app-install";
             if !install && ["iam", "ting"].contains(&id) {
-                bail!("IAM and Ting are required interpreter dependencies");
+                bail!("cannot uninstall {id}: IAM and Ting are required interpreter dependencies");
             }
             let cfg = &connected.cfg;
             if install {
@@ -852,7 +1124,8 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             Ok(json!({"app_id":id,"installed":install}))
         }
         "send" => {
-            let options: SendOptions = serde_json::from_value(args.clone())?;
+            let options: SendOptions =
+                serde_json::from_value(args.clone()).context("invalid send options")?;
             let sent = app.runtime.send_connected(
                 &connected,
                 Some(caller),
@@ -866,16 +1139,17 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
         "sessions" => sessions(&app.runtime, &connected, args),
         "show" => app
             .runtime
-            .show_connected(&connected, text(args, "isi")?, args["id"].as_str()),
+            .show_connected(&connected, text(args, "isi")?, optional(args, "id")?),
         "end" => {
             app.runtime
-                .end_connected(&connected, text(args, "isi")?, args["id"].as_str())?;
+                .end_connected(&connected, text(args, "isi")?, optional(args, "id")?)?;
             Ok(json!({"ended":true}))
         }
         "new-session" => Ok(json!(app.runtime.new_session_connected(
             &connected,
             caller,
-            &serde_json::from_value::<NewSession>(args.clone())?
+            &serde_json::from_value::<NewSession>(args.clone())
+                .context("invalid new-session arguments")?
         )?)),
         "auth-setup" => {
             let c = &connected;
@@ -888,7 +1162,7 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             auth::remove(&c.cfg.home, text(args, "app")?)?;
             Ok(json!({"removed":true}))
         }
-        _ => bail!("unknown si action"),
+        _ => bail!("unknown si action {action:?}"),
     }
 }
 
@@ -897,7 +1171,7 @@ fn sessions(
     connected: &crate::runtime::Connected,
     args: &Value,
 ) -> Result<Value> {
-    let archived = args["archived"].as_bool().unwrap_or(false);
+    let archived = flag(args, "archived")?;
     let records = json!(runtime.list_connected(connected, text(args, "isi")?, archived)?);
     if !archived {
         return Ok(records);
@@ -905,30 +1179,38 @@ fn sessions(
     let filters: Vec<String> = if args["filters"].is_null() {
         Vec::new()
     } else {
-        serde_json::from_value(args["filters"].clone())
-            .context("archive filters must be a list of strings")?
+        serde_json::from_value(args["filters"].clone()).with_context(|| {
+            format!(
+                "archive filters must be a list of strings, got {}",
+                args["filters"]
+            )
+        })?
     };
-    let timezone = args["timezone"]
-        .as_str()
-        .unwrap_or(connected.cfg.silicon.timezone.as_deref().unwrap());
+    let timezone =
+        optional(args, "timezone")?.unwrap_or(connected.cfg.silicon.timezone.as_deref().unwrap());
     crate::cli::filter_sessions(records, &filters, timezone, chrono::Utc::now())
 }
 
 pub fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
-    use std::io::{Seek, SeekFrom};
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let mut file = File::open(path)?;
-    let mut position = file.metadata()?.len();
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        // No log yet; any other open failure is reported, not shown as an empty log.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).with_context(|| format!("open {}", path.display())),
+    };
+    let mut position = file
+        .metadata()
+        .with_context(|| format!("read the size of {}", path.display()))?
+        .len();
     let mut chunks = Vec::new();
     let mut lines = 0;
     while position > 0 && lines <= count {
         let size = position.min(8192) as usize;
         position -= size as u64;
-        file.seek(SeekFrom::Start(position))?;
         let mut chunk = vec![0; size];
-        file.read_exact(&mut chunk)?;
+        file.seek(SeekFrom::Start(position))
+            .and_then(|_| file.read_exact(&mut chunk))
+            .with_context(|| format!("read {} at byte {position}", path.display()))?;
         lines += chunk.iter().filter(|b| **b == b'\n').count();
         chunks.push(chunk);
     }
@@ -963,7 +1245,7 @@ mod tests {
             "access": {}, "flow": [{"value": "private-table-value/private-silicon-value/private-app-value"}]
         }))
         .unwrap();
-        let snapshot = configuration(&cfg);
+        let snapshot = configuration(&cfg).unwrap();
         assert_eq!(snapshot["silicon"]["token"], "[redacted]");
         assert_eq!(
             snapshot["silicon"]["space_station"]["table_key"],
@@ -1051,5 +1333,240 @@ flow: []
         assert_eq!(request.join().unwrap().unwrap()["valid"], true);
         handler.join().unwrap();
         assert!(runtime.begin_restart_if_idle());
+    }
+
+    #[test]
+    fn http_errors_carry_the_tools_words_and_mask_every_registered_credential() {
+        let home = tempfile::tempdir().unwrap();
+        // A credential another Silicon registered with this interpreter.
+        let other = PathBuf::from(format!("/test/{}", Uuid::new_v4()));
+        let mut registered: Config = serde_json::from_value(json!({
+            "silicon": {"id":"si:other", "org_id":"org", "token":"other-silicon-private-token"},
+            "isi":{}, "access":{}, "flow":[]
+        }))
+        .unwrap();
+        registered.home = other.clone();
+        crate::telemetry::register(&registered);
+        let yaml = home.path().join("silicon.yaml");
+        fs::write(
+            &yaml,
+            format!(
+                r#"
+silicon:
+  id: si:test
+  org_id: org
+  token: test
+  timezone: UTC
+  SILICON_HOME: {}
+  inference_providers: [all-available-providers]
+isi:
+  a:
+    model: '! echo "model lookup failed for other-silicon-private-token" >&2; echo "[\"no model\"]"; exit 3'
+    primary_send_mode: global
+    session_type: persistent
+    dna: {{assemble: [], next_refresh: 30min}}
+access: {{a: []}}
+flow: []
+"#,
+                serde_json::to_string(home.path()).unwrap()
+            ),
+        )
+        .unwrap();
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let daemon = Daemon {
+            pid: std::process::id(),
+            port: server.server_addr().to_ip().unwrap().port(),
+            token: "test-capability".into(),
+        };
+        let app = Arc::new(App {
+            runtime: Runtime::new(format!("http://127.0.0.1:{}", daemon.port)),
+            daemon: daemon.clone(),
+            mutation: Mutex::new(()),
+            proxy: Mutex::new(None),
+        });
+        let handler = thread::spawn(move || {
+            handle(
+                app,
+                server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap(),
+            );
+        });
+        let error = format!(
+            "{:#}",
+            call(&daemon, "compile", json!({"yaml": yaml})).unwrap_err()
+        );
+        handler.join().unwrap();
+        crate::telemetry::unregister(&other);
+        for said in [
+            "exit status: 3",
+            "stderr:\nmodel lookup failed for [redacted]",
+            "stdout:\n[\"no model\"]",
+        ] {
+            assert!(error.contains(said), "missing {said:?} in {error}");
+        }
+        assert!(!error.contains("other-silicon-private-token"), "{error}");
+    }
+
+    #[test]
+    fn failed_interpreter_start_carries_its_status_and_every_line_it_wrote() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("daemon.log");
+        fs::write(&log, "an earlier run's line\n").unwrap();
+        let start = fs::metadata(&log).unwrap().len();
+        let app = dir.path().join("silicon");
+        fs::write(
+            &app,
+            "#!/bin/sh\necho 'binding 127.0.0.1:4242'\necho 'Error: Address already in use (os error 48)' >&2\necho '{\"hint\":\"stop the other interpreter\"}'\necho 'restoring with stk-0123456789abcdef' >&2\nexit 3\n",
+        )
+        .unwrap();
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = OpenOptions::new().append(true).open(&log).unwrap();
+        let mut child = Command::new(&app)
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .spawn()
+            .unwrap();
+        let error = await_start(dir.path(), &mut child, start, Duration::from_secs(10))
+            .err()
+            .unwrap();
+        let error = format!("{error:#}");
+        assert!(
+            error.starts_with("interpreter exited before answering: exit status: 3\n"),
+            "{error}"
+        );
+        for expected in [
+            "binding 127.0.0.1:4242",
+            "Error: Address already in use (os error 48)",
+            "{\"hint\":\"stop the other interpreter\"}",
+            &log.display().to_string(),
+            "last ping: read ",
+        ] {
+            assert!(error.contains(expected), "missing {expected:?} in {error}");
+        }
+        assert!(!error.contains("an earlier run's line"), "{error}");
+        assert!(
+            error.contains("restoring with [redacted]") && !error.contains("stk-0123456789abcdef"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn interpreter_answers_reach_the_caller_with_status_url_and_raw_body() {
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/control",
+            server.server_addr().to_ip().unwrap().port()
+        );
+        let tool = "`ting webhook http://x.localhost/events --json` failed: exit status: 3\nstderr:\nboom\nstdout:\n{\"ok\":false}";
+        let answers = [
+            (502, "upstream exploded\nsecond line".to_owned()),
+            (400, json!({"error": tool}).to_string()),
+            (500, json!({"detail": "no error field"}).to_string()),
+        ];
+        let replies = thread::spawn(move || {
+            for (status, body) in answers {
+                let request = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                request
+                    .respond(Response::from_string(body).with_status_code(status))
+                    .unwrap();
+            }
+        });
+        let error = format!(
+            "{:#}",
+            request(&url, "t", "connect", json!({})).unwrap_err()
+        );
+        assert!(
+            error.contains(&format!("`connect` at {url} with HTTP 502 Bad Gateway"))
+                && error.contains("upstream exploded\nsecond line"),
+            "{error}"
+        );
+        let error = request(&url, "t", "connect", json!({})).unwrap_err();
+        assert_eq!(format!("{error:#}"), tool);
+        let error = format!("{:#}", request(&url, "t", "list", json!({})).unwrap_err());
+        assert!(
+            error.contains("HTTP 500 Internal Server Error and no error message")
+                && error.contains("{\"detail\":\"no error field\"}"),
+            "{error}"
+        );
+        replies.join().unwrap();
+    }
+
+    #[test]
+    fn misses_and_panics_explain_themselves() {
+        let runtime = Runtime::new("http://127.0.0.1:1".into());
+        let app = App {
+            runtime,
+            daemon: Daemon {
+                pid: 1,
+                port: 1,
+                token: "t".into(),
+            },
+            mutation: Mutex::new(()),
+            proxy: Mutex::new(None),
+        };
+        let error = resolve(&app, "/nonexistent/silicon.yaml")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with(
+                "unknown silicon: /nonexistent/silicon.yaml (resolving it as a YAML path failed: "
+            ) && error.ends_with("; no Silicons are connected"),
+            "{error}"
+        );
+        let error = guarded(|| panic!("lock poisoned by {}", "worker")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("interpreter panicked: lock poisoned by worker"),
+            "{error}"
+        );
+        assert_eq!(
+            text(&json!({"isi": 3}), "isi").unwrap_err().to_string(),
+            "isi must be a string, got 3"
+        );
+        // A mistyped optional argument is reported, not silently treated as absent.
+        assert_eq!(optional(&json!({"id": null}), "id").unwrap(), None);
+        assert_eq!(
+            optional(&json!({"id": 7}), "id").unwrap_err().to_string(),
+            "id must be a string, got 7"
+        );
+        assert_eq!(
+            flag(&json!({"archived": "yes"}), "archived")
+                .unwrap_err()
+                .to_string(),
+            "archived must be boolean, got \"yes\""
+        );
+    }
+
+    #[test]
+    fn unattended_failures_reach_the_silicon_log_whole_and_masked() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".silicon")).unwrap();
+        let failure = "restore Ting for si:x: `ting webhook http://x.localhost/events --json` failed: exit status: 3\nstderr:\nboom {\"access_token\":\"private-access-value\"}\nstdout:\n{\"ok\":false} stk-0123456789abcdef";
+        report(home.path(), None, "ting", failure);
+        let log = fs::read_to_string(home.path().join(".silicon/silicon.log")).unwrap();
+        assert!(log.starts_with("[error] [ting/cli] ["), "{log}");
+        assert_eq!(log.lines().count(), 1, "{log}");
+        for expected in [
+            "[restore Ting for si:x: `ting webhook http://x.localhost/events --json` failed: exit status: 3",
+            "\\nstderr:\\nboom {\"access_token\":\"[redacted]\"}",
+            "\\nstdout:\\n{\"ok\":false} [redacted]]",
+        ] {
+            assert!(log.contains(expected), "missing {expected:?} in {log}");
+        }
+        assert!(
+            !log.contains("private-access-value") && !log.contains("stk-0123456789abcdef"),
+            "{log}"
+        );
+        // A home that is gone is not recreated just to hold the line.
+        let gone = home.path().join("gone");
+        report(&gone, None, "ting", failure);
+        assert!(!gone.exists());
     }
 }

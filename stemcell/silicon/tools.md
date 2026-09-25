@@ -1,5 +1,8 @@
 Tools:
 
+when a tool or `si` fails, it shows the full error: the command, its exit status, stderr and stdout (json comes raw).
+read the tool's own words and fix that cause. dont guess. when you pass a failure on to a carbon or silicon, send the whole error, not a summary.
+
 > [dm]
 `dm --help`
 this is used to message carbons & silicons.

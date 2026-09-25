@@ -1,6 +1,16 @@
 # Building Silicon
 
 
+## 5.0.2: Errors in full
+
+Until now the interpreter replaced most tool failures with its own advice. A failed Honeycomb install read "run the same honeycomb command … to inspect its diagnostic"; a rejected IAM login read "check the Silicon credential, application ID, and this Silicon's IAM environment configuration"; a credential expression that could not run read only "credential expression evaluation failed". The reason was caution: captured output might hold a credential. The cost was that neither a Carbon nor a Silicon could see what actually went wrong without reproducing it by hand, and a Silicon usually cannot.
+
+5.0.2 reverses that. A shared helper, `src/failure.rs`, renders a failed command as the command itself, its exit status, and its complete stderr and stdout, untruncated, with JSON shown exactly as the tool printed it. A command that exited successfully but answered wrongly states the concrete problem (the serde error, the missing field, the value it got) before the same streams; one that could not start gives the operating system's reason. Every app, IAM, Ting, Honeycomb, Caddy, Omni, Bash, CEL, YAML, updater, installer, and Windows launcher failure goes through it. Cause chains are kept everywhere an error becomes text, fallback chains list every candidate's reason, and failures that used to be skipped silently, such as an app on `PATH` that crashes on `iam --json` or an unreadable `org.json`, are now logged or carried into the error that follows. `silicon logs`, connection progress, and the dashboard unfold multi-line `[error]` entries; the log file keeps its four-field format.
+
+Masking is the only reduction, and it applies to literal credential values: the Silicon token, IAM SLTs, ISI capabilities, table keys, `app_configs` values, recognized token prefixes, and credential-named JSON fields, including their shell-quoted and JSON-escaped copies. A credential expression reports its stderr and exit status but withholds its stdout and source. Configured values shorter than eight characters are no longer redacted, because replacing every `en` or `true` garbled the very errors people needed to read.
+
+Local validation passed 88 unit tests and the bundle-path integration test, formatting, Clippy with warnings denied (also for the Linux target), both migration test suites, the documentation telemetry test, and the installer activation checks. Against the released 5.0.1, a missing Honeycomb app now shows Honeycomb's own `HTTP 404 not_found` JSON, and a missing token file shows `cat`'s own error.
+
 ## 5.0.1: Completing the identifier migration
 
 Following 5.0.0, Silicon IDs use `si:handle`, with the IAM owning organization supplied separately in `silicon.org_id`. Application selectors and discovery IDs are bare handles; Carbon examples use `c:handle`. `SILICON_ORG` still selects the application organization and defaults to the explicit owner. Authentication caches bind the complete identity and organization, and stale grants require fresh IAM issuance.

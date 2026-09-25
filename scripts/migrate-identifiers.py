@@ -23,6 +23,14 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def load_json(path):
+    """JSON from a file; a parse failure names the file and the parser's position."""
+    try:
+        return json.loads(path.read_bytes())
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path} is not valid JSON: {error}") from error
+
+
 def ordinary(path):
     """Never follow links or copy special files in migrated state."""
     require(not path.is_symlink(), f"state must not contain symlinks: {path}")
@@ -54,26 +62,30 @@ def mappings(document, world):
     result = []
     for field, target in [("applications", "app_id"), ("identities", "public_id")]:
         rows = document.get(field, [])
-        require(isinstance(rows, list), f"{field} must be an array")
+        require(isinstance(rows, list), f"{field} must be an array, got {type(rows).__name__}: {rows!r}")
         mapping, destinations = {}, set()
         for row in rows:
-            require(isinstance(row, dict), f"invalid {field} mapping")
+            require(isinstance(row, dict), f"invalid {field} mapping {row!r}: expected an object")
             if row.get("testing_environment_id") != world:
                 continue
             old, new = row.get("legacy_id"), row.get(target)
-            require(isinstance(old, str) and isinstance(new, str), f"invalid {field} IDs")
-            require(old not in mapping and new not in destinations, f"colliding {field} mapping")
+            require(isinstance(old, str) and isinstance(new, str),
+                    f"invalid {field} IDs in {row!r}: legacy_id and {target} must be strings")
+            require(old not in mapping, f"colliding {field} mapping: {old!r} maps to both {mapping.get(old)!r} and {new!r}")
+            require(new not in destinations, f"colliding {field} mapping: {new!r} is the destination of more than one legacy ID, including {old!r}")
             if field == "applications":
-                require(re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", new), "invalid canonical app ID")
+                require(re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", new), f"invalid canonical app ID {new!r} for {old!r}")
                 require(isinstance(row.get("org_id"), str) and re.fullmatch(r"[a-z0-9_-]{3,50}", row["org_id"])
                         and old.startswith(row["org_id"] + ">")
-                        and old.count(">") == 1, "app mapping must retain verified ownership")
+                        and old.count(">") == 1,
+                        f"app mapping {old!r} -> {new!r} must retain verified ownership, but its org_id is {row.get('org_id')!r}")
             elif new.startswith("si:"):
                 require(row.get("kind", "silicon") == "silicon" and row.get("actor_type", "silicon") == "silicon",
-                        "Silicon mapping has the wrong actor kind")
+                        f"Silicon mapping {old!r} -> {new!r} has the wrong actor kind: kind {row.get('kind')!r}, actor_type {row.get('actor_type')!r}")
                 if "org_id" in row:
                     require(isinstance(row["org_id"], str) and re.fullmatch(r"[a-z0-9_-]{3,50}", row["org_id"])
-                            and old.rpartition(":")[2] == row["org_id"], "Silicon mapping disagrees with verified ownership")
+                            and old.rpartition(":")[2] == row["org_id"],
+                            f"Silicon mapping {old!r} -> {new!r} disagrees with verified ownership: org_id {row['org_id']!r}")
             mapping[old] = new
             destinations.add(new)
         result.append(mapping)
@@ -83,31 +95,36 @@ def mappings(document, world):
 def migrate(args):
     home = args.home.resolve(strict=True)
     state = home / ".silicon"
-    require(state.is_dir() and not state.is_symlink(), "home must have an ordinary .silicon directory")
+    require(state.is_dir() and not state.is_symlink(), f"home must have an ordinary .silicon directory: {state}")
     require(re.fullmatch(r"[a-z0-9_-]+:[a-z0-9_-]{3,50}", args.old_id)
-            and not args.old_id.startswith(("si:", "c:")), "--old-id must be the exact legacy Silicon ID")
-    require(re.fullmatch(r"[a-z0-9_-]{3,50}", args.org_id), "invalid selected --org-id")
-    document = json.loads(args.map.read_bytes())
-    require(isinstance(document, dict), "IAM mapping must be an object")
+            and not args.old_id.startswith(("si:", "c:")), f"--old-id must be the exact legacy Silicon ID, got {args.old_id!r}")
+    require(re.fullmatch(r"[a-z0-9_-]{3,50}", args.org_id), f"invalid selected --org-id {args.org_id!r}")
+    document = load_json(args.map)
+    require(isinstance(document, dict), f"IAM mapping {args.map} must be an object, got {type(document).__name__}")
     apps, actors = mappings(document, args.testing_environment_id)
     new_id = actors.get(args.old_id, "")
-    require(re.fullmatch(r"si:[a-z0-9_-]{3,50}", new_id), "legacy Silicon has no canonical mapping in this IAM world")
+    require(re.fullmatch(r"si:[a-z0-9_-]{3,50}", new_id),
+            f"legacy Silicon {args.old_id!r} has no canonical mapping in IAM world {args.testing_environment_id!r}"
+            + (f" (it maps to {new_id!r})" if new_id else ""))
     org_file = state / "org.json"
     ordinary(org_file)
     if org_file.exists():
-        require(json.loads(org_file.read_bytes()) == args.org_id, "--org-id must match the saved selected organization")
+        saved = load_json(org_file)
+        require(saved == args.org_id, f"--org-id {args.org_id!r} must match the saved selected organization {saved!r} in {org_file}")
 
     ting = state / "ting"
     ordinary(ting)
     if ting.exists():
         for actor in ting.iterdir():
-            require(actor.is_dir(), "unexpected file in Ting identity directory")
+            require(actor.is_dir(), f"unexpected file in Ting identity directory: {actor}")
             require((re.fullmatch(r"si:[a-z0-9_-]{3,50}", actor.name) and actor.name in actors.values())
                     or re.fullmatch(r"si:[a-z0-9_-]{3,50}", actors.get(actor.name, "")),
-                    "Ting state contains an unmapped Silicon actor")
-            require(actor.name in (args.old_id, new_id), "Ting state belongs to another Silicon; reconcile the home before migration")
+                    f"Ting state contains an unmapped Silicon actor: {actor}")
+            require(actor.name in (args.old_id, new_id),
+                    f"Ting state belongs to another Silicon ({actor}); reconcile the home before migration")
     source, destination = ting / args.old_id, ting / new_id
-    require(not source.exists() or not destination.exists(), "canonical Ting directory already exists; reconcile collision first")
+    require(not source.exists() or not destination.exists(),
+            f"canonical Ting directory {destination} already exists beside {source}; reconcile collision first")
 
     files = [state / name for name in ["auth-apps.json", "auth-checked.json", "auth-grants.json"]]
     for path in files:
@@ -117,22 +134,24 @@ def migrate(args):
     registry = files[0]
     rewritten = None
     if registry.exists():
-        commands = json.loads(registry.read_bytes())
-        require(isinstance(commands, list) and all(isinstance(c, str) for c in commands), "invalid auth-apps.json")
+        commands = load_json(registry)
+        require(isinstance(commands, list) and all(isinstance(c, str) for c in commands),
+                f"invalid {registry}: expected a list of strings, got {commands!r}")
         for command in args.command:
             require(re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", command)
                     and (command in commands or "! " + command in commands),
-                    "--command must name an exact saved bare executable (or its migrated ! entry)")
+                    f"--command {command!r} must name an exact saved bare executable (or its migrated ! entry); saved: {commands!r}")
         updated = []
         for command in commands:
             if re.fullmatch(r"[A-Za-z0-9_-]+>[A-Za-z0-9_-]+", command):
-                require(command in apps, "auth-apps.json contains an unmapped legacy app")
+                require(command in apps, f"auth-apps.json contains an unmapped legacy app {command!r}")
                 command = apps[command]
             elif command in args.command and "! " + command not in commands:
                 command = "! " + command
             elif re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", command):
-                require(command in apps.values(), "ambiguous bare auth-apps entry; preserve a verified executable with --command NAME")
-            require(command not in updated, "auth-apps.json has colliding app/command entries")
+                require(command in apps.values(),
+                        f"ambiguous bare auth-apps entry {command!r}; preserve a verified executable with --command {command}")
+            require(command not in updated, f"auth-apps.json has colliding app/command entries for {command!r}")
             updated.append(command)
         if commands != updated:
             rewritten = (json.dumps(updated, indent=2) + "\n").encode()
@@ -148,7 +167,8 @@ def migrate(args):
         return
     require(args.backup_dir is not None, "--apply requires --backup-dir")
     backup_root = args.backup_dir.resolve()
-    require(backup_root != state and state not in backup_root.parents, "backup directory must be outside .silicon")
+    require(backup_root != state and state not in backup_root.parents,
+            f"backup directory {backup_root} must be outside {state}")
     backup_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     backup = Path(tempfile.mkdtemp(prefix="identifier-migration-", dir=backup_root))
     for path in changes:
@@ -158,7 +178,8 @@ def migrate(args):
             shutil.copytree(path, saved)
         else:
             shutil.copy2(path, saved)
-        require(inventory(saved) == originals[path], "backup verification failed; no live state changed")
+        require(inventory(saved) == originals[path],
+                f"backup verification failed: {saved} does not match {path}; no live state changed")
     for path in [*sorted(backup.rglob("*"), reverse=True), backup]:
         path.chmod(0o700 if path.is_dir() else 0o600)
         sync(path)
@@ -171,8 +192,8 @@ def migrate(args):
     sync(backup / "migration.json")
     sync(backup)
     sync(backup_root)
-    require(all(inventory(path) == snapshot for path, snapshot in originals.items()),
-            "source changed during backup; no live state changed")
+    changed = [str(path) for path, snapshot in originals.items() if inventory(path) != snapshot]
+    require(not changed, f"source changed during backup: {', '.join(changed)}; no live state changed")
     moved, temporary = False, None
     try:
         if rewritten is not None:
@@ -188,15 +209,20 @@ def migrate(args):
         if source.exists():
             source.rename(destination)
             moved = True
-            require(inventory(destination) == originals[source], "destination verification failed; keep the interpreter stopped")
+            require(inventory(destination) == originals[source],
+                    f"destination verification failed for {destination}; keep the interpreter stopped")
             sync(ting)
         sync(state)
-    except BaseException:
-        if moved:
-            destination.rename(source)
-        for path in changes:
-            if path.is_file() or path in files:
-                shutil.copy2(backup / path.relative_to(home), path)
+    except BaseException as error:
+        # A failed rollback must not replace the failure that caused it.
+        try:
+            if moved:
+                destination.rename(source)
+            for path in changes:
+                if path.is_file() or path in files:
+                    shutil.copy2(backup / path.relative_to(home), path)
+        except BaseException as rollback:
+            raise ValueError(f"{error!r}; rolling back also failed: {rollback!r}; restore from {backup}") from error
         raise
     finally:
         if temporary is not None:

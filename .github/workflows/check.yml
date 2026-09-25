@@ -47,11 +47,11 @@ jobs:
               prefix, downloads, mocks = (root / name for name in ['prefix with spaces', 'downloads', 'mocks'])
               downloads.mkdir(); mocks.mkdir()
               asset = 'silicon-' + targets[(platform.system(), platform.machine())] + '.tar.gz'
-              def bundle(missing=None, caddy_body=None):
+              def bundle(missing=None, caddy_body=None, silicon_body=None):
                   with tarfile.open(downloads / asset, 'w:gz') as archive:
                       for name in binaries:
                           if name == missing: continue
-                          body = caddy_body if name == 'caddy' and caddy_body else b'#!/bin/sh\necho test-binary\n'
+                          body = caddy_body if name == 'caddy' and caddy_body else silicon_body if name == 'silicon' and silicon_body else b'#!/bin/sh\necho test-binary\n'
                           entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
                           archive.addfile(entry, io.BytesIO(body))
                       body = (version + '\n').encode()
@@ -107,6 +107,7 @@ jobs:
               def install(ok):
                   result = subprocess.run(['sh', str(installer)], env=env, capture_output=True, text=True)
                   assert (result.returncode == 0) == ok, result.stdout + result.stderr
+                  return result
               bundle(); install(True)
               current = prefix / 'lib/silicon/current'
               old = current.readlink()
@@ -118,7 +119,13 @@ jobs:
               config = prefix / 'silicon.yaml'; config.write_text('untouched')
               (downloads / 'SHA256SUMS').write_text(f'{"0" * 64}  {asset}\n')
               install(False); assert current.readlink() == old
-              bundle('LICENSE'); install(False); assert current.readlink() == old
+              bundle('LICENSE'); refused = install(False); assert current.readlink() == old
+              assert '`tar -xOzf' in refused.stderr and 'LICENSE' in refused.stderr, refused.stderr
+              # A binary that cannot run is refused in its own words: status and both streams.
+              bundle(silicon_body=b'#!/bin/sh\necho \'{"error":"bad cpu"}\'\necho \'dyld: missing symbol\' >&2\nexit 7\n')
+              refused = install(False); assert current.readlink() == old
+              for said in ['interpreter binary cannot run on this system', 'exit status: 7', 'stderr:\ndyld: missing symbol', 'stdout:\n{"error":"bad cpu"}']:
+                  assert said in refused.stderr, (said, refused.stderr)
               (prefix / 'bin/dm').symlink_to('../lib/silicon/current/bin/dm')
               (prefix / 'bin/briefcase').write_text('user-owned')
               (prefix / 'bin/honeycomb').unlink()

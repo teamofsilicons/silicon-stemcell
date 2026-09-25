@@ -1,7 +1,7 @@
 //! YAML plus the small shell/ordered-flow notation used by silicon.yaml.
 use anyhow::{anyhow, bail, Context, Result};
 use chrono_tz::Tz;
-use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value as Json};
 use serde_yaml::{Mapping, Number, Value as Yaml};
@@ -86,7 +86,10 @@ pub struct Config {
 impl Config {
     /// Flow stays editable while a Silicon is connected; compile-time expressions are untouched.
     pub fn load_flow(&self) -> Result<Yaml> {
-        let document = parse_document(&fs::read_to_string(&self.path)?, &mut Vec::new())?;
+        let source = fs::read_to_string(&self.path)
+            .with_context(|| format!("read {}", self.path.display()))?;
+        let document = parse_document(&source, &mut Vec::new())
+            .with_context(|| format!("invalid silicon YAML in {}", self.path.display()))?;
         let flow = document["flow"].clone();
         crate::eval::validate(&flow).context("invalid flow expression syntax")?;
         validate_static_sends(&flow, &self.isi)?;
@@ -99,12 +102,14 @@ impl Config {
             .canonicalize()
             .with_context(|| format!("config not found: {}", path.as_ref().display()))?;
         let mut warnings = Vec::new();
-        let mut document = parse_document(&fs::read_to_string(&path)?, &mut warnings)
+        let source =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let mut document = parse_document(&source, &mut warnings)
             .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
         validate_expressions(&document).context("invalid silicon expression syntax")?;
         let base = path
             .parent()
-            .ok_or_else(|| anyhow!("config has no parent directory"))?;
+            .ok_or_else(|| anyhow!("config {} has no parent directory", path.display()))?;
         #[cfg(target_os = "linux")]
         if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
             crate::state::validate_wsl_filesystem(base)?;
@@ -113,18 +118,26 @@ impl Config {
             "isi": document["isi"], "access": document["access"]});
         let home_source = document["silicon"]["SILICON_HOME"]
             .as_str()
-            .ok_or_else(|| anyhow!("silicon.SILICON_HOME is required and must be a string"))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "silicon.SILICON_HOME is required and must be a string, found {}",
+                    shown(&document["silicon"]["SILICON_HOME"])
+                )
+            })?;
         let home = crate::eval::evaluate(home_source, &env, base, "interpreter")
             .context("evaluate silicon.SILICON_HOME")?;
         if home.trim().is_empty() {
             bail!("silicon.SILICON_HOME evaluated to an empty path");
         }
-        let home = base
-            .join(home)
+        let requested = base.join(home);
+        let home = requested
             .canonicalize()
-            .context("silicon.SILICON_HOME must exist")?;
+            .with_context(|| format!("silicon.SILICON_HOME must exist: {}", requested.display()))?;
         if !home.is_dir() {
-            bail!("silicon.SILICON_HOME must be a directory");
+            bail!(
+                "silicon.SILICON_HOME must be a directory: {}",
+                home.display()
+            );
         }
         #[cfg(target_os = "linux")]
         if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
@@ -133,29 +146,46 @@ impl Config {
         document["silicon"]["SILICON_HOME"] = Yaml::String(home.to_string_lossy().into_owned());
         env["silicon"]["SILICON_HOME"] = json!(home);
         for key in ["id", "org_id", "token", "timezone", "SILICON_ORG"] {
-            evaluate_field(&mut document["silicon"], key, &env, &home, "interpreter")?;
-            env["silicon"][key] = serde_json::to_value(&document["silicon"][key])?;
+            evaluate_field(
+                &mut document["silicon"],
+                "silicon",
+                key,
+                &env,
+                &home,
+                "interpreter",
+            )?;
+            env["silicon"][key] = to_json(&document["silicon"][key], &format!("silicon.{key}"))?;
         }
         if document["silicon"]["SILICON_ORG"].is_null() {
             document["silicon"]["SILICON_ORG"] = document["silicon"]["org_id"].clone();
             env["silicon"]["SILICON_ORG"] =
-                serde_json::to_value(&document["silicon"]["SILICON_ORG"])?;
+                to_json(&document["silicon"]["SILICON_ORG"], "silicon.SILICON_ORG")?;
         }
-        evaluate_provider_values(&mut document["silicon"]["inference_providers"], &env, &home)?;
-        env["silicon"]["inference_providers"] =
-            serde_json::to_value(&document["silicon"]["inference_providers"])?;
+        evaluate_provider_values(
+            &mut document["silicon"]["inference_providers"],
+            "silicon.inference_providers",
+            &env,
+            &home,
+        )?;
+        env["silicon"]["inference_providers"] = to_json(
+            &document["silicon"]["inference_providers"],
+            "silicon.inference_providers",
+        )?;
         if document["silicon"]["space_station"].is_mapping() {
             for key in ["table_name", "table_key"] {
                 evaluate_field(
                     &mut document["silicon"]["space_station"],
+                    "silicon.space_station",
                     key,
                     &env,
                     &home,
                     "interpreter",
                 )?;
             }
-            env["silicon"]["space_station"] =
-                serde_json::to_value(&document["silicon"]["space_station"])?;
+            env["silicon"]["space_station"] = to_json(
+                &document["silicon"]["space_station"],
+                "silicon.space_station",
+            )?;
         }
         for key in ["apps", "login"] {
             if let Some(commands) = document["silicon"][key].as_sequence_mut() {
@@ -165,22 +195,23 @@ impl Config {
                             .with_context(|| format!("evaluate silicon.{key}[{index}]"))?,
                     );
                 }
-                env["silicon"][key] = serde_json::to_value(commands)?;
+                env["silicon"][key] = to_json(commands, &format!("silicon.{key}"))?;
             }
         }
         if let Some(configs) = document["silicon"]["app_configs"].as_mapping_mut() {
-            for config in configs.values_mut() {
-                evaluate_app_config(config, &env, &home)?;
+            for (app, config) in configs.iter_mut() {
+                let path = format!("silicon.app_configs.{}", key_name(app));
+                evaluate_app_config(config, &path, &env, &home)?;
             }
-            env["silicon"]["app_configs"] = serde_json::to_value(configs)?;
+            env["silicon"]["app_configs"] = to_json(configs, "silicon.app_configs")?;
         }
         if let Some(isies) = document["isi"].as_mapping_mut() {
             for (name, isi) in isies {
                 let name = name
                     .as_str()
-                    .ok_or_else(|| anyhow!("isi names must be strings"))?;
+                    .ok_or_else(|| anyhow!("isi names must be strings, found {}", shown(name)))?;
                 for key in ["model", "primary_send_mode", "session_type"] {
-                    evaluate_field(isi, key, &env, &home, name)?;
+                    evaluate_field(isi, &format!("isi.{name}"), key, &env, &home, name)?;
                 }
                 // Removed in favour of the canonical pair. Rejected here, before
                 // deserialization, so the error names the replacement instead of
@@ -205,72 +236,82 @@ impl Config {
         }
         if let Some(access) = document["access"].as_mapping_mut() {
             for (name, targets) in access {
-                let name = name
-                    .as_str()
-                    .ok_or_else(|| anyhow!("access names must be strings"))?;
+                let name = name.as_str().ok_or_else(|| {
+                    anyhow!("access names must be strings, found {}", shown(name))
+                })?;
                 if let Some(targets) = targets.as_sequence_mut() {
-                    for target in targets {
+                    for (index, target) in targets.iter_mut().enumerate() {
                         if let Some(source) = target.as_str() {
-                            *target =
-                                Yaml::String(crate::eval::evaluate(source, &env, &home, name)?);
+                            *target = Yaml::String(
+                                crate::eval::evaluate(source, &env, &home, name)
+                                    .with_context(|| format!("evaluate access.{name}[{index}]"))?,
+                            );
                         }
                     }
                 }
             }
         }
         let result = (|| {
-            let mut config: Self =
-                serde_yaml::from_value(document).context("invalid silicon schema")?;
+            let mut config = Self::deserialize(&document).map_err(|error| {
+                anyhow!(error).context(format!(
+                    "invalid silicon schema in {}",
+                    schema_section(&document)
+                ))
+            })?;
             config.path = path;
             config.home = home;
             config.warnings = warnings;
             config.validate()?;
             Ok(config)
         })();
-        result.map_err(|error: anyhow::Error| {
-            anyhow!(crate::telemetry::redact_text(
-                &format!("{error:#}"),
-                &crate::telemetry::silicon_secrets(&env["silicon"])
-            ))
-        })
+        // Evaluated credentials can surface in schema or validation text: mask only those values.
+        result.map_err(|error| masked(error, &crate::telemetry::silicon_secrets(&env["silicon"])))
     }
 
     fn validate(&mut self) -> Result<()> {
         let id = required(&self.silicon.id, "silicon.id")?;
         if !valid_silicon_id(id) {
-            bail!("silicon.id must be si:<handle> (3–50 lowercase letters, digits, underscores or hyphens); migrate old IDs using IAM's verified mapping and set silicon.org_id separately");
+            bail!("silicon.id must be si:<handle> (3–50 lowercase letters, digits, underscores or hyphens), found {id:?}; migrate old IDs using IAM's verified mapping and set silicon.org_id separately");
         }
-        if !valid_org(required(&self.silicon.org_id, "silicon.org_id")?) {
-            bail!("silicon.org_id must be a canonical IAM organization handle");
+        for (path, org) in [
+            ("silicon.org_id", &self.silicon.org_id),
+            ("silicon.SILICON_ORG", &self.silicon.silicon_org),
+        ] {
+            let org = required(org, path)?;
+            if !valid_org(org) {
+                bail!("{path} must be a canonical IAM organization handle (3–50 lowercase letters, digits, underscores or hyphens), found {org:?}");
+            }
         }
         required(&self.silicon.token, "silicon.token")?;
-        if !valid_org(required(&self.silicon.silicon_org, "silicon.SILICON_ORG")?) {
-            bail!("silicon.SILICON_ORG must be a canonical IAM organization handle");
-        }
-        required(&self.silicon.timezone, "silicon.timezone")?
-            .parse::<Tz>()
-            .context("silicon.timezone must be an IANA timezone")?;
+        let timezone = required(&self.silicon.timezone, "silicon.timezone")?;
+        timezone.parse::<Tz>().with_context(|| {
+            format!("silicon.timezone must be an IANA timezone such as UTC or Asia/Kolkata, found {timezone:?}")
+        })?;
         validate_providers(&self.silicon.inference_providers)?;
         let mut seen = HashSet::new();
         for app in &self.silicon.apps {
             if !crate::apps::valid_id(app) {
-                bail!("silicon.apps entries must be bare IAM app IDs, e.g. dm; migrate old org>app IDs using IAM's verified mapping");
+                bail!("silicon.apps entries must be bare IAM app IDs, e.g. dm, found {app:?}; migrate old org>app IDs using IAM's verified mapping");
             }
             if !seen.insert(app) {
                 bail!("silicon.apps repeats {app}");
             }
         }
         for (app, config) in &self.silicon.app_configs {
-            if !crate::apps::valid_id(app) || !self.silicon.managed_apps().contains(app) {
-                bail!("silicon.app_configs keys must be managed bare IAM app IDs, e.g. dm");
+            let managed = self.silicon.managed_apps();
+            if !crate::apps::valid_id(app) || !managed.contains(app) {
+                bail!(
+                    "silicon.app_configs keys must be managed bare IAM app IDs, e.g. dm, found {app:?}; managed apps are {}",
+                    managed.join(", ")
+                );
             }
             if !config.is_object() {
                 bail!("silicon.app_configs.{app} must be a key-value mapping");
             }
         }
-        for source in &self.silicon.setup {
+        for (index, source) in self.silicon.setup.iter().enumerate() {
             if source.trim().trim_start_matches('!').trim().is_empty() || source.contains('\0') {
-                bail!("silicon.setup entries must be nonempty shell commands without NUL bytes");
+                bail!("silicon.setup[{index}] must be a nonempty shell command without NUL bytes, found {source:?}");
             }
         }
         if let Some(station) = &self.silicon.space_station {
@@ -284,17 +325,17 @@ impl Config {
                 )?;
             }
         }
-        for command in &self.silicon.login {
+        for (index, command) in self.silicon.login.iter().enumerate() {
             if !command.trim().starts_with('!')
                 && command.contains('>')
                 && !command.contains('/')
                 && !command.chars().any(char::is_whitespace)
             {
-                bail!("silicon.login contains a legacy org>app ID; migrate it using IAM's verified mapping");
+                bail!("silicon.login[{index}] is a legacy org>app ID {command:?}; migrate it using IAM's verified mapping");
             }
             let command = command.trim().strip_prefix('!').unwrap_or(command).trim();
             if command.is_empty() || command.contains(['\n', '\0']) {
-                bail!("silicon.login commands must be nonempty single lines");
+                bail!("silicon.login[{index}] must be a nonempty single-line command, found {command:?}");
             }
         }
         if self.isi.is_empty() {
@@ -305,20 +346,16 @@ impl Config {
                 bail!("invalid isi name {name:?}; use letters, digits, '.', '_' or '-'");
             }
             required(&isi.model, &format!("isi.{name}.model"))?;
-            if !matches!(
-                required(
-                    &isi.primary_send_mode,
-                    &format!("isi.{name}.primary_send_mode")
-                )?,
-                "global" | "session"
-            ) {
-                bail!("isi.{name}.primary_send_mode must be global or session");
+            let mode = required(
+                &isi.primary_send_mode,
+                &format!("isi.{name}.primary_send_mode"),
+            )?;
+            if !matches!(mode, "global" | "session") {
+                bail!("isi.{name}.primary_send_mode must be global or session, found {mode:?}");
             }
-            if !matches!(
-                required(&isi.session_type, &format!("isi.{name}.session_type"))?,
-                "persistent" | "ephemeral"
-            ) {
-                bail!("isi.{name}.session_type must be persistent or ephemeral");
+            let kind = required(&isi.session_type, &format!("isi.{name}.session_type"))?;
+            if !matches!(kind, "persistent" | "ephemeral") {
+                bail!("isi.{name}.session_type must be persistent or ephemeral, found {kind:?}");
             }
             validate_isi_blocks(name, isi)?;
             let allowed = self
@@ -347,10 +384,24 @@ impl Config {
     }
 }
 
+/// Rebuild the chain link by link so every cause survives with only credential values masked.
+fn masked(error: anyhow::Error, secrets: &[String]) -> anyhow::Error {
+    let mut causes: Vec<_> = error
+        .chain()
+        .map(|cause| crate::telemetry::redact_text(&cause.to_string(), secrets))
+        .collect();
+    let mut rebuilt = anyhow!(causes.pop().unwrap_or_default());
+    while let Some(outer) = causes.pop() {
+        rebuilt = rebuilt.context(outer);
+    }
+    rebuilt
+}
+
 fn validate_expressions(document: &Yaml) -> Result<()> {
     fields(document, "config", &["silicon", "isi", "access", "flow"])?;
     for (key, value) in document.as_mapping().unwrap() {
-        crate::eval::validate(key)?;
+        let section = key_name(key);
+        crate::eval::validate(key).with_context(|| format!("top-level key {section}"))?;
         if key.as_str() == Some("silicon") {
             for removed in ["webhooks", "webhook"] {
                 if value
@@ -379,6 +430,13 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                 ],
             )?;
             if !value["space_station"].is_null() {
+                // A bare value here is most likely the table key itself: name its type only.
+                if !value["space_station"].is_mapping() {
+                    bail!(
+                        "silicon.space_station must be a mapping, found {}; expected table_name and table_key",
+                        kind(&value["space_station"])
+                    );
+                }
                 fields(
                     &value["space_station"],
                     "silicon.space_station",
@@ -400,14 +458,27 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                 .as_mapping_mut()
                 .and_then(|map| map.remove("app_configs"))
             {
-                let configs = configs
-                    .as_mapping()
-                    .context("silicon.app_configs must be a mapping")?;
+                let configs = configs.as_mapping().with_context(|| {
+                    format!(
+                        "silicon.app_configs must map IAM app IDs to key-value mappings, found {}",
+                        kind(&configs)
+                    )
+                })?;
                 for (app, config) in configs {
-                    if !app.as_str().is_some_and(crate::apps::valid_id) || !config.is_mapping() {
-                        bail!("silicon.app_configs must map IAM app IDs to key-value mappings");
+                    let Some(app) = app.as_str().filter(|app| crate::apps::valid_id(app)) else {
+                        bail!(
+                            "silicon.app_configs keys must be bare IAM app IDs, e.g. dm, found {}",
+                            shown(app)
+                        );
+                    };
+                    if !config.is_mapping() {
+                        bail!(
+                            "silicon.app_configs.{app} must be a key-value mapping, found {}",
+                            kind(config)
+                        );
                     }
-                    crate::eval::validate_secret(config).context("silicon.app_configs")?;
+                    crate::eval::validate_secret(config)
+                        .with_context(|| format!("silicon.app_configs.{app}"))?;
                 }
             }
             for key in ["setup", "apps", "login"] {
@@ -415,13 +486,16 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                     .as_mapping_mut()
                     .and_then(|map| map.remove(Yaml::String(key.into())))
                 {
-                    let commands = commands
-                        .as_sequence()
-                        .ok_or_else(|| anyhow!("silicon.{key} must be a list"))?;
+                    let commands = commands.as_sequence().ok_or_else(|| {
+                        anyhow!("silicon.{key} must be a list, found {}", shown(&commands))
+                    })?;
                     for (index, command) in commands.iter().enumerate() {
-                        let command = command
-                            .as_str()
-                            .ok_or_else(|| anyhow!("silicon.{key}[{index}] must be a string"))?;
+                        let command = command.as_str().ok_or_else(|| {
+                            anyhow!(
+                                "silicon.{key}[{index}] must be a string, found {}",
+                                shown(command)
+                            )
+                        })?;
                         (if key == "setup" {
                             crate::eval::validate_template(command)
                         } else {
@@ -431,15 +505,22 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                     }
                 }
             }
-            crate::eval::validate(&silicon)?;
+            crate::eval::validate(&silicon).context("silicon")?;
         } else {
-            crate::eval::validate(value)?;
+            crate::eval::validate(value).with_context(|| section.clone())?;
         }
     }
     Ok(())
 }
 
-fn evaluate_field(object: &mut Yaml, key: &str, env: &Json, home: &Path, isi: &str) -> Result<()> {
+fn evaluate_field(
+    object: &mut Yaml,
+    path: &str,
+    key: &str,
+    env: &Json,
+    home: &Path,
+    isi: &str,
+) -> Result<()> {
     if let Some(source) = object[key].as_str() {
         object[key] = Yaml::String(
             (if matches!(key, "token" | "table_key") {
@@ -447,18 +528,21 @@ fn evaluate_field(object: &mut Yaml, key: &str, env: &Json, home: &Path, isi: &s
             } else {
                 crate::eval::evaluate(source, env, home, isi)
             })
-            .with_context(|| format!("evaluate {isi}.{key}"))?,
+            .with_context(|| format!("evaluate {path}.{key}"))?,
         );
     }
     Ok(())
 }
 
-fn evaluate_provider_values(value: &mut Yaml, env: &Json, home: &Path) -> Result<()> {
+fn evaluate_provider_values(value: &mut Yaml, path: &str, env: &Json, home: &Path) -> Result<()> {
     match value {
-        Yaml::String(source) => *source = crate::eval::evaluate(source, env, home, "interpreter")?,
+        Yaml::String(source) => {
+            *source = crate::eval::evaluate(source, env, home, "interpreter")
+                .with_context(|| format!("evaluate {path}"))?;
+        }
         Yaml::Sequence(values) => {
-            for value in values {
-                evaluate_provider_values(value, env, home)?;
+            for (index, value) in values.iter_mut().enumerate() {
+                evaluate_provider_values(value, &format!("{path}[{index}]"), env, home)?;
             }
         }
         _ => {}
@@ -466,20 +550,20 @@ fn evaluate_provider_values(value: &mut Yaml, env: &Json, home: &Path) -> Result
     Ok(())
 }
 
-fn evaluate_app_config(value: &mut Yaml, env: &Json, home: &Path) -> Result<()> {
+fn evaluate_app_config(value: &mut Yaml, path: &str, env: &Json, home: &Path) -> Result<()> {
     match value {
         Yaml::String(source) => {
             *source = crate::eval::evaluate_secret(source, env, home, "interpreter")
-                .context("evaluate silicon.app_configs")?;
+                .with_context(|| format!("evaluate {path}"))?;
         }
         Yaml::Sequence(values) => {
-            for value in values {
-                evaluate_app_config(value, env, home)?;
+            for (index, value) in values.iter_mut().enumerate() {
+                evaluate_app_config(value, &format!("{path}[{index}]"), env, home)?;
             }
         }
         Yaml::Mapping(values) => {
-            for value in values.values_mut() {
-                evaluate_app_config(value, env, home)?;
+            for (key, value) in values.iter_mut() {
+                evaluate_app_config(value, &format!("{path}.{}", key_name(key)), env, home)?;
             }
         }
         _ => {}
@@ -491,29 +575,40 @@ fn evaluate_app_config(value: &mut Yaml, env: &Json, home: &Path) -> Result<()> 
 pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> {
     use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
     if !crate::apps::valid_id(id) {
-        bail!("expected a bare Honeycomb app ID (e.g. dm)");
+        bail!("expected a bare Honeycomb app ID (e.g. dm), got {id:?}");
     }
     if !installed && ["iam", "ting"].contains(&id) {
         bail!("{id} is required by the interpreter and cannot be uninstalled");
     }
-    let path = path.canonicalize()?;
-    let source = fs::read_to_string(&path)?;
-    let current = Config::load(&path)?;
-    if fs::read_to_string(&path)? != source {
-        bail!("silicon.yaml changed while updating apps; retry the command");
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("config not found: {}", path.display()))?;
+    let read = || fs::read_to_string(&path).with_context(|| format!("read {}", path.display()));
+    let source = read()?;
+    let current = Config::load(&path)
+        .with_context(|| format!("the current {} does not compile", path.display()))?;
+    if read()? != source {
+        bail!(
+            "{} changed while updating apps; retry the command",
+            path.display()
+        );
     }
     if installed && current.silicon.apps.iter().any(|app| app == id) {
         return Ok(current);
     }
-    let mut document = parse_document(&source, &mut Vec::new())?;
+    let mut document = parse_document(&source, &mut Vec::new())
+        .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
+    let found = kind(&document["silicon"]);
     let silicon = document["silicon"]
         .as_mapping_mut()
-        .context("silicon must be a mapping")?;
+        .with_context(|| format!("silicon must be a mapping, found {found}"))?;
     let apps = silicon
         .entry(Yaml::String("apps".into()))
-        .or_insert(Yaml::Sequence(Vec::new()))
+        .or_insert(Yaml::Sequence(Vec::new()));
+    let found = shown(apps);
+    let apps = apps
         .as_sequence_mut()
-        .context("silicon.apps must be a list")?;
+        .with_context(|| format!("silicon.apps must be a list, found {found}"))?;
     if installed {
         apps.push(Yaml::String(id.to_owned()));
     } else {
@@ -548,36 +643,74 @@ pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> 
         offset += line.len();
     }
     // ponytail: preserve block-style YAML; add a source-span parser if compact root maps need editing.
-    let start = start.context("si app requires silicon as a top-level YAML block")?;
-    let replacement = serde_yaml::to_string(&BTreeMap::from([("silicon", &document["silicon"])]))?;
+    let start = start.with_context(|| {
+        format!(
+            "si app requires silicon as a top-level YAML block in {}",
+            path.display()
+        )
+    })?;
+    let replacement = serde_yaml::to_string(&BTreeMap::from([("silicon", &document["silicon"])]))
+        .context("serialize the updated silicon block")?;
     let next = format!("{}{}{}", &source[..start], replacement, &source[end..]);
-    if parse_document(&next, &mut Vec::new())? != document {
-        bail!("cannot safely update this YAML layout; use a top-level silicon block");
+    let reparsed =
+        parse_document(&next, &mut Vec::new()).context("re-read the rewritten silicon block")?;
+    if reparsed != document {
+        bail!(
+            "cannot safely update the YAML layout of {}; use a top-level silicon block",
+            path.display()
+        );
     }
-    let parent = path.parent().context("config has no parent directory")?;
+    let parent = path
+        .parent()
+        .with_context(|| format!("config {} has no parent directory", path.display()))?;
     let staged = parent.join(format!(".silicon-{}.yaml", uuid::Uuid::new_v4()));
     let result = (|| {
+        let write = || format!("write staged config {}", staged.display());
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&staged)?;
-        file.write_all(next.as_bytes())?;
-        file.sync_all()?;
-        let mut config = Config::load(&staged)?;
-        if fs::read_to_string(&path)? != source {
-            bail!("silicon.yaml changed while updating apps; retry the command");
+            .open(&staged)
+            .with_context(write)?;
+        file.write_all(next.as_bytes()).with_context(write)?;
+        file.sync_all().with_context(write)?;
+        let mut config = Config::load(&staged).with_context(|| {
+            format!(
+                "the updated {} would not compile (staged as {})",
+                path.display(),
+                staged.display()
+            )
+        })?;
+        if read()? != source {
+            bail!(
+                "{} changed while updating apps; retry the command",
+                path.display()
+            );
         }
-        fs::set_permissions(&staged, fs::metadata(&path)?.permissions())?;
-        fs::rename(&staged, &path)?;
-        fs::File::open(parent)?.sync_all()?;
+        fs::metadata(&path)
+            .and_then(|metadata| fs::set_permissions(&staged, metadata.permissions()))
+            .with_context(|| {
+                format!(
+                    "copy permissions of {} to {}",
+                    path.display(),
+                    staged.display()
+                )
+            })?;
+        fs::rename(&staged, &path)
+            .with_context(|| format!("replace {} with {}", path.display(), staged.display()))?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("sync directory {}", parent.display()))?;
         config.path = path.clone();
         Ok(config)
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&staged);
-    }
-    result
+    result.map_err(|error| match fs::remove_file(&staged) {
+        Err(cleanup) if cleanup.kind() != std::io::ErrorKind::NotFound => error.context(format!(
+            "updating apps failed and left {} behind (remove: {cleanup})",
+            staged.display()
+        )),
+        _ => error,
+    })
 }
 
 fn required<'a>(value: &'a Option<String>, path: &str) -> Result<&'a str> {
@@ -634,7 +767,10 @@ pub fn safe_name(value: &str) -> bool {
 
 fn validate_providers(value: &Yaml) -> Result<()> {
     let values = value.as_sequence().ok_or_else(|| {
-        anyhow!("silicon.inference_providers must be a list (lists may be nested)")
+        anyhow!(
+            "silicon.inference_providers must be a list (lists may be nested), found {}",
+            shown(value)
+        )
     })?;
     if values.is_empty() {
         bail!("silicon.inference_providers cannot be empty");
@@ -643,19 +779,96 @@ fn validate_providers(value: &Yaml) -> Result<()> {
         match value {
             Yaml::Sequence(_) => validate_providers(value)?,
             Yaml::String(s) if !s.trim().is_empty() && s.trim() != "except" => {},
-            _ => bail!("inference_providers entries must be provider names, 'except provider', or nested lists"),
+            _ => bail!("inference_providers entries must be provider names, 'except provider', or nested lists, found {}", shown(value)),
         }
     }
     Ok(())
 }
 
+/// A YAML value as compact JSON for an error message.
+fn shown(value: &Yaml) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
+}
+
+/// A value's type alone, for errors about fields whose values are credentials.
+fn kind(value: &Yaml) -> &'static str {
+    match value {
+        Yaml::Null => "null",
+        Yaml::Bool(_) => "a boolean",
+        Yaml::Number(_) => "a number",
+        Yaml::String(_) => "a string",
+        Yaml::Sequence(_) => "a list",
+        Yaml::Mapping(_) => "a mapping",
+        Yaml::Tagged(_) => "a tagged value",
+    }
+}
+
+/// Expressions read evaluated sections as JSON, which allows only string keys.
+fn to_json(value: impl Serialize, path: &str) -> Result<Json> {
+    serde_json::to_value(value)
+        .with_context(|| format!("{path} cannot be converted to JSON for expressions"))
+}
+
+fn key_name(key: &Yaml) -> String {
+    key.as_str().map_or_else(|| shown(key), str::to_owned)
+}
+
+// serde_yaml gives no location for in-memory values, so name the section it rejected,
+// checking sections in document order as serde does, and the field within it.
+fn schema_section(document: &Yaml) -> String {
+    fn rejected<T: DeserializeOwned>(path: String, value: &Yaml) -> Option<String> {
+        if T::deserialize(value).is_ok() {
+            return None;
+        }
+        // Every Silicon and Isi field is optional, so one rejected alone is the culprit.
+        let field = value
+            .as_mapping()
+            .into_iter()
+            .flatten()
+            .find_map(|(key, field)| {
+                let alone = Yaml::Mapping(Mapping::from_iter([(key.clone(), field.clone())]));
+                T::deserialize(&alone)
+                    .is_err()
+                    .then(|| format!("{path}.{}", key_name(key)))
+            });
+        Some(field.unwrap_or(path))
+    }
+    fn entries(
+        section: &str,
+        value: &Yaml,
+        entry: fn(String, &Yaml) -> Option<String>,
+    ) -> Option<String> {
+        match value.as_mapping() {
+            Some(map) => map
+                .iter()
+                .find_map(|(name, value)| entry(format!("{section}.{}", key_name(name)), value)),
+            None => Some(section.into()),
+        }
+    }
+    document
+        .as_mapping()
+        .into_iter()
+        .flatten()
+        .find_map(|(key, value)| match key.as_str() {
+            Some("silicon") => rejected::<Silicon>("silicon".into(), value),
+            Some("isi") => entries("isi", value, rejected::<Isi>),
+            Some("access") => entries("access", value, rejected::<Vec<String>>),
+            _ => None,
+        })
+        .unwrap_or_else(|| "config".into())
+}
+
 fn fields<'a>(value: &'a Yaml, path: &str, allowed: &[&str]) -> Result<&'a Mapping> {
     let map = value
         .as_mapping()
-        .ok_or_else(|| anyhow!("{path} must be a mapping"))?;
+        .ok_or_else(|| anyhow!("{path} must be a mapping, found {}", shown(value)))?;
     for key in map.keys() {
         if !key.as_str().is_some_and(|k| allowed.contains(&k)) {
-            bail!("unknown field in {path}: {key:?}");
+            bail!(
+                "unknown field in {path}: {}; expected one of {}",
+                shown(key),
+                allowed.join(", ")
+            );
         }
     }
     Ok(map)
@@ -665,7 +878,7 @@ fn nonempty_scalar(value: &Yaml, path: &str) -> Result<()> {
     if value.as_str().is_some_and(|s| !s.is_empty()) || value.is_number() || value.is_bool() {
         return Ok(());
     }
-    bail!("{path} must be a nonempty scalar")
+    bail!("{path} must be a nonempty scalar, found {}", shown(value))
 }
 
 fn interval(value: &Yaml, path: &str) -> Result<()> {
@@ -696,14 +909,14 @@ fn interval(value: &Yaml, path: &str) -> Result<()> {
     }) {
         return Ok(());
     }
-    bail!("{path} must be a positive interval of at most ten years, e.g. 30min, or an expression")
+    bail!("{path} must be a positive interval of at most ten years, e.g. 30min, or an expression, found {source:?}")
 }
 
 fn nonempty_string(value: &Yaml, path: &str) -> Result<()> {
     if value.as_str().is_some_and(|s| !s.is_empty()) {
         return Ok(());
     }
-    bail!("{path} must be a nonempty string")
+    bail!("{path} must be a nonempty string, found {}", shown(value))
 }
 
 fn validate_isi_blocks(name: &str, isi: &Isi) -> Result<()> {
@@ -713,12 +926,18 @@ fn validate_isi_blocks(name: &str, isi: &Isi) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow!("{path} is required"))?;
     fields(dna, &path, &["assemble", "next_refresh"])?;
-    let assemble = dna["assemble"]
-        .as_sequence()
-        .ok_or_else(|| anyhow!("{path}.assemble must be a list"))?;
-    for value in assemble {
+    let assemble = dna["assemble"].as_sequence().ok_or_else(|| {
+        anyhow!(
+            "{path}.assemble must be a list, found {}",
+            shown(&dna["assemble"])
+        )
+    })?;
+    for (index, value) in assemble.iter().enumerate() {
         if !value.as_str().is_some_and(|source| !source.is_empty()) {
-            bail!("{path}.assemble entries must be nonempty paths or shell expressions");
+            bail!(
+                "{path}.assemble[{index}] must be a nonempty path or shell expression, found {}",
+                shown(value)
+            );
         }
     }
     interval(&dna["next_refresh"], &format!("{path}.next_refresh"))?;
@@ -748,7 +967,10 @@ fn validate_isi_blocks(name: &str, isi: &Isi) -> Result<()> {
                     || s.contains("!>>")
             })
         {
-            bail!("{path}.min_new_messages must be a positive integer or expression");
+            bail!(
+                "{path}.min_new_messages must be a positive integer or expression, found {}",
+                shown(count)
+            );
         }
         nonempty_string(
             &suggestion["suggestion_message"],
@@ -771,9 +993,12 @@ fn validate_static_sends(value: &Yaml, isies: &BTreeMap<String, Isi>) -> Result<
                     .as_str()
                     .filter(|s| !s.starts_with('!') && !s.contains('{') && !s.contains("!>>"))
                 {
-                    let isi = isies
-                        .get(target)
-                        .ok_or_else(|| anyhow!("flow sends to unknown isi {target}"))?;
+                    let isi = isies.get(target).ok_or_else(|| {
+                        anyhow!(
+                            "flow sends to unknown isi {target:?}; known ISIs are {}",
+                            isies.keys().cloned().collect::<Vec<_>>().join(", ")
+                        )
+                    })?;
                     if isi.primary_send_mode.as_deref() == Some("session")
                         && send["session_id"].is_null()
                     {
@@ -805,6 +1030,16 @@ enum Node {
     Scalar(Yaml),
     Seq(Vec<Node>),
     Map(Vec<(String, Node)>),
+}
+
+impl Node {
+    fn describe(&self) -> String {
+        match self {
+            Node::Scalar(value) => shown(value),
+            Node::Seq(_) => "a list".into(),
+            Node::Map(_) => "a mapping".into(),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Node {
@@ -864,7 +1099,7 @@ impl<'de> Deserialize<'de> for Node {
 fn parse_document(source: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
     let node: Node = serde_yaml::from_str(&prepare_scalars(source)?)?;
     let Node::Map(entries) = node else {
-        bail!("config must be a YAML mapping");
+        bail!("config must be a YAML mapping, found {}", node.describe());
     };
     let mut result = Mapping::new();
     for (key, node) in entries {
@@ -917,7 +1152,10 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
         Node::Map(entries) => vec![Node::Map(entries)],
         Node::Scalar(Yaml::Null) => return Ok(Yaml::Sequence(vec![])),
         Node::Scalar(Yaml::String(expression)) => return Ok(Yaml::String(expression)),
-        _ => bail!("{path} must be steps or an expression"),
+        other => bail!(
+            "{path} must be steps or an expression, found {}",
+            other.describe()
+        ),
     };
     let mut output = Vec::new();
     for (index, node) in nodes.into_iter().enumerate() {
@@ -927,7 +1165,10 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
                 output.push(Yaml::String(expression));
                 continue;
             }
-            bail!("{step_path} must be a step mapping or an expression");
+            bail!(
+                "{step_path} must be a step mapping or an expression, found {}",
+                node.describe()
+            );
         };
         // The reference's first `- var:` has its fields beside, not below, var.
         // Normalize this unambiguous shape and disclose it through warnings.
@@ -960,7 +1201,10 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
                 _ => bail!("unknown flow action {action} at {step_path}"),
             };
             let Node::Map(fields) = payload else {
-                bail!("{step_path}.{action} must be a mapping");
+                bail!(
+                    "{step_path}.{action} must be a mapping, found {}",
+                    payload.describe()
+                );
             };
             let mut body = Mapping::new();
             for (key, node) in fields {
@@ -1797,7 +2041,7 @@ flow:
             ),
             source.replace(
                 "! printf private-api-key",
-                "! printf private-api-key >&2; exit 1",
+                "! printf private-api-key; echo vault locked >&2; exit 1",
             ),
             source.replace(
                 "api_key: '! printf private-api-key'",
@@ -1812,13 +2056,144 @@ flow:
             let error = format!("{:#}", Config::load(&path).unwrap_err());
             assert!(!error.contains("private-api-key"), "{error}");
         }
+        // A failed credential command still says why; only its stdout is withheld.
+        fs::write(
+            &path,
+            source.replace(
+                "! printf private-api-key",
+                "! printf private-api-key; echo vault locked >&2; exit 1",
+            ),
+        )?;
+        let error = format!("{:#}", Config::load(&path).unwrap_err());
+        for expected in [
+            "evaluate silicon.app_configs.waveform.api_key",
+            "exit status: 1",
+            "vault locked",
+        ] {
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
         let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log"))?;
         assert!(!logs.contains("private-api-key"));
         Ok(())
     }
 
     #[test]
-    fn compilation_never_logs_credential_expressions_or_errors() {
+    fn compile_errors_carry_tool_output_parser_positions_and_found_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("silicon.yaml");
+        let source = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: []\n";
+        let load = |text: String| {
+            fs::write(&path, text).unwrap();
+            format!("{:#}", Config::load(&path).unwrap_err())
+        };
+        let error = load(source.replace(
+            "model: code",
+            "model: ! echo model-stdout; echo model-stderr >&2; exit 3",
+        ));
+        for expected in [
+            "evaluate isi.worker.model",
+            "exit status: 3",
+            "model-stderr",
+            "model-stdout",
+        ] {
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        let error = load(source.replace("  timezone: UTC\n", "  timezone: UTC\n\tbad: tab\n"));
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("line 6 column 1"), "{error}");
+        for (from, to, expected) in [
+            (
+                "primary_send_mode: global",
+                "primary_send_mode: sometimes",
+                "isi.worker.primary_send_mode must be global or session, found \"sometimes\"",
+            ),
+            (
+                "timezone: UTC",
+                "timezone: Mars/Olympus",
+                "found \"Mars/Olympus\": failed to parse timezone",
+            ),
+            (
+                "[all-available-providers]",
+                "[all-available-providers, 7]",
+                "or nested lists, found 7",
+            ),
+            (
+                "model: code",
+                "model: [code]",
+                "invalid silicon schema in isi.worker.model: invalid type: sequence, expected a string",
+            ),
+            (
+                "id: si:test",
+                "id: 7",
+                "invalid silicon schema in silicon.id: invalid type: integer `7`, expected a string",
+            ),
+            (
+                "flow: []",
+                "flow: [{send: {isi: other, message: hi}}]",
+                "flow sends to unknown isi \"other\"; known ISIs are worker",
+            ),
+            (
+                "access: {worker: []}",
+                "access: {worker: [], typo: []}",
+                "access defines unknown isi typo",
+            ),
+            (
+                "access: {worker: []}",
+                "access: {worker: nope}",
+                "invalid silicon schema in access.worker: invalid type: string \"nope\", expected a sequence",
+            ),
+            (
+                "flow: []",
+                "flow: 7",
+                "flow must be steps or an expression, found 7",
+            ),
+            (
+                "  timezone: UTC",
+                "  timezone: UTC\n  webhookz: []",
+                "unknown field in silicon: \"webhookz\"; expected one of id, org_id",
+            ),
+        ] {
+            let error = load(source.replace(from, to));
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+        // A credential-bearing field names its wrong type, never its value.
+        let error = load(source.replace(
+            "  timezone: UTC\n",
+            "  timezone: UTC\n  apps: [dm]\n  app_configs: {dm: '! printf app-config-private'}\n",
+        ));
+        assert!(
+            error.contains("silicon.app_configs.dm must be a key-value mapping, found a string"),
+            "{error}"
+        );
+        assert!(!error.contains("app-config-private"), "{error}");
+        let error = load(source.replace(
+            "  timezone: UTC\n",
+            "  timezone: UTC\n  space_station: sk-station-private-key\n",
+        ));
+        assert!(
+            error.contains("silicon.space_station must be a mapping, found a string"),
+            "{error}"
+        );
+        assert!(!error.contains("station-private"), "{error}");
+        // si app edits say whether the file on disk or the edit is what fails to compile.
+        fs::write(
+            &path,
+            source.replace("timezone: UTC", "timezone: Mars/Olympus"),
+        )
+        .unwrap();
+        let error = format!("{:#}", set_app(&path, "dm", true).unwrap_err());
+        let current = format!(
+            "the current {} does not compile",
+            path.canonicalize().unwrap().display()
+        );
+        assert!(error.starts_with(&current), "{error}");
+        assert!(error.contains("found \"Mars/Olympus\""), "{error}");
+        let error = format!("{:#}", set_app(&path, "Bad App", true).unwrap_err());
+        assert!(error.contains("got \"Bad App\""), "{error}");
+    }
+
+    #[test]
+    fn compilation_shows_credential_failures_but_never_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("silicon.yaml");
         let source = r#"silicon:
@@ -1851,15 +2226,23 @@ flow: []
             "compile-private-key"
         );
         assert!(config.generation.is_nil());
+        for (invalid, stderr) in [
+            ("printf compile-private-token", "token service down"),
+            ("printf compile-private-key", "table service down"),
+        ] {
+            fs::write(
+                &path,
+                source.replace(invalid, &format!("{invalid}; echo {stderr} >&2; exit 1")),
+            )
+            .unwrap();
+            let error = format!("{:#}", Config::load(&path).unwrap_err());
+            assert!(
+                error.contains(stderr) && error.contains("exit status: 1"),
+                "{error}"
+            );
+            assert!(!error.contains("compile-private"), "{error}");
+        }
         for invalid in [
-            source.replace(
-                "printf compile-private-token",
-                "printf compile-private-token >&2; exit 1",
-            ),
-            source.replace(
-                "printf compile-private-key",
-                "printf compile-private-key >&2; exit 1",
-            ),
             source.replace(
                 "! printf compile-private-token",
                 "{missing['compile-private-token']}",

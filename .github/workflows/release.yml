@@ -130,7 +130,9 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 migrate-identifiers.py migrate-ting-state.py PUBLIC-IDENTIFIER-MIGRATION.md > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 5.0.1 completes the IAM and Honeycomb identifier migration: `si:handle`, explicit `silicon.org_id`, and bare application IDs. It preserves 5.0.0 organization handles and local hostnames, binds cached authentication to the full identity and organization, and refreshes saved routing descriptors on reconnect.
+          Silicon 5.0.2 shows every failure in full. When an app CLI, IAM, Ting, Honeycomb, Caddy, Omni, a Bash expression, the updater, or the installer fails, the error now carries the command that ran, its exit status, and its complete stderr and stdout (JSON shown raw), along with parser positions, HTTP status and body, and the whole cause chain. The same text reaches `silicon` and `si` output, flow `{error}` catches, the dashboard, and `silicon.log`, whose viewers unfold multi-line errors. Failures that were silently skipped are now logged. Only literal credential values are masked; configured values shorter than eight characters are no longer redacted. See "Reading errors" in the guide.
+
+          5.0.2 keeps the 5.0.1 identifier contract: `si:handle`, explicit `silicon.org_id`, and bare application IDs. Existing 5.0.x YAML and state need no changes.
 
           **Existing homes:** disconnect and stop the interpreter, then follow `PUBLIC-IDENTIFIER-MIGRATION.md` from this release before upgrading or reconnecting. The offline mapper requires verified backups, preserves sessions, Ting receipts and webhook IDs, and clears stale authentication caches. Honeycomb's installed registry uses its own migration tool. Installers do not migrate YAML or local state. Earlier 4.x configuration migrations also remain required; see the README.
 

@@ -355,7 +355,10 @@ flow:
             except urllib.error.HTTPError as error:
                 response = error
             body = response.read()
-            result = json.loads(body) if body else None
+            try:
+                result = json.loads(body) if body else None
+            except ValueError as error:
+                raise AssertionError((response.status, error, body.decode(errors="replace"))) from error
             assert response.status == status, (response.status, result)
             return result
         def control(action, **args):
@@ -390,7 +393,7 @@ case "$*" in
   'auth status --json')
     touch auth-started
     while ! test -f auth-release; do sleep 0.05; done
-    if test -f auth-fail; then echo private-auth-error >&2; exit 1; fi
+    if test -f auth-fail; then echo 'progress: session store unreachable' >&2; echo '{"authenticated":null}'; exit 1; fi
     echo '{"authenticated":true}' ;;
   *) exit 1 ;;
 esac
@@ -436,7 +439,9 @@ esac
         failed = subprocess.run([str(binary), "connect", str(progress_config)], env=env, capture_output=True, text=True, timeout=35)
         assert failed.returncode != 0 and "✗ Authenticating progress" in failed.stdout, failed.stdout + failed.stderr
         assert "✓ Authenticated progress" not in failed.stdout
-        assert "private-auth-error" not in failed.stdout + failed.stderr
+        # The app's own words reach the Carbon whole: command, exit status and both streams.
+        for said in [" auth status --json` failed: exit status: 1", "progress: session store unreachable", '{"authenticated":null}']:
+            assert said in failed.stderr, (said, failed.stdout + failed.stderr)
         cli("compile", str(config))
         assert not (home / "setup-count").exists(), "compile must not run setup"
         result = cli("connect", str(config))

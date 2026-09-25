@@ -22,7 +22,8 @@ static CONTEXTS: OnceLock<Mutex<HashMap<PathBuf, Context>>> = OnceLock::new();
 static REDACTIONS: OnceLock<Mutex<HashMap<PathBuf, Vec<String>>>> = OnceLock::new();
 static CLIENTS: OnceLock<Mutex<HashMap<String, Arc<SpaceClient>>>> = OnceLock::new();
 
-fn client(key: &str) -> Option<Arc<SpaceClient>> {
+/// `what` names where the key came from, for the one message a bad key earns.
+fn client(key: &str, what: &str) -> Option<Arc<SpaceClient>> {
     if key.is_empty() {
         return None;
     }
@@ -30,13 +31,23 @@ fn client(key: &str) -> Option<Arc<SpaceClient>> {
     if let Some(client) = clients.get(key) {
         return Some(client.clone());
     }
-    let client = SpaceClient::builder(key)
+    let client = match SpaceClient::builder(key)
         .home(crate::server::directory().join("space-station"))
         .url(space_station::default_url())
         .flush_timeout(Duration::from_millis(100))
         .on_error(|error| eprintln!("Space Station telemetry: {error}"))
         .build()
-        .ok()?;
+    {
+        Ok(client) => client,
+        Err(error) => {
+            // Telemetry must never fail the work it describes, nor vanish without a reason.
+            once(
+                &format!("client:{what}"),
+                &format!("Space Station telemetry to {what} is off: {error}"),
+            );
+            return None;
+        }
+    };
     let client = Arc::new(client);
     clients.insert(key.into(), client.clone());
     Some(client)
@@ -48,7 +59,7 @@ pub fn register(cfg: &Config) {
         .silicon
         .space_station
         .as_ref()
-        .and_then(|station| client(&station.table_key));
+        .and_then(|station| client(&station.table_key, "silicon.space_station.table_key"));
     let mut redactions = REDACTIONS.get_or_init(Default::default).lock().unwrap();
     let known = redactions.entry(cfg.home.clone()).or_default();
     for secret in secrets {
@@ -103,10 +114,51 @@ pub fn silicon_secrets(silicon: &Value) -> Vec<String> {
     secrets
 }
 
+/// Values registered for `home` (its token, table key and every app config string).
+pub(crate) fn known_secrets(home: &Path) -> Vec<String> {
+    REDACTIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .get(home)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Values registered for every home this process has seen.
+pub(crate) fn all_secrets() -> Vec<String> {
+    REDACTIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .values()
+        .flatten()
+        .cloned()
+        .collect()
+}
+
+/// Say `message` on stderr (daemon.log for the interpreter) once per `key` per process.
+/// Telemetry runs inside every log write, so repeating it there would drown the log it serves.
+fn once(key: &str, message: &str) {
+    static SAID: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    if SAID
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert(key.to_owned())
+    {
+        eprintln!("{message}");
+    }
+}
+
+/// Shorter configured values ("en", "true", "30") are settings, not credentials;
+/// replacing every occurrence of them garbles the errors and logs people must read.
+pub(crate) const MIN_SECRET_LEN: usize = 8;
+
 pub fn redact_text(text: &str, secrets: &[String]) -> String {
     static TOKENS: OnceLock<Regex> = OnceLock::new();
     let mut text = text.to_owned();
-    for secret in secrets.iter().filter(|s| !s.is_empty()) {
+    for secret in secrets.iter().filter(|s| s.len() >= MIN_SECRET_LEN) {
         text = text.replace(secret, "[redacted]");
     }
     TOKENS
@@ -165,9 +217,22 @@ pub fn redact(home: &Path, text: &str) -> String {
 }
 
 fn vendor_enabled() -> bool {
-    !cfg!(test)
-        && std::env::var("SILICON_TELEMETRY").as_deref() != Ok("0")
-        && settings::load().is_ok_and(|s| s.telemetry)
+    if cfg!(test) || std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0") {
+        return false;
+    }
+    match settings::load() {
+        Ok(settings) => settings.telemetry,
+        // An unreadable choice is not consent; say why telemetry is off.
+        Err(error) => {
+            once(
+                &format!("settings:{error:#}"),
+                &format!(
+                    "Silicon telemetry off: interpreter settings could not be read: {error:#}"
+                ),
+            );
+            false
+        }
+    }
 }
 
 fn vendor(runtime: bool) -> Option<Arc<SpaceClient>> {
@@ -190,6 +255,7 @@ fn vendor(runtime: bool) -> Option<Arc<SpaceClient>> {
             .ok()
             .or_else(|| bundled.map(str::to_owned))
             .unwrap_or_default(),
+        name,
     )
 }
 
@@ -229,15 +295,7 @@ pub fn record_scoped(
 }
 
 fn redact_interpreter_context(context: &mut Value) {
-    let secrets = REDACTIONS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap()
-        .values()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>();
-    redact_value(context, &secrets);
+    redact_value(context, &all_secrets());
 }
 
 pub fn interpreter(source: &str, step: &str, mut context: Value) {

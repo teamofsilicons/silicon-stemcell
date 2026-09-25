@@ -7,7 +7,7 @@ set -eu
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
 
-version=${SILICON_VERSION:-v5.0.1}
+version=${SILICON_VERSION:-v5.0.2}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -20,12 +20,12 @@ commands='silicon si omnid silicon-omni omni so caddy'
 binaries="$commands"
 notices='LICENSE LICENSES/README.md LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'
 
-case "$version" in ''|*[!A-Za-z0-9._-]*) fail 'SILICON_VERSION must be a release tag, without slashes' ;; esac
-case "$repository" in ''|*[!A-Za-z0-9._/-]*) fail 'invalid SILICON_REPOSITORY' ;; esac
+case "$version" in ''|*[!A-Za-z0-9._-]*) fail "SILICON_VERSION must be a release tag, without slashes, not '$version'" ;; esac
+case "$repository" in ''|*[!A-Za-z0-9._/-]*) fail "invalid SILICON_REPOSITORY '$repository'" ;; esac
 [ -z "$source_dir" ] || [ -z "$git_rev" ] || fail 'choose SILICON_SOURCE_DIR or SILICON_GIT_REV, not both'
 if [ -n "$git_rev" ]; then
-    [ "${#git_rev}" -eq 40 ] || fail 'SILICON_GIT_REV must be an exact 40-character Git commit'
-    case "$git_rev" in *[!0-9a-f]*) fail 'SILICON_GIT_REV must be lowercase hexadecimal' ;; esac
+    [ "${#git_rev}" -eq 40 ] || fail "SILICON_GIT_REV must be an exact 40-character Git commit, not '$git_rev' (${#git_rev} characters)"
+    case "$git_rev" in *[!0-9a-f]*) fail "SILICON_GIT_REV must be lowercase hexadecimal, not '$git_rev'" ;; esac
 fi
 
 system=$(uname -s)
@@ -34,46 +34,119 @@ case "$system/$(uname -m)" in
     Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64; honeycomb_target=macos-x86_64 ;;
     Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64; honeycomb_target=linux-x86_64 ;;
     Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64; honeycomb_target=linux-aarch64 ;;
-    *) fail 'supported systems are macOS and Linux on x86-64 or ARM64' ;;
+    *) fail "supported systems are macOS and Linux on x86-64 or ARM64, not $system/$(uname -m)" ;;
 esac
+
+# Shell-quoted argv, so an error names exactly what ran.
+command_line() {
+    line=
+    for word do
+        case "$word" in
+            ''|*[!A-Za-z0-9_./:=@%+,-]*) word="'$(printf '%s' "$word" | sed "s/'/'\\\\''/g")'" ;;
+        esac
+        line="${line:+$line }$word"
+    done
+    printf '%s' "$line"
+}
+
+# A captured stream for an error: verbatim, or "(empty)".
+stream() {
+    if [ -n "$(tr -d ' \t\r\n' < "$1")" ]; then printf '\n%s' "$(cat "$1")"; else printf ' (empty)'; fi
+}
+
+# Run a command with both streams kept. Success replays them unchanged; failure
+# leaves $report with the exact command, its exit status and both streams
+# verbatim, the shape src/failure.rs gives every Silicon error.
+attempt() {
+    report=
+    attempt_status=0
+    "$@" >"$stage/stdout" 2>"$stage/stderr" || attempt_status=$?
+    if [ "$attempt_status" -eq 0 ]; then
+        [ ! -s "$stage/stderr" ] || cat "$stage/stderr" >&2
+        [ ! -s "$stage/stdout" ] || cat "$stage/stdout"
+        return 0
+    fi
+    report="\`$(command_line "$@")\` failed: exit status: $attempt_status
+stderr:$(stream "$stage/stderr")
+stdout:$(stream "$stage/stdout")"
+    return "$attempt_status"
+}
+
+# attempt, stopping the install with what it was doing and the command's own words.
+run() {
+    purpose=$1
+    shift
+    attempt "$@" || fail "$purpose
+$report"
+}
+
+# For long commands whose progress streams live: their own words are already on
+# the terminal, so a failure adds the exact command and its exit status.
+live() {
+    purpose=$1
+    shift
+    live_status=0
+    "$@" || live_status=$?
+    [ "$live_status" -eq 0 ] || fail "$purpose
+\`$(command_line "$@")\` failed: exit status: $live_status (its output is above)"
+}
+
+# Extract one archive member into a file. tar's stdout is the member itself, so a
+# failure shows tar's own words and how much of the member arrived.
+extract() {
+    extract_status=0
+    tar -xOzf "$2" "$3" >"$4" 2>"$stage/stderr" || extract_status=$?
+    if [ "$extract_status" -eq 0 ]; then
+        [ ! -s "$stage/stderr" ] || cat "$stage/stderr" >&2
+        return 0
+    fi
+    fail "$1
+\`$(command_line tar -xOzf "$2" "$3")\` failed: exit status: $extract_status
+stderr:$(stream "$stage/stderr")
+stdout: $(wc -c <"$4" | tr -d ' ') bytes written to $4"
+}
 
 hash_file() {
     if command -v "sha${1}sum" >/dev/null 2>&1; then
-        "sha${1}sum" "$2" | awk '{print $1}'
+        digest=$(run "could not hash $2" "sha${1}sum" "$2") || exit 1
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a "$1" "$2" | awk '{print $1}'
+        digest=$(run "could not hash $2" shasum -a "$1" "$2") || exit 1
     else
         fail "SHA-$1 verifier missing; install shasum or coreutils"
     fi
+    printf '%s\n' "${digest%% *}"
 }
 
 download() {
     command -v curl >/dev/null 2>&1 || fail 'curl is required'
-    curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 --output "$2" "$1"
+    run "$3" curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 --output "$2" "$1"
 }
 
 verify() {
     expected=$(awk -v name="$3" '$2 == name {print $1}' "$2")
-    case "$expected" in ''|*[!0-9a-fA-F]*) fail "missing or ambiguous checksum for $3" ;; esac
-    [ "${#expected}" -eq "$(( $1 / 4 ))" ] || fail "invalid checksum for $3"
+    case "$expected" in ''|*[!0-9a-fA-F]*) fail "missing or ambiguous checksum for $3; $2 says:$(stream "$2")" ;; esac
+    [ "${#expected}" -eq "$(( $1 / 4 ))" ] || fail "invalid SHA-$1 checksum for $3: $expected has ${#expected} hex digits, not $(( $1 / 4 ))"
     actual=$(hash_file "$1" "$4")
-    [ "$actual" = "$expected" ] || fail "checksum mismatch for $3; installation was not changed"
+    [ "$actual" = "$expected" ] || fail "checksum mismatch for $3: expected $expected, downloaded file has $actual; installation was not changed"
 }
 
-mkdir -p "$prefix"
-prefix=$(CDPATH= cd -- "$prefix" && pwd -P)
+mkdir -p "$prefix" || fail "could not create SILICON_PREFIX $prefix (mkdir's error is above)"
+resolved=$(CDPATH= cd -- "$prefix" && pwd -P) || fail "could not enter SILICON_PREFIX $prefix (the error is above)"
+prefix=$resolved
 [ "$prefix" != / ] || fail 'SILICON_PREFIX must be a dedicated prefix, not /'
 runtime="$prefix/lib/silicon"
-mkdir -p "$runtime/releases" "$prefix/bin"
+mkdir -p "$runtime/releases" "$prefix/bin" || fail "could not create $runtime/releases and $prefix/bin (mkdir's error is above)"
 for binary in $commands; do
     link="$prefix/bin/$binary"
     if [ -e "$link" ] || [ -L "$link" ]; then
         [ -L "$link" ] && [ "$(readlink "$link")" = "../lib/silicon/current/bin/$binary" ] ||
-            fail "$link is not managed by this installer; choose another SILICON_PREFIX"
+            fail "$link is not managed by this installer; choose another SILICON_PREFIX
+$(ls -ld "$link" 2>&1)"
     fi
 done
-[ ! -e "$runtime/current" ] || [ -L "$runtime/current" ] || fail 'runtime current path is not a managed symlink'
-stage=$(mktemp -d "$runtime/.install.XXXXXX")
+[ ! -e "$runtime/current" ] || [ -L "$runtime/current" ] || fail "runtime current path is not a managed symlink
+$(ls -ld "$runtime/current" 2>&1)"
+stage=$(mktemp -d "$runtime/.install.XXXXXX") || fail "could not create a staging directory in $runtime (mktemp's error is above)"
 new_links=''
 activated=false
 lock_owned=false
@@ -95,60 +168,73 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 # ponytail: one installer per prefix; after SIGKILL remove a stale lock only
 # after confirming no installer is running.
-mkdir "$runtime/.install-lock" 2>/dev/null || fail "another installer holds $runtime/.install-lock"
+run "another installer may hold $runtime/.install-lock; if none is running, remove that directory and retry" mkdir "$runtime/.install-lock"
 lock_owned=true
 mkdir -p "$stage/payload/bin" "$stage/payload/LICENSES"
 
 if [ -n "$git_rev" ]; then
     command -v git >/dev/null 2>&1 || fail 'Git is required for source builds'
     source_dir="$stage/source"
-    git init -q "$source_dir"
-    git -C "$source_dir" fetch -q --depth 1 "https://github.com/$repository.git" "$git_rev" || fail 'could not fetch the requested interpreter commit'
-    git -C "$source_dir" checkout -q --detach FETCH_HEAD
-    [ "$(git -C "$source_dir" rev-parse HEAD)" = "$git_rev" ] || fail 'source Git revision did not match'
+    run 'could not create the source checkout' git init -q "$source_dir"
+    run 'could not fetch the requested interpreter commit' git -C "$source_dir" fetch -q --depth 1 "https://github.com/$repository.git" "$git_rev"
+    run 'could not check out the requested interpreter commit' git -C "$source_dir" checkout -q --detach FETCH_HEAD
+    head=$(run 'could not read the checked-out source revision' git -C "$source_dir" rev-parse HEAD)
+    [ "$head" = "$git_rev" ] || fail "source Git revision did not match: checked out $head, requested $git_rev"
 fi
 
 copy_dependency() {
     [ -n "$dependency_bins" ] && [ -f "$dependency_bins/$1" ] && [ -x "$dependency_bins/$1" ] || return 1
-    cp "$dependency_bins/$1" "$stage/payload/bin/$1"
+    run "could not copy trusted dependency $1" cp "$dependency_bins/$1" "$stage/payload/bin/$1"
 }
 
 configure_caddy_port() {
     [ "$system" = Linux ] || return 0
     port_start=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null) || port_start=1024
-    case "$port_start" in ''|*[!0-9]*) fail 'could not determine Linux privileged port permissions' ;; esac
+    case "$port_start" in ''|*[!0-9]*) fail "could not determine Linux privileged port permissions: /proc/sys/net/ipv4/ip_unprivileged_port_start says '$port_start'" ;; esac
     [ "$port_start" -gt 80 ] || return 0
     command -v getcap >/dev/null 2>&1 || fail 'port 80 requires getcap/setcap; install the Linux libcap tools first'
     caddy="$stage/payload/bin/caddy"
     current_caddy="$runtime/current/bin/caddy"
-    if [ -f "$current_caddy" ] && caddy_has_capability "$current_caddy" &&
-        [ "$(hash_file 256 "$current_caddy")" = "$(hash_file 256 "$caddy")" ]; then
+    if [ -f "$current_caddy" ] && caddy_has_capability "$current_caddy"; then
+        # Hashed outside any condition, so a failed hash stops the install instead
+        # of comparing two empty digests.
+        current_hash=$(hash_file 256 "$current_caddy")
+        staged_hash=$(hash_file 256 "$caddy")
         # An unchanged inode retains its capability without another sudo prompt.
-        if ln "$current_caddy" "$stage/payload/caddy.capable" 2>/dev/null; then
-            mv -f "$stage/payload/caddy.capable" "$caddy"
-            return 0
+        if [ "$current_hash" = "$staged_hash" ]; then
+            if attempt ln "$current_caddy" "$stage/payload/caddy.capable"; then
+                run 'could not reuse the permitted Caddy' mv -f "$stage/payload/caddy.capable" "$caddy"
+                return 0
+            fi
+            say "could not reuse the permitted Caddy, so its permission is granted again
+$report"
         fi
     fi
     setcap_path=$(command -v setcap) || fail 'port 80 requires setcap; install the Linux libcap tools first'
     say 'granting Caddy permission to bind local port 80'
+    report=
     if [ "$(id -u)" = 0 ]; then
-        "$setcap_path" cap_net_bind_service=ep "$caddy" || fail 'could not grant Caddy port 80 permission'
-    elif command -v sudo >/dev/null 2>&1 && sudo -n "$setcap_path" cap_net_bind_service=ep "$caddy" 2>/dev/null; then
+        run 'could not grant Caddy port 80 permission' "$setcap_path" cap_net_bind_service=ep "$caddy"
+    elif command -v sudo >/dev/null 2>&1 && attempt sudo -n "$setcap_path" cap_net_bind_service=ep "$caddy"; then
         :
     elif [ "${SILICON_NONINTERACTIVE:-0}" != 1 ] && command -v sudo >/dev/null 2>&1 &&
         ( : </dev/tty ) >/dev/null 2>&1; then
-        sudo "$setcap_path" cap_net_bind_service=ep "$caddy" </dev/tty || fail 'could not grant Caddy port 80 permission'
+        live 'could not grant Caddy port 80 permission' sudo "$setcap_path" cap_net_bind_service=ep "$caddy" </dev/tty
     else
-        fail 'Caddy needs port 80 permission; rerun this installation in a terminal with sudo access. The active release was not changed'
+        # ponytail: the non-interactive sudo attempt's own words, when there was one.
+        fail "Caddy needs port 80 permission; rerun this installation in a terminal with sudo access. The active release was not changed${report:+
+$report}"
     fi
-    caddy_has_capability "$caddy" || fail 'Caddy port 80 permission was not applied'
+    caddy_has_capability "$caddy" || fail "Caddy port 80 permission was not applied
+$report"
 }
 
+# getcap's answer stays in $report so a failed grant can show it.
 caddy_has_capability() {
-    case "$(getcap "$1" 2>/dev/null)" in
-        *' cap_net_bind_service=ep') return 0 ;;
-        *) return 1 ;;
-    esac
+    attempt getcap "$1" >"$stage/capability" || return 1
+    case "$(cat "$stage/capability")" in *' cap_net_bind_service=ep') return 0 ;; esac
+    report="\`$(command_line getcap "$1")\` does not list cap_net_bind_service=ep; it printed:$(stream "$stage/capability")"
+    return 1
 }
 
 if [ -n "$source_dir" ]; then
@@ -159,59 +245,61 @@ if [ -n "$source_dir" ]; then
     export CARGO_TARGET_DIR
     source_dir=$(CDPATH= cd -- "$source_dir" && pwd -P)
     say "building interpreter from $source_dir"
-    cargo install --locked --force --root "$stage/payload" --path "$source_dir" --bin silicon --bin si || fail 'interpreter source build failed'
+    live 'interpreter source build failed' cargo install --locked --force --root "$stage/payload" --path "$source_dir" --bin silicon --bin si
     for binary in omnid silicon-omni omni so; do
         if ! copy_dependency "$binary"; then
             case "$binary" in omnid) package=omni-daemon ;; *) package=silicon-omni-cli ;; esac
-            cargo install --locked --force --root "$stage/payload" --git https://github.com/teamofsilicons/silicon-omni --rev "$omni_rev" --bin "$binary" "$package" ||
-                fail "required Omni binary $binary could not be built at $omni_rev"
+            live "required Omni binary $binary could not be built at $omni_rev" \
+                cargo install --locked --force --root "$stage/payload" --git https://github.com/teamofsilicons/silicon-omni --rev "$omni_rev" --bin "$binary" "$package"
         fi
     done
     if ! copy_dependency caddy; then
         caddy_asset="caddy_2.11.4_${caddy_platform}.tar.gz"
         caddy_url=https://github.com/caddyserver/caddy/releases/download/v2.11.4
-        download "$caddy_url/$caddy_asset" "$stage/caddy.tar.gz" || fail 'could not download required Caddy 2.11.4'
-        download "$caddy_url/caddy_2.11.4_checksums.txt" "$stage/caddy-checksums" || fail 'could not download Caddy checksums'
+        download "$caddy_url/$caddy_asset" "$stage/caddy.tar.gz" 'could not download required Caddy 2.11.4'
+        download "$caddy_url/caddy_2.11.4_checksums.txt" "$stage/caddy-checksums" 'could not download Caddy checksums'
         # Upstream Caddy's checksum file uses SHA-512.
         verify 512 "$stage/caddy-checksums" "$caddy_asset" "$stage/caddy.tar.gz"
-        tar -xOzf "$stage/caddy.tar.gz" caddy > "$stage/payload/bin/caddy" || fail 'Caddy archive has no binary'
+        extract "could not extract caddy from $caddy_asset" "$stage/caddy.tar.gz" caddy "$stage/payload/bin/caddy"
     fi
     printf '%s\n' "$version" > "$stage/payload/VERSION"
-    cp "$source_dir/install.sh" "$stage/payload/installer.sh" || fail 'source checkout has no installer'
+    run 'source checkout has no installer' cp "$source_dir/install.sh" "$stage/payload/installer.sh"
     for notice in $notices; do
-        cp "$source_dir/$notice" "$stage/payload/$notice" || fail "source checkout is missing $notice"
+        run "source checkout is missing $notice" cp "$source_dir/$notice" "$stage/payload/$notice"
     done
     rm -f "$stage/payload/.crates.toml" "$stage/payload/.crates2.json"
 else
     asset="silicon-$target.tar.gz"
     release_url=${SILICON_RELEASE_BASE_URL:-"https://github.com/$repository/releases/download/$version"}
     say "downloading $version for $target"
-    download "$release_url/$asset" "$stage/bundle.tar.gz" || fail "complete bundle $version/$asset is unavailable; legacy Stemcell releases cannot install the Rust interpreter"
-    download "$release_url/SHA256SUMS" "$stage/checksums" || fail 'release checksum file is unavailable'
+    download "$release_url/$asset" "$stage/bundle.tar.gz" "complete bundle $version/$asset is unavailable; legacy Stemcell releases cannot install the Rust interpreter"
+    download "$release_url/SHA256SUMS" "$stage/checksums" 'release checksum file is unavailable'
     verify 256 "$stage/checksums" "$asset" "$stage/bundle.tar.gz"
     # Stream only known members into fixed paths; archive symlinks and ../ names
     # can never redirect extraction into a Silicon's configuration or other files.
     for binary in $binaries; do
-        tar -xOzf "$stage/bundle.tar.gz" "bin/$binary" > "$stage/payload/bin/$binary" || fail "release is missing required binary $binary"
+        extract "could not extract required binary bin/$binary from $asset" "$stage/bundle.tar.gz" "bin/$binary" "$stage/payload/bin/$binary"
     done
-    tar -xOzf "$stage/bundle.tar.gz" VERSION > "$stage/payload/VERSION" || fail 'release has no version marker'
-    tar -xOzf "$stage/bundle.tar.gz" installer.sh > "$stage/payload/installer.sh" || fail 'release has no installer'
+    extract "could not extract the version marker VERSION from $asset" "$stage/bundle.tar.gz" VERSION "$stage/payload/VERSION"
+    extract "could not extract installer.sh from $asset" "$stage/bundle.tar.gz" installer.sh "$stage/payload/installer.sh"
     for notice in $notices; do
-        tar -xOzf "$stage/bundle.tar.gz" "$notice" > "$stage/payload/$notice" || fail "release is missing $notice"
+        extract "could not extract required notice $notice from $asset" "$stage/bundle.tar.gz" "$notice" "$stage/payload/$notice"
     done
-    [ "$(cat "$stage/payload/VERSION")" = "$version" ] || fail 'release version marker does not match the requested release'
+    release_version=$(cat "$stage/payload/VERSION")
+    [ "$release_version" = "$version" ] || fail "release version marker says '$release_version', not the requested $version"
 fi
 
 for binary in $binaries; do
-    [ -s "$stage/payload/bin/$binary" ] && [ ! -L "$stage/payload/bin/$binary" ] || fail "required binary $binary is missing or empty"
+    [ -s "$stage/payload/bin/$binary" ] && [ ! -L "$stage/payload/bin/$binary" ] || fail "required binary $binary is missing, empty or a link
+$(ls -ld "$stage/payload/bin/$binary" 2>&1)"
     chmod 755 "$stage/payload/bin/$binary"
 done
 [ -s "$stage/payload/installer.sh" ] || fail 'release installer is empty'
 for notice in $notices; do
     [ -s "$stage/payload/$notice" ] || fail "release notice $notice is empty"
 done
-"$stage/payload/bin/silicon" --version >/dev/null || fail 'interpreter binary cannot run on this system'
-"$stage/payload/bin/omnid" --version >/dev/null || fail 'Omni daemon binary cannot run on this system'
+run 'interpreter binary cannot run on this system' "$stage/payload/bin/silicon" --version >/dev/null
+run 'Omni daemon binary cannot run on this system' "$stage/payload/bin/omnid" --version >/dev/null
 printf '%s\n' "$prefix" > "$stage/payload/PREFIX"
 configure_caddy_port
 
@@ -219,36 +307,37 @@ configure_caddy_port
 # Its ordinary CLI update checks remain enabled; app binaries stay outside the bundle.
 honeycomb_asset="honeycomb-$honeycomb_target.tar.gz"
 honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/latest/download
-download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz"
-download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256"
+download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz" 'could not download the latest Honeycomb'
+download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256" 'could not download the latest Honeycomb checksum'
 verify 256 "$stage/honeycomb.sha256" "$honeycomb_asset" "$stage/honeycomb.tar.gz"
-tar -xOzf "$stage/honeycomb.tar.gz" honeycomb > "$stage/honeycomb"
-[ -s "$stage/honeycomb" ] || fail 'Honeycomb archive has no executable'
+extract "could not extract honeycomb from $honeycomb_asset" "$stage/honeycomb.tar.gz" honeycomb "$stage/honeycomb"
+[ -s "$stage/honeycomb" ] || fail 'Honeycomb archive holds an empty honeycomb executable'
 chmod 755 "$stage/honeycomb"
-"$stage/honeycomb" --version >/dev/null || fail 'Honeycomb binary cannot run on this system'
+run 'Honeycomb binary cannot run on this system' "$stage/honeycomb" --version >/dev/null
 honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
-mkdir -p "$(dirname "$honeycomb")"
-cp "$stage/honeycomb" "$honeycomb.new.$$"
-mv -f "$honeycomb.new.$$" "$honeycomb"
+run "could not install Honeycomb at $honeycomb" mkdir -p "$(dirname "$honeycomb")"
+run "could not install Honeycomb at $honeycomb" cp "$stage/honeycomb" "$honeycomb.new.$$"
+run "could not install Honeycomb at $honeycomb" mv -f "$honeycomb.new.$$" "$honeycomb"
 link="$prefix/bin/honeycomb"
 if [ -e "$link" ] || [ -L "$link" ]; then
-    [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || fail "unmanaged executable at $link"
-    rm "$link"
+    [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || fail "unmanaged executable at $link
+$(ls -ld "$link" 2>&1)"
+    run "could not replace the Honeycomb link $link" rm "$link"
 fi
-ln -s "$honeycomb" "$link"
+run "could not link $link to Honeycomb" ln -s "$honeycomb" "$link"
 
 release_name="$version-${stage##*.}"
-mv "$stage/payload" "$runtime/releases/$release_name"
+run "could not store release $release_name; the active release was not changed" mv "$stage/payload" "$runtime/releases/$release_name"
 for binary in $commands; do
     if [ ! -L "$prefix/bin/$binary" ]; then
-        ln -s "../lib/silicon/current/bin/$binary" "$prefix/bin/$binary"
+        run "could not link $prefix/bin/$binary; the active release was not changed" ln -s "../lib/silicon/current/bin/$binary" "$prefix/bin/$binary"
         new_links="$new_links $binary"
     fi
 done
-ln -s "releases/$release_name" "$stage/current"
+run "could not prepare the switch to $release_name; the active release was not changed" ln -s "releases/$release_name" "$stage/current"
 case "$system" in
-    Darwin) mv -fh "$stage/current" "$runtime/current" ;;
-    Linux) mv -fT "$stage/current" "$runtime/current" ;;
+    Darwin) run "could not activate $release_name; the active release was not changed" mv -fh "$stage/current" "$runtime/current" ;;
+    Linux) run "could not activate $release_name; the active release was not changed" mv -fT "$stage/current" "$runtime/current" ;;
 esac
 activated=true
 # Remove only links owned by older bundles. Honeycomb/app installations are untouched.
@@ -272,7 +361,7 @@ if [ "$manage_path" = true ]; then
         if printf '\n# Silicon CLI\n%s\n' "$path_line" >> "$profile"; then
             say "added Silicon to $profile; new shells will find the commands"
         else
-            say "could not update $profile; use the PATH command below"
+            say "could not update $profile (the shell's error is above); use the PATH command below"
         fi
     fi
 fi

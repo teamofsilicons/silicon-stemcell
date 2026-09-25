@@ -8,10 +8,11 @@ fn get<'a>(map: &'a Mapping, name: &str) -> Option<&'a Yaml> {
     map.get(Yaml::String(name.into()))
 }
 fn required<'a>(map: &'a Mapping, name: &str) -> Result<&'a Yaml> {
-    get(map, name).ok_or_else(|| anyhow!("missing {name}"))
+    get(map, name).ok_or_else(|| anyhow!("missing required field `{name}`"))
 }
 
-/// Flow sources include multi-line message templates; keep one entry readable.
+/// Flow sources include multi-line message templates; keep one `[flow]` entry readable.
+/// `[error]` entries name their step with the whole source instead.
 fn summarize(source: &str) -> String {
     let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
     const LIMIT: usize = 160;
@@ -26,11 +27,11 @@ fn summarize(source: &str) -> String {
 /// branch or assignment rather than only its operation. These are unevaluated
 /// sources on purpose: rendering here would run any `!` expression a second
 /// time. Anything without a readable source logs as the bare operation.
-fn describe(name: &str, body: &Yaml) -> String {
+fn describe(name: &str, body: &Yaml, shown: fn(&str) -> String) -> String {
     let Some(map) = body.as_mapping() else {
         return name.to_owned();
     };
-    let source = |key: &str| get(map, key).and_then(Yaml::as_str).map(summarize);
+    let source = |key: &str| get(map, key).and_then(Yaml::as_str).map(shown);
     match name {
         "if" => source("condition").map(|condition| format!("if {condition}")),
         "var" => source("name").map(|target| match source("value") {
@@ -49,17 +50,20 @@ fn describe(name: &str, body: &Yaml) -> String {
 fn operation(step: &Yaml) -> Result<(&str, &Yaml, Option<&Yaml>)> {
     let map = step
         .as_mapping()
-        .ok_or_else(|| anyhow!("flow step must be an object"))?;
-    let mut operations = map.iter().filter(|(key, _)| key.as_str() != Some("catch"));
-    let (name, body) = operations
-        .next()
-        .ok_or_else(|| anyhow!("empty flow step"))?;
-    if operations.next().is_some() {
-        bail!("flow step must contain exactly one operation");
-    }
+        .ok_or_else(|| anyhow!("flow step must be an object, got {step:?}"))?;
+    let operations = map
+        .iter()
+        .filter(|(key, _)| key.as_str() != Some("catch"))
+        .collect::<Vec<_>>();
+    let &[(name, body)] = operations.as_slice() else {
+        bail!(
+            "flow step must contain exactly one operation, got {:?}",
+            operations.iter().map(|(key, _)| key).collect::<Vec<_>>()
+        );
+    };
     let name = name
         .as_str()
-        .ok_or_else(|| anyhow!("flow operation must be a string"))?;
+        .ok_or_else(|| anyhow!("flow operation must be a string, got {name:?}"))?;
     let inner_catch = body.as_mapping().and_then(|body| get(body, "catch"));
     let outer_catch = get(map, "catch");
     if inner_catch.is_some() && outer_catch.is_some() {
@@ -72,7 +76,9 @@ fn steps(value: &Yaml) -> Result<&[Yaml]> {
     match value {
         Yaml::Sequence(items) => Ok(items),
         Yaml::Mapping(_) | Yaml::String(_) | Yaml::Tagged(_) => Ok(std::slice::from_ref(value)),
-        _ => bail!("flow branch must be an operation, a list of operations, or an expression"),
+        _ => bail!(
+            "flow branch must be an operation, a list of operations, or an expression, got {value:?}"
+        ),
     }
 }
 
@@ -81,7 +87,7 @@ fn string_field(value: &Yaml) -> Result<()> {
         Yaml::String(_) | Yaml::Number(_) | Yaml::Bool(_) | Yaml::Tagged(_) => {
             crate::eval::validate(value)
         }
-        _ => bail!("expected a string expression"),
+        _ => bail!("expected a string expression, got {value:?}"),
     }
 }
 
@@ -100,12 +106,12 @@ pub fn validate(flow: &Yaml) -> Result<()> {
                     bail!("else requires a preceding if chain");
                 }
                 chain = false;
-                validate(body)?;
+                validate(body).context("else")?;
             } else {
                 chain = name == "if";
                 let map = body
                     .as_mapping()
-                    .ok_or_else(|| anyhow!("{name} must contain an object"))?;
+                    .ok_or_else(|| anyhow!("{name} must contain an object, got {body:?}"))?;
                 let fields: &[&str] = match name {
                     "if" => &["condition", "then", "else", "catch"],
                     "var" => &["name", "value", "catch"],
@@ -120,30 +126,30 @@ pub fn validate(flow: &Yaml) -> Result<()> {
                 }
                 match name {
                     "if" => {
-                        string_field(required(map, "condition")?)?;
-                        validate(required(map, "then")?)?;
+                        string_field(required(map, "condition")?).context("if.condition")?;
+                        validate(required(map, "then")?).context("if.then")?;
                         if let Some(branch) = get(map, "else") {
-                            validate(branch)?;
+                            validate(branch).context("if.else")?;
                             chain = false;
                         }
                     }
                     "var" => {
-                        string_field(required(map, "name")?)?;
-                        crate::eval::validate(required(map, "value")?)?;
+                        string_field(required(map, "name")?).context("var.name")?;
+                        crate::eval::validate(required(map, "value")?).context("var.value")?;
                     }
                     "send" => {
-                        string_field(required(map, "isi")?)?;
-                        string_field(required(map, "message")?)?;
+                        string_field(required(map, "isi")?).context("send.isi")?;
+                        string_field(required(map, "message")?).context("send.message")?;
                         if let Some(session) = get(map, "session_id") {
-                            string_field(session)?;
+                            string_field(session).context("send.session_id")?;
                         }
                     }
-                    "log" => string_field(required(map, "message")?)?,
+                    "log" => string_field(required(map, "message")?).context("log.message")?,
                     _ => unreachable!(),
                 }
             }
             if let Some(catch) = catch.filter(|value| !value.is_null()) {
-                validate(catch)?;
+                validate(catch).context("catch")?;
             }
             Ok(())
         })();
@@ -158,9 +164,9 @@ fn render(value: &Yaml, env: &Json, home: &Path, origin: &str) -> Result<String>
         Yaml::Tagged(tag) => render(
             &Yaml::String(format!(
                 "! {}",
-                tag.value
-                    .as_str()
-                    .ok_or_else(|| anyhow!("Bash tag must be a string"))?
+                tag.value.as_str().ok_or_else(|| {
+                    anyhow!("Bash tag {} must be a string, got {:?}", tag.tag, tag.value)
+                })?
             )),
             env,
             home,
@@ -168,7 +174,7 @@ fn render(value: &Yaml, env: &Json, home: &Path, origin: &str) -> Result<String>
         ),
         Yaml::Bool(value) => Ok(value.to_string()),
         Yaml::Number(value) => Ok(value.to_string()),
-        _ => bail!("expected a string expression"),
+        other => bail!("expected a string expression, got {other:?}"),
     }
 }
 
@@ -180,6 +186,21 @@ struct Runner<'a, F> {
 }
 
 impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
+    /// A failed write still carries the entry, so a step error is never swapped for an I/O one.
+    fn log(&self, kind: &str, message: &str) -> Result<()> {
+        let generation = self.env["_connection"]
+            .as_str()
+            .and_then(|id| id.parse().ok());
+        crate::log_line_scoped(self.home, generation, kind, self.origin, message).with_context(
+            || {
+                format!(
+                    "could not write this [{kind}] entry to silicon.log: {}",
+                    crate::failure::mask(self.home, message, &[])
+                )
+            },
+        )
+    }
+
     fn run(&mut self, flow: &Yaml) -> Result<()> {
         let mut chain: Option<bool> = None;
         for step in steps(flow)? {
@@ -187,23 +208,29 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                 chain = None;
                 let result = (|| {
                     let expanded = crate::eval::value(step, &self.env, self.home, self.origin)?;
+                    let produced = crate::failure::mask(self.home, &expanded.to_string(), &[]);
                     if !expanded.is_array() && !expanded.is_object() {
-                        bail!("flow expression must produce an operation or list");
+                        bail!("flow expression must produce an operation or list, got {produced}");
                     }
-                    let expanded = serde_yaml::to_value(expanded)?;
-                    validate(&expanded)?;
+                    let expanded = serde_yaml::to_value(expanded).with_context(|| {
+                        format!("flow expression produced {produced}, which is not YAML")
+                    })?;
+                    validate(&expanded).with_context(|| {
+                        format!("flow expression produced an invalid flow {produced}")
+                    })?;
                     self.run(&expanded)
                 })();
                 if let Err(error) = result {
-                    crate::log_line_scoped(
-                        self.home,
-                        self.env["_connection"]
+                    let source = match step {
+                        Yaml::Tagged(tag) => match tag.value.as_str() {
+                            Some(value) => format!("{} {value}", tag.tag),
+                            None => format!("{} {:?}", tag.tag, tag.value),
+                        },
+                        other => other
                             .as_str()
-                            .and_then(|id| id.parse().ok()),
-                        "error",
-                        self.origin,
-                        &format!("flow expression: {error:#}"),
-                    )?;
+                            .map_or_else(|| format!("{other:?}"), str::to_owned),
+                    };
+                    self.log("error", &format!("flow expression {source}: {error:#}"))?;
                 }
                 continue;
             }
@@ -217,15 +244,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
             if name != "if" {
                 chain = None;
             }
-            crate::log_line_scoped(
-                self.home,
-                self.env["_connection"]
-                    .as_str()
-                    .and_then(|id| id.parse().ok()),
-                "flow",
-                self.origin,
-                &describe(name, body),
-            )?;
+            self.log("flow", &describe(name, body, summarize))?;
             match self.step(name, body) {
                 Ok(matched) if name == "if" => {
                     chain = Some(chain.unwrap_or(false) || matched);
@@ -241,15 +260,8 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     if name == "if" {
                         chain = Some(chain.unwrap_or(false));
                     }
-                    crate::log_line_scoped(
-                        self.home,
-                        self.env["_connection"]
-                            .as_str()
-                            .and_then(|id| id.parse().ok()),
-                        "error",
-                        self.origin,
-                        &format!("{name}: {error:#}"),
-                    )?;
+                    let step = describe(name, body, str::to_owned);
+                    self.log("error", &format!("{step}: {error:#}"))?;
                     if let Some(catch) = catch.filter(|value| !value.is_null()) {
                         let previous = self
                             .env
@@ -277,7 +289,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
     fn step(&mut self, name: &str, body: &Yaml) -> Result<bool> {
         let map = body
             .as_mapping()
-            .ok_or_else(|| anyhow!("{name} must be an object"))?;
+            .ok_or_else(|| anyhow!("{name} must be an object, got {body:?}"))?;
         match name {
             "if" => {
                 let condition = self.field(map, "condition")?;
@@ -308,29 +320,16 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                 let session = get(map, "session_id")
                     .map(|value| render(value, &self.env, self.home, self.origin))
                     .transpose()?;
-                if target.is_empty() || session.as_deref() == Some("") {
-                    bail!("send target/session must not be empty");
+                if target.is_empty() {
+                    bail!("send.isi evaluated to an empty string");
+                }
+                if session.as_deref() == Some("") {
+                    bail!("send.session_id evaluated to an empty string");
                 }
                 (self.send)(&target, &message, session.as_deref())?;
-                crate::log_line_scoped(
-                    self.home,
-                    self.env["_connection"]
-                        .as_str()
-                        .and_then(|id| id.parse().ok()),
-                    "send",
-                    self.origin,
-                    &format!("{target}: {message}"),
-                )?;
+                self.log("send", &format!("{target}: {message}"))?;
             }
-            "log" => crate::log_line_scoped(
-                self.home,
-                self.env["_connection"]
-                    .as_str()
-                    .and_then(|id| id.parse().ok()),
-                "runtime",
-                self.origin,
-                &self.field(map, "message")?,
-            )?,
+            "log" => self.log("runtime", &self.field(map, "message")?)?,
             _ => bail!("unknown flow operation: {name}"),
         }
         Ok(false)
@@ -519,5 +518,87 @@ mod tests {
         )
         .unwrap();
         assert_eq!(vars["answer"], 42);
+    }
+
+    #[test]
+    fn step_errors_reach_catch_and_log_in_the_tools_own_words() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".silicon/bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            bin.join("ledger"),
+            "#!/bin/sh\necho '{\"ok\":false}'\necho 'ledger: quota exceeded' >&2\nexit 4\n",
+        )
+        .unwrap();
+        fs::set_permissions(bin.join("ledger"), fs::Permissions::from_mode(0o700)).unwrap();
+        let flow: Yaml = serde_yaml::from_str(
+            &r#"
+- var:
+    name: total
+    value: '! ledger --json'
+    catch:
+      - var: {name: tool, value: '{error}'}
+- send:
+    isi: intuit
+    message: hi
+    catch:
+      - var: {name: provider, value: '{error}'}
+- send: {isi: '{""}', message: hi, catch: [{var: {name: empty, value: '{error}'}}]}
+- '{42}'
+- var: {name: long, value: '! ledger --json # {long}'}
+"#
+            .replace("{long}", &"x".repeat(200)),
+        )
+        .unwrap();
+        let vars = execute(&flow, json!({}), dir.path(), "interpreter", |_, _, _| {
+            Err(anyhow!("session is closed").context("intuit refused the message"))
+        })
+        .unwrap();
+        let tool = "`bash -c 'ledger --json'` failed: exit status: 4\nstderr:\nledger: quota exceeded\nstdout:\n{\"ok\":false}";
+        assert_eq!(vars["tool"], tool);
+        assert_eq!(
+            vars["provider"],
+            "intuit refused the message: session is closed"
+        );
+        assert_eq!(vars["empty"], "send.isi evaluated to an empty string");
+        let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(
+            log.contains(&format!(
+                "[var total = ! ledger --json: {}]",
+                tool.replace('\n', "\\n")
+            )),
+            "{log}"
+        );
+        assert!(
+            log.contains("[send intuit: intuit refused the message: session is closed]"),
+            "{log}"
+        );
+        assert!(
+            log.contains(
+                "[flow expression {42}: flow expression must produce an operation or list, got 42]"
+            ),
+            "{log}"
+        );
+        // [flow] progress entries are shortened; the [error] entry names the whole step.
+        let long = format!("! ledger --json # {}", "x".repeat(200));
+        assert!(
+            log.contains(&format!("[var long = {long}: `bash -c ")),
+            "{log}"
+        );
+        let error = format!(
+            "{:#}",
+            validate(
+                &serde_yaml::from_str(
+                    "- if: {condition: 'true', then: [{send: {isi: a, message: [x]}}]}"
+                )
+                .unwrap()
+            )
+            .unwrap_err()
+        );
+        assert_eq!(
+            error,
+            "flow step 0: if.then: flow step 0: send.message: expected a string expression, got Sequence [String(\"x\")]"
+        );
     }
 }

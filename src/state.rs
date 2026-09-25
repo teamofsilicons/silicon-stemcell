@@ -12,8 +12,10 @@ pub fn private_dir(path: &Path) -> Result<()> {
     if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
         validate_wsl_filesystem(path)?;
     }
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    fs::create_dir_all(path)
+        .with_context(|| format!("cannot create directory {}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("cannot make {} private (mode 700)", path.display()))?;
     Ok(())
 }
 
@@ -21,63 +23,93 @@ pub fn private_dir(path: &Path) -> Result<()> {
 #[cfg(target_os = "linux")]
 pub(crate) fn validate_wsl_filesystem(path: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let absolute = std::path::absolute(path)?;
+    let absolute = std::path::absolute(path)
+        .with_context(|| format!("cannot make {} absolute", path.display()))?;
     let mut probe = absolute.as_path();
     loop {
-        let name = std::ffi::CString::new(probe.as_os_str().as_bytes())?;
+        let name = std::ffi::CString::new(probe.as_os_str().as_bytes())
+            .with_context(|| format!("path {} contains a NUL byte", probe.display()))?;
         let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
         if unsafe { libc::statfs(name.as_ptr(), filesystem.as_mut_ptr()) } == 0 {
-            if unsafe { filesystem.assume_init() }.f_type != libc::EXT4_SUPER_MAGIC {
-                bail!("Windows WSL installation requires configuration and private state inside the Silicon distribution's Linux filesystem; copy your project to /home/silicon first. Windows data files remain accessible through /mnt/c and other mounted drives");
+            let found = unsafe { filesystem.assume_init() }.f_type;
+            if found != libc::EXT4_SUPER_MAGIC {
+                bail!("Windows WSL installation requires configuration and private state inside the Silicon distribution's Linux filesystem; copy your project to /home/silicon first. Windows data files remain accessible through /mnt/c and other mounted drives. {} (for {}) is on filesystem type {found:#x}, not ext4", probe.display(), path.display());
             }
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error).context("inspect WSL configuration filesystem");
+            return Err(error).with_context(|| {
+                format!(
+                    "inspect WSL configuration filesystem at {}",
+                    probe.display()
+                )
+            });
         }
-        probe = probe
-            .parent()
-            .ok_or(error)
-            .context("find WSL configuration filesystem")?;
+        probe = probe.parent().ok_or(error).with_context(|| {
+            format!(
+                "find WSL configuration filesystem for {}",
+                absolute.display()
+            )
+        })?;
     }
 }
 
 pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| anyhow!("state path has no parent"))?;
-    private_dir(parent)?;
+        .ok_or_else(|| anyhow!("state path {} has no parent", path.display()))?;
+    let saving = || format!("saving {} failed", path.display());
+    private_dir(parent).with_context(saving)?;
     let staged = parent.join(format!(".{}.tmp", Uuid::new_v4()));
+    let at = |step: &str, file: &Path| format!("{step} {}", file.display());
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(&staged)?;
-    let result = (|| {
-        serde_json::to_writer_pretty(&mut file, value)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        fs::rename(&staged, path)?;
-        File::open(parent)?.sync_all()?;
+        .open(&staged)
+        .with_context(|| at("cannot create", &staged))
+        .with_context(saving)?;
+    let result = (|| -> Result<()> {
+        serde_json::to_writer_pretty(&mut file, value)
+            .with_context(|| at("cannot serialize state into", &staged))?;
+        file.write_all(b"\n")
+            .with_context(|| at("cannot write", &staged))?;
+        file.sync_all()
+            .with_context(|| at("cannot sync", &staged))?;
+        fs::rename(&staged, path)
+            .with_context(|| format!("cannot rename {} to {}", staged.display(), path.display()))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| at("cannot sync directory", parent))?;
         Ok(())
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&staged);
-    }
-    result
+    // A leftover staged copy is reported with the failure that left it behind.
+    result.map_err(|error| match fs::remove_file(&staged) {
+        Err(cleanup) if cleanup.kind() != std::io::ErrorKind::NotFound => error.context(format!(
+            "saving {} failed and its staged copy {} remains ({cleanup})",
+            path.display(),
+            staged.display()
+        )),
+        _ => error.context(saving()),
+    })
 }
 
 pub fn append_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    private_dir(path.parent().ok_or_else(|| anyhow!("log has no parent"))?)?;
-    let mut data = serde_json::to_vec(value)?;
+    private_dir(
+        path.parent()
+            .ok_or_else(|| anyhow!("log {} has no parent", path.display()))?,
+    )?;
+    let mut data = serde_json::to_vec(value)
+        .with_context(|| format!("cannot serialize a record for {}", path.display()))?;
     data.push(b'\n');
     OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(path)?
-        .write_all(&data)?;
+        .open(path)
+        .and_then(|mut file| file.write_all(&data))
+        .with_context(|| format!("cannot append to {}", path.display()))?;
     Ok(())
 }
 
@@ -176,7 +208,12 @@ impl Session {
         self.status = "archived".into();
         self.save(home)?;
         if active.exists() {
-            fs::remove_file(active)?;
+            fs::remove_file(&active).with_context(|| {
+                format!(
+                    "archived, but cannot remove active copy {}",
+                    active.display()
+                )
+            })?;
         }
         Ok(())
     }
@@ -191,11 +228,14 @@ pub fn sessions(home: &Path, isi: &str, archived: bool) -> Result<Vec<Session>> 
         return Ok(Vec::new());
     }
     let mut found = Vec::new();
-    for entry in fs::read_dir(&dir)? {
-        let path = entry?.path();
+    let listing = || format!("cannot list sessions in {}", dir.display());
+    for entry in fs::read_dir(&dir).with_context(listing)? {
+        let path = entry.with_context(listing)?.path();
         if path.extension().is_some_and(|s| s == "json") {
+            let bytes =
+                fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
             found.push(
-                serde_json::from_slice::<Session>(&fs::read(&path)?)
+                serde_json::from_slice::<Session>(&bytes)
                     .with_context(|| format!("invalid session state {}", path.display()))?,
             );
         }
@@ -228,14 +268,66 @@ mod tests {
         let alias = directory.path().join(".silicon");
         std::os::unix::fs::symlink("/proc", &alias).unwrap();
         let path = alias.join(format!("silicon-state-{}/credentials.json", Uuid::new_v4()));
-        let error = write_json(&path, &serde_json::json!({"secret": "private"}))
-            .unwrap_err()
-            .to_string();
+        let error = format!(
+            "{:#}",
+            write_json(&path, &serde_json::json!({"secret": "private"})).unwrap_err()
+        );
         assert!(
             error.contains("copy your project to /home/silicon"),
             "{error}"
         );
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn state_failures_name_the_path_and_the_operating_system_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "a file, not a directory").unwrap();
+        let path = blocker.join("state.json");
+        let error = format!(
+            "{:#}",
+            write_json(&path, &serde_json::json!({"ok": true})).unwrap_err()
+        );
+        assert!(
+            error.contains(&format!("saving {} failed", path.display()))
+                && error.contains(&format!("cannot create directory {}", blocker.display()))
+                && error.contains("(os error"),
+            "{error}"
+        );
+        let error = format!(
+            "{:#}",
+            append_json(&path, &serde_json::json!({"ok": true})).unwrap_err()
+        );
+        assert!(error.contains(&blocker.display().to_string()), "{error}");
+        // A directory in the way of the rename names both paths and the OS reason.
+        let occupied = dir.path().join("occupied");
+        fs::create_dir_all(occupied.join("child")).unwrap();
+        let error = format!(
+            "{:#}",
+            write_json(&occupied, &serde_json::json!({})).unwrap_err()
+        );
+        assert!(
+            error.contains(&format!("saving {} failed", occupied.display()))
+                && error.contains("cannot rename")
+                && error.contains("(os error"),
+            "{error}"
+        );
+        // The failed save leaves no staged copy behind.
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty());
+        let sessions_dir = dir.path().join(".silicon/sessions/active/worker");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        fs::write(sessions_dir.join("broken.json"), "{\"id\":").unwrap();
+        let error = format!("{:#}", sessions(dir.path(), "worker", false).unwrap_err());
+        assert!(
+            error.contains("broken.json") && error.contains("EOF while parsing"),
+            "{error}"
+        );
     }
 
     #[test]

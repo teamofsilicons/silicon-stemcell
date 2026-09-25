@@ -1,7 +1,7 @@
 use crate::{
     auth,
     config::Config,
-    eval, flow, log_line_scoped,
+    eval, failure, flow, log_line_scoped,
     state::{self, Session},
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -11,8 +11,9 @@ use serde_json::{json, Value};
 use silicon_omni::{raw::Client, Ask, Chat, Event, Inference};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::{symlink, OpenOptionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -102,7 +103,7 @@ impl SendReceipt {
             Some(Ok(())) => Ok(()),
             Some(Err(error)) => bail!("{error}"),
             None => bail!(
-                "timed out awaiting provider START/INJECTED; the accepted delivery may still run"
+                "timed out after 60s awaiting provider START/INJECTED; the accepted delivery may still run"
             ),
         }
     }
@@ -146,6 +147,16 @@ struct WorkerState {
     pending: Vec<Dispatch>,
     text: String,
     next_dna: Option<Instant>,
+    /// (provider, what it said) for every provider error and stderr line since the last END.
+    /// A failure or provider removal quotes it, because the cause is usually said earlier.
+    trouble: Vec<(String, String)>,
+}
+
+/// The omnid a worker started, and where this run's output begins in its log.
+struct Daemon {
+    child: Child,
+    log: PathBuf,
+    start: u64,
 }
 
 pub struct Worker {
@@ -154,7 +165,7 @@ pub struct Worker {
     state: Mutex<WorkerState>,
     /// Held only through initialization/send acceptance; never while waiting for a turn.
     client: Mutex<Option<Client>>,
-    child: Mutex<Option<Child>>,
+    daemon: Mutex<Option<Daemon>>,
     capability: String,
     pub session_id: Uuid,
     stopped: AtomicBool,
@@ -179,18 +190,28 @@ impl Runtime {
             .silicon
             .id
             .as_deref()
-            .ok_or_else(|| anyhow!("silicon.id missing"))?
+            .ok_or_else(|| anyhow!("silicon.id missing in {}", cfg.path.display()))?
             .to_owned();
         {
             let silicons = self.silicons.read().unwrap();
             if silicons.contains_key(&id) {
                 bail!("{id} is already connected");
             }
-            if silicons
+            if let Some(other) = silicons
                 .values()
-                .any(|s| s.cfg.path == cfg.path || s.cfg.home == cfg.home)
+                .find(|s| s.cfg.path == cfg.path || s.cfg.home == cfg.home)
             {
-                bail!("this YAML path or SILICON_HOME is already connected");
+                bail!(
+                    "{} is already connected from {} with SILICON_HOME {}; {id} would share its {}",
+                    other.cfg.silicon.id.as_deref().unwrap_or_default(),
+                    other.cfg.path.display(),
+                    other.cfg.home.display(),
+                    if other.cfg.path == cfg.path {
+                        "YAML file"
+                    } else {
+                        "SILICON_HOME"
+                    }
+                );
             }
         }
         state::private_dir(&cfg.home.join(".silicon"))?;
@@ -228,7 +249,8 @@ impl Runtime {
             Ok(())
         })();
         if let Err(error) = preparation {
-            let message = crate::telemetry::redact(&cfg.home, &format!("{error:#}"));
+            // The whole chain, with the token and app config values registered above masked.
+            let message = failure::mask(&cfg.home, &format!("{error:#}"), &[]);
             crate::telemetry::unregister(&cfg.home);
             bail!("{message}");
         }
@@ -282,11 +304,11 @@ impl Runtime {
         let mut errors = Vec::new();
         for worker in workers {
             if let Err(error) = worker.stop(None) {
-                errors.push(error.to_string());
+                errors.push(format!("stopping session {}: {error:#}", worker.session_id));
             }
         }
         if let Err(error) = connected.ting.unhook(&connected.cfg) {
-            errors.push(error.to_string());
+            errors.push(format!("removing the Ting webhook: {error:#}"));
         }
         self.callers.write().unwrap().retain(|_, c| c.silicon != id);
         self.silicons.write().unwrap().remove(id);
@@ -297,11 +319,11 @@ impl Runtime {
             "interpreter",
             "disconnected",
         ) {
-            errors.push(error.to_string());
+            errors.push(format!("recording the disconnect: {error:#}"));
         }
         crate::telemetry::unregister(&connected.cfg.home);
         if !errors.is_empty() {
-            bail!("{}", errors.join("; "));
+            bail!("{id} was disconnected with errors:\n{}", errors.join("\n"));
         }
         Ok(())
     }
@@ -338,9 +360,9 @@ impl Runtime {
         let workers = connected.workers.lock().unwrap();
         let worker = workers
             .get(&session)
-            .ok_or_else(|| anyhow!("current session not found"))?;
+            .ok_or_else(|| anyhow!("current session {session} not found"))?;
         self.caller(&worker.capability)
-            .ok_or_else(|| anyhow!("current session ended"))
+            .ok_or_else(|| anyhow!("current session {session} ended"))
     }
 
     pub fn event(self: &Arc<Self>, id: &str, request: Value) -> Result<Value> {
@@ -370,8 +392,11 @@ impl Runtime {
         )?;
         let mut env = environment(cfg);
         env["request"] = request;
+        let steps = cfg
+            .load_flow()
+            .with_context(|| format!("loading the flow from {}", cfg.path.display()))?;
         flow::execute(
-            &cfg.load_flow()?,
+            &steps,
             env,
             &cfg.home,
             "interpreter",
@@ -408,10 +433,9 @@ impl Runtime {
                     .process(|request| runtime.event_connected(&connected, request).map(|_| ()))
             })();
             if let Err(error) = result {
-                let _ = log_line_scoped(
+                log_error(
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
-                    "error",
                     "ting",
                     &format!("pending Ting flow: {error:#}"),
                 );
@@ -526,7 +550,10 @@ impl Runtime {
                 Some(s) => s,
                 None => {
                     if by_session && !options.new {
-                        bail!("session does not exist; pass --new to create it");
+                        bail!(
+                            "session {target}:{} does not exist; pass --new to create it",
+                            options.id.as_deref().unwrap_or_default()
+                        );
                     }
                     creating = true;
                     Session::new(
@@ -574,7 +601,10 @@ impl Runtime {
                 connected.cfg.silicon.token.as_deref().unwrap(),
                 &connected.app_settings.read().unwrap().managed_apps(),
                 connected.cfg.generation,
-            )?;
+            )
+            .with_context(|| {
+                format!("checking app credentials before starting a {target} session")
+            })?;
         }
         let session_id = record.session_id;
         let capability = Uuid::new_v4().to_string();
@@ -586,9 +616,10 @@ impl Runtime {
                 pending: Vec::new(),
                 text: String::new(),
                 next_dna: None,
+                trouble: Vec::new(),
             }),
             client: Mutex::new(None),
-            child: Mutex::new(None),
+            daemon: Mutex::new(None),
             capability: capability.clone(),
             session_id,
             stopped: AtomicBool::new(false),
@@ -663,16 +694,28 @@ impl Runtime {
                     || session == Some(r.id.as_str())
                     || session == Some(r.session_id.to_string().as_str())
             })
-            .ok_or_else(|| anyhow!("session not found for {target}"))?;
+            .ok_or_else(|| match session {
+                Some(session) => anyhow!("session {session} not found for {target}"),
+                None => anyhow!("{target} has no active session"),
+            })?;
         let log = connected
             .cfg
             .home
             .join(".silicon/sessions/events")
             .join(format!("{}.jsonl", record.session_id));
-        let events = crate::server::tail(&log, 100)?
+        // tail names the file in its own errors.
+        let events = crate::server::tail(&log, 100)
+            .with_context(|| format!("reading the event history of session {}", record.id))?
             .iter()
-            .map(|line| serde_json::from_str::<Value>(line))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .map(|line| {
+                serde_json::from_str::<Value>(line).with_context(|| {
+                    format!(
+                        "{} holds an event line that is not JSON: {line}",
+                        log.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(json!({"session":record,"events":events}))
     }
 
@@ -738,7 +781,10 @@ impl Runtime {
             ended += 1;
         }
         if ended == 0 {
-            bail!("no active session for {target}");
+            match session {
+                Some(session) => bail!("no active session {session} for {target}"),
+                None => bail!("no active session for {target}"),
+            }
         }
         Ok(())
     }
@@ -755,10 +801,13 @@ impl Runtime {
         options: &NewSession,
     ) -> Result<Session> {
         let _activity = self.activity()?;
-        let worker = caller
-            .worker
-            .upgrade()
-            .ok_or_else(|| anyhow!("current session not found"))?;
+        let worker = caller.worker.upgrade().ok_or_else(|| {
+            anyhow!(
+                "current session {} of {} not found",
+                caller.session,
+                caller.isi
+            )
+        })?;
         let record = worker.state.lock().unwrap().record.clone();
         if record.ephemeral {
             bail!("ephemeral sessions cannot start a successor session");
@@ -786,7 +835,11 @@ impl Runtime {
                 .iter()
                 .any(|s| s.id == options.id)
             {
-                bail!("archive id already exists");
+                bail!(
+                    "archive id {} already exists for {}",
+                    options.id,
+                    caller.isi
+                );
             }
             current.record.archive(
                 &connected.cfg.home,
@@ -867,10 +920,9 @@ impl Runtime {
                                     records.into_iter().map(|record| Some(record.id)).collect()
                                 }
                                 Err(error) => {
-                                    let _ = log_line_scoped(
+                                    log_error(
                                         &connected.cfg.home,
                                         Some(connected.cfg.generation),
-                                        "error",
                                         name,
                                         &format!("heartbeat sessions: {error:#}"),
                                     );
@@ -890,15 +942,16 @@ impl Runtime {
                             let now = Instant::now();
                             let due = deadlines.get(&key).is_some_and(|d| now >= *d);
                             if !deadlines.contains_key(&key) || due {
-                                match interval(&heartbeat["next"], &connected.cfg, &address) {
+                                match interval(&heartbeat["next"], &connected.cfg, &address)
+                                    .context("evaluating heartbeat.next")
+                                {
                                     Ok(next) => {
                                         deadlines.insert(key.clone(), now + next);
                                     }
                                     Err(error) => {
-                                        let _ = log_line_scoped(
+                                        log_error(
                                             &connected.cfg.home,
                                             Some(connected.cfg.generation),
-                                            "error",
                                             &address,
                                             &format!("heartbeat schedule: {error:#}"),
                                         );
@@ -936,14 +989,18 @@ impl Runtime {
                                     let cfg = &connected.cfg;
                                     let source =
                                         heartbeat["message"].as_str().ok_or_else(|| {
-                                            anyhow!("heartbeat.message must be a string")
+                                            anyhow!(
+                                                "heartbeat.message must be a string, got {}",
+                                                shown(&heartbeat["message"])
+                                            )
                                         })?;
                                     let message = eval::evaluate(
                                         source,
                                         &environment(cfg),
                                         &cfg.home,
                                         &address,
-                                    )?;
+                                    )
+                                    .context("evaluating heartbeat.message")?;
                                     runtime.send_connected(
                                         &connected,
                                         None,
@@ -958,10 +1015,9 @@ impl Runtime {
                                     Ok(())
                                 })();
                                 if let Err(error) = result {
-                                    let _ = log_line_scoped(
+                                    log_error(
                                         &connected.cfg.home,
                                         Some(connected.cfg.generation),
-                                        "error",
                                         &address,
                                         &format!("heartbeat: {error:#}"),
                                     );
@@ -981,12 +1037,11 @@ impl Runtime {
         for connected in self.silicons.read().unwrap().values() {
             connected.enabled.store(false, Ordering::SeqCst);
             if let Err(error) = connected.ting.unhook(&connected.cfg) {
-                let _ = log_line_scoped(
+                log_error(
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
-                    "error",
                     "ting",
-                    &error.to_string(),
+                    &format!("removing the Ting webhook at shutdown: {error:#}"),
                 );
             }
             let workers: Vec<_> = connected
@@ -997,13 +1052,12 @@ impl Runtime {
                 .cloned()
                 .collect();
             for worker in workers {
-                if let Err(e) = worker.stop(None) {
-                    let _ = log_line_scoped(
+                if let Err(error) = worker.stop(None) {
+                    log_error(
                         &connected.cfg.home,
                         Some(connected.cfg.generation),
-                        "error",
                         "shutdown",
-                        &e.to_string(),
+                        &format!("stopping session {}: {error:#}", worker.session_id),
                     );
                 }
             }
@@ -1058,17 +1112,27 @@ impl Worker {
             .home
             .join(".silicon/omni")
             .join(record.session_id.to_string());
-        state::private_dir(&omni_home)?;
+        // private_dir names the directory in its own errors.
+        state::private_dir(&omni_home).context("creating this session's Omni home")?;
         // Unix socket paths have a 104-byte ceiling on macOS. The data stays under SILICON_HOME.
         let short_base = PathBuf::from(format!("/tmp/silicon-{}", unsafe { libc::getuid() }));
-        state::private_dir(&short_base)?;
+        state::private_dir(&short_base).context("creating the short Omni socket directory")?;
         let short_home = short_base.join(record.session_id.simple().to_string());
-        if let Ok(existing) = fs::read_link(&short_home) {
-            if existing != omni_home {
-                bail!("Omni socket alias belongs to another home");
-            }
-        } else {
-            symlink(&omni_home, &short_home)?;
+        match fs::read_link(&short_home) {
+            Ok(existing) if existing != omni_home => bail!(
+                "Omni socket alias {} points to {}, not this session's {}",
+                short_home.display(),
+                existing.display(),
+                omni_home.display()
+            ),
+            Ok(_) => {}
+            Err(unread) => symlink(&omni_home, &short_home).with_context(|| {
+                format!(
+                    "linking Omni socket alias {} -> {} (reading it first said: {unread})",
+                    short_home.display(),
+                    omni_home.display()
+                )
+            })?,
         }
         let socket = short_home.join("omnid.sock");
         let address = if cfg.isi[&record.isi].primary_send_mode.as_deref() == Some("session") {
@@ -1079,11 +1143,18 @@ impl Worker {
         let daemon = std::env::var_os("OMNI_DAEMON")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("omnid"));
+        let log = omni_home.join("daemon.log");
         let daemon_log = OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(omni_home.join("daemon.log"))?;
+            .open(&log)
+            .with_context(|| format!("opening {}", log.display()))?;
+        // Earlier runs of this session share the log; this run's output starts here.
+        let start = daemon_log
+            .metadata()
+            .with_context(|| format!("reading the size of {}", log.display()))?
+            .len();
         let mut child = crate::command(&daemon, &cfg.home)
             .current_dir(&cfg.home)
             .env("OMNI_HOME", &short_home)
@@ -1100,24 +1171,29 @@ impl Worker {
             .env_remove("SILICON_TOKEN")
             .env_remove("SILICON_INTERPRETER_TOKEN")
             .stdin(Stdio::null())
-            .stdout(daemon_log.try_clone()?)
+            .stdout(
+                daemon_log
+                    .try_clone()
+                    .with_context(|| format!("sharing {} with omnid", log.display()))?,
+            )
             .stderr(daemon_log)
             .spawn()
-            .with_context(|| format!("cannot start {} — install Omni", daemon.display()))?;
+            .map_err(|error| {
+                failure::spawn(&cfg.home, &daemon.display().to_string(), &error)
+                    .context("starting Omni (install Omni, or set OMNI_DAEMON to omnid's path)")
+            })?;
         let setup = (|| -> Result<(Client, Chat)> {
             let deadline = Instant::now() + Duration::from_secs(20);
             let inference = loop {
                 match Inference::connect_to(&socket) {
                     Ok(client) => break client,
                     Err(error) => {
-                        if let Some(status) = child.try_wait()? {
-                            bail!(
-                                "Omni exited ({status}); see {}",
-                                omni_home.join("daemon.log").display()
-                            );
+                        if let Some(status) = child.try_wait().context("checking on omnid")? {
+                            bail!("omnid exited ({status}) before accepting connections; last attempt: {error}");
                         }
                         if Instant::now() >= deadline {
-                            bail!("Omni startup timed out: {error}");
+                            return Err(anyhow::Error::new(error)
+                                .context("omnid did not accept connections within 20s"));
                         }
                         thread::sleep(Duration::from_millis(50));
                     }
@@ -1126,10 +1202,16 @@ impl Worker {
             let providers = select_providers(&cfg.silicon.inference_providers, &inference)?;
             let mut chat =
                 inference.load_or_create_session(record.session_id.to_string(), providers);
-            chat.cwd(&cfg.home)?;
-            chat.model(Ask::key(cfg.isi[&record.isi].model.as_deref().unwrap()))?;
-            chat.system_prompt(assemble_dna(cfg, &record.isi, &address)?)?;
-            chat.start_since(-1)?;
+            chat.cwd(&cfg.home).with_context(|| {
+                format!("setting Omni's working directory to {}", cfg.home.display())
+            })?;
+            let model = cfg.isi[&record.isi].model.as_deref().unwrap();
+            chat.model(Ask::key(model))
+                .with_context(|| format!("asking Omni for model {model}"))?;
+            chat.system_prompt(assemble_dna(cfg, &record.isi, &address)?)
+                .context("sending the system prompt (DNA) to Omni")?;
+            chat.start_since(-1)
+                .with_context(|| format!("starting Omni session {}", record.session_id))?;
             self.refresh_deadline()?;
             Ok((inference.raw().clone(), chat))
         })();
@@ -1137,12 +1219,22 @@ impl Worker {
             Ok(ready) => ready,
             Err(error) => {
                 // Child does not terminate on Drop. A failed setup must not leave an untracked daemon.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
+                let pid = child.id();
+                let stopped = terminate_child(child);
+                // The cause first, then everything omnid said about it this run.
+                let mut said = format!(
+                    "{error:#}\n{}",
+                    daemon_output(&cfg.home, &log, start, &[&self.capability])
+                );
+                if let Err(stop) = stopped {
+                    said.push_str(&format!(
+                        "\nomnid (pid {pid}) could not be stopped and may still be running: {stop:#}"
+                    ));
+                }
+                return Err(anyhow!(said).context(format!("starting Omni for {address}")));
             }
         };
-        *self.child.lock().unwrap() = Some(child);
+        *self.daemon.lock().unwrap() = Some(Daemon { child, log, start });
         let worker = self.clone();
         thread::spawn(move || worker.listen(chat));
         Ok(client)
@@ -1208,10 +1300,17 @@ impl Worker {
             .unwrap()
             .send(&self.session_id.to_string(), message);
         if !matches!(result, Ok(true)) {
-            let error = result
-                .err()
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "Omni rejected message".into());
+            // "the omni daemon went away" means nothing without the daemon's own last words.
+            let error = self.with_daemon_exit(match result {
+                Err(error) => format!(
+                    "Omni did not accept the message for session {}: {error}",
+                    self.session_id
+                ),
+                _ => format!(
+                    "Omni answered the send for session {} with accepted: false",
+                    self.session_id
+                ),
+            });
             let mut state = self.state.lock().unwrap();
             if let Some(pos) = state.pending.iter().position(|d| d.id == id) {
                 state.pending.remove(pos).receipt.finish(Err(error.clone()));
@@ -1224,13 +1323,16 @@ impl Worker {
         }
         if let Err(error) = state.record.save(&connected.cfg.home) {
             // Accepted work keeps running even if metadata persistence fails; the caller sees the failure.
-            log_line_scoped(
+            let error = error.context(format!(
+                "{} accepted the message, but saving its session state failed",
+                state.record.isi
+            ));
+            log_error(
                 &connected.cfg.home,
                 Some(connected.cfg.generation),
-                "error",
                 &state.record.isi,
-                &format!("session state write failed: {error}"),
-            )?;
+                &format!("{error:#}"),
+            );
             return Err(error);
         }
         log_line_scoped(
@@ -1254,13 +1356,12 @@ impl Worker {
         drop(client);
         if !control {
             if let Err(error) = self.suggest_session() {
-                log_line_scoped(
+                log_error(
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
-                    "error",
                     &name,
                     &format!("new session suggestion: {error:#}"),
-                )?;
+                );
             }
         }
         Ok(sent)
@@ -1287,11 +1388,15 @@ impl Worker {
             &env,
             &connected.cfg.home,
             &address,
-        )?
-        .as_u64()
-        .filter(|count| *count > 0)
-        .ok_or_else(|| anyhow!("min_new_messages must be a positive integer"))?;
-        let cooldown = interval(&suggestion["cooldown_minutes"], &connected.cfg, &address)?;
+        )
+        .context("evaluating new_session_suggestion.min_new_messages")?;
+        let minimum = minimum.as_u64().filter(|count| *count > 0).ok_or_else(|| {
+            anyhow!(
+                "new_session_suggestion.min_new_messages must be a positive integer, got {minimum}"
+            )
+        })?;
+        let cooldown = interval(&suggestion["cooldown_minutes"], &connected.cfg, &address)
+            .context("evaluating new_session_suggestion.cooldown_minutes")?;
         let now = Utc::now();
         let message = {
             let state = self.state.lock().unwrap();
@@ -1299,10 +1404,14 @@ impl Worker {
                 return Ok(());
             }
             drop(state);
-            let source = suggestion["suggestion_message"]
-                .as_str()
-                .ok_or_else(|| anyhow!("suggestion_message must be a string"))?;
-            eval::evaluate(source, &env, &connected.cfg.home, &address)?
+            let source = suggestion["suggestion_message"].as_str().ok_or_else(|| {
+                anyhow!(
+                    "new_session_suggestion.suggestion_message must be a string, got {}",
+                    shown(&suggestion["suggestion_message"])
+                )
+            })?;
+            eval::evaluate(source, &env, &connected.cfg.home, &address)
+                .context("evaluating new_session_suggestion.suggestion_message")?
         };
         let previous = {
             let mut state = self.state.lock().unwrap();
@@ -1318,16 +1427,20 @@ impl Worker {
             if let Err(error) = state.record.save(&connected.cfg.home) {
                 state.record.last_suggestion = previous.0;
                 state.record.messages_at_suggestion = previous.1;
-                return Err(error);
+                return Err(error.context("saving the suggestion time to session state"));
             }
             previous
         };
         if let Err(error) = self.send(&message, None, true) {
+            let error = error.context("sending the new session suggestion");
             let mut state = self.state.lock().unwrap();
             if state.record.last_suggestion == Some(now) {
                 state.record.last_suggestion = previous.0;
                 state.record.messages_at_suggestion = previous.1;
-                state.record.save(&connected.cfg.home)?;
+                // Two independent failures: report both rather than the rollback alone.
+                if let Err(rollback) = state.record.save(&connected.cfg.home) {
+                    bail!("{error:#}\nrestoring the session state afterwards also failed: {rollback:#}");
+                }
             }
             return Err(error);
         }
@@ -1346,24 +1459,34 @@ impl Worker {
             match chat.next_event_timeout(Duration::from_millis(200)) {
                 Ok(Some(event)) => {
                     let queued = chat.state().map_or(0, |state| state.queued);
+                    let kind = event.event_type.clone();
                     if let Err(error) = self.on_event(event, chat.idle(), queued) {
-                        self.fail(&error.to_string());
+                        self.fail(&format!("handling Omni {kind} event: {error:#}"));
                         break;
                     }
                 }
                 Ok(None) => {
                     if chat.status() == "stopped" {
-                        self.fail("Omni session stopped before completion");
+                        self.fail(&self.with_daemon_exit(format!(
+                            "Omni session {} stopped before completion; Omni's last state: {}",
+                            self.session_id,
+                            json!(chat.state())
+                        )));
                         break;
                     }
                 }
                 Err(error) => {
-                    self.fail(&format!("Omni event stream failed: {error}"));
+                    self.fail(&self.with_daemon_exit(format!(
+                        "Omni event stream for session {} failed: {error}",
+                        self.session_id
+                    )));
                     break;
                 }
             }
             self.schedule_dna_refresh();
         }
+        // The worker has already stopped or failed and said why; a dead daemon refusing
+        // the detach changes nothing.
         let _ = chat.detach();
     }
 
@@ -1379,12 +1502,13 @@ impl Worker {
             .ok_or_else(|| anyhow!("silicon disconnected"))?;
         let cfg = &connected.cfg;
         let mut state = self.state.lock().unwrap();
+        let line = serde_json::to_string(&event)?;
         log_line_scoped(
             &cfg.home,
             Some(cfg.generation),
             &event.event_type,
             &state.record.isi,
-            &serde_json::to_string(&event)?,
+            &line,
         )?;
         if !state.record.disposable || state.record.archived_at.is_some() {
             state::append_json(
@@ -1419,50 +1543,79 @@ impl Worker {
                 state.text.push_str(&event.text);
             }
             Event::ERROR => {
+                let who = if event.provider.is_empty() {
+                    "omni"
+                } else {
+                    event.provider.as_str()
+                };
+                let said = format!("{who} reported {}: {}", event.kind, event.error);
+                // Stderr chatter and retried errors do not end the turn, but they usually
+                // explain the failure that does, so they are kept for its message.
                 if event.kind != "stderr"
                     && event.extra.get("willRetry").and_then(Value::as_bool) != Some(true)
                     && omni_idle
                 {
-                    let error = format!("{}: {}", event.kind, event.error);
+                    let mut error = format!("{said}\nevent: {line}");
+                    if !state.trouble.is_empty() {
+                        error.push_str("\nearlier this turn:");
+                        for (_, text) in &state.trouble {
+                            error.push('\n');
+                            error.push_str(text);
+                        }
+                    }
                     // A blocked provider can fail before START and never emit END.
                     // Retire its daemon so failed receipts/Omni work cannot strand idle detection.
                     drop(state);
-                    self.fail(&error);
+                    // Providers run with this session's SI_TOKEN capability in their environment.
+                    self.fail(&failure::mask(&cfg.home, &error, &[&self.capability]));
                     return Ok(());
                 }
+                state.trouble.push((event.provider.clone(), said));
             }
             Event::CONFIG => {
                 // Omni takes a failing provider off the chat and says so before switching.
                 if event.text == "provider_removed" {
-                    let why = event
-                        .extra
-                        .get("why")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown reason");
-                    let left: Vec<&str> = event
+                    let why = event.extra.get("why").and_then(Value::as_str);
+                    let left: Option<Vec<&str>> = event
                         .extra
                         .get("left")
                         .and_then(Value::as_array)
-                        .map(|left| left.iter().filter_map(Value::as_str).collect())
-                        .unwrap_or_default();
-                    let remaining = if left.is_empty() {
-                        "no providers remain; Omni retries them all on the next send".to_string()
-                    } else {
-                        format!("remaining providers: {}", left.join(", "))
+                        .map(|left| left.iter().filter_map(Value::as_str).collect());
+                    let remaining = match &left {
+                        // An unreported list is not an empty one.
+                        None => "remaining providers not reported".to_string(),
+                        Some(left) if left.is_empty() => {
+                            "no providers remain; Omni retries them all on the next send"
+                                .to_string()
+                        }
+                        Some(left) => format!("remaining providers: {}", left.join(", ")),
                     };
+                    let mut message = format!(
+                        "Omni removed provider {}: {}; {remaining}",
+                        event.provider,
+                        why.unwrap_or("no reason given")
+                    );
+                    if why.is_none() || left.is_none() {
+                        message.push_str(&format!("\nevent: {line}"));
+                    }
+                    // `why` is only a kind; the provider's own words came in earlier events.
+                    for (provider, text) in &state.trouble {
+                        if *provider == event.provider {
+                            message.push('\n');
+                            message.push_str(text);
+                        }
+                    }
                     log_line_scoped(
                         &cfg.home,
                         Some(cfg.generation),
                         "provider_removed",
                         &state.record.isi,
-                        &format!(
-                            "Omni removed provider {}: {why}; {remaining}",
-                            event.provider
-                        ),
+                        &message,
                     )?;
                 }
             }
             Event::END => {
+                state.trouble.clear();
                 // Native next-turn injections can share event.turn with an earlier END.
                 // Omni's snapshot is the authority for whether all accepted work is now idle.
                 if !omni_idle || queued != 0 {
@@ -1500,9 +1653,19 @@ impl Worker {
                             if let Some(target) = target {
                                 target
                                     .send(&format!("{name} completed:\n{reply}"), None, true)
+                                    .with_context(|| {
+                                        format!(
+                                            "returning the reply to {} session {}",
+                                            origin.isi, origin.session
+                                        )
+                                    })
                                     .map(|_| ())
                             } else {
-                                Err(anyhow!("caller session disappeared before ephemeral reply"))
+                                Err(anyhow!(
+                                    "{} session {} ended before the ephemeral reply could reach it",
+                                    origin.isi,
+                                    origin.session
+                                ))
                             }
                         } else {
                             Ok(())
@@ -1511,13 +1674,12 @@ impl Worker {
                         Ok(())
                     };
                     if let Err(error) = result {
-                        log_line_scoped(
+                        log_error(
                             &cfg.home,
                             Some(cfg.generation),
-                            "error",
                             &name,
-                            &format!("ephemeral reply: {error}"),
-                        )?;
+                            &format!("ephemeral reply: {error:#}"),
+                        );
                     }
                 }
                 self.retire_if_idle()?;
@@ -1532,15 +1694,40 @@ impl Worker {
         // A failed listener cannot be reused; remove it so a later send restores a fresh worker.
         if let Err(error) = self.stop(Some(message.into())) {
             if let Some(connected) = self.connected.upgrade() {
-                let _ = log_line_scoped(
+                log_error(
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
-                    "error",
                     "worker cleanup",
-                    &format!("{message}; {error:#}"),
+                    &format!("{message}\ncleaning up after it failed too: {error:#}"),
                 );
             }
         }
+    }
+
+    /// `message`, plus omnid's exit status and output when the daemon has died.
+    fn with_daemon_exit(&self, mut message: String) -> String {
+        if let Some(exit) = self.daemon_exit() {
+            message.push('\n');
+            message.push_str(&exit);
+        }
+        message
+    }
+
+    /// When this worker's omnid has exited: its status and everything it wrote this run.
+    fn daemon_exit(&self) -> Option<String> {
+        let home = self.connected.upgrade()?.cfg.home.clone();
+        let mut daemon = self.daemon.lock().unwrap();
+        let daemon = daemon.as_mut()?;
+        let status = match daemon.child.try_wait() {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => return None,
+            Err(error) => format!("status unknown ({error})"),
+        };
+        Some(format!(
+            "omnid (pid {}) exited: {status}\n{}",
+            daemon.child.id(),
+            daemon_output(&home, &daemon.log, daemon.start, &[&self.capability])
+        ))
     }
 
     pub fn stop(&self, error: Option<String>) -> Result<()> {
@@ -1568,12 +1755,24 @@ impl Worker {
             return Ok(());
         }
         if let Some(client) = client.take() {
-            let _ = client.stop(&self.session_id.to_string());
+            // omnid is terminated next regardless, but a refused stop can leave its provider running.
+            if let Err(error) = client.stop(&self.session_id.to_string()) {
+                if let Some(connected) = self.connected.upgrade() {
+                    let isi = self.state.lock().unwrap().record.isi.clone();
+                    log_error(
+                        &connected.cfg.home,
+                        Some(connected.cfg.generation),
+                        &isi,
+                        &format!("asking Omni to stop session {}: {error}", self.session_id),
+                    );
+                }
+            }
         }
         let mut errors = Vec::new();
-        if let Some(child) = self.child.lock().unwrap().take() {
-            if let Err(error) = terminate_child(child) {
-                errors.push(error.to_string());
+        if let Some(daemon) = self.daemon.lock().unwrap().take() {
+            let pid = daemon.child.id();
+            if let Err(error) = terminate_child(daemon.child) {
+                errors.push(format!("stopping omnid (pid {pid}): {error:#}"));
             }
         }
         // Keep the old worker discoverable until its daemon exits. Its client lock rejects racing sends.
@@ -1608,17 +1807,18 @@ impl Worker {
                 state.record.save(&connected.cfg.home)
             };
             if let Err(error) = stored {
-                errors.push(error.to_string());
+                errors.push(format!("saving session state: {error:#}"));
             }
             if let Some(error) = error.as_deref() {
-                if let Err(error) = log_line_scoped(
+                if let Err(log) = log_line_scoped(
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
                     "error",
                     &state.record.isi,
                     error,
                 ) {
-                    errors.push(error.to_string());
+                    // The failure itself still reaches the receipts above and fail()'s message.
+                    errors.push(format!("recording this failure: {log:#}"));
                 }
             }
         }
@@ -1644,7 +1844,7 @@ impl Worker {
                     .join(self.session_id.to_string());
                 if directory.exists() {
                     if let Err(error) = fs::remove_dir_all(&directory) {
-                        errors.push(error.to_string());
+                        errors.push(format!("removing {}: {error}", directory.display()));
                     }
                 }
                 let alias = PathBuf::from(format!(
@@ -1653,14 +1853,14 @@ impl Worker {
                     self.session_id.simple()
                 ));
                 if fs::read_link(&alias).is_ok_and(|target| target == directory) {
-                    if let Err(error) = fs::remove_file(alias) {
-                        errors.push(error.to_string());
+                    if let Err(error) = fs::remove_file(&alias) {
+                        errors.push(format!("removing {}: {error}", alias.display()));
                     }
                 }
             }
         }
         if !errors.is_empty() {
-            bail!("{}", errors.join("; "));
+            bail!("{}", errors.join("\n"));
         }
         Ok(())
     }
@@ -1682,7 +1882,9 @@ impl Worker {
             .as_ref()
             .and_then(|dna| dna.get("next_refresh"))
             .map(|next| {
-                interval(next, &connected.cfg, &address).map(|duration| Instant::now() + duration)
+                interval(next, &connected.cfg, &address)
+                    .context("evaluating dna.next_refresh")
+                    .map(|duration| Instant::now() + duration)
             })
             .transpose()?;
         self.state.lock().unwrap().next_dna = next;
@@ -1712,10 +1914,9 @@ impl Worker {
             })();
             if let Err(error) = result {
                 if let Some(connected) = worker.connected.upgrade() {
-                    let _ = log_line_scoped(
+                    log_error(
                         &connected.cfg.home,
                         Some(connected.cfg.generation),
-                        "error",
                         "dna",
                         &format!("DNA refresh: {error:#}"),
                     );
@@ -1740,7 +1941,12 @@ impl Worker {
         };
         let prompt = assemble_dna(&connected.cfg, &record.isi, &name)?;
         if let Some(client) = self.client.lock().unwrap().as_ref() {
-            client.set(&self.session_id.to_string(), "system_prompt", json!(prompt))?;
+            let accepted = client
+                .set(&self.session_id.to_string(), "system_prompt", json!(prompt))
+                .context("sending the refreshed system prompt to Omni")?;
+            if !accepted {
+                bail!("Omni answered the refreshed system prompt with accepted: false");
+            }
         }
         self.refresh_deadline()?;
         Ok(())
@@ -1748,15 +1954,56 @@ impl Worker {
 }
 
 fn terminate_child(mut child: Child) -> Result<()> {
-    if child.try_wait()?.is_none() {
+    if child
+        .try_wait()
+        .context("checking whether it exited")?
+        .is_none()
+    {
         if let Err(error) = child.kill() {
-            if child.try_wait()?.is_none() {
-                return Err(error.into());
+            if child
+                .try_wait()
+                .context("checking whether it exited")?
+                .is_none()
+            {
+                return Err(error).context("sending SIGKILL");
             }
         }
     }
-    child.wait()?;
+    child.wait().context("waiting for it to exit")?;
     Ok(())
+}
+
+/// Background failures have no caller to return to, so silicon.log is where they are read.
+/// If that write fails too, the interpreter's own stderr (its daemon.log) gets both.
+fn log_error(home: &Path, generation: Option<Uuid>, origin: &str, message: &str) {
+    if let Err(error) = log_line_scoped(home, generation, "error", origin, message) {
+        eprintln!(
+            "{error:#}; the {origin} error it was recording: {}",
+            failure::mask(home, message, &[])
+        );
+    }
+}
+
+/// What omnid wrote to `log` from `start` on, masked. The daemon explains its own failures there.
+fn daemon_output(home: &Path, log: &Path, start: u64, secrets: &[&str]) -> String {
+    let read = || -> std::io::Result<String> {
+        let mut file = fs::File::open(log)?;
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    };
+    let text = match read() {
+        Ok(text) if text.trim().is_empty() => format!("omnid wrote nothing to {}", log.display()),
+        Ok(text) => format!("omnid wrote to {}:\n{}", log.display(), text.trim_end()),
+        Err(error) => format!("omnid's log {} could not be read: {error}", log.display()),
+    };
+    failure::mask(home, &text, secrets)
+}
+
+/// A YAML value as JSON, for saying what was wrong with it.
+fn shown(value: &serde_yaml::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| format!("{value:?}"))
 }
 
 fn suggestion_due(
@@ -1798,20 +2045,25 @@ fn assemble_dna(cfg: &Config, isi: &str, address: &str) -> Result<String> {
         .and_then(|d| d.get("assemble"))
         .and_then(|v| v.as_sequence())
     {
-        for item in items {
-            let source = item
-                .as_str()
-                .ok_or_else(|| anyhow!("DNA item must be a string"))?;
+        for (index, item) in items.iter().enumerate() {
+            let source = item.as_str().ok_or_else(|| {
+                anyhow!(
+                    "isi.{isi}.dna.assemble[{index}] must be a string, got {}",
+                    shown(item)
+                )
+            })?;
             let text = eval::dna(source, &environment(cfg), &cfg.home, address);
             match text {
                 Ok(text) => parts.push(format!("{source}\n{text}")),
-                Err(error) => log_line_scoped(
+                // A skipped entry does not stop the session; silicon.log is where it is read.
+                Err(error) => log_error(
                     &cfg.home,
                     Some(cfg.generation),
-                    "error",
                     address,
-                    &format!("DNA entry skipped: {error}"),
-                )?,
+                    &format!(
+                        "DNA entry skipped: isi.{isi}.dna.assemble[{index}] {source}: {error:#}"
+                    ),
+                ),
             }
         }
     }
@@ -1842,9 +2094,11 @@ fn interval(value: &serde_yaml::Value, cfg: &Config, isi: &str) -> Result<Durati
     } else {
         (text, 60.)
     };
-    let seconds = n.trim().parse::<f64>()? * mul;
+    let seconds = n.trim().parse::<f64>().with_context(|| {
+        format!("interval {text:?} must be a number with an optional s, m, min or h suffix")
+    })? * mul;
     if !seconds.is_finite() || seconds <= 0. || seconds > 315360000. {
-        bail!("interval must be positive, at most ten years");
+        bail!("interval {text:?} must be positive, at most ten years");
     }
     Ok(Duration::from_secs_f64(seconds))
 }
@@ -1881,21 +2135,40 @@ fn select_providers(
             }
             Y::String(s) => {
                 if !available.contains(s) {
-                    bail!("inference provider is not installed/authenticated: {s}");
+                    bail!(
+                        "inference provider is not installed/authenticated: {s} (Omni reports these as available: {})",
+                        listed(available)
+                    );
                 }
                 if !selected.contains(s) {
                     selected.push(s.clone());
                 }
             }
-            _ => bail!("inference_providers must contain names or nested lists"),
+            _ => bail!(
+                "inference_providers must contain names or nested lists, got {}",
+                shown(v)
+            ),
         }
         Ok(())
     }
-    let available = inference.get_available_providers(None)?;
+    fn listed(names: &[String]) -> String {
+        if names.is_empty() {
+            "none".into()
+        } else {
+            names.join(", ")
+        }
+    }
+    let available = inference
+        .get_available_providers(None)
+        .context("asking Omni which inference providers are available")?;
     let mut selected = Vec::new();
     walk(value, &available, &mut selected)?;
     if selected.is_empty() {
-        bail!("inference_providers selects no authenticated providers");
+        bail!(
+            "inference_providers {} selects no authenticated providers (Omni reports these as available: {})",
+            shown(value),
+            listed(&available)
+        );
     }
     Ok(Some(selected))
 }
@@ -1925,7 +2198,13 @@ flow: []
         cfg.home = dir.path().to_owned();
         let runtime = Runtime::new("http://127.0.0.1:1823".into());
         let error = runtime.connect(cfg).unwrap_err().to_string();
-        assert!(error.contains("setup[0]") && error.contains("9"));
+        // The script's own status and output survive connect's masking, all of it.
+        assert!(
+            error.contains("setup[0]")
+                && error.contains("exit status: 9")
+                && error.contains("setup output"),
+            "{error}"
+        );
         assert!(!error.contains("private-setup-credential"));
         assert!(runtime.get("si:test").is_err());
         let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
@@ -1964,10 +2243,11 @@ flow: []
         let prompt = assemble_dna(&cfg, "a", "a:job").unwrap();
         assert!(prompt.starts_with("prompt.md\nfile contents\n\n\n! printf \"$ISI\"\na:job\n\n\nabsent.md !>> \"No contacts\"\nNo contacts\n\n\nYou are a:job."));
         assert_eq!(prompt.matches("absent.md").count(), 1);
+        let log = std::fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        // The skipped entry is named, and its failure follows in full.
         assert!(
-            std::fs::read_to_string(dir.path().join(".silicon/silicon.log"))
-                .unwrap()
-                .contains("DNA entry skipped")
+            log.contains("[DNA entry skipped: isi.a.dna.assemble[3] absent.md: "),
+            "{log}"
         );
     }
 
@@ -2638,6 +2918,272 @@ flow: []
                 .count(),
             2
         );
+        // `why` is only a kind: the removal quotes what that provider said this turn.
+        worker
+            .on_event(
+                Event::failure("stderr", "Error: 401 {\"type\":\"authentication_error\"}")
+                    .from("claude-code-cli"),
+                false,
+                1,
+            )
+            .unwrap();
+        worker
+            .on_event(
+                Event::failure("stderr", "unrelated").from("codex-cli"),
+                false,
+                1,
+            )
+            .unwrap();
+        let removed = Event::config("provider_removed")
+            .from("claude-code-cli")
+            .with("why", "auth")
+            .with("left", json!(["codex-cli"]));
+        worker.on_event(removed, false, 1).unwrap();
+        let lines = fs::read_to_string(&log).unwrap();
+        let line = lines.lines().last().unwrap();
+        assert!(
+            line.ends_with("[Omni removed provider claude-code-cli: auth; remaining providers: codex-cli\\nclaude-code-cli reported stderr: Error: 401 {\"type\":\"authentication_error\"}]"),
+            "{line}"
+        );
+        // A completed turn starts the next one without the old chatter.
+        worker.on_event(Event::new(Event::END), false, 1).unwrap();
+        assert!(worker.state.lock().unwrap().trouble.is_empty());
+        // Missing fields are said to be missing, and the raw event shows what did arrive.
+        let bare = Event::config("provider_removed")
+            .from("gemini-cli")
+            .with("detail", "quota");
+        worker.on_event(bare, false, 1).unwrap();
+        let lines = fs::read_to_string(&log).unwrap();
+        let line = lines.lines().last().unwrap();
+        assert!(
+            line.contains("[Omni removed provider gemini-cli: no reason given; remaining providers not reported\\nevent: {")
+                && line.contains("\"detail\":\"quota\""),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn provider_failure_carries_its_event_and_everything_said_before_it() {
+        let (dir, _runtime, _connected, worker) = worker(false);
+        let delivery = pending(&worker, "hello");
+        let chatter = Event::failure(
+            "stderr",
+            "Error: ENOENT: no such file or directory, open '/home/silicon/.claude.json'",
+        )
+        .from("claude-code-cli");
+        worker.on_event(chatter, false, 1).unwrap();
+        let retried = Event::failure("crash", "socket hang up")
+            .from("claude-code-cli")
+            .with("willRetry", true);
+        worker.on_event(retried, true, 1).unwrap();
+        assert!(delivery.receipt.result.lock().unwrap().is_none());
+        let crash = Event::failure("crash", "claude exited with code 1")
+            .from("claude-code-cli")
+            .with("exitCode", 1);
+        worker.on_event(crash, true, 1).unwrap();
+        let error = format!("{:#}", delivery.wait_started().unwrap_err());
+        for said in [
+            "claude-code-cli reported crash: claude exited with code 1",
+            "\"exitCode\":1",
+            "claude-code-cli reported stderr: Error: ENOENT: no such file or directory, open '/home/silicon/.claude.json'",
+            "claude-code-cli reported crash: socket hang up",
+        ] {
+            assert!(error.contains(said), "missing {said:?} in {error}");
+        }
+        let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(
+            log.contains("claude exited with code 1")
+                && log.contains("open '/home/silicon/.claude.json'"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn omnid_dying_at_startup_reaches_the_sender_with_its_status_and_output() {
+        use std::os::unix::fs::PermissionsExt;
+        // The fake daemon is found on SILICON_HOME/.silicon/bin; OMNI_DAEMON would bypass it.
+        if std::env::var_os("OMNI_DAEMON").is_some() {
+            return;
+        }
+        let (dir, runtime, _connected, worker) = worker(false);
+        let app = dir.path().join(".silicon/bin/omnid");
+        fs::create_dir_all(app.parent().unwrap()).unwrap();
+        fs::write(
+            &app,
+            "#!/bin/sh\n\
+             echo 'omnid: provider registry is corrupt: {\"code\":\"E_REGISTRY\"}' >&2\n\
+             echo \"omnid: listening as $SI_TOKEN\"\n\
+             exit 3\n",
+        )
+        .unwrap();
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
+        let omni_home = dir
+            .path()
+            .join(".silicon/omni")
+            .join(worker.session_id.to_string());
+        fs::create_dir_all(&omni_home).unwrap();
+        fs::write(omni_home.join("daemon.log"), "a previous run's output\n").unwrap();
+        let error = format!(
+            "{:#}",
+            worker
+                .send("hello", None, false)
+                .err()
+                .expect("omnid exited")
+        );
+        let _ = fs::remove_file(format!(
+            "/tmp/silicon-{}/{}",
+            unsafe { libc::getuid() },
+            worker.session_id.simple()
+        ));
+        runtime.shutdown();
+        for said in [
+            "starting Omni for a",
+            "omnid exited (exit status: 3)",
+            "omnid: provider registry is corrupt: {\"code\":\"E_REGISTRY\"}",
+            "omnid: listening as [redacted]",
+        ] {
+            assert!(error.contains(said), "missing {said:?} in {error}");
+        }
+        assert!(!error.contains(&worker.capability), "{error}");
+        assert!(!error.contains("a previous run's output"), "{error}");
+        // The cause reads before the daemon's own account of it.
+        assert!(
+            error.find("before accepting connections").unwrap()
+                < error.find("omnid wrote to").unwrap(),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn omnid_dying_after_start_reaches_the_sender_with_its_status_and_output() {
+        let (dir, runtime, _connected, worker) = worker(false);
+        let omni_home = dir
+            .path()
+            .join(".silicon/omni")
+            .join(worker.session_id.to_string());
+        fs::create_dir_all(&omni_home).unwrap();
+        let log = omni_home.join("daemon.log");
+        fs::write(&log, "a previous run's output\n").unwrap();
+        let start = fs::metadata(&log).unwrap().len();
+        let output = OpenOptions::new().append(true).open(&log).unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(
+                "echo 'omnid: panicked at registry.rs:12: {\"code\":\"E_PANIC\"}' >&2\n\
+                 echo \"omnid: last session token $SI_TOKEN\"\n\
+                 exit 4",
+            )
+            .env("SI_TOKEN", &worker.capability)
+            .stdout(output.try_clone().unwrap())
+            .stderr(output)
+            .spawn()
+            .unwrap();
+        assert!(wait_until(|| child.try_wait().unwrap().is_some()));
+        *worker.daemon.lock().unwrap() = Some(Daemon { child, log, start });
+        // The daemon's end of the socket is gone, as it is when omnid dies.
+        let (client, daemon) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(daemon);
+        *worker.client.lock().unwrap() = Some(Client::from_stream(client).unwrap());
+        let error = format!(
+            "{:#}",
+            worker.send("hello", None, false).err().expect("omnid died")
+        );
+        runtime.shutdown();
+        let refused = format!(
+            "Omni did not accept the message for session {}: ",
+            worker.session_id
+        );
+        for said in [
+            refused.as_str(),
+            "exited: exit status: 4\nomnid wrote to ",
+            "omnid: panicked at registry.rs:12: {\"code\":\"E_PANIC\"}",
+            "omnid: last session token [redacted]",
+        ] {
+            assert!(error.contains(said), "missing {said:?} in {error}");
+        }
+        assert!(!error.contains(&worker.capability), "{error}");
+        assert!(!error.contains("a previous run's output"), "{error}");
+    }
+
+    #[test]
+    fn omni_refusing_a_send_reaches_the_sender_verbatim() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let (_dir, runtime, _connected, worker) = worker(false);
+        let (client, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        *worker.client.lock().unwrap() = Some(Client::from_stream(client).unwrap());
+        let refusal = "session is wedged: {\"reason\":\"provider_lock\",\"holder\":\"codex-cli\"}";
+        let transport = thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let request: Value = serde_json::from_str(&line).unwrap();
+            writeln!(
+                daemon,
+                "{}",
+                json!({"id": request["id"], "ok": false, "error": refusal})
+            )
+            .unwrap();
+            daemon.flush().unwrap();
+        });
+        let error = format!(
+            "{:#}",
+            worker.send("hello", None, false).err().expect("refused")
+        );
+        transport.join().unwrap();
+        runtime.shutdown();
+        assert!(
+            error.contains(&format!(
+                "Omni did not accept the message for session {}: {refusal}",
+                worker.session_id
+            )),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unreadable_settings_and_session_history_name_the_value_and_file() {
+        let (dir, runtime, connected, worker) = worker(false);
+        let soon = format!(
+            "{:#}",
+            interval(
+                &serde_yaml::Value::String("soon".into()),
+                &connected.cfg,
+                "a"
+            )
+            .unwrap_err()
+        );
+        assert!(
+            soon.contains("interval \"soon\" must be a number")
+                && soon.contains("invalid float literal"),
+            "{soon}"
+        );
+        let never = format!(
+            "{:#}",
+            interval(&serde_yaml::Value::String("0s".into()), &connected.cfg, "a").unwrap_err()
+        );
+        assert!(
+            never.contains("interval \"0s\" must be positive"),
+            "{never}"
+        );
+        let events = dir
+            .path()
+            .join(".silicon/sessions/events")
+            .join(format!("{}.jsonl", worker.session_id));
+        fs::create_dir_all(events.parent().unwrap()).unwrap();
+        fs::write(&events, "{\"type\":\"start\"}\nhalf-written {\"type\n").unwrap();
+        let error = format!("{:#}", runtime.show("si:test", "a", None).unwrap_err());
+        assert!(
+            error.contains(&events.display().to_string())
+                && error.contains("half-written {\"type")
+                && error.contains("line 1 column"),
+            "{error}"
+        );
+        runtime.shutdown();
     }
 
     #[test]
@@ -2800,7 +3346,7 @@ flow: []
             r#"#!/bin/sh
 case "$*" in
   'iam --json') echo '{"app_id":"ting"}' ;;
-  'unhook retained-hook --json') exit 1 ;;
+  'unhook retained-hook --json') echo 'hook is held by another org' >&2; exit 1 ;;
   *) exit 2 ;;
 esac
 "#,
@@ -2821,7 +3367,13 @@ esac
             .worker(&connected, "a", &SendOptions::default())
             .unwrap();
         let delivery = pending(&second, "will be cancelled");
-        assert!(runtime.disconnect("si:test").is_err());
+        let error = format!("{:#}", runtime.disconnect("si:test").unwrap_err());
+        assert!(
+            error.starts_with("si:test was disconnected with errors:\nremoving the Ting webhook: ")
+                && error.contains("exit status: 1")
+                && error.contains("hook is held by another org"),
+            "{error}"
+        );
         assert!(runtime.get("si:test").is_err());
         assert!(runtime.caller(&second.capability).is_none());
         assert!(delivery.wait_started().is_err());

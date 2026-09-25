@@ -2,8 +2,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
@@ -22,11 +23,21 @@ pub struct Proxy {
     interpreter_port: u16,
     http_port: u16,
     ipv6: bool,
+    /// caddy.log length after the last operation Caddy completed; later lines explain later failures.
+    log_mark: u64,
+    /// Why this proxy stopped its Caddy, for every later call that finds it stopped.
+    stopped: Option<String>,
+}
+
+/// The Caddy executable: SILICON_CADDY, else `caddy` on PATH.
+fn binary() -> OsString {
+    std::env::var_os("SILICON_CADDY").unwrap_or_else(|| "caddy".into())
 }
 
 impl Proxy {
     pub fn start(state_dir: &Path, interpreter_port: u16, hosts: &[String]) -> Result<Self> {
-        Self::start_on(state_dir, interpreter_port, hosts, 80)
+        Self::start_on(state_dir, interpreter_port, hosts, 80, &binary())
+            .context("could not start the owned Caddy proxy")
     }
 
     fn start_on(
@@ -34,20 +45,32 @@ impl Proxy {
         interpreter_port: u16,
         hosts: &[String],
         http_port: u16,
+        binary: &OsStr,
     ) -> Result<Self> {
         if interpreter_port == 0 || http_port == 0 {
-            bail!("proxy ports must be nonzero");
+            bail!("proxy ports must be nonzero (interpreter {interpreter_port}, HTTP {http_port})");
         }
         validate_hosts(hosts)?;
         let state = state_dir.join("caddy");
-        crate::state::private_dir(&state)?;
-        let state = state.canonicalize()?;
+        crate::state::private_dir(&state).context("create Caddy state directory")?;
+        let state = state
+            .canonicalize()
+            .with_context(|| format!("resolve Caddy state directory {}", state.display()))?;
         // Unix socket paths are limited to 104 bytes on macOS; user-selected
         // state directories can be much longer. This private, unique directory
         // contains only the short-lived admin socket and is removed on drop.
         let socket_dir = PathBuf::from("/tmp").join(format!("silicon-caddy-{}", Uuid::new_v4()));
-        fs::DirBuilder::new().mode(0o700).create(&socket_dir)?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&socket_dir)
+            .with_context(|| {
+                format!(
+                    "create Caddy admin socket directory {}",
+                    socket_dir.display()
+                )
+            })?;
         let socket = socket_dir.join("admin.sock");
+        // Probe only: without IPv6 loopback, Caddy listens on IPv4 alone.
         let ipv6 = TcpListener::bind("[::1]:0").is_ok();
         let mut proxy = Self {
             child: None,
@@ -58,23 +81,53 @@ impl Proxy {
             interpreter_port,
             http_port,
             ipv6,
+            log_mark: 0,
+            stopped: None,
         };
         let initial = proxy.base_config();
+        let log_path = proxy.log_path();
         let log = OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(proxy.state.join("caddy.log"))?;
-        let binary = std::env::var_os("SILICON_CADDY").unwrap_or_else(|| "caddy".into());
-        let child = Command::new(&binary).args(["run", "--config", "-"])
-            .stdin(Stdio::piped()).stdout(log.try_clone()?).stderr(log)
+            .open(&log_path)
+            .with_context(|| format!("open Caddy log {}", log_path.display()))?;
+        proxy.log_mark = proxy.log_len();
+        let command = crate::failure::argv(binary, &["run", "--config", "-"]);
+        let child = Command::new(binary)
+            .args(["run", "--config", "-"])
+            .stdin(Stdio::piped())
+            .stdout(log.try_clone().with_context(|| format!("share Caddy log {}", log_path.display()))?)
+            .stderr(log)
             .env("XDG_DATA_HOME", proxy.state.join("data"))
             .env("XDG_CONFIG_HOME", proxy.state.join("config"))
-            .spawn().with_context(|| format!("could not start Caddy ({:?}); install Caddy or set SILICON_CADDY to its executable", binary))?;
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "could not run `{command}` ({}); install Caddy or set SILICON_CADDY to its executable",
+                    Path::new(binary).display()
+                )
+            })?;
         proxy.child = Some(child);
         let mut input = proxy.child.as_mut().unwrap().stdin.take().unwrap();
-        input.write_all(&serde_json::to_vec(&initial)?)?;
+        let sent = input.write_all(&serde_json::to_vec(&initial)?);
         drop(input);
+        if let Err(error) = sent {
+            // Caddy closing stdin early usually means it exited; its status and log say why.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if let Err(exited) = proxy.ensure_running() {
+                    return Err(exited).context(format!(
+                        "could not send Caddy its initial configuration on stdin: {error}"
+                    ));
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            bail!(
+                "could not send Caddy its initial configuration on stdin: {error}; Caddy is still running\n{}",
+                proxy.log_since(proxy.log_mark)
+            );
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             proxy.ensure_running()?;
@@ -88,23 +141,26 @@ impl Proxy {
                         error.kind(),
                         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
                     ) => {}
-                Err(error) => {
-                    return Err(error).context("connect to the private Caddy admin socket")
-                }
+                Err(error) => bail!(
+                    "could not connect to the private Caddy admin socket {}: {error}\n{}",
+                    proxy.socket.display(),
+                    proxy.log_since(proxy.log_mark)
+                ),
             }
             if Instant::now() >= deadline {
                 bail!(
-                    "Caddy did not open its private admin socket; inspect {}",
-                    proxy.state.join("caddy.log").display()
+                    "Caddy is running but did not open its private admin socket {} within 10s\n{}",
+                    proxy.socket.display(),
+                    proxy.log_since(proxy.log_mark)
                 );
             }
             thread::sleep(Duration::from_millis(25));
         }
         proxy.config = initial;
+        proxy.log_mark = proxy.log_len();
         let config = proxy.configuration(hosts)?;
         proxy.replace_config(config).with_context(|| format!(
-            "Caddy could not bind HTTP port {http_port}; check whether another server uses that port and, on Linux, grant the Caddy executable permission to bind port 80. Log: {}",
-            proxy.state.join("caddy.log").display()))?;
+            "Caddy could not serve the Silicon routes on HTTP port {http_port}; if it reports a bind error, check whether another server uses that port and, on Linux, grant the Caddy executable permission to bind port 80"))?;
         Ok(proxy)
     }
 
@@ -169,14 +225,16 @@ impl Proxy {
                 .with_context(|| format!("Caddy reload failed: {error:#}"))?;
             return Err(error).context("Caddy reload failed; previous routes are active");
         }
-        if let Err(error) = crate::state::write_json(&self.state.join("config.json"), &next) {
+        let saved = self.state.join("config.json");
+        if let Err(error) = crate::state::write_json(&saved, &next) {
             self.rollback()
                 .with_context(|| format!("Caddy config could not be saved: {error:#}"))?;
-            crate::state::write_json(&self.state.join("config.json"), &self.config)
-                .with_context(|| format!("previous Caddy routes are active, but saved config could not be restored after {error:#}"))?;
+            crate::state::write_json(&saved, &self.config)
+                .with_context(|| format!("previous Caddy routes are active, but the saved config could not be restored after {error:#}"))?;
             return Err(error).context("Caddy config could not be saved; restored previous routes");
         }
         self.config = next;
+        self.log_mark = self.log_len();
         Ok(())
     }
 
@@ -187,65 +245,117 @@ impl Proxy {
             &serde_json::to_vec(&self.config)?,
             Duration::from_secs(10),
         ) {
-            let _ = self.stop();
-            return Err(error)
-                .context("could not restore previous routes; stopped the owned Caddy proxy");
+            let stopped = match self.stop() {
+                Ok(()) => "stopped the owned Caddy proxy".to_owned(),
+                Err(stop) => format!("stopping the owned Caddy proxy also failed: {stop:#}"),
+            };
+            let error = error.context(format!("could not restore previous routes; {stopped}"));
+            self.stopped = Some(format!("{error:#}"));
+            return Err(error);
         }
         Ok(())
     }
 
     fn ensure_running(&mut self) -> Result<()> {
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| anyhow!("Caddy proxy is stopped"))?;
-        if let Some(status) = child.try_wait()? {
-            let tail = fs::read_to_string(self.state.join("caddy.log"))
-                .unwrap_or_default()
-                .lines()
-                .rev()
-                .take(5)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
+        let Some(child) = self.child.as_mut() else {
             bail!(
-                "Caddy exited with {status}; inspect {}\n{tail}",
-                self.state.join("caddy.log").display()
+                "the owned Caddy proxy is stopped, so Silicon hosts are not routed; restart the interpreter with `silicon stop`, then `silicon serve`. It stopped because: {}",
+                self.stopped.as_deref().unwrap_or("it was stopped on request")
+            );
+        };
+        let pid = child.id();
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("check whether Caddy process {pid} is running"))?
+        {
+            bail!(
+                "Caddy process {pid} exited with {status}\n{}",
+                self.log_since(self.log_mark)
             );
         }
         Ok(())
     }
 
-    fn request(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<()> {
-        let mut stream =
-            UnixStream::connect(&self.socket).context("connect to private Caddy admin socket")?;
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
-        write!(stream, "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
-        stream.write_all(body)?;
-        let mut response = String::new();
-        stream
-            .take(1024 * 1024)
-            .read_to_string(&mut response)
-            .context("read Caddy admin response")?;
-        let status = response
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|code| code.parse::<u16>().ok());
-        if !status.is_some_and(|code| (200..300).contains(&code)) {
-            bail!(
-                "Caddy {path} failed: {}",
-                response
-                    .split_once("\r\n\r\n")
-                    .map(|(_, body)| body)
-                    .unwrap_or(&response)
-                    .trim()
-            );
+    fn log_path(&self) -> PathBuf {
+        self.state.join("caddy.log")
+    }
+
+    /// Current caddy.log length; an unreadable log counts as empty, and `log_since` then says why.
+    fn log_len(&self) -> u64 {
+        fs::metadata(self.log_path()).map_or(0, |metadata| metadata.len())
+    }
+
+    /// Everything Caddy wrote to its stdout and stderr after `offset`, verbatim.
+    fn log_since(&self, offset: u64) -> String {
+        let path = self.log_path();
+        let text = fs::File::open(&path).and_then(|mut file| {
+            // A log replaced since `offset` is read from its start.
+            if file.metadata()?.len() >= offset {
+                file.seek(SeekFrom::Start(offset))?;
+            }
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        });
+        match text {
+            Ok(text) if text.trim().is_empty() => {
+                format!("Caddy log {}: (nothing new)", path.display())
+            }
+            Ok(text) => format!("Caddy log {}:\n{}", path.display(), text.trim_end()),
+            Err(error) => format!("Caddy log {} could not be read: {error}", path.display()),
         }
-        Ok(())
+    }
+
+    /// One admin API call. Failures carry the HTTP status and body Caddy answered with,
+    /// plus everything Caddy logged while handling the call.
+    fn request(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<()> {
+        let mark = self.log_len();
+        let call = format!(
+            "Caddy admin API `{method} {path}` on {}",
+            self.socket.display()
+        );
+        let fail = |problem: String| anyhow!("{call} {problem}\n{}", self.log_since(mark));
+        let mut stream = UnixStream::connect(&self.socket)
+            .map_err(|error| fail(format!("could not connect: {error}")))?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .and_then(|()| stream.set_write_timeout(Some(timeout)))
+            .map_err(|error| fail(format!("could not set a {timeout:?} timeout: {error}")))?;
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+            .and_then(|()| stream.write_all(body))
+            .map_err(|error| fail(format!("could not send the request: {error}")))?;
+        let mut response = Vec::new();
+        let read = stream.read_to_end(&mut response);
+        let response = String::from_utf8_lossy(&response);
+        if let Err(error) = read {
+            let received = if response.is_empty() {
+                "nothing".to_owned()
+            } else {
+                format!("\n{response}")
+            };
+            return Err(fail(format!(
+                "could not read the answer within {timeout:?}: {error}; received {received}"
+            )));
+        }
+        let (head, answer) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+        let status_line = head.lines().next().unwrap_or_default();
+        match status_line
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse::<u16>().ok())
+        {
+            Some(code) if (200..300).contains(&code) => Ok(()),
+            Some(_) if answer.trim().is_empty() => {
+                Err(fail(format!("answered {status_line} with an empty body")))
+            }
+            Some(_) => Err(fail(format!(
+                "answered {status_line}:\n{}",
+                answer.trim_end()
+            ))),
+            None => Err(fail(format!(
+                "answered without an HTTP status line; full response: {response:?}"
+            ))),
+        }
     }
 
     /// Stops only this child. Config and logs are retained for inspection.
@@ -253,13 +363,26 @@ impl Proxy {
         if self.child.is_none() {
             return Ok(());
         }
-        let _ = self.request("POST", "/stop", &[], Duration::from_secs(2));
+        // Asking first lets Caddy close listeners cleanly; the kill below covers a refusal.
+        let asked = self.request("POST", "/stop", &[], Duration::from_secs(2));
         let mut child = self.child.take().unwrap();
+        let pid = child.id();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while child.try_wait()?.is_none() {
+        while child
+            .try_wait()
+            .with_context(|| format!("check whether Caddy process {pid} stopped"))?
+            .is_none()
+        {
             if Instant::now() >= deadline {
-                child.kill().context("stop Caddy child")?;
-                child.wait()?;
+                child.kill().with_context(|| match &asked {
+                    Ok(()) => format!(
+                        "kill Caddy process {pid}, still running 2s after it accepted /stop"
+                    ),
+                    Err(error) => format!("kill Caddy process {pid} after /stop failed: {error:#}"),
+                })?;
+                child
+                    .wait()
+                    .with_context(|| format!("wait for killed Caddy process {pid}"))?;
                 break;
             }
             thread::sleep(Duration::from_millis(20));
@@ -270,13 +393,18 @@ impl Proxy {
 
 impl Drop for Proxy {
     fn drop(&mut self) {
-        let _ = self.stop();
+        // Drop cannot return an error; the daemon's stderr is its daemon.log.
+        if let Err(error) = self.stop() {
+            eprintln!("could not stop the owned Caddy proxy: {error:#}");
+        }
+        // Best effort: an empty private directory left in /tmp changes nothing.
         let _ = fs::remove_dir_all(&self.socket_dir);
     }
 }
 
 fn validate_hosts(hosts: &[String]) -> Result<Vec<String>> {
     let mut allowed = BTreeSet::from(["silicon.localhost".to_owned()]);
+    let mut invalid = Vec::new();
     for host in hosts {
         let host = host.to_ascii_lowercase();
         if !host.ends_with(".localhost")
@@ -291,11 +419,16 @@ fn validate_hosts(hosts: &[String]) -> Result<Vec<String>> {
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             })
         {
-            bail!(
-                "invalid Silicon proxy hostname {host:?}; expected a DNS name ending in .localhost"
-            );
+            invalid.push(format!("{host:?}"));
+        } else {
+            allowed.insert(host);
         }
-        allowed.insert(host);
+    }
+    if !invalid.is_empty() {
+        bail!(
+            "invalid Silicon proxy hostname {}; expected a DNS name ending in .localhost, at most 253 characters, whose labels are 1–63 letters, digits or inner hyphens",
+            invalid.join(", ")
+        );
     }
     Ok(allowed.into_iter().collect())
 }
@@ -303,8 +436,10 @@ fn validate_hosts(hosts: &[String]) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     use std::net::TcpStream;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
 
     fn fetch(port: u16, host: &str) -> String {
         fetch_from("127.0.0.1", port, host, "")
@@ -340,6 +475,160 @@ mod tests {
         ] {
             assert!(validate_hosts(&[host.into()]).is_err());
         }
+        let error = validate_hosts(&[
+            "ok.localhost".into(),
+            "evil.com".into(),
+            "*.localhost".into(),
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(r#""evil.com", "*.localhost""#), "{error}");
+    }
+
+    #[test]
+    fn caddy_that_exits_reports_status_and_everything_it_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let caddy = dir.path().join("caddy");
+        fs::write(
+            &caddy,
+            "#!/bin/sh\ncat >/dev/null\necho 'using config from stdin'\necho 'Error: loading initial config: listen tcp :80: bind: permission denied' >&2\nexit 3\n",
+        )
+        .unwrap();
+        fs::set_permissions(&caddy, fs::Permissions::from_mode(0o700)).unwrap();
+        let state = dir.path().join("state");
+        crate::state::private_dir(&state.join("caddy")).unwrap();
+        // An earlier run's lines are not this failure's explanation.
+        fs::write(state.join("caddy/caddy.log"), "earlier run\n").unwrap();
+        let error = Proxy::start_on(&state, 1, &[], 1, caddy.as_os_str())
+            .err()
+            .unwrap();
+        let error = format!("{error:#}");
+        assert!(error.contains("exited with exit status: 3"), "{error}");
+        assert!(error.contains("using config from stdin"), "{error}");
+        assert!(
+            error
+                .contains("Error: loading initial config: listen tcp :80: bind: permission denied"),
+            "{error}"
+        );
+        assert!(!error.contains("earlier run"), "{error}");
+
+        let missing = dir.path().join("no-caddy");
+        let error = Proxy::start_on(&state, 1, &[], 1, missing.as_os_str())
+            .err()
+            .unwrap();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("could not run `no-caddy run --config -`"),
+            "{error}"
+        );
+        assert!(error.contains("No such file or directory"), "{error}");
+    }
+
+    #[test]
+    fn rejected_reload_reports_caddy_status_body_and_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().to_path_buf();
+        let log = state.join("caddy.log");
+        fs::write(&log, "earlier line\n").unwrap();
+        let socket = state.join("admin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            for answer in [
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"error\":\"loading new config: http app module: start: listening on 127.0.0.1:80: bind: address already in use\"}\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                OpenOptions::new()
+                    .append(true)
+                    .open(&log)
+                    .unwrap()
+                    .write_all(b"{\"level\":\"error\",\"logger\":\"admin.api\",\"msg\":\"request error\"}\n")
+                    .unwrap();
+                stream.write_all(answer.as_bytes()).unwrap();
+            }
+        });
+        let mut proxy = Proxy {
+            child: None,
+            socket_dir: state.join("unused"),
+            socket,
+            state,
+            config: json!({"previous": true}),
+            interpreter_port: 1,
+            http_port: 1,
+            ipv6: false,
+            log_mark: 0,
+            stopped: None,
+        };
+        let error = format!(
+            "{:#}",
+            proxy.replace_config(json!({"next": true})).unwrap_err()
+        );
+        server.join().unwrap();
+        for said in [
+            "Caddy reload failed; previous routes are active",
+            "Caddy admin API `POST /load` on ",
+            "answered HTTP/1.1 400 Bad Request:\n{\"error\":\"loading new config: http app module: start: listening on 127.0.0.1:80: bind: address already in use\"}",
+            "{\"level\":\"error\",\"logger\":\"admin.api\",\"msg\":\"request error\"}",
+        ] {
+            assert!(error.contains(said), "{error}");
+        }
+        assert!(!error.contains("earlier line"), "{error}");
+        assert_eq!(proxy.config, json!({"previous": true}));
+        assert!(!proxy.state.join("config.json").exists());
+    }
+
+    #[test]
+    fn unrestorable_routes_explain_every_later_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("gone.sock");
+        let mut proxy = Proxy {
+            child: None,
+            socket_dir: dir.path().join("unused"),
+            socket: socket.clone(),
+            state: dir.path().to_path_buf(),
+            config: json!({"previous": true}),
+            interpreter_port: 1,
+            http_port: 1,
+            ipv6: false,
+            log_mark: 0,
+            stopped: None,
+        };
+        let refused = format!(
+            "`POST /load` on {} could not connect: No such file or directory",
+            socket.display()
+        );
+        let error = format!(
+            "{:#}",
+            proxy.replace_config(json!({"next": true})).unwrap_err()
+        );
+        assert!(
+            error.contains("could not restore previous routes"),
+            "{error}"
+        );
+        assert_eq!(error.matches(&refused).count(), 2, "{error}");
+        // A later call names the stop and the failure behind it, not just "stopped".
+        let later = format!("{:#}", proxy.update(&[]).unwrap_err());
+        for said in [
+            "the owned Caddy proxy is stopped",
+            "`silicon stop`, then `silicon serve`",
+            "It stopped because: could not restore previous routes; stopped the owned Caddy proxy",
+            refused.as_str(),
+        ] {
+            assert!(later.contains(said), "{later}");
+        }
     }
 
     #[test]
@@ -374,6 +663,7 @@ mod tests {
             backend_port,
             &["a.org.localhost".into()],
             proxy_port,
+            &binary(),
         )
         .unwrap();
         let pid = proxy.child.as_ref().unwrap().id();
