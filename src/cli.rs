@@ -669,13 +669,12 @@ fn file_bug_report(program: &str, title: &str, body: &str) -> Result<()> {
     ];
     let home = server::directory();
     let shown = crate::failure::argv(program, &args);
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| crate::failure::spawn(&home, &shown, &error))
-        .context(
-            "could not file the bug report; install the GitHub CLI (gh) and run gh auth login",
-        )?;
+    let output =
+        crate::process::Starting::output_retrying(std::process::Command::new(program).args(args))
+            .map_err(|error| crate::failure::spawn(&home, &shown, &error))
+            .context(
+                "could not file the bug report; install the GitHub CLI (gh) and run gh auth login",
+            )?;
     if !output.status.success() {
         return Err(crate::failure::command(&home, &shown, &output, &[]))
             .context("GitHub CLI could not file the bug report; check gh auth status");

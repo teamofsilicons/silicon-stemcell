@@ -1,4 +1,5 @@
 //! An owned, isolated Caddy process. It never contacts the machine's default admin API.
+use crate::process::Starting;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -170,7 +171,7 @@ impl Proxy {
             .stderr(log)
             .env("XDG_DATA_HOME", proxy.state.join("data"))
             .env("XDG_CONFIG_HOME", proxy.state.join("config"))
-            .spawn()
+            .spawn_retrying()
             .with_context(|| {
                 format!(
                     "could not run `{command}` ({}); install Caddy or set SILICON_CADDY to its executable",

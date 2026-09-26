@@ -1,3 +1,4 @@
+use crate::process::Starting;
 use crate::Recover;
 use crate::{
     auth,
@@ -496,7 +497,7 @@ fn spawn_serve(dir: &Path) -> Result<(std::process::Child, u64)> {
         });
     }
     let child = command
-        .spawn()
+        .spawn_retrying()
         .map_err(|error| failure::spawn(dir, &failure::argv(&executable, &["serve"]), &error))
         .with_context(|| format!("start the interpreter from {}", executable.display()))?;
     Ok((child, start))

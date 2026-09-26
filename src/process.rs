@@ -11,6 +11,37 @@ use std::time::Duration;
 
 use crate::Recover;
 
+/// Starting a program that was written a moment ago (an app Honeycomb just installed, a script
+/// a test just wrote) can fail on Linux with ETXTBSY while another thread's freshly forked child
+/// still holds the file open for writing, until that child execs. That passes within moments.
+pub(crate) trait Starting {
+    fn spawn_retrying(&mut self) -> std::io::Result<std::process::Child>;
+    fn output_retrying(&mut self) -> std::io::Result<Output>;
+}
+
+impl Starting for Command {
+    fn spawn_retrying(&mut self) -> std::io::Result<std::process::Child> {
+        retrying(|| self.spawn())
+    }
+
+    fn output_retrying(&mut self) -> std::io::Result<Output> {
+        retrying(|| self.output())
+    }
+}
+
+fn retrying<T>(mut start: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match start() {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempt < 20 => {
+                attempt += 1;
+                thread::sleep(Duration::from_millis(10 * attempt));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// The process groups of tools running right now, so a stopping interpreter can end them:
 /// their time limits die with the threads that enforce them.
 static RUNNING: Mutex<Vec<libc::pid_t>> = Mutex::new(Vec::new());
@@ -125,7 +156,7 @@ pub(crate) fn output_within(command: &mut Command, limit: Duration) -> std::io::
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = command.spawn()?;
+    let mut child = command.spawn_retrying()?;
     let group = child.id() as libc::pid_t;
     RUNNING.lock().recover().push(group);
     // Removed however this call ends, once the child is reaped (its group id is then free).
@@ -385,6 +416,29 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(30));
         assert!(!output.status.success());
         assert!(RUNNING.lock().recover().is_empty());
+    }
+
+    #[test]
+    fn a_program_briefly_busy_being_written_is_started_after_a_retry() {
+        let mut tries = 0;
+        let started = retrying(|| {
+            tries += 1;
+            if tries < 3 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Ok(tries)
+            }
+        })
+        .unwrap();
+        assert_eq!(started, 3);
+        // Any other failure is the answer at once.
+        let mut tries = 0;
+        let error = retrying(|| -> std::io::Result<()> {
+            tries += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!((tries, error.kind()), (1, std::io::ErrorKind::NotFound));
     }
 
     #[test]

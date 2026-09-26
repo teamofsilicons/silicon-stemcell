@@ -1,3 +1,4 @@
+use crate::process::Starting;
 use crate::Recover;
 use crate::{
     auth,
@@ -1637,7 +1638,7 @@ impl Worker {
                         .with_context(|| format!("sharing {} with omnid", log.display()))?,
                 )
                 .stderr(daemon_log)
-                .spawn()
+                .spawn_retrying()
                 .map_err(|error| {
                     failure::spawn(&cfg.home, &daemon.display().to_string(), &error)
                         .context("starting Omni (install Omni, or set OMNI_DAEMON to omnid's path)")

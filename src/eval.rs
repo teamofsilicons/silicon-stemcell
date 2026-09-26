@@ -659,7 +659,7 @@ fn bounded(bash: &mut std::process::Command, mode: Mode) -> std::io::Result<Outp
         return crate::process::output_within(bash, limit);
     }
     if crate::process_role() != "daemon" {
-        return bash.output();
+        return crate::process::Starting::output_retrying(bash);
     }
     let limit = if matches!(mode, Mode::Setup) {
         crate::process::Limit::Setup

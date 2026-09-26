@@ -10,6 +10,7 @@
 //! `lib/silicon/current`, so updates never rewrite it, with `SILICON_SERVICE` set so serve
 //! waits for daemon.lock and writes its own output to daemon.log. A clean stop exits 0 and
 //! is never restarted; any other exit is.
+use crate::process::Starting;
 use crate::{failure, server, state};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -394,7 +395,7 @@ impl Tools for System {
                 }
             });
         }
-        Ok(command.spawn()?.id())
+        Ok(command.spawn_retrying()?.id())
     }
 
     fn signal(&self, pid: i32, signal: i32) -> std::io::Result<()> {
@@ -2731,7 +2732,7 @@ fn spawn_serve(
         .stdout(file.try_clone()?)
         .stderr(file)
         .process_group(0)
-        .spawn()
+        .spawn_retrying()
 }
 
 /// Stop what a failed serve left in its process group: Linux has no process-group cleanup
