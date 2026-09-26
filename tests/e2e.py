@@ -437,11 +437,15 @@ esac
         checked = progress_home / ".silicon/auth-checked.json"
         checked.write_text(json.dumps({key: int(time.time()) - 48 * 60 * 60 for key in json.loads(checked.read_text())}))
         failed = subprocess.run([str(binary), "connect", str(progress_config)], env=env, capture_output=True, text=True, timeout=35)
-        assert failed.returncode != 0 and "✗ Authenticating progress" in failed.stdout, failed.stdout + failed.stderr
+        # A failed automatic check no longer keeps the Silicon offline: it connects, and the
+        # check is shown failing live with the app's own words.
+        assert failed.returncode == 0 and "✗ Authenticating progress" in failed.stdout, failed.stdout + failed.stderr
         assert "✓ Authenticated progress" not in failed.stdout
         # The app's own words reach the Carbon whole: command, exit status and both streams.
         for said in [" auth status --json` failed: exit status: 1", "progress: session store unreachable", '{"authenticated":null}']:
-            assert said in failed.stderr, (said, failed.stdout + failed.stderr)
+            assert said in failed.stdout, (said, failed.stdout + failed.stderr)
+        assert "automatic credential check failed" in (progress_home / ".silicon/silicon.log").read_text()
+        cli("disconnect", "si:progress")
         cli("compile", str(config))
         assert not (home / "setup-count").exists(), "compile must not run setup"
         result = cli("connect", str(config))
@@ -634,7 +638,8 @@ esac
         before = session("pulse", "alpha")["new_messages"]
         si("isi", "send", "pulse", "within cooldown one", "--id", "alpha")
         si("isi", "send", "pulse", "within cooldown two", "--id", "alpha")
-        eventually(lambda: len(messages("pulse:alpha", "true")) >= 2)
+        # Heartbeats coalesce: one waits while the held turn is open.
+        eventually(lambda: len(messages("pulse:alpha", "true")) >= 1)
         assert time.time() - latest["at"] < 3
         assert len(messages("pulse:alpha", "suggest pulse:alpha")) == 2, "suggestion ignored cooldown"
         assert session("pulse", "alpha")["new_messages"] == before + 2, "control messages counted toward suggestion threshold"
@@ -648,6 +653,8 @@ esac
         pulse_info = eventually(lambda: next((json.loads(file.read_text()) for file in home.glob("*.provider.json") if json.loads(file.read_text())["ISI"] == "pulse:alpha"), None))
         pulse_env = dict(env, **{key: pulse_info[key] for key in ("SILICON_HOME", "ISI", "SI_URL", "SI_TOKEN", "TZ")})
         si("isi", "send", "pulse", "finish", "--id", "alpha")
+        # Once the turn ends, heartbeats resume.
+        eventually(lambda: len(messages("pulse:alpha", "true")) >= 2)
         eventually(lambda: session("pulse", "alpha")["status"] == "idle")
         for name, logical_id, context in [("source", None, child_env), ("pulse", "alpha", pulse_env)]:
             old = session(name, logical_id)
@@ -691,9 +698,12 @@ esac
         process = subprocess.Popen([str(binary), "serve", "--port", "1823"], env=env, cwd=home, stdout=log, stderr=log)
         daemon = eventually(started)
         base = f'http://127.0.0.1:{daemon["port"]}'
+        # Restore runs in the background after the interpreter answers.
+        eventually(lambda: [row.get("state") for row in control("list")] == ["connected"])
         assert len(control("list")) == 1
-        migrated_connection, = json.loads(connection_path.read_text())
-        assert migrated_connection == {**saved_connections[0], "id": "si:e2e", "host": "e2e.local.localhost"}
+        # The registry file follows the restored state within moments.
+        migrated = {**saved_connections[0], "id": "si:e2e", "host": "e2e.local.localhost"}
+        eventually(lambda: json.loads(connection_path.read_text()) == [migrated])
         post("/events", batch, host="e2e.local.localhost", status=204)
         assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
         for name, records in restored.items():

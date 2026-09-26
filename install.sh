@@ -6,8 +6,16 @@ set -eu
 
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
+# Exit status 77: only a person can finish this installation (sudo for Caddy's port 80).
+# The interpreter's automatic updater does not retry such a release until someone acts.
+needs_person() { printf 'silicon install: %s\n' "$*" >&2; exit 77; }
 
-version=${SILICON_VERSION:-v5.0.2}
+# Service managers and cron start with a minimal PATH; getcap and setcap live in sbin.
+case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="$PATH:/usr/sbin" ;; esac
+case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
+export PATH
+
+version=${SILICON_VERSION:-v5.1.0}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -15,7 +23,7 @@ repository=${SILICON_REPOSITORY:-teamofsilicons/silicon-stemcell}
 source_dir=${SILICON_SOURCE_DIR:-}
 git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
-omni_rev=c23d80a7251a1f6a77e76172a197126e693c00f1
+omni_rev=62c2adc57983be37c1de2064d169073bddf71291
 commands='silicon si omnid silicon-omni omni so caddy'
 binaries="$commands"
 notices='LICENSE LICENSES/README.md LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'
@@ -117,9 +125,12 @@ hash_file() {
     printf '%s\n' "${digest%% *}"
 }
 
+# A stalled or trickling transfer fails instead of holding the install lock forever.
 download() {
     command -v curl >/dev/null 2>&1 || fail 'curl is required'
-    run "$3" curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 --output "$2" "$1"
+    run "$3" curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+        --connect-timeout 30 --speed-limit 1024 --speed-time 120 --max-time 3600 \
+        --retry 3 --retry-delay 5 --output "$2" "$1"
 }
 
 verify() {
@@ -147,9 +158,12 @@ done
 [ ! -e "$runtime/current" ] || [ -L "$runtime/current" ] || fail "runtime current path is not a managed symlink
 $(ls -ld "$runtime/current" 2>&1)"
 stage=$(mktemp -d "$runtime/.install.XXXXXX") || fail "could not create a staging directory in $runtime (mktemp's error is above)"
+lock="$runtime/.install-lock"
+reclaim="$lock.reclaim"
 new_links=''
 activated=false
 lock_owned=false
+reclaiming=false
 cleanup() {
     status=$?
     trap - 0 HUP INT TERM
@@ -159,17 +173,138 @@ cleanup() {
         done
     fi
     rm -rf "$stage"
-    [ "$lock_owned" = false ] || rmdir "$runtime/.install-lock"
+    [ "$lock_owned" = false ] || rm -rf "$lock"
+    [ "$reclaiming" = false ] || rmdir "$reclaim" 2>/dev/null || true
     exit "$status"
 }
 trap cleanup 0
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# ponytail: one installer per prefix; after SIGKILL remove a stale lock only
-# after confirming no installer is running.
-run "another installer may hold $runtime/.install-lock; if none is running, remove that directory and retry" mkdir "$runtime/.install-lock"
+
+# This boot, where the kernel names it: a lock from before a reboot is stale whatever
+# process now has its number.
+boot_id() {
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null || true
+}
+
+# Whether a process exists; another user's cannot be signalled but is listed by ps.
+process_running() {
+    kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
+}
+
+# When a process started, which tells it apart from a later one given the same number.
+# Linux counts clock ticks after boot, which setting the wall clock does not change;
+# elsewhere ps prints the start in a fixed language and zone, so installers run by launchd
+# and from a person's terminal agree. Fails when it cannot tell.
+process_start() {
+    if [ -r "/proc/$1/stat" ]; then
+        process_stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+        # Field 22. The command name (field 2) may hold spaces and parentheses, so the
+        # fields are counted from after its closing one.
+        # shellcheck disable=SC2086
+        set -- ${process_stat##*") "}
+        [ "$#" -ge 20 ] || return 1
+        shift 19
+        started=$1
+    else
+        started=$(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null) || return 1
+        # ps pads its column; single spaces compare the same whatever the padding.
+        # shellcheck disable=SC2086
+        set -- $started
+        started=$*
+    fi
+    [ -n "$started" ] || return 1
+    printf '%s\n' "$started"
+}
+
+# Whether $lock was left by an installer that can no longer be running: power loss,
+# SIGKILL or a VM shutdown skip the trap that removes it. Sets $lock_reason either way.
+# The owner is known by its process number and start, so a number that now belongs to
+# another process is recognized whatever that process is called.
+lock_is_stale() {
+    lock_pid=$(cat "$lock/pid" 2>/dev/null) || lock_pid=
+    lock_start=$(cat "$lock/start" 2>/dev/null) || lock_start=
+    lock_boot=$(cat "$lock/boot" 2>/dev/null) || lock_boot=
+    # Its owner records itself just after taking it; a new lock is never judged.
+    if [ -z "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        lock_reason="it was taken less than a minute ago"
+        return 1
+    fi
+    case "$lock_pid" in ''|*[!0-9]*) lock_pid= ;; esac
+    if [ -z "$lock_pid" ]; then
+        # Older installers record nothing.
+        unverified="it names no installer process"
+    elif [ -n "$lock_boot" ] && [ "$lock_boot" != "$(boot_id)" ]; then
+        lock_reason="installer process $lock_pid ran before this machine last started"
+        return 0
+    elif ! process_running "$lock_pid"; then
+        lock_reason="installer process $lock_pid is not running"
+        return 0
+    elif [ -z "$lock_start" ]; then
+        unverified="it does not record when installer process $lock_pid started"
+    elif running_start=$(process_start "$lock_pid"); then
+        if [ "$running_start" = "$lock_start" ]; then
+            lock_reason="installer process $lock_pid is running"
+            return 1
+        fi
+        lock_reason="process $lock_pid is not the installer that took it: that one started at $lock_start, this one at $running_start"
+        return 0
+    else
+        unverified="the start of process $lock_pid cannot be read"
+    fi
+    # An owner that cannot be checked: no installer runs for two hours (unattended runs are
+    # stopped after 30 minutes).
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+        lock_reason="$unverified, and it is over two hours old"
+        return 0
+    fi
+    lock_reason="$unverified, and it is under two hours old"
+    return 1
+}
+
+# One installer per prefix. The lock records its owner, so one left behind by a killed
+# installer is reclaimed instead of blocking every later update.
+take_lock() {
+    attempt mkdir "$lock" && return 0
+    [ -d "$lock" ] || fail "could not create the installer lock $lock
+$report"
+    held=$report
+    # Reclaimers take turns and judge the lock once alone: a lock another reclaimer has
+    # just replaced is under a minute old, so two installers never both reclaim it.
+    if ! mkdir "$reclaim" 2>/dev/null; then
+        # A turn lasts moments; an older one was left by a reclaimer that was killed.
+        if [ -n "$(find "$reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ] &&
+            rmdir "$reclaim" 2>/dev/null && mkdir "$reclaim" 2>/dev/null; then
+            say "removed $reclaim, left by an installer stopped while it reclaimed $lock"
+        else
+            fail "another installer is reclaiming $lock right now; if none is running, remove $reclaim and retry
+$held"
+        fi
+    fi
+    reclaiming=true
+    if lock_is_stale; then
+        say "removing a stale installer lock $lock: $lock_reason"
+        run "could not remove the stale installer lock $lock" rm -rf "$lock"
+        run "another installer took $lock while its stale copy was removed" mkdir "$lock"
+        lock_owned=true
+    fi
+    rmdir "$reclaim" 2>/dev/null || true
+    reclaiming=false
+    [ "$lock_owned" = true ] || fail "another installer may hold $lock ($lock_reason); if none is running, remove that directory and retry
+$held"
+}
+take_lock
 lock_owned=true
+# The owner: its start and this boot, then its number. A lock whose record is incomplete
+# is reclaimed only after two hours.
+own_start=$(process_start "$$") || own_start=
+[ -z "$own_start" ] || printf '%s\n' "$own_start" > "$lock/start" || true
+boot=$(boot_id)
+[ -z "$boot" ] || printf '%s\n' "$boot" > "$lock/boot" || true
+if ! printf '%s\n' "$$" > "$lock/pid"; then
+    say "could not record this installer's process in $lock/pid (the error is above); a lock left by a crash is reclaimed after two hours"
+fi
 mkdir -p "$stage/payload/bin" "$stage/payload/LICENSES"
 
 if [ -n "$git_rev" ]; then
@@ -192,7 +327,7 @@ configure_caddy_port() {
     port_start=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null) || port_start=1024
     case "$port_start" in ''|*[!0-9]*) fail "could not determine Linux privileged port permissions: /proc/sys/net/ipv4/ip_unprivileged_port_start says '$port_start'" ;; esac
     [ "$port_start" -gt 80 ] || return 0
-    command -v getcap >/dev/null 2>&1 || fail 'port 80 requires getcap/setcap; install the Linux libcap tools first'
+    command -v getcap >/dev/null 2>&1 || needs_person "port 80 requires getcap/setcap; install the Linux libcap tools first (searched PATH=$PATH)"
     caddy="$stage/payload/bin/caddy"
     current_caddy="$runtime/current/bin/caddy"
     if [ -f "$current_caddy" ] && caddy_has_capability "$current_caddy"; then
@@ -210,7 +345,7 @@ configure_caddy_port() {
 $report"
         fi
     fi
-    setcap_path=$(command -v setcap) || fail 'port 80 requires setcap; install the Linux libcap tools first'
+    setcap_path=$(command -v setcap) || needs_person "port 80 requires setcap; install the Linux libcap tools first (searched PATH=$PATH)"
     say 'granting Caddy permission to bind local port 80'
     report=
     if [ "$(id -u)" = 0 ]; then
@@ -222,7 +357,7 @@ $report"
         live 'could not grant Caddy port 80 permission' sudo "$setcap_path" cap_net_bind_service=ep "$caddy" </dev/tty
     else
         # ponytail: the non-interactive sudo attempt's own words, when there was one.
-        fail "Caddy needs port 80 permission; rerun this installation in a terminal with sudo access. The active release was not changed${report:+
+        needs_person "Caddy needs port 80 permission; rerun this installation in a terminal with sudo access. The active release was not changed${report:+
 $report}"
     fi
     caddy_has_capability "$caddy" || fail "Caddy port 80 permission was not applied
@@ -334,6 +469,7 @@ for binary in $commands; do
         new_links="$new_links $binary"
     fi
 done
+previous=$(readlink "$runtime/current" 2>/dev/null) || previous=
 run "could not prepare the switch to $release_name; the active release was not changed" ln -s "releases/$release_name" "$stage/current"
 case "$system" in
     Darwin) run "could not activate $release_name; the active release was not changed" mv -fh "$stage/current" "$runtime/current" ;;
@@ -347,6 +483,52 @@ for app in iam spacestation dm briefcase waveform commit remind hook; do
         rm "$link"
     fi
 done
+
+# Every update stores a full release; nothing needs the old ones. Kept: the active
+# release, the one it replaced (to roll back to), the one the updating interpreter runs
+# ($SILICON_KEEP_RELEASE) and any a running interpreter recorded in $runtime/running.
+# A removal that fails is a warning: the new release is already active.
+prune_releases() {
+    active=$(readlink "$runtime/current" 2>/dev/null) || active="releases/$release_name"
+    keep=" ${active##*/} ${previous##*/} "
+    if [ -n "${SILICON_KEEP_RELEASE:-}" ]; then
+        kept_release=${SILICON_KEEP_RELEASE%/}
+        keep="$keep${kept_release##*/} "
+    fi
+    for record in "$runtime/running"/*; do
+        [ -f "$record" ] || continue
+        record_pid=${record##*/}
+        case "$record_pid" in ''|*[!0-9]*) continue ;; esac
+        if process_running "$record_pid"; then
+            in_use=$(cat "$record" 2>/dev/null) || in_use=
+            keep="$keep${in_use##*/} "
+        else
+            rm -f "$record" 2>/dev/null || true
+        fi
+    done
+    for release in "$runtime/releases"/*; do
+        [ -e "$release" ] || [ -L "$release" ] || continue
+        case "$keep" in *" ${release##*/} "*) continue ;; esac
+        if attempt rm -rf "$release"; then
+            say "removed old release ${release##*/}"
+        else
+            say "warning: could not remove old release $release; $release_name is active regardless
+$report"
+        fi
+    done
+    # Staging directories of installers that were killed; this one holds the lock.
+    for old_stage in "$runtime"/.install.*; do
+        [ -d "$old_stage" ] && [ "$old_stage" != "$stage" ] || continue
+        [ -n "$(find "$old_stage" -maxdepth 0 -mmin +60 2>/dev/null)" ] || continue
+        if attempt rm -rf "$old_stage"; then
+            say "removed the staging directory $old_stage of an installer that did not finish"
+        else
+            say "warning: could not remove the staging directory $old_stage
+$report"
+        fi
+    done
+}
+prune_releases
 say "installed $version runtime in $prefix/bin"
 quoted_bin=$(printf '%s' "$prefix/bin" | sed "s/'/'\\\\''/g")
 path_line="export PATH='$quoted_bin':\"\$PATH\""

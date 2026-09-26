@@ -4,6 +4,45 @@ use serde_json::{json, Value as Json};
 use serde_yaml::{Mapping, Value as Yaml};
 use std::path::Path;
 
+/// Deepest nesting of branches, catches and generated flows. A flow expression that
+/// produces itself would otherwise recurse until the thread's stack overflows, which
+/// aborts the whole interpreter instead of failing one step.
+const MAX_DEPTH: usize = 64;
+
+/// A send refused because the interpreter is stopping or the Silicon disconnected. That is
+/// not the step's failure, so no `catch` handles it: the flow stops there, and the Ting
+/// batch that ran it stays queued for the next connection instead of being dropped as done.
+#[derive(Debug)]
+pub struct Interrupted(pub String);
+
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
+/// True when `error` stopped a flow because the work is being torn down.
+pub fn interrupted(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Interrupted>().is_some()
+}
+
+/// The runtime's own words for a send refused during shutdown or disconnect. Matched whole,
+/// so a tool's output that merely mentions them is still an ordinary failure.
+const TEARDOWN: [&str; 3] = [
+    "interpreter is stopping",
+    "interpreter stopped",
+    "silicon disconnected",
+];
+
+fn teardown(error: &anyhow::Error) -> bool {
+    interrupted(error)
+        || error
+            .chain()
+            .any(|cause| TEARDOWN.contains(&cause.to_string().as_str()))
+}
+
 fn get<'a>(map: &'a Mapping, name: &str) -> Option<&'a Yaml> {
     map.get(Yaml::String(name.into()))
 }
@@ -93,6 +132,14 @@ fn string_field(value: &Yaml) -> Result<()> {
 
 /// Validate structure and every CEL expression, including unselected branches/catches.
 pub fn validate(flow: &Yaml) -> Result<()> {
+    validate_at(flow, 0)
+}
+
+fn validate_at(flow: &Yaml, depth: usize) -> Result<()> {
+    if depth > MAX_DEPTH {
+        bail!("flow nesting exceeds {MAX_DEPTH} levels");
+    }
+    let validate = |flow: &Yaml| validate_at(flow, depth + 1);
     let mut chain = false;
     for (index, step) in steps(flow)?.iter().enumerate() {
         let result = (|| {
@@ -183,6 +230,8 @@ struct Runner<'a, F> {
     home: &'a Path,
     origin: &'a str,
     send: F,
+    /// The branches, catches and generated flows entered to reach the running step.
+    path: Vec<String>,
 }
 
 impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
@@ -201,9 +250,23 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
         )
     }
 
+    /// Run a branch, catch or generated flow one level deeper, refusing past MAX_DEPTH.
+    fn nested(&mut self, label: String, flow: &Yaml) -> Result<()> {
+        if self.path.len() >= MAX_DEPTH {
+            bail!(
+                "flow nesting exceeds {MAX_DEPTH} levels at {} > {label}; a flow expression may be producing itself",
+                self.path.join(" > ")
+            );
+        }
+        self.path.push(label);
+        let result = self.run(flow);
+        self.path.pop();
+        result
+    }
+
     fn run(&mut self, flow: &Yaml) -> Result<()> {
         let mut chain: Option<bool> = None;
-        for step in steps(flow)? {
+        for (index, step) in steps(flow)?.iter().enumerate() {
             if matches!(step, Yaml::String(_) | Yaml::Tagged(_)) {
                 chain = None;
                 let result = (|| {
@@ -218,9 +281,12 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     validate(&expanded).with_context(|| {
                         format!("flow expression produced an invalid flow {produced}")
                     })?;
-                    self.run(&expanded)
+                    self.nested(format!("step {index} (expression)"), &expanded)
                 })();
                 if let Err(error) = result {
+                    if interrupted(&error) {
+                        return Err(error);
+                    }
                     let source = match step {
                         Yaml::Tagged(tag) => match tag.value.as_str() {
                             Some(value) => format!("{} {value}", tag.tag),
@@ -237,7 +303,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
             let (name, body, catch) = operation(step)?;
             if name == "else" {
                 if chain.take() == Some(false) {
-                    self.run(body)?;
+                    self.nested(format!("step {index} else"), body)?;
                 }
                 continue;
             }
@@ -245,7 +311,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                 chain = None;
             }
             self.log("flow", &describe(name, body, summarize))?;
-            match self.step(name, body) {
+            match self.step(index, name, body) {
                 Ok(matched) if name == "if" => {
                     chain = Some(chain.unwrap_or(false) || matched);
                     if body
@@ -256,6 +322,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     }
                 }
                 Ok(_) => {}
+                Err(error) if interrupted(&error) => return Err(error),
                 Err(error) => {
                     if name == "if" {
                         chain = Some(chain.unwrap_or(false));
@@ -268,7 +335,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                             .as_object_mut()
                             .unwrap()
                             .insert("error".into(), json!(format!("{error:#}")));
-                        let result = self.run(catch);
+                        let result = self.nested(format!("step {index} catch"), catch);
                         if let Some(previous) = previous {
                             self.env["error"] = previous;
                         } else {
@@ -286,7 +353,7 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
         render(required(map, key)?, &self.env, self.home, self.origin)
     }
 
-    fn step(&mut self, name: &str, body: &Yaml) -> Result<bool> {
+    fn step(&mut self, index: usize, name: &str, body: &Yaml) -> Result<bool> {
         let map = body
             .as_mapping()
             .ok_or_else(|| anyhow!("{name} must be an object, got {body:?}"))?;
@@ -299,9 +366,9 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                     _ => bail!("if.condition must evaluate to true or false, got {condition:?}"),
                 };
                 if matched {
-                    self.run(required(map, "then")?)?;
+                    self.nested(format!("step {index} if.then"), required(map, "then")?)?;
                 } else if let Some(branch) = get(map, "else") {
-                    self.run(branch)?;
+                    self.nested(format!("step {index} if.else"), branch)?;
                 }
                 return Ok(matched);
             }
@@ -326,7 +393,22 @@ impl<F: FnMut(&str, &str, Option<&str>) -> Result<()>> Runner<'_, F> {
                 if session.as_deref() == Some("") {
                     bail!("send.session_id evaluated to an empty string");
                 }
-                (self.send)(&target, &message, session.as_deref())?;
+                if let Err(error) = (self.send)(&target, &message, session.as_deref()) {
+                    if !teardown(&error) {
+                        return Err(error);
+                    }
+                    // Recorded here, where it happened; the levels it passes through stay quiet.
+                    let step = describe(name, body, str::to_owned);
+                    let entry = format!("{step}: {error:#}; the flow stops here and no catch runs");
+                    if let Err(log) = self.log("error", &entry) {
+                        crate::stderr_line(&format!("{log:#}"));
+                    }
+                    return Err(if interrupted(&error) {
+                        error
+                    } else {
+                        error.context(Interrupted(format!("the flow stopped at `send {target}`")))
+                    });
+                }
                 self.log("send", &format!("{target}: {message}"))?;
             }
             "log" => self.log("runtime", &self.field(map, "message")?)?,
@@ -353,6 +435,7 @@ where
         home,
         origin,
         send,
+        path: Vec::new(),
     };
     runner.run(flow)?;
     Ok(runner.env["var"].take())
@@ -599,6 +682,138 @@ mod tests {
         assert_eq!(
             error,
             "flow step 0: if.then: flow step 0: send.message: expected a string expression, got Sequence [String(\"x\")]"
+        );
+    }
+
+    #[test]
+    fn a_send_refused_by_shutdown_stops_the_flow_past_every_catch() {
+        for refusal in [
+            "interpreter is stopping",
+            "silicon disconnected",
+            "interpreter stopped",
+        ] {
+            let flow: Yaml = serde_yaml::from_str(
+                r#"
+- send: {isi: first, message: one}
+- if:
+    condition: '{true}'
+    then:
+      - send:
+          isi: refused
+          message: two
+          catch: [{send: {isi: caught, message: no}}]
+    catch: [{send: {isi: outer, message: no}}]
+- send: {isi: after, message: three}
+"#,
+            )
+            .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let mut sent = Vec::new();
+            let error = execute(
+                &flow,
+                json!({}),
+                dir.path(),
+                "interpreter",
+                |target, _, _| {
+                    sent.push(target.to_owned());
+                    if target == "refused" {
+                        return Err(anyhow!("{refusal}").context("delivery to refused"));
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert!(interrupted(&error), "{error:#}");
+            assert_eq!(
+                format!("{error:#}"),
+                format!("the flow stopped at `send refused`: delivery to refused: {refusal}")
+            );
+            assert_eq!(sent, ["first", "refused"]);
+            // One entry where it happened, not one per level it passed through.
+            let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+            let errors: Vec<_> = log
+                .lines()
+                .filter(|line| line.starts_with("[error] "))
+                .collect();
+            assert_eq!(errors.len(), 1, "{log}");
+            assert!(
+                errors[0].ends_with(&format!(
+                    "[send refused: delivery to refused: {refusal}; the flow stops here and no catch runs]"
+                )),
+                "{log}"
+            );
+        }
+        // A tool that merely mentions those words is an ordinary, catchable failure.
+        let flow: Yaml = serde_yaml::from_str(
+            "- send: {isi: a, message: x, catch: [{var: {name: caught, value: '{error}'}}]}",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let vars = execute(&flow, json!({}), dir.path(), "interpreter", |_, _, _| {
+            bail!("the tool said: silicon disconnected from its VPN")
+        })
+        .unwrap();
+        assert_eq!(
+            vars["caught"],
+            "the tool said: silicon disconnected from its VPN"
+        );
+    }
+
+    #[test]
+    fn a_flow_that_produces_itself_fails_one_step_instead_of_the_stack() {
+        let flow: Yaml = serde_yaml::from_str(
+            r#"
+- var: {name: s, value: '\{[var.s]\}'}
+- '{[var.s]}'
+- send: {isi: after, message: still runs}
+"#,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut sent = Vec::new();
+        execute(
+            &flow,
+            json!({}),
+            dir.path(),
+            "interpreter",
+            |target, _, _| {
+                sent.push(target.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(sent, ["after"]);
+        let log = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        let errors: Vec<_> = log
+            .lines()
+            .filter(|line| line.starts_with("[error] "))
+            .collect();
+        assert_eq!(errors.len(), 1, "{log}");
+        // The top-level step, then the list each expansion produces, over and over.
+        let path = std::iter::once("step 1 (expression)")
+            .chain(std::iter::repeat_n("step 0 (expression)", MAX_DEPTH - 1))
+            .collect::<Vec<_>>()
+            .join(" > ");
+        assert!(
+            errors[0].contains(&format!(
+                "flow nesting exceeds {MAX_DEPTH} levels at {path} > step 0 (expression); a flow expression may be producing itself"
+            )),
+            "{log}"
+        );
+
+        let mut deep = Yaml::Sequence(Vec::new());
+        for _ in 0..=MAX_DEPTH {
+            let mut body = Mapping::new();
+            body.insert("condition".into(), "true".into());
+            body.insert("then".into(), deep);
+            let mut step = Mapping::new();
+            step.insert("if".into(), Yaml::Mapping(body));
+            deep = Yaml::Sequence(vec![Yaml::Mapping(step)]);
+        }
+        let error = format!("{:#}", validate(&deep).unwrap_err());
+        assert!(
+            error.ends_with(&format!("flow nesting exceeds {MAX_DEPTH} levels")),
+            "{error}"
         );
     }
 }

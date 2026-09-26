@@ -85,13 +85,10 @@ pub struct Config {
 
 impl Config {
     /// Flow stays editable while a Silicon is connected; compile-time expressions are untouched.
+    /// Every batch sees the file as it is now; the parse is reused only while it is unchanged.
     pub fn load_flow(&self) -> Result<Yaml> {
-        let source = fs::read_to_string(&self.path)
-            .with_context(|| format!("read {}", self.path.display()))?;
-        let document = parse_document(&source, &mut Vec::new())
-            .with_context(|| format!("invalid silicon YAML in {}", self.path.display()))?;
-        let flow = document["flow"].clone();
-        crate::eval::validate(&flow).context("invalid flow expression syntax")?;
+        let flow = flow_at(&self.path, SETTLE)?;
+        // Sends are checked against this connection's ISIs, which a reconnect may change.
         validate_static_sends(&flow, &self.isi)?;
         Ok(flow)
     }
@@ -101,6 +98,7 @@ impl Config {
             .as_ref()
             .canonicalize()
             .with_context(|| format!("config not found: {}", path.as_ref().display()))?;
+        utf8(&path, "the config path")?;
         let mut warnings = Vec::new();
         let source =
             fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
@@ -143,8 +141,9 @@ impl Config {
         if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
             crate::state::validate_wsl_filesystem(&home)?;
         }
-        document["silicon"]["SILICON_HOME"] = Yaml::String(home.to_string_lossy().into_owned());
-        env["silicon"]["SILICON_HOME"] = json!(home);
+        let text = utf8(&home, "silicon.SILICON_HOME")?.to_owned();
+        document["silicon"]["SILICON_HOME"] = Yaml::String(text.clone());
+        env["silicon"]["SILICON_HOME"] = Json::String(text);
         for key in ["id", "org_id", "token", "timezone", "SILICON_ORG"] {
             evaluate_field(
                 &mut document["silicon"],
@@ -357,7 +356,7 @@ impl Config {
             if !matches!(kind, "persistent" | "ephemeral") {
                 bail!("isi.{name}.session_type must be persistent or ephemeral, found {kind:?}");
             }
-            validate_isi_blocks(name, isi)?;
+            validate_isi_blocks(name, isi, &mut self.warnings)?;
             let allowed = self
                 .access
                 .get(name)
@@ -382,6 +381,93 @@ impl Config {
         validate_static_sends(&self.flow, &self.isi)?;
         Ok(())
     }
+}
+
+/// Expressions, the YAML, the saved connection registry and every answer about a connection
+/// carry paths as text, so a path that is not UTF-8 is refused by name instead of failing
+/// (or panicking) later. Unlike a sub-second interval this refuses nothing 5.0.2 kept: it
+/// panicked on such a SILICON_HOME and could not save a connection with such a YAML path,
+/// so no saved Silicon has one to restore. Carried lossily, the path would connect a
+/// Silicon whose registry entry cannot be written, which stops every Silicon being saved.
+fn utf8<'a>(path: &'a Path, what: &str) -> Result<&'a str> {
+    path.to_str().ok_or_else(|| {
+        anyhow!(
+            "{what} {} is not valid UTF-8, and the saved connection registry and every answer about a connection carry it as text; rename it so every part of the path is UTF-8",
+            path.display()
+        )
+    })
+}
+
+/// How long after its last change a YAML file must be before its parse is reused.
+/// Timestamps are coarse on some filesystems, so an edit within the same tick as the read
+/// could keep every stamp; a file that changed that recently is simply read again.
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Which version of a file was read: an edit, a replacement or a restore changes one of these.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Stamp {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(path).with_context(|| format!("read {}", path.display()))?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.size(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
+
+    /// True when the file last changed at least `settle` ago by the wall clock.
+    fn settled(&self, settle: std::time::Duration) -> bool {
+        let (seconds, nanos) = self.modified.max(self.changed);
+        let last = std::time::Duration::new(
+            u64::try_from(seconds).unwrap_or(0),
+            u32::try_from(nanos.clamp(0, 999_999_999)).unwrap_or(0),
+        );
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok_and(|now| last + settle <= now)
+    }
+}
+
+/// Parsed, syntax-checked flows by canonical YAML path, with the stamp they were read at.
+static FLOWS: std::sync::Mutex<BTreeMap<PathBuf, (Stamp, Yaml)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// The flow in `path` as it is on disk now. Every Ting batch loads it, so the parse and CEL
+/// syntax check are reused while the file keeps its stamp; any change reads it again.
+fn flow_at(path: &Path, settle: std::time::Duration) -> Result<Yaml> {
+    use crate::Recover;
+    let before = Stamp::of(path)?;
+    if let Some((stamp, flow)) = FLOWS.lock().recover().get(path) {
+        if *stamp == before {
+            return Ok(flow.clone());
+        }
+    }
+    let source = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let document = parse_document(&source, &mut Vec::new())
+        .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
+    let flow = document["flow"].clone();
+    crate::eval::validate(&flow).context("invalid flow expression syntax")?;
+    // Kept only when nothing changed while it was read and the change before is settled.
+    if before.settled(settle) && Stamp::of(path).is_ok_and(|after| after == before) {
+        let mut flows = FLOWS.lock().recover();
+        // One entry per connected YAML; files connected long ago are simply dropped.
+        if flows.len() >= 64 {
+            flows.clear();
+        }
+        flows.insert(path.to_owned(), (before, flow.clone()));
+    }
+    Ok(flow)
 }
 
 /// Rebuild the chain link by link so every cause survives with only credential values masked.
@@ -881,7 +967,10 @@ fn nonempty_scalar(value: &Yaml, path: &str) -> Result<()> {
     bail!("{path} must be a nonempty scalar, found {}", shown(value))
 }
 
-fn interval(value: &Yaml, path: &str) -> Result<()> {
+/// A literal below a second is accepted, as 5.0.2 accepted it, so a Silicon saved with one
+/// still restores after an update; the runtime floors every interval at a second, which a
+/// warning says. Anything not positive, not finite or above ten years is refused.
+fn interval(value: &Yaml, path: &str, warnings: &mut Vec<String>) -> Result<()> {
     nonempty_scalar(value, path)?;
     let source = value
         .as_str()
@@ -903,13 +992,15 @@ fn interval(value: &Yaml, path: &str) -> Result<()> {
     } else {
         (source, 60.)
     };
-    if number.trim().parse::<f64>().is_ok_and(|n| {
-        let seconds = n * multiplier;
-        seconds.is_finite() && seconds > 0.0 && seconds <= 315360000.
-    }) {
-        return Ok(());
+    match number.trim().parse::<f64>().map(|n| n * multiplier) {
+        Ok(seconds) if seconds.is_finite() && seconds > 0.0 && seconds <= 315360000. => {
+            if seconds < 1.0 {
+                warnings.push(format!("{path} is below 1 second; it runs every second"));
+            }
+            Ok(())
+        }
+        _ => bail!("{path} must be a positive interval of at most ten years, e.g. 30min, or an expression, found {source:?}"),
     }
-    bail!("{path} must be a positive interval of at most ten years, e.g. 30min, or an expression, found {source:?}")
 }
 
 fn nonempty_string(value: &Yaml, path: &str) -> Result<()> {
@@ -919,7 +1010,7 @@ fn nonempty_string(value: &Yaml, path: &str) -> Result<()> {
     bail!("{path} must be a nonempty string, found {}", shown(value))
 }
 
-fn validate_isi_blocks(name: &str, isi: &Isi) -> Result<()> {
+fn validate_isi_blocks(name: &str, isi: &Isi, warnings: &mut Vec<String>) -> Result<()> {
     let path = format!("isi.{name}.dna");
     let dna = isi
         .dna
@@ -940,11 +1031,15 @@ fn validate_isi_blocks(name: &str, isi: &Isi) -> Result<()> {
             );
         }
     }
-    interval(&dna["next_refresh"], &format!("{path}.next_refresh"))?;
+    interval(
+        &dna["next_refresh"],
+        &format!("{path}.next_refresh"),
+        warnings,
+    )?;
     if let Some(heartbeat) = &isi.heartbeat {
         let path = format!("isi.{name}.heartbeat");
         fields(heartbeat, &path, &["next", "message"])?;
-        interval(&heartbeat["next"], &format!("{path}.next"))?;
+        interval(&heartbeat["next"], &format!("{path}.next"), warnings)?;
         nonempty_string(&heartbeat["message"], &format!("{path}.message"))?;
     }
     if let Some(suggestion) = &isi.new_session_suggestion {
@@ -957,6 +1052,7 @@ fn validate_isi_blocks(name: &str, isi: &Isi) -> Result<()> {
         interval(
             &suggestion["cooldown_minutes"],
             &format!("{path}.cooldown_minutes"),
+            warnings,
         )?;
         let count = &suggestion["min_new_messages"];
         if !count.as_u64().is_some_and(|n| n > 0)
@@ -1440,6 +1536,8 @@ fn strip_comment(source: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Recover;
+    use std::time::Duration;
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -2190,6 +2288,175 @@ flow:
         assert!(error.contains("found \"Mars/Olympus\""), "{error}");
         let error = format!("{:#}", set_app(&path, "Bad App", true).unwrap_err());
         assert!(error.contains("got \"Bad App\""), "{error}");
+    }
+
+    const MINIMAL: &str = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: [{log: {message: before}}]\n";
+
+    #[test]
+    fn a_flow_is_parsed_once_and_read_again_after_any_edit() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        fs::write(&path, MINIMAL)?;
+        let cfg = Config::load(&path)?;
+        let message = |flow: &Yaml| flow[0]["log"]["message"].as_str().unwrap().to_owned();
+        assert_eq!(message(&cfg.load_flow()?), "before");
+        // An edit of the same length a moment later is seen by the very next batch: a file
+        // that changed within the settle time is always read again.
+        fs::write(&path, MINIMAL.replace("before", "after!"))?;
+        assert_eq!(message(&cfg.load_flow()?), "after!");
+        // The unsettled parse was not kept. (A slow load above may have kept the settled
+        // "before" parse, but under the stamp it was read at, which no longer matches.)
+        let now = Stamp::of(&cfg.path)?;
+        assert!(FLOWS
+            .lock()
+            .recover()
+            .get(&cfg.path)
+            .is_none_or(|(stamp, _)| *stamp != now));
+        // A settled file's parse is reused while its stamp holds...
+        assert_eq!(message(&flow_at(&cfg.path, Duration::ZERO)?), "after!");
+        let stamp = FLOWS.lock().recover()[&cfg.path].0;
+        FLOWS.lock().recover().insert(
+            cfg.path.clone(),
+            (stamp, serde_yaml::from_str("[{log: {message: reused}}]")?),
+        );
+        assert_eq!(message(&flow_at(&cfg.path, Duration::ZERO)?), "reused");
+        // ...and a change replaces it. (Without the settle time only a stamp that moved is
+        // noticed; timestamps may not have ticked yet, so this edit changes the length.)
+        fs::write(&path, MINIMAL.replace("before", "edited again"))?;
+        assert_eq!(
+            message(&flow_at(&cfg.path, Duration::ZERO)?),
+            "edited again"
+        );
+        // Send targets are checked against the connection's ISIs on every load, cached or not.
+        fs::write(
+            &path,
+            MINIMAL.replace(
+                "{log: {message: before}}",
+                "{send: {isi: ghost, message: hi}}",
+            ),
+        )?;
+        flow_at(&cfg.path, Duration::ZERO)?;
+        let error = format!("{:#}", cfg.load_flow().unwrap_err());
+        assert!(
+            error.contains("flow sends to unknown isi \"ghost\""),
+            "{error}"
+        );
+        // A missing file names itself.
+        fs::remove_file(&path)?;
+        let error = format!("{:#}", cfg.load_flow().unwrap_err());
+        assert!(
+            error.starts_with(&format!("read {}: ", cfg.path.display())),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn literal_intervals_below_a_second_load_with_a_warning() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        let with = |block: &str| {
+            MINIMAL.replace(
+                "    model: code\n",
+                &format!("    model: code\n    {block}\n"),
+            )
+        };
+        let below =
+            |field: &str| format!("isi.worker.{field} is below 1 second; it runs every second");
+        // 5.0.2 accepted these, so a Silicon saved with one must still restore after an
+        // update; the runtime runs them every second and the load says so.
+        for (yaml, field) in [
+            (with("heartbeat: {next: 0.5s, message: hi}"), "heartbeat.next"),
+            // Bare numbers are minutes: 0.001 is 0.06 seconds.
+            (with("heartbeat: {next: 0.001, message: hi}"), "heartbeat.next"),
+            (
+                with("new_session_suggestion: {cooldown_minutes: 0.01, min_new_messages: 2, suggestion_message: hi}"),
+                "new_session_suggestion.cooldown_minutes",
+            ),
+            (
+                MINIMAL.replace("next_refresh: 30min", "next_refresh: 0.01"),
+                "dna.next_refresh",
+            ),
+        ] {
+            fs::write(&path, &yaml)?;
+            let cfg = Config::load(&path).with_context(|| yaml.clone())?;
+            assert_eq!(cfg.warnings, [below(field)], "{yaml}");
+        }
+        for block in [
+            "heartbeat: {next: 1s, message: hi}",
+            "heartbeat: {next: 0.02, message: hi}",
+            "heartbeat: {next: '! echo 0.5s', message: hi}",
+            "new_session_suggestion: {cooldown_minutes: 3s, min_new_messages: 2, suggestion_message: hi}",
+        ] {
+            fs::write(&path, with(block))?;
+            let cfg = Config::load(&path).with_context(|| block.to_owned())?;
+            assert!(cfg.warnings.is_empty(), "{block}: {:?}", cfg.warnings);
+        }
+        // Nothing, a negative, a non-finite or a longer than ten-year interval is refused
+        // as 5.0.2 refused it.
+        for value in [
+            "0s",
+            "0",
+            "-1",
+            "-0.5s",
+            "nan",
+            "inf",
+            "5256001",
+            "315360001s",
+            "soon",
+        ] {
+            fs::write(
+                &path,
+                MINIMAL.replace("next_refresh: 30min", &format!("next_refresh: {value}")),
+            )?;
+            let error = format!("{:#}", Config::load(&path).unwrap_err());
+            assert!(
+                error.contains(&format!("isi.worker.dna.next_refresh must be a positive interval of at most ten years, e.g. 30min, or an expression, found {value:?}")),
+                "{value}: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn paths_that_are_not_utf8_are_refused_by_name() -> Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9");
+        let latin = Path::new("/srv").join(name);
+        assert_eq!(
+            utf8(Path::new("/srv/caf\u{e9}"), "silicon.SILICON_HOME")?,
+            "/srv/caf\u{e9}"
+        );
+        let error = format!("{:#}", utf8(&latin, "silicon.SILICON_HOME").unwrap_err());
+        assert_eq!(
+            error,
+            "silicon.SILICON_HOME /srv/caf\u{fffd} is not valid UTF-8, and the saved connection registry and every answer about a connection carry it as text; rename it so every part of the path is UTF-8"
+        );
+        // Why it is refused rather than carried lossily: the connection registry and the
+        // connect answer serialize these paths, and JSON cannot hold one.
+        assert!(serde_json::to_value(&latin).is_err());
+        let dir = tempfile::tempdir()?;
+        let latin = dir.path().join(name);
+        // APFS refuses such names outright, so nothing there can reach a Silicon.
+        if fs::create_dir(&latin).is_err() {
+            return Ok(());
+        }
+        std::os::unix::fs::symlink(&latin, dir.path().join("home"))?;
+        let path = dir.path().join("silicon.yaml");
+        fs::write(&path, MINIMAL.replace("! pwd", "home"))?;
+        let error = format!("{:#}", Config::load(&path).unwrap_err());
+        assert!(
+            error.contains("silicon.SILICON_HOME ") && error.contains(" is not valid UTF-8"),
+            "{error}"
+        );
+        let inside = latin.join("silicon.yaml");
+        fs::write(&inside, MINIMAL)?;
+        let error = format!("{:#}", Config::load(&inside).unwrap_err());
+        assert!(
+            error.starts_with("the config path ") && error.contains(" is not valid UTF-8"),
+            "{error}"
+        );
+        Ok(())
     }
 
     #[test]

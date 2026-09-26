@@ -58,10 +58,19 @@ enum SiliconCommand {
         #[arg(long)]
         no_proxy: bool,
     },
-    /// Stop the interpreter and its child processes.
-    Stop,
+    /// Stop the interpreter and its child processes, and wait until it has exited.
+    Stop {
+        /// Terminate an interpreter that does not stop: SIGTERM, then SIGKILL 10 seconds later.
+        #[arg(long)]
+        force: bool,
+    },
     /// Install a newer stable GitHub release into a managed bundle installation.
     Update,
+    /// Start the interpreter at login or boot and restart it after a crash.
+    Service {
+        #[command(subcommand)]
+        action: crate::service::Action,
+    },
     /// Install an app for this system through Honeycomb, for example 'dm'.
     Install { app_id: String },
     /// Remove a Honeycomb-managed app from this home.
@@ -310,6 +319,7 @@ pub fn silicon() -> Result<()> {
         SiliconCommand::Connect { yaml } => {
             let value = if cli.json {
                 let cfg = server::compile(yaml)?;
+                supervise(&cfg);
                 server::call(&server::daemon(true)?, "connect", json!({"yaml":cfg.path}))?
             } else {
                 crate::progress::connect(yaml)?
@@ -348,6 +358,7 @@ pub fn silicon() -> Result<()> {
             if cli.json {
                 print_json(&value)?;
             } else {
+                warnings(&value["warnings"]);
                 println!("disconnected {}", field(&value, "disconnected")?);
             }
         }
@@ -364,7 +375,7 @@ pub fn silicon() -> Result<()> {
             let filter = glob(pattern.as_deref().unwrap_or("*"), true, false)?;
             let rows: Vec<_> = connections()?
                 .into_iter()
-                .filter(|row| filter.is_match(&row.id))
+                .filter(|row| filter.is_match(row["id"].as_str().unwrap_or("")))
                 .collect();
             if cli.json {
                 print_json(&json!(rows))?;
@@ -381,26 +392,89 @@ pub fn silicon() -> Result<()> {
                 },
         } => logs(&silicon, lines, !no_follow, cli.json)?,
         SiliconCommand::Serve { port, no_proxy } => server::serve(port, no_proxy)?,
-        SiliconCommand::Stop => {
-            let result = server::call(&server::daemon(false)?, "shutdown", json!({}))?;
+        SiliconCommand::Stop { force } => {
+            let terminal = std::io::stderr().is_terminal() && !cli.json;
+            // Before the shutdown: a cron `service ensure` between the interpreter's exit and
+            // a later marker would start it again.
+            if let Err(error) = crate::service::note_stopped() {
+                eprintln!("warning: {error:#}");
+            }
+            let result = server::stop(force, |pid| {
+                if terminal {
+                    eprintln!(
+                        "waiting for the interpreter{} to finish stopping",
+                        pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
+                    );
+                }
+            });
+            // The marker stays even when this failed: the interpreter may be stopping slowly or
+            // waiting out a restart delay, and the portable supervisor must not start it again.
+            // `silicon connect` and `silicon service restart` clear it.
+            let result = match result {
+                Ok(result) => result,
+                // Nothing runs, but the portable supervisor may be waiting to restart it: the
+                // marker keeps it stopped, so this is a stop, not a failure.
+                Err(error)
+                    if !server::interpreter_present()
+                        && matches!(crate::service::installed(), Ok(Some(ref s)) if s.mechanism() == "run") =>
+                {
+                    if cli.json {
+                        print_json(&json!({"stopped": true, "running": false}))?;
+                    } else {
+                        println!("the interpreter was not running ({error:#}); it stays stopped until the next boot or `silicon connect`");
+                    }
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            let supervised = matches!(crate::service::installed(), Ok(Some(_)));
             if cli.json {
                 print_json(&result)?;
+            } else if supervised {
+                println!("interpreter stopped; it starts again at the next login or boot, or with `silicon connect`. `silicon service uninstall` turns autostart off");
             } else {
-                println!("interpreter stopping");
+                println!("interpreter stopped");
             }
         }
+        SiliconCommand::Service { action } => crate::service::cli(action, cli.json)?,
         SiliconCommand::Update => {
             let installed = crate::update::install_latest()?;
+            // A running interpreter restarts into the new release by itself once it is idle;
+            // so does one still running an older release than this, the installed one.
+            let behind = || {
+                server::daemon(false)
+                    .ok()
+                    .filter(|daemon| daemon.version != env!("CARGO_PKG_VERSION"))
+            };
+            let restart = match &installed {
+                Some(_) => Some(
+                    server::daemon(false)
+                        .and_then(|daemon| server::call(&daemon, "restart", json!({}))),
+                ),
+                None => behind().map(|daemon| server::call(&daemon, "restart", json!({}))),
+            };
+            let requested = matches!(restart, Some(Ok(_)));
             if cli.json {
                 print_json(
-                    &json!({"updated": installed.is_some(), "executable": installed, "restart_required": installed.is_some()}),
+                    &json!({"updated": installed.is_some(), "executable": installed, "restart_required": installed.is_some(), "restart_requested": requested}),
                 )?;
-            } else if installed.is_some() {
-                println!(
-                    "updated; restart the interpreter with `silicon stop`, then `silicon serve`"
-                );
             } else {
-                println!("Silicon {} is current", env!("CARGO_PKG_VERSION"));
+                match restart {
+                    None => println!("Silicon {} is current", env!("CARGO_PKG_VERSION")),
+                    Some(Ok(_)) if installed.is_none() => println!(
+                        "Silicon {} is current; the running interpreter is on an older release and restarts into this one as soon as no work is running",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    Some(Ok(_)) => println!(
+                        "updated; the running interpreter restarts into the new release as soon as no work is running"
+                    ),
+                    Some(Err(error)) if never_started(&error) => {
+                        println!("updated; the interpreter uses the new release when it next starts")
+                    }
+                    Some(Err(error)) => println!(
+                        "updated; the interpreter uses the new release when it next starts. The running interpreter could not be asked to restart ({error:#}); to restart it now, run `silicon stop`, then `silicon connect` with your silicon.yaml"
+                    ),
+                }
             }
         }
         SiliconCommand::Web { no_open } => {
@@ -611,8 +685,50 @@ fn file_bug_report(program: &str, title: &str, body: &str) -> Result<()> {
     std::io::stderr().write_all(&output.stderr)?;
     Ok(())
 }
-/// Only a missing daemon.json means no interpreter was ever started. A leftover one,
-/// or any other failure, is worth a reason.
+/// Before `connect` starts or reaches the interpreter: install autostart the first time
+/// (the interpreter then comes back after a reboot or crash), warn about paths a supervisor
+/// cannot read, and let an interpreter started without a supervisor hand over to it. All of
+/// it goes to stderr, so `--json` output stays JSON, and none of it can fail the connect.
+pub(crate) fn supervise(cfg: &crate::config::Config) {
+    match crate::service::ensure_for_connect() {
+        Ok(Some(note)) => eprintln!("{note}"),
+        Ok(None) => {}
+        Err(error) => eprintln!(
+            "warning: autostart was not set up; the interpreter runs without a supervisor: {error:#}"
+        ),
+    }
+    for warning in crate::service::connect_warnings(&cfg.path, &cfg.home) {
+        eprintln!("warning: {warning}");
+    }
+    let Ok(Some(service)) = crate::service::installed() else {
+        return;
+    };
+    // Started in the background by an earlier connect, not by a supervisor: it hands over to
+    // one whose interpreter can wait beside it, once no work is running. One run in a terminal
+    // or by the user's own process manager is theirs and is left alone.
+    if !crate::server::HANDOVER_MECHANISMS.contains(&service.mechanism()) {
+        return;
+    }
+    if let Ok(daemon) = server::daemon(false) {
+        if daemon.supervisor.is_none() && daemon.detached {
+            match server::call(&daemon, "restart", json!({"handover": true})) {
+                Ok(_) => eprintln!(
+                    "the running interpreter (pid {}) hands over to the {} service as soon as no work is running",
+                    daemon.pid,
+                    service.mechanism()
+                ),
+                Err(error) => eprintln!(
+                    "warning: the running interpreter (pid {}) was not started by the {} service and could not be asked to hand over to it: {error:#}",
+                    daemon.pid,
+                    service.mechanism()
+                ),
+            }
+        }
+    }
+}
+/// Only a missing daemon.json with nothing holding daemon.lock means no interpreter was
+/// ever started. A leftover file, one that is starting or restarting (it holds the lock
+/// before it writes daemon.json), or any other failure is worth a reason.
 fn never_started(error: &anyhow::Error) -> bool {
     error
         .root_cause()
@@ -622,8 +738,10 @@ fn never_started(error: &anyhow::Error) -> bool {
             .join("daemon.json")
             .try_exists()
             .unwrap_or(true)
+        && !server::interpreter_present()
 }
-fn connections() -> Result<Vec<server::Connection>> {
+/// Saved Silicons as the interpreter lists them, each with its state.
+fn connections() -> Result<Vec<Value>> {
     let daemon = match server::daemon(false) {
         Ok(daemon) => daemon,
         Err(error) => {
@@ -636,20 +754,70 @@ fn connections() -> Result<Vec<server::Connection>> {
         }
     };
     let value = server::call(&daemon, "list", json!({}))?;
-    serde_json::from_value(value.clone()).with_context(|| {
-        format!(
-            "interpreter returned an invalid connection list: {}",
+    let rows = value.as_array().cloned().ok_or_else(|| {
+        anyhow!(
+            "interpreter returned an invalid connection list (expected an array): {}",
             shown(&value)
         )
-    })
+    })?;
+    for row in &rows {
+        serde_json::from_value::<server::Listed>(row.clone()).with_context(|| {
+            format!(
+                "interpreter returned an invalid connection list entry: {}",
+                shown(row)
+            )
+        })?;
+    }
+    Ok(rows)
 }
-fn print_connections(rows: &[server::Connection]) {
+/// One line per Silicon; one that is not connected shows its state after the host, and a
+/// failure it is retrying is shown whole on the lines below it.
+fn print_connections(rows: &[Value]) {
     if rows.is_empty() {
         println!("No Silicons connected.");
     }
     for row in rows {
-        println!("{}\thttp://{}\t{}", row.id, row.host, row.yaml.display());
+        let Ok(listed) = serde_json::from_value::<server::Listed>(row.clone()) else {
+            println!("{}", shown(row));
+            continue;
+        };
+        for line in connection_lines(&listed) {
+            println!("{line}");
+        }
     }
+}
+fn connection_lines(listed: &server::Listed) -> Vec<String> {
+    let row = &listed.connection;
+    let state = match listed.state.as_str() {
+        "connected" => String::new(),
+        "waiting" => format!(
+            "\twaiting to be restored (attempt {} failed; next attempt {})",
+            listed.attempt.unwrap_or_default(),
+            listed.retry_at.as_deref().unwrap_or("soon")
+        ),
+        other => format!("\t{}", clean(other)),
+    };
+    let mut lines = vec![format!(
+        "{}\thttp://{}{state}\t{}",
+        row.id,
+        row.host,
+        row.yaml.display()
+    )];
+    let indented = |error: &str, lines: &mut Vec<String>| {
+        lines.extend(error.lines().map(|line| format!("    {}", clean(line))));
+    };
+    if let Some(error) = &listed.error {
+        indented(error, &mut lines);
+    }
+    if let Some(error) = &listed.ting_error {
+        lines.push(format!(
+            "  Ting webhook registration is failing (attempt {}; next attempt {}):",
+            listed.ting_attempt.unwrap_or_default(),
+            listed.ting_retry_at.as_deref().unwrap_or("soon")
+        ));
+        indented(error, &mut lines);
+    }
+    lines
 }
 fn warnings(value: &Value) {
     for warning in value
@@ -998,7 +1166,7 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
     let sigterm = signal_hook::flag::register(libc::SIGTERM, stopping.clone())
         .context("install the SIGTERM handler for following the log")?;
     let result = (|| -> Result<()> {
-        let mut file = None;
+        let mut file: Option<File> = None;
         let mut identity = (0, 0);
         let mut offset = 0;
         let mut pending = Vec::new();
@@ -1009,6 +1177,18 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
                     let current = (metadata.dev(), metadata.ino());
                     if file.is_none() || identity != current || metadata.len() < offset {
                         let read = || format!("read Silicon log {}", path.display());
+                        // A rotated log keeps its last lines in the file already open.
+                        if let Some(old) = file.as_mut() {
+                            let mut bytes = Vec::new();
+                            old.read_to_end(&mut bytes).with_context(read)?;
+                            pending.extend(bytes);
+                            if !pending.is_empty() && !pending.ends_with(b"\n") {
+                                pending.push(b'\n');
+                            }
+                            for line in String::from_utf8_lossy(&pending).lines() {
+                                emit_log(line, id, &path, color, json);
+                            }
+                        }
                         let mut opened = File::open(&path).with_context(read)?;
                         if initial {
                             let (lines, end) =
@@ -1139,6 +1319,53 @@ mod tests {
         assert!(glob("si:*", true, false).unwrap().is_match("si:hello"));
         assert!(!glob("a*b*c", true, false).unwrap().is_match("ac"));
         assert!(!glob("foo.bar", true, false).unwrap().is_match("fooXbar"));
+    }
+    #[test]
+    fn listed_silicons_show_their_restore_state_and_whole_errors() {
+        let row = |extra: Value| {
+            let mut row =
+                json!({"id":"si:a","yaml":"/a/silicon.yaml","home":"/a","host":"a.o.localhost"});
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<server::Listed>(row).unwrap()
+        };
+        // An older interpreter lists no state: those rows are connected.
+        assert_eq!(
+            connection_lines(&row(json!({}))),
+            ["si:a\thttp://a.o.localhost\t/a/silicon.yaml"]
+        );
+        assert_eq!(
+            connection_lines(&row(json!({"state":"restoring"}))),
+            ["si:a\thttp://a.o.localhost\trestoring\t/a/silicon.yaml"]
+        );
+        let waiting = row(
+            json!({"state":"waiting","attempt":3,"retry_at":"2026-09-26T10:00:00+00:00",
+            "error":"`honeycomb install ting` failed: exit status: 1\nstderr:\nno network"}),
+        );
+        assert_eq!(
+            connection_lines(&waiting),
+            [
+                "si:a\thttp://a.o.localhost\twaiting to be restored (attempt 3 failed; next attempt 2026-09-26T10:00:00+00:00)\t/a/silicon.yaml",
+                "    `honeycomb install ting` failed: exit status: 1",
+                "    stderr:",
+                "    no network",
+            ]
+        );
+        let ting = row(json!({"ting_error":"ting: refused","ting_attempt":2,"ting_retry_at":"T"}));
+        assert_eq!(
+            connection_lines(&ting),
+            [
+                "si:a\thttp://a.o.localhost\t/a/silicon.yaml",
+                "  Ting webhook registration is failing (attempt 2; next attempt T):",
+                "    ting: refused",
+            ]
+        );
+        let parsed = SiliconCli::try_parse_from(["silicon", "stop", "--force"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(SiliconCommand::Stop { force: true })
+        ));
     }
     #[test]
     fn tail_snapshot_follows_exact_read_boundary_and_colors_only_prefix() {

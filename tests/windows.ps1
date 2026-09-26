@@ -8,6 +8,8 @@ if ('Silicon' -in @($existing | ForEach-Object { $_.Trim() })) { throw 'Tests re
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $env:SILICON_TELEMETRY = '0'
 $env:SILICON_AUTO_UPDATE = '0'
+# The runner must not keep a logon-task interpreter on ports 1823 and 80 between steps.
+$env:SILICON_NO_SERVICE = '1'
 $env:SILICON_INTERPRETER_HOME = '/home/silicon/native-cli-state'
 try {
     if ($ReleaseTag) {

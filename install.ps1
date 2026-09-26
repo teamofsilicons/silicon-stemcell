@@ -1,14 +1,19 @@
 param(
-    [string]$Version = 'v5.0.2',
+    [string]$Version = 'v5.1.0',
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'Silicon'),
     [string]$PayloadRoot,
-    [switch]$NoPath
+    [switch]$NoPath,
+    # Skip the logon task that starts the interpreter at logon and restarts it; removes an
+    # existing one. Remembered: later installs and upgrades keep it off until -Service.
+    [switch]$NoService,
+    # Register the logon task again after an earlier -NoService.
+    [switch]$Service
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 if ($env:OS -ne 'Windows_NT') { throw 'This installer requires Windows 11 or Windows Server with WSL2.' }
-if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must be an exact stable release tag such as v5.0.2.' }
+if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Version must be an exact stable release tag such as v5.1.0.' }
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 switch ($architecture) {
     'X64' {
@@ -26,6 +31,18 @@ switch ($architecture) {
     default { throw "Unsupported Windows architecture: $architecture" }
 }
 $wsl = Join-Path $env:SystemRoot 'System32\wsl.exe'
+if ($NoService -and $Service) { throw 'Pass -Service or -NoService, not both.' }
+# The choice is remembered per Windows user, so the launcher's automatic setup and plain
+# upgrades never turn a declined task back on. SILICON_NO_SERVICE=1 does the same as
+# -NoService for `irm ... | iex`, which takes no switches.
+$serviceDeclined = Join-Path $env:LOCALAPPDATA 'Silicon\service-declined'
+$serviceTaskFile = Join-Path $env:LOCALAPPDATA 'Silicon\service-task'
+$serviceWanted = if ($Service) { $true } elseif ($NoService -or $env:SILICON_NO_SERVICE -eq '1') { $false } else { !(Test-Path -LiteralPath $serviceDeclined) }
+$serviceMode = if ($serviceWanted) { 'task' } else { 'none' }
+# Task names are machine-wide but WSL distributions are per user, and a standard user may
+# not create task folders: one task per user in the root folder, named by the user's SID.
+$taskPath = '\'
+$taskName = 'Silicon Interpreter ' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 # A download failure names its address; the web error keeps its own words.
 function Get-File([string]$Url, [string]$Path) {
     try { Invoke-WebRequest $Url -OutFile $Path -UseBasicParsing }
@@ -147,7 +164,7 @@ try {
     $linuxPowerShell = & $wsl --distribution Silicon --user root --exec wslpath -u $windowsPowerShell
     if ($LASTEXITCODE -ne 0) { throw "Could not locate the Windows browser bridge: wslpath -u $windowsPowerShell exited $($LASTEXITCODE) and printed:`n$(Format-Said $linuxPowerShell)" }
     $linuxPowerShell = "$linuxPowerShell".Trim()
-    & $wsl --distribution Silicon --user root --exec sh "$linuxPayload/provision.sh" $linuxPayload $runtimeHash $Version $linuxPowerShell (Join-Path $PayloadRoot 'open-url.ps1')
+    & $wsl --distribution Silicon --user root --exec sh "$linuxPayload/provision.sh" $linuxPayload $runtimeHash $Version $linuxPowerShell (Join-Path $PayloadRoot 'open-url.ps1') $serviceMode $taskName
     if ($LASTEXITCODE -ne 0) { throw "Silicon WSL provisioning failed: provision.sh exited $($LASTEXITCODE) (its output is above). Existing projects were not moved." }
     $activated = $true
     if ($createdDistro) {
@@ -169,6 +186,43 @@ try {
         $entries = @($previous -split ';' | Where-Object { $_ -and $_ -notlike "$Prefix\releases\*" -and $_ -ne $PayloadRoot })
         [Environment]::SetEnvironmentVariable('Path', (@($PayloadRoot) + $entries -join ';'), 'User')
         $env:Path = "$PayloadRoot;$env:Path"
+    }
+    # The interpreter lives in the logon task's wsl.exe session: it keeps the distribution
+    # running, starts the interpreter at logon and restarts it after a crash, `wsl --shutdown`
+    # or a WSL update. Registering again refreshes the helper's path for this release.
+    if ($serviceWanted) {
+        try {
+            $me = "$env:USERDOMAIN\$env:USERNAME"
+            $taskAction = New-ScheduledTaskAction -Execute (Join-Path $PayloadRoot 'silicon-service.exe') -WorkingDirectory $PayloadRoot
+            $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $me
+            $taskPrincipal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Limited
+            # Windows' defaults would stop it after 72 hours, on battery, or never start it on battery.
+            $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -Hidden
+            Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description "Keeps the Silicon interpreter of $me running in its WSL2 distribution and restarts it after a crash. Rerun install.ps1 -NoService to remove it." -Force | Out-Null
+            # silicon.exe connect starts this task by the name recorded here.
+            [IO.File]::WriteAllText($serviceTaskFile, "$taskPath$taskName`n")
+            Remove-Item -LiteralPath $serviceDeclined -Force -ErrorAction SilentlyContinue
+            # A helper from an earlier release keeps running; it is replaced at the next logon.
+            if ((Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName).State -ne 'Running') {
+                Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName
+            }
+            Write-Host "The Silicon interpreter now starts at logon and restarts after a crash (scheduled task $taskPath$taskName). Rerun this installer with -NoService to turn that off."
+        } catch {
+            Write-Warning "Silicon is installed, but the logon task $taskPath$taskName could not be set up, so the interpreter starts only with silicon.exe connect and is not restarted after a crash or logon. Rerun this installer to try again. The error:`n$($_.Exception.Message)`n$($_ | Out-String)"
+        }
+    } else {
+        try {
+            [IO.File]::WriteAllText($serviceDeclined, "The Silicon logon task was turned off with install.ps1 -NoService (or SILICON_NO_SERVICE=1). install.ps1 -Service turns it back on.`n")
+            Remove-Item -LiteralPath $serviceTaskFile -Force -ErrorAction SilentlyContinue
+            $existingTask = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue
+            if ($existingTask) {
+                Stop-ScheduledTask -TaskPath $taskPath -TaskName $taskName
+                Unregister-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Confirm:$false
+                Write-Host "Removed the logon task $taskPath$taskName; the interpreter no longer starts at logon. Rerun this installer with -Service to turn it back on."
+            }
+        } catch {
+            Write-Warning "Could not remove the logon task $taskPath$taskName. The error:`n$($_.Exception.Message)`n$($_ | Out-String)"
+        }
     }
     Write-Host "Silicon $Version is installed. Open a new terminal to use silicon.exe."
     Write-Host 'Keep silicon.yaml and SILICON_HOME under \\wsl.localhost\Silicon\home\silicon. Windows data is accessible at /mnt/c.'

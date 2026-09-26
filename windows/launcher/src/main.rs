@@ -1,9 +1,13 @@
+use silicon_windows_launcher::{
+    argv, describe, forwarded, output_within, registered_task, text, DISTRO,
+};
 use std::env;
+use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
-const DISTRO: &str = "Silicon";
 const COMMANDS: &[&str] = &[
     "silicon",
     "si",
@@ -24,72 +28,75 @@ const COMMANDS: &[&str] = &[
     "ting",
 ];
 
-fn forwarded(name: &str) -> bool {
-    [
-        "SILICON_",
-        "SI_",
-        "OMNI_",
-        "HONEYCOMB_",
-        "SPACE_STATION_",
-        "BRIEFCASE_",
-        "DM_",
-        "WAVEFORM_",
-        "COMMIT_",
-        "REMIND_",
-        "HOOK_",
-        "TING_",
-        "IAM_",
-        "ANTHROPIC_",
-        "OPENAI_",
-    ]
-    .iter()
-    .any(|prefix| name.starts_with(prefix))
-        && name != "SILICON_WSL"
+/// `silicon connect` (after global flags such as `--json`).
+fn is_connect(args: &[OsString]) -> bool {
+    args.iter()
+        .map(|arg| arg.to_string_lossy())
+        .find(|arg| !arg.starts_with('-'))
+        .is_some_and(|command| command == "connect")
 }
 
-/// The command line for an error, quoted the way Windows parses it.
-fn argv(command: &Command) -> String {
-    std::iter::once(command.get_program())
-        .chain(command.get_args())
-        .map(|word| {
-            let word = word.to_string_lossy();
-            if word.is_empty() || word.contains([' ', '\t', '"']) {
-                format!("\"{}\"", word.replace('"', "\\\""))
-            } else {
-                word.into_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+/// schtasks /Query /FO CSV answers `"\Silicon Interpreter S-1-…","N/A","Running"`. Other
+/// languages name the state differently; starting a running task is then a no-op anyway,
+/// because the task ignores a second instance.
+fn task_running(csv: &str) -> bool {
+    csv.lines().any(|line| line.contains("\"Running\""))
 }
 
-/// wsl.exe writes its own messages as UTF-16LE; Linux programs write UTF-8.
-fn text(bytes: &[u8]) -> String {
-    if !bytes.contains(&0) {
-        return String::from_utf8_lossy(bytes).into_owned();
+/// Before `silicon connect`, start this user's interpreter logon task if install.ps1
+/// registered one and it is not running, so the interpreter lives in that long-lived
+/// wsl.exe session and not in this command's short one, which WSL would idle out. A
+/// failure is reported and the command continues: connect then starts the interpreter.
+fn start_interpreter_task(system_root: &str) {
+    if env::var("SILICON_NO_SERVICE").as_deref() == Ok("1") {
+        return;
     }
-    let units: Vec<u16> = bytes
-        .chunks(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair.get(1).copied().unwrap_or(0)]))
-        .collect();
-    String::from_utf16_lossy(&units)
-        .trim_start_matches('\u{feff}')
-        .to_owned()
-}
-
-/// Exit status plus both streams verbatim, the shape Silicon gives every failure.
-fn describe(output: &Output) -> String {
-    let mut description = output.status.to_string();
-    for (name, bytes) in [("stderr", &output.stderr), ("stdout", &output.stdout)] {
-        let stream = text(bytes);
-        let stream = stream.trim_end_matches(['\r', '\n']);
-        if stream.trim().is_empty() {
-            description.push_str(&format!("\n{name}: (empty)"));
-        } else {
-            description.push_str(&format!("\n{name}:\n{stream}"));
+    // No record: installed with -NoService, or by an installer before tasks existed.
+    let Some(task) = env::var_os("LOCALAPPDATA")
+        .and_then(|local| registered_task(&Path::new(&local).join("Silicon")))
+    else {
+        return;
+    };
+    let limit = Duration::from_secs(60);
+    let schtasks = Path::new(system_root).join("System32/schtasks.exe");
+    let mut query = Command::new(&schtasks);
+    query.args(["/Query", "/TN", task.as_str(), "/FO", "CSV", "/NH"]);
+    let found = match output_within(&mut query, limit) {
+        Ok(output) if output.status.success() => output,
+        // Recorded but not found: removed in Task Scheduler, or registered by another user.
+        Ok(output) => {
+            eprintln!(
+                "Silicon Windows launcher: `{}` failed: {}\ncontinuing without the logon task; rerun install.ps1 to register it again",
+                argv(&query),
+                describe(&output)
+            );
+            return;
         }
+        Err(error) => {
+            eprintln!(
+                "Silicon Windows launcher: could not run `{}`: {error}; continuing without the logon task",
+                argv(&query)
+            );
+            return;
+        }
+    };
+    if task_running(&text(&found.stdout)) {
+        return;
     }
-    description
+    let mut start = Command::new(&schtasks);
+    start.args(["/Run", "/TN", task.as_str()]);
+    match output_within(&mut start, limit) {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => eprintln!(
+            "Silicon Windows launcher: could not start the interpreter's logon task: `{}` failed: {}\ncontinuing; connect starts the interpreter itself",
+            argv(&start),
+            describe(&output)
+        ),
+        Err(error) => eprintln!(
+            "Silicon Windows launcher: could not run `{}`: {error}; continuing; connect starts the interpreter itself",
+            argv(&start)
+        ),
+    }
 }
 
 /// Whether WSL already holds this exact release; otherwise why not, in WSL's own words.
@@ -107,6 +114,16 @@ fn installed(probe: io::Result<Output>, command: &str, version: &str) -> Result<
         ));
     }
     Ok(())
+}
+
+/// Answers that mean WSL lacks this release: no WSL, no distribution, an unprovisioned
+/// one, or another version. Anything else may be WSL starting up after logon or updating.
+fn needs_provisioning(reason: &str) -> bool {
+    reason.starts_with("could not run `")
+        || reason.contains("WSL_E_DISTRO_NOT_FOUND")
+        || reason.contains("There is no distribution with the supplied name")
+        || reason.contains("/opt/silicon/windows-version: No such file or directory")
+        || reason.contains("` says WSL holds Silicon ")
 }
 
 fn run() -> Result<i32, String> {
@@ -145,7 +162,17 @@ fn run() -> Result<i32, String> {
             "/opt/silicon/windows-version",
         ])
         .stdin(Stdio::null());
-    if let Err(reason) = installed(probe.output(), &argv(&probe), version) {
+    let mut outcome = installed(probe.output(), &argv(&probe), version);
+    if let Err(first) = outcome.clone() {
+        if !needs_provisioning(&first) {
+            // Setup takes minutes and may ask for elevation, so a passing WSL error (the
+            // service starting after logon, an update) gets one more look first.
+            std::thread::sleep(Duration::from_secs(2));
+            outcome = installed(probe.output(), &argv(&probe), version)
+                .map_err(|again| format!("{first}\nand again 2s later: {again}"));
+        }
+    }
+    if let Err(reason) = outcome {
         // ponytail: first use says why setup runs; a rerun on every call is a bug worth seeing.
         eprintln!("Preparing Silicon {version} in its dedicated WSL2 distribution...\n{reason}");
         let powershell =
@@ -190,6 +217,10 @@ fn run() -> Result<i32, String> {
         .collect();
     let cwd = env::current_dir()
         .map_err(|error| format!("could not read the current directory: {error}"))?;
+    let arguments: Vec<OsString> = env::args_os().skip(1).collect();
+    if name == "silicon" && is_connect(&arguments) {
+        start_interpreter_task(&system_root);
+    }
     let mut launch = Command::new(&wsl);
     launch
         .env("WSLENV", variables.join(":"))
@@ -208,13 +239,10 @@ fn run() -> Result<i32, String> {
     // ponytail: the caller's own arguments are counted, not repeated; this launcher
     // cannot tell which of them are credentials, and the caller already has them.
     let shown = argv(&launch);
-    let arguments = env::args_os().len().saturating_sub(1);
-    let status = launch
-        .args(env::args_os().skip(1))
-        .status()
-        .map_err(|error| {
-            format!("could not run `{shown}` with this command's {arguments} argument(s): {error}")
-        })?;
+    let count = arguments.len();
+    let status = launch.args(&arguments).status().map_err(|error| {
+        format!("could not run `{shown}` with this command's {count} argument(s): {error}")
+    })?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -232,15 +260,24 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
-    fn linux_home_and_path_cannot_be_overridden_through_windows() {
-        for name in ["HOME", "USERPROFILE", "PATH", "WSLENV", "SILICON_WSL"] {
-            assert!(!forwarded(name));
-        }
-        assert!(forwarded("SILICON_TELEMETRY"));
-        assert!(forwarded("SILICON_HOME"));
-        assert!(forwarded("SPACE_STATION_TABLE_KEY"));
-        assert!(forwarded("TING_HOME"));
+    fn every_bundled_command_has_a_launcher_name() {
         assert!(COMMANDS.contains(&"ting"));
+        assert!(!COMMANDS.contains(&"silicon-service"));
+    }
+
+    #[test]
+    fn connect_starts_the_logon_task_first() {
+        let args = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
+        assert!(is_connect(&args(&["connect", "silicon.yaml"])));
+        assert!(is_connect(&args(&["--json", "connect", "a.yaml"])));
+        assert!(!is_connect(&args(&["compile", "connect"])));
+        assert!(!is_connect(&args(&[])));
+        assert!(task_running(
+            "\"\\Silicon Interpreter S-1-5-21-7-8-9-1001\",\"N/A\",\"Running\"\r\n"
+        ));
+        assert!(!task_running(
+            "\"\\Silicon Interpreter S-1-5-21-7-8-9-1001\",\"N/A\",\"Ready\"\r\n"
+        ));
     }
 
     #[cfg(unix)]
@@ -277,6 +314,60 @@ mod tests {
     }
 
     #[test]
+    fn only_a_missing_or_outdated_release_skips_the_second_look() {
+        let wide =
+            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        let answer = |code: i32, stdout: &[u8], stderr: &[u8]| {
+            let mut probe = Command::new("wsl.exe");
+            probe.arg("--status");
+            let status = {
+                #[cfg(unix)]
+                {
+                    std::os::unix::process::ExitStatusExt::from_raw(code << 8)
+                }
+                #[cfg(windows)]
+                {
+                    std::os::windows::process::ExitStatusExt::from_raw(code as u32)
+                }
+            };
+            installed(
+                Ok(Output {
+                    status,
+                    stdout: stdout.to_vec(),
+                    stderr: stderr.to_vec(),
+                }),
+                &argv(&probe),
+                "v5.0.2",
+            )
+            .unwrap_err()
+        };
+        assert!(needs_provisioning(&answer(
+            1,
+            &wide("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n"),
+            b""
+        )));
+        assert!(needs_provisioning(&answer(
+            1,
+            b"",
+            b"cat: /opt/silicon/windows-version: No such file or directory\n"
+        )));
+        assert!(needs_provisioning(&answer(0, b"v5.0.1\n", b"")));
+        let missing = installed(
+            Err(io::Error::from(io::ErrorKind::NotFound)),
+            "wsl.exe --status",
+            "v5.0.2",
+        )
+        .unwrap_err();
+        assert!(needs_provisioning(&missing));
+        // A WSL service hiccup is looked at again before minutes of setup.
+        assert!(!needs_provisioning(&answer(
+            1,
+            &wide("Error code: Wsl/Service/CreateInstance/E_UNEXPECTED\r\n"),
+            b""
+        )));
+    }
+
+    #[test]
     fn unstartable_probe_names_the_command_and_the_os_reason() {
         let mut probe = Command::new("/nonexistent/wsl.exe");
         probe.arg("--status");
@@ -286,18 +377,5 @@ mod tests {
             "{error}"
         );
         assert!(error.len() > "could not run `/nonexistent/wsl.exe --status`: ".len());
-    }
-
-    #[test]
-    fn wsl_utf16_messages_read_as_text() {
-        let wide: Vec<u8> = "\u{feff}Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        assert_eq!(
-            text(&wide),
-            "Error code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n"
-        );
-        assert_eq!(text("v5.0.1 Ω\n".as_bytes()), "v5.0.1 Ω\n");
     }
 }

@@ -1,10 +1,10 @@
-# Silicon 5.0.2
+# Silicon 5.1.0
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
 ## Start here
 
-Silicon 5.0.2 uses the new IAM and Honeycomb identifier contract, Omni 0.9.0, and Ting for notification delivery. Existing 4.x Silicons must complete the [identifier migration](#identifier-migration) before upgrading or reconnecting.
+Silicon 5.1.0 uses the IAM and Honeycomb identifier contract introduced in 5.0, Omni 0.9.1, and Ting for notification delivery. It is built to run unattended: it starts at login or boot, restarts after a crash, and recovers by itself from network loss, sleep, and updates; see [Running unattended](#running-unattended). Existing 4.x Silicons must complete the [identifier migration](#identifier-migration) before upgrading or reconnecting.
 
 1. [Install Silicon and its dependencies](#installation) with the one-line command below.
 2. [Create your first Silicon](#first-silicon) in a new directory, with your own IAM identity and token.
@@ -31,23 +31,25 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-> Upgrading from 4.x to 5.0.2: disconnect and stop the old interpreter, then follow the [identifier migration](#identifier-migration). It changes Silicon IDs, adds `silicon.org_id`, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.
+> Upgrading from 4.x to 5.1.0: disconnect and stop the old interpreter, then follow the [identifier migration](#identifier-migration). It changes Silicon IDs, adds `silicon.org_id`, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.
 >
 > Upgrading from 4.0.x or earlier: also migrate per-app webhook configuration and event flows using the [Ting migration](#ting-migration). IAM and Ting are implicit dependencies; the interpreter installs both through Honeycomb.
 >
 > Upgrading from 4.0.6–4.0.8: replace any `sticky` and `archive_on_end` fields using the [migration table](#legacy-mode-fields-removed), then run `silicon update` and restart the interpreter. No reinstallation is needed.
 >
-> Upgrading from 4.0.5 or earlier: rerun the 5.0.2 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
+> Upgrading from 4.0.5 or earlier: rerun the 5.1.0 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v5.0.2` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v5.1.0` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.2/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh | sh
 ```
 
-Find the platform bundles and their checksums on the [v5.0.2 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.0.2). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the platform bundles and their checksums on the [v5.1.0 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.1.0). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
+
+**5.1.0** runs unattended for months. The first `silicon connect` sets up autostart (a LaunchAgent on macOS, a systemd user service with linger on Linux, cron and a built-in supervisor elsewhere, and a logon task on Windows), so the interpreter starts at login or boot and restarts after a crash; `silicon service` manages it. Saved Silicons restore in the background and are retried until they come back, and a Silicon whose restore fails is never forgotten. Caddy is supervised and an orphaned one is cleaned up, every tool the interpreter runs has a time limit, logs rotate, old releases are pruned, heartbeats keep wall-clock time across sleep and restarts, idle session workers are retired, and the updater backs off and reclaims a stale installer lock. It moves to Omni 0.9.1, whose Codex chats no longer stall after a mid-turn message. Upgrading from 5.0.x needs only `silicon update`; see [Running unattended](#running-unattended) for what changed in behavior.
 
 **5.0.2** shows every failure in full. An app CLI, IAM, Ting, Honeycomb, Caddy, Omni, Bash expression, updater, or installer failure now carries the command, its exit status, and its complete stderr and stdout, plus parser positions, HTTP bodies, and the whole cause chain, in CLI output, `si` output, flow catches, the dashboard, and `silicon.log`. Only literal credential values are masked. See [Reading errors](#reading-errors). Upgrading from 5.0.1 needs only `silicon update` and an interpreter restart.
 
@@ -84,7 +86,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.2/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -94,8 +96,8 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 5.0.2 |
-| `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.9.0 pinned to commit `c23d80a7251a1f6a77e76172a197126e693c00f1` |
+| `silicon`, `si` | Interpreter and internal CLI, 5.1.0 |
+| `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.9.1 pinned to commit `62c2adc57983be37c1de2064d169073bddf71291` |
 | `caddy` | Caddy 2.11.4 |
 
 Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs `honeycomb install 'app' --json` for configured and registered canonical app IDs, the IAM issuer (`iam`), and Ting (`ting`). Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.
@@ -108,7 +110,7 @@ Use `silicon.id: si:handle`, an explicit `silicon.org_id`, and bare IDs in `apps
 
 ### Ting migration
 
-For configurations from 4.0.x or earlier, before reconnecting on 5.0.2:
+For configurations from 4.0.x or earlier, before reconnecting on 5.1.0:
 
 1. Remove `silicon.webhooks` and `silicon.webhook`. Keep application IDs in `silicon.apps`; applications publish notifications through Ting and no longer register separate interpreter webhooks.
 2. Change the flow to read `request.tings`, a list of notification objects with `id`, `type`, `data`, and `metadata`. The old top-level `{type, data, metadata}` HTTP envelope is rejected. Use CEL `map`, `filter`, and the list helpers to process a whole batch; the [first Silicon example](#first-silicon) shows a minimal flow.
@@ -124,7 +126,7 @@ Existing Windows installations should rerun this release's PowerShell installer 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.2/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -157,14 +159,14 @@ First complete the [identifier migration](#identifier-migration), including disc
 
 ```sh
 silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.2/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh | sh
 silicon serve
 ```
 
 Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter; reconnect each migrated YAML path after compiling it. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.0.2/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -174,7 +176,7 @@ Replace that example path with your existing prefix. Run this migration once eve
 
 On Linux, the installer checks whether unprivileged processes can bind port 80. If not, it grants only the bundled Caddy binary `cap_net_bind_service=ep` using `setcap`. This requires the system's libcap tools and suitable privileges; it can ask for `sudo` in an interactive terminal. Silicon itself does not need to run as root.
 
-An automatic, noninteractive update cannot prompt for privileges. When the Caddy binary is unchanged, the installer can reuse the existing capability. If a new Caddy binary needs a capability and unattended privilege is unavailable, activation fails with an explanation and leaves the current release selected. Rerun the installation or update interactively.
+An automatic, noninteractive update cannot prompt for privileges. When the Caddy binary is unchanged, the installer can reuse the existing capability. If a new Caddy binary needs a capability and unattended privilege is unavailable, the installer exits with status 77 and leaves the current release selected. The updater reports this once with the command to run and does not retry that release until the installed release changes or a newer release appears. Run `silicon update` in a terminal as a user who can use `sudo` (on Windows, rerun the Windows installer). The installer adds `/usr/sbin` and `/sbin` to `PATH` so `getcap` and `setcap` are found under service managers.
 
 ### Build the complete installation from source
 
@@ -204,7 +206,9 @@ This does not install the required runtime dependencies. Put the intended `omnid
 
 Installed commands are symlinks through `<prefix>/lib/silicon/current/bin`. A new release is prepared under the same prefix, checked, moved into `<prefix>/lib/silicon/releases`, and selected by replacing the `current` symlink. Existing unmanaged files in `<prefix>/bin` are not overwritten; choose another prefix if there is a conflict.
 
-Only one installation may modify a prefix at a time. A stale `.install-lock` after a forced kill requires checking that no installer is running before removing the lock. Old release directories are retained; there is no automatic release-pruning or public rollback command in this version.
+Only one installation may modify a prefix at a time. `.install-lock` records its owner (`pid`, when that process started and, on Linux, the boot it ran in). A lock over a minute old is reclaimed automatically, saying why, when its process is gone, was started before the last boot, or is a different process that reused the number; a lock whose owner cannot be checked (one left by an older installer) is reclaimed after two hours. Installers take turns reclaiming through `.install-lock.reclaim`; if an error says another installer is reclaiming and none is running, remove that directory.
+
+Old releases are pruned. After activation the installer keeps the active release, the one it replaced, the release of the interpreter running the update, and any release a running interpreter recorded in `<prefix>/lib/silicon/running/`; it removes other releases and staging directories older than an hour. The interpreter also prunes when it starts, keeping the active release, its own, and the newest other one. There is no public rollback command.
 
 The installer does not copy the repository's `stemcell` examples into a user's home. It never edits a connected `silicon.yaml`, memories, workspace, or session archive.
 
@@ -258,7 +262,7 @@ silicon web
 
 `compile` validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including `SILICON_HOME`, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. `setup`, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.
 
-`connect` starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, `… Authenticating dm` changes to `✓ Authenticated dm`; failures use `✗`. Redirected output uses separate lines without terminal control codes. `--json` returns the normal complete JSON response with its progress records. Setup/authentication commands have no overall Silicon-imposed timeout; they retain their own CLI timeout behavior. Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
+`connect` starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, `… Authenticating dm` changes to `✓ Authenticated dm`; failures use `✗`. Redirected output uses separate lines without terminal control codes. `--json` returns the normal complete JSON response with its progress records. Setup, installation, authentication, and Ting commands run with the [time limits](#time-limits) the interpreter enforces. A failed automatic app authentication no longer fails the connection: it shows as `✗` with the app's complete answer, and the app is checked again later (see the [IAM application contract](#iam-application-contract)). Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
 
 The local identity is the canonical YAML path. The global identity is `silicon.id`; `silicon.org_id` supplies its owning organization separately. Moving a file changes its local identity. The interpreter reads `flow` from disk for each incoming batch, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. `si app install` and `si app uninstall` update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.
 
@@ -307,7 +311,7 @@ inference_providers:
   - [claude-code-cli]
 ```
 
-A single `all-available-providers` entry uses Omni's native selection. Explicit names are checked against Omni's installed/authenticated providers when a session initializes. An empty final selection is an error. Extra named groups such as `open-weight-models` are not expanded unless Omni exposes that exact name as a provider.
+Every session opens with an explicit provider list. A lone `all-available-providers` sends the providers Omni reports as installed and authenticated when that session starts, so a provider dropped after an authentication error, or logged in later, rejoins at the next session start; an empty result is an error naming what Omni reported. Explicit names are checked against Omni's installed/authenticated providers when a session initializes. An empty final selection is an error. Extra named groups such as `open-weight-models` are not expanded unless Omni exposes that exact name as a provider.
 
 Use canonical application IDs in new files:
 
@@ -368,13 +372,13 @@ Note the last row when migrating: `archive_on_end: false` meant persistent, not 
 
 ### Intervals and scheduled work
 
-Bare numeric intervals are minutes. `30min`, `30m`, `10s`, and `2h` are also accepted. Values must be finite and positive, at most ten years. Timing expressions can use Bash, CEL, and fallbacks; the evaluated result must satisfy the same interval rules.
+Bare numeric intervals are minutes. `30min`, `30m`, `10s`, and `2h` are also accepted. Values must be finite and positive, at most ten years. Schedules run at least one second apart: a shorter literal is accepted with a warning and runs every second. Timing expressions can use Bash, CEL, and fallbacks; the evaluated result must satisfy the same interval rules.
 
 DNA is assembled at session initialization. `next_refresh` is reevaluated after assembly and after each refresh. Refresh work runs separately from the provider event listener, so a slow DNA command does not block receipt processing. A failed refresh is logged and retried after approximately 60 seconds.
 
 Heartbeat `next` is evaluated when its schedule is created and when it becomes due. The first heartbeat waits for its configured interval. A global ISI can be started by its heartbeat. A session-addressed ISI gets independent heartbeat schedules for existing active session addresses; a heartbeat does not invent a missing session ID. Heartbeats do not check app authentication. If a heartbeat creates a new session, the normal session-creation check applies. Failed timing evaluations are logged and retried after approximately 60 seconds.
 
-Timers are best effort and have scheduler granularity; they are not wall-clock cron jobs. Keep interval expressions quick and deterministic enough for the desired schedule. DNA, heartbeat, and suggestion expressions inside a session-addressed ISI receive `ISI=name:session-id`.
+Heartbeat and DNA refresh times follow the wall clock, so system sleep does not stretch them, and heartbeat due times are saved per address in `<SILICON_HOME>/.silicon/heartbeats.json`, so restarts, reconnects, and self-updates neither reset nor skip them. A due heartbeat fires once; missed ticks are not replayed. Heartbeats found overdue when a Silicon connects fire within its first minute, at random offsets. A due time more than one interval ahead (the clock went back) is pulled in and logged. When a reconnect brings a changed `heartbeat.next`, a shorter interval applies from the reconnect and a longer one after the heartbeat already scheduled. A heartbeat is skipped while the previous heartbeat to the same target is still undelivered or unfinished. `next` is evaluated off the scheduler thread; keep interval expressions quick, since they run under the expression [time limit](#time-limits). DNA, heartbeat, and suggestion expressions inside a session-addressed ISI receive `ISI=name:session-id`.
 
 A new-session suggestion is a message, not an automatic archive. It is considered after a normal incoming message. At least `min_new_messages` new messages since the last suggestion are required, and subsequent suggestions must respect `cooldown_minutes`. Heartbeats and suggestion messages do not count toward that threshold. The first suggestion can occur as soon as the message threshold is reached; the cooldown is between suggestions. Counters belong to each session. Archived sessions do not receive these suggestions.
 
@@ -524,11 +528,11 @@ A flow send can create a missing session-addressed session automatically. An int
 
 ### Acknowledgment and delivery
 
-Ting’s batch delivery contract requires a prompt empty HTTP 204. The interpreter validates and durably saves the complete batch before acknowledging it, then processes its flow from the local inbox. Ting IDs are deduplicated across batches and restarts. Invalid batches are rejected as a whole. Flow loading, validation, and other overall processing failures remain in the inbox for retry, and accepted pending batches survive interpreter restarts.
+Ting’s batch delivery contract requires a prompt empty HTTP 204. The interpreter validates and durably saves the complete batch before acknowledging it, then processes its flow from the local inbox. Ting IDs are deduplicated across batches and restarts. Invalid batches are rejected as a whole (400). Flow loading, validation, and other overall processing failures remain in the inbox for retry, and accepted pending batches survive interpreter restarts. A batch is refused with 503 and `Retry-After`, so Ting delivers it again later, when its Silicon is still being restored, when the interpreter is stopping, or when the Silicon's inbox is full: 10,000 pending batches or 256 MiB, usually a flow that keeps failing (the answer names the oldest batch and its error). A batch's complete request is written to `silicon.log` on its first attempt; each retry writes one short `[event]` line.
 
 Each flow send still waits for its provider delivery receipt (`START` or `INJECTED`) before the next step, including its catch branch. This does not wait for the model’s entire turn. The ordinary send CLI returns session and delivery information after dispatch acceptance.
 
-Messages are forwarded into active provider work as soon as their flow reaches a send. Ting’s durable transport inbox does not wait for an inference turn to end. Provider startup and delivery can take time; delivery receipts have a 60-second deadline. A crash during processing can replay completed flow actions, so durable side effects should use ting IDs for idempotency. There is no transactional rollback of app actions.
+Messages are forwarded into active provider work as soon as their flow reaches a send. Ting’s durable transport inbox does not wait for an inference turn to end. Provider startup and delivery can take time; delivery receipts have a 60-second deadline. A crash during processing can replay completed flow actions, and so can a stop or disconnect: a send cut short because the interpreter is stopping or the Silicon disconnected stops the flow without running its catch, and the batch stays queued and runs again from the start on the next connection (at-least-once). Durable side effects should use ting IDs for idempotency. There is no transactional rollback of app actions. Flows nest at most 64 levels; deeper nesting fails that step and names the step path.
 
 ## CLI reference
 
@@ -549,6 +553,11 @@ silicon web --no-open
 silicon serve
 silicon serve --port 1810 --no-proxy
 silicon stop
+silicon stop --force
+silicon service status
+silicon service install
+silicon service restart
+silicon service uninstall
 silicon update
 silicon install 'dm'
 silicon uninstall 'dm'
@@ -562,11 +571,13 @@ Without a command, `silicon` lists connections. `silicon list` is an alias for `
 
 `install` and `uninstall` operate on Honeycomb-managed applications using bare app IDs. `ping` checks the local interpreter's connection without prompting a model. `config` returns the connected configuration with credentials redacted. `info` returns version, protocol, source, documentation, and dependency details.
 
-Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer and Ting. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences. It restores Honeycomb's default once where an older interpreter forced this private home's `auto_update` off, and it repairs a home left without that required setting, which Honeycomb otherwise rejects as invalid configuration. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.
+Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer and Ting. When Honeycomb cannot install the latest release but a working copy is installed, the failure is logged in full with `; continuing with the installed <id>` and the connection proceeds, so a restore after a reboot does not depend on the network. Only a configured app (or IAM or Ting) with no installed copy fails the connection; an app only the managed registry lists is logged and left out. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences. It restores Honeycomb's default once where an older interpreter forced this private home's `auto_update` off, and it repairs a home left without that required setting, which Honeycomb otherwise rejects as invalid configuration. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.
 
 Commands are exposed through owned links under `<home>/.silicon/bin`; the interpreter adds those to its command environment. `uninstall` removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured `apps` entries before reconnecting if you do not want an application installed again, or use `si app uninstall` from the running Silicon to update the YAML too.
 
-`serve` stays in the foreground and is useful with a process manager. `connect` normally starts it automatically. `--no-proxy` is a development mode with direct localhost access and no Caddy aliases. This release does not install a login item, launch agent, or systemd service. After a reboot, use `silicon serve` or `silicon connect` to start the interpreter again.
+`serve` stays in the foreground. `connect` normally starts it, through the installed service when there is one; see [Running unattended](#running-unattended). To run it under your own process manager, start `silicon serve` with `SILICON_SERVICE=external`. `--no-proxy` is a development mode with direct localhost access and no Caddy aliases.
+
+`stop` asks the interpreter to stop and waits until it has exited (up to two minutes). `stop --force` sends SIGTERM, a second SIGTERM that ends an orderly stop at once and cleanly, and only then SIGKILL. A stopped interpreter comes back at the next login or boot, or with `silicon connect`; `silicon service uninstall` turns autostart off. `ls` shows each saved Silicon with its state: `connected`, `restoring`, or `waiting` with the error, attempt number, and next retry.
 
 Public work commands specify the Silicon identity first:
 
@@ -684,7 +695,7 @@ Bare `--archived` selects the previous 72 hours. With explicit filters, the sear
 
 The interpreter owns orchestration of authentication. IAM issues short-lived application tokens. Each app exchanges and stores its own access/refresh tokens and maintains them afterward.
 
-Applications from `apps`, implicit Ting, and legacy `login` are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app, full Silicon identity, and owning organization in `.silicon/auth-checked.json`; reuse also requires a matching selected organization grant, so reconnects and interpreter restarts can reuse valid checks. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit `si auth setup APP` always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused only with a current matching grant; a changed identity or organization requires a fresh IAM grant. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.
+Applications from `apps`, implicit Ting, and legacy `login` are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app, full Silicon identity, and owning organization in `.silicon/auth-checked.json`; reuse also requires a matching selected organization grant, so reconnects and interpreter restarts can reuse valid checks. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Every app is attempted: an automatic check that fails is logged in full under the app's name, does not stop the connection or session, and is not retried automatically for 10 minutes. An app still signed in under another identity or organization whose new grant cannot be minted is signed out and its grant dropped; if it cannot be signed out, the connection or session fails as before. Explicit `si auth setup` and `si app install` fail closed. Existing sessions and heartbeats do not trigger checks. Explicit `si auth setup APP` always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused only with a current matching grant; a changed identity or organization requires a fresh IAM grant. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.
 
 The supported discovery contract is:
 
@@ -759,7 +770,7 @@ silicon settings set auto_update --off
 | `telemetry` | TOS-owned Space Station telemetry from this installation. |
 | `auto_update` | The interpreter's hourly stable-release check and automatic bundle activation. |
 
-`SILICON_TELEMETRY=0` and `SILICON_AUTO_UPDATE=0` also disable their corresponding interpreter features. App CLIs may have their own telemetry and update settings; these are documented by each app's `--help`.
+`SILICON_TELEMETRY=0` and `SILICON_AUTO_UPDATE=0` also disable their corresponding interpreter features. Keys in `settings.json` that this release does not know are ignored and kept when `silicon settings set` writes the file, so a newer release's setting never stops an older interpreter. App CLIs may have their own telemetry and update settings; these are documented by each app's `--help`.
 
 TOS telemetry uses separate destinations for interpreter/CLI/daemon activity, Silicon runtime and session activity, and the documentation frontend. Events include the source, operation, timestamp, version, Silicon identity, ISI context where applicable, and diagnostic context. Silicon inputs, flow logs, provider/session events, tool or command information, and `silicon.log` error entries with their complete tool output can be included, masked as described in [Reading errors](#reading-errors). Telemetry records diagnostic activity; it does not replace durable session history or local logs. Space Station queues records durably. A short-lived CLI command waits at most 100 ms during flush and may exit with records still queued; the running interpreter's client drains that queue, so delivery need not be immediate.
 
@@ -785,14 +796,18 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 
 | Location | Contents |
 | --- | --- |
-| Interpreter `daemon.json` | Running PID, chosen port, and local management token. Removed on orderly shutdown. |
-| Interpreter `connections.json` | Saved connection identities, YAML paths, home paths, and hosts. |
+| Interpreter `daemon.json` | Running PID, chosen port, local management token, version, start time, and the supervisor that started it. Removed on orderly shutdown. |
+| Interpreter `daemon.lock` | Held by the running interpreter; its first line is the holder's PID. |
+| Interpreter `connections.json` | Every saved Silicon, whether connected or still waiting to be restored, until an explicit disconnect. One that does not parse is moved to `connections.json.corrupt-<UTC>`. |
+| Interpreter `service.json`, `service.env`, `service.log`, `stopped` | The installed autostart service, the environment it gives the interpreter (0600), its supervisor's log, and a `silicon stop` marker for this boot. |
+| Interpreter `update-state.json` | The update schedule, ETag, failure history, and a release that needs a person. |
 | Interpreter `daemon.log` | Background interpreter stdout/stderr, including restoration, update, and rejected Ting delivery failures. Those failures also go to the affected Silicon's `silicon.log`; automatic-update failures go to every connected Silicon's log. |
 | Interpreter `updates.log` | Bundle installer output for updates. |
 | Interpreter `settings.json` | Telemetry and automatic-update preferences. |
 | Interpreter `space-station/` | Space Station client state and durable telemetry spool. |
-| Interpreter `caddy/` | Owned Caddy configuration, logs, data, and storage. |
-| `<SILICON_HOME>/.silicon/silicon.log` | Append-only Silicon event, flow, send, runtime, error, and provider log. |
+| Interpreter `caddy/` | Owned Caddy configuration, logs, data, storage, and `owner.json`/`caddy.pid` recording the running Caddy so a later start can stop one left behind. |
+| `<SILICON_HOME>/.silicon/silicon.log` | Silicon event, flow, send, runtime, error, and provider log; rotated at 64 MiB. |
+| `.silicon/heartbeats.json` | Wall-clock due times of this Silicon's heartbeats. |
 | `.silicon/auth-apps.json` | Commands for configured/dynamically managed application authentication. |
 | `.silicon/auth-checked.json`, `.silicon/auth-grants.json` | Recent authentication checks and granted organizations bound to the complete Silicon identity and owning organization; changing `SILICON_ORG` renews the application grant. |
 | `.silicon/bin/` | Owned command links for applications installed through Honeycomb. |
@@ -801,7 +816,7 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 | `.silicon/sessions/archived/<isi>/<UUID>.json` | Archive metadata. |
 | `.silicon/sessions/events/<UUID>.jsonl` | Persistent-session provider events. |
 | `.silicon/omni/<UUID>/` | Omni's session data and its daemon log. |
-| `<SILICON_HOME>/.silicon/ting/<silicon-id>/<org>/` | Durable Ting inbox, deduplication IDs, and retained webhook ID. |
+| `<SILICON_HOME>/.silicon/ting/<silicon-id>/<org>/` | `pending/` (one file per accepted batch, run oldest first), `seen.json` (ting IDs processed in the last 100 days), and `hook.json` (the retained webhook ID). An earlier `inbox.json` is moved into these on first use. A damaged file is moved to `NAME.corrupt-<UTC>` and reported, and the inbox carries on. |
 | `<SILICON_HOME>/.silicon/org.json` | Default organization propagated to app commands. |
 | `<SILICON_HOME>/.silicon-iam/` | Isolated IAM CLI configuration/state for this Silicon. |
 
@@ -821,7 +836,9 @@ The origin names who produced the entry — `interpreter`, an ISI name, or an ap
 
 Embedded message newlines are escaped so an entry stays on one line. `[error]` entries keep a failing tool's complete output; `silicon logs show` and the dashboard unfold them onto indented lines, while `--json` returns the stored line. `silicon logs show ID` prints the latest 100 entries and follows new ones. On a terminal, the type/origin prefix is colored, and the Silicon ID and log location remain in a footer. Ctrl-C restores the terminal and exits the viewer. `--no-follow` prints the tail and exits.
 
-With `--json --no-follow`, the result is an object with `silicon`, `path`, and `lines`. With `--json` while following, each line is emitted as an independent JSON object containing `silicon`, `path`, and `line`. The follower handles appends, file replacement/truncation, and partial lines. There is no automatic Silicon log rotation or retention policy in this release.
+With `--json --no-follow`, the result is an object with `silicon`, `path`, and `lines`. With `--json` while following, each line is emitted as an independent JSON object containing `silicon`, `path`, and `line`. The follower handles appends, rotation, file replacement/truncation, and partial lines.
+
+Logs rotate at 64 MiB: the file moves to `NAME.1`, older copies shift up, and a new file starts. `silicon.log`, `daemon.log`, `caddy.log`, and `updates.log` keep five copies; each session's Omni `daemon.log` and `.silicon/sessions/events/<UUID>.jsonl` keep two, and `si isi show` reads the event history across a rotation. A torn line in the event history (a full disk, a power cut) is shown beside the rest with the parser's reason instead of failing the command.
 
 ## Local dashboard and HTTP interface
 
@@ -831,7 +848,7 @@ The dashboard can list, compile, connect, disconnect, send events/messages, insp
 
 The underlying control API is `POST /control` with `Authorization: Bearer <interpreter-token>` and a JSON body of `{ "action": "...", "args": {...} }`. The internal API is `POST /si` with the corresponding ISI capability. Events use `POST /` or `POST /events` on a connected Silicon hostname.
 
-Requests require `Content-Type: application/json`. Event batches are limited to 1 MiB; control and internal requests are limited to 16 MiB. Cross-origin browser requests are rejected. During shutdown/restart, requests are rejected with 503 so callers can retry after the interpreter resumes. Every interpreter error answer is JSON `{"error": "..."}` whose text is the complete failure, masked only for credential values; see [Reading errors](#reading-errors).
+Requests require `Content-Type: application/json`. Event batches are limited to 1 MiB; control and internal requests are limited to 16 MiB. Cross-origin browser requests are rejected. During shutdown/restart, requests are rejected with 503 so callers can retry after the interpreter resumes. More than 256 requests in flight also get 503. The CLI never sends its requests through `HTTP(S)_PROXY`, and quick actions such as `ping` and `list` time out after 15 seconds. Every interpreter error answer is JSON `{"error": "..."}` whose text is the complete failure, masked only for credential values; see [Reading errors](#reading-errors).
 
 | HTTP status | Typical cause |
 | --- | --- |
@@ -844,7 +861,7 @@ Requests require `Content-Type: application/json`. Event batches are limited to 
 | 405 | Unsupported method. |
 | 413 | Body over its endpoint limit. |
 | 415 | Missing/incorrect JSON content type. |
-| 503 | Interpreter stopping or restarting. |
+| 503 | Interpreter stopping or restarting, the Silicon still being restored, its Ting inbox full, or its storage failing. Sent with `Retry-After`. |
 
 ## Security and lifecycle boundaries
 
@@ -854,21 +871,75 @@ The interpreter listens on loopback, and the owned Caddy configuration only forw
 
 The runtime omits the Silicon token from CEL's `silicon` object and removes `SILICON_TOKEN` and `SILICON_INTERPRETER_TOKEN` from the provider environment. The ISI receives only its own `SI_TOKEN` capability for internal API access. IAM credential state is scoped to the Silicon home, and the application receives a short-lived, app-specific token instead of the long-lived Silicon credential. Protect the original YAML and all credential-bearing files accordingly.
 
-Explicit `silicon stop`, SIGINT, or SIGTERM stops the interpreter's owned workers and Caddy, removes the active daemon descriptor, and leaves saved connections and persistent state for restoration. This is a stop request, not a promise to let every model turn finish. App-owned relay daemons and saved authentication belong to those applications; disconnect and interpreter shutdown call Ting’s `unhook`, retaining the hook ID. Stopping preserves saved connection configuration so startup can restore and re-register the same hook.
+Explicit `silicon stop`, SIGINT, SIGTERM, or SIGHUP stops the interpreter's owned workers, tools still running, and Caddy, removes the active daemon descriptor, and leaves saved connections and persistent state for restoration. The orderly stop is bounded so it finishes within the 90 seconds supervisors allow; a second SIGINT or SIGTERM (not the same signal repeated within two seconds) exits at once. This is a stop request, not a promise to let every model turn finish. App-owned relay daemons and saved authentication belong to those applications; disconnect and interpreter shutdown call Ting’s `unhook`, retaining the hook ID. Stopping preserves saved connection configuration so startup can restore and re-register the same hook.
 
-On startup, each saved YAML path is recompiled and reconnected. Failed restorations are logged and skipped rather than preventing every other Silicon from starting. Persistent session records are loaded when needed; provider processes are initialized lazily. A configuration file that was moved, removed, or made invalid can therefore fail restoration without being edited by the interpreter.
+On startup, the interpreter answers at once and restores each saved YAML path in the background: recompiled and reconnected, one Silicon at a time, each failure retried as described in [Running unattended](#running-unattended). Persistent session records are loaded when needed; provider processes are initialized lazily. A configuration file that was moved, removed, or made invalid keeps failing restoration, visibly in `silicon ls`, without being edited or forgotten by the interpreter.
 
-Caddy updates use its dedicated private admin socket. Accepted routes are persisted; a failed update retains or restores the previous routes. Cleanup stops only the Caddy process owned by this interpreter. Existing unrelated Caddy installations are not reconfigured or stopped.
+Caddy updates use its dedicated private admin socket. Accepted routes are persisted; a failed update retains or restores the previous routes. Cleanup stops only the Caddy process owned by this interpreter, recorded in `caddy/owner.json`, and only while its command line still matches. Existing unrelated Caddy installations are not reconfigured or stopped; if another server answers port 80, routing reports that server's full response and stays down until it stops.
+
+## Running unattended
+
+### Autostart
+
+The first `silicon connect` from an installed release, using the default interpreter directory, sets up autostart and says what it did:
+
+| Platform | Mechanism | Starts | After a crash |
+| --- | --- | --- | --- |
+| macOS | LaunchAgent `~/Library/LaunchAgents/com.teamofsilicons.silicon.plist` | At login | launchd restarts it (at most every 30 seconds) |
+| Linux with systemd | User unit `~/.config/systemd/user/silicon.service`, enabled, plus `loginctl enable-linger` | At boot (at login when lingering is not allowed) | systemd restarts it after 10 seconds |
+| Linux without a systemd user manager | Crontab `@reboot` and five-minute lines running `silicon service ensure`, which starts the built-in supervisor `silicon service run` | At boot, when a cron daemon runs | The supervisor restarts it, waiting 5 seconds doubling to 5 minutes |
+| Windows | Per-user logon task `Silicon Interpreter <your SID>` running `silicon-service.exe`, registered by `install.ps1` | At logon | The helper restarts it, and its `wsl.exe` session keeps the Silicon distribution running |
+
+```sh
+silicon service status
+silicon service install
+silicon service restart
+silicon service uninstall
+```
+
+`status` shows the mechanism, its state, the last exit, and the logs to read. `uninstall` turns autostart off for good: `silicon connect` does not set it up again until `silicon service install`. `SILICON_NO_SERVICE=1` skips the automatic setup. Source and `cargo` builds, and a non-default `SILICON_INTERPRETER_HOME`, never get a service from `connect`; `silicon service install` still installs one for a non-default directory on request. On Windows, `install.ps1 -NoService` removes the logon task and remembers that choice; `install.ps1 -Service` turns it back on.
+
+`silicon stop` stops the interpreter now; the service starts it at the next login or boot, or at the next `silicon connect`. An interpreter that an earlier `connect` started in the background hands over to launchd, systemd, or the logon task once no work is running: the service is started first and waits, then the old interpreter exits and the supervised one restores every saved Silicon. If the service cannot start (for example a Mac reached over SSH with nobody logged in), the running interpreter keeps running and says why.
+
+Supervisors start programs with a minimal environment. `~/.silicon-interpreter/service.env` (mode 0600) holds `PATH`, `LANG`, `LC_*`, `SHELL`, and the `SILICON_`, `OMNI_`, `HONEYCOMB_`, `IAM_`, `TING_`, `SPACE_STATION_`, `ANTHROPIC_`, `OPENAI_`, `CLAUDE_`, `CODEX_`, and `GEMINI_` variables of the terminal that installed the service, refreshed whenever `silicon connect` starts the interpreter; the login shell's `PATH` is added when it starts. Edit it and run `silicon service restart` to change what the interpreter sees. The supervisor writes to `service.log`; the interpreter writes to `daemon.log`.
+
+On macOS, a LaunchAgent runs only after someone logs in to the Mac's desktop: over SSH the agent loads at the next login, and a headless Mac needs automatic login, which FileVault prevents. macOS shows a "Background Items Added" notice, and the agent appears under System Settings › General › Login Items, where turning it off stops autostart. Programs launchd starts cannot read `~/Desktop`, `~/Documents`, `~/Downloads`, iCloud Drive, or `/Volumes` without Full Disk Access; keep YAML files and homes elsewhere, such as `~/silicon`. `connect` warns when one is there. On Linux without systemd, starting at boot needs a running cron daemon; on WSL without systemd, add `[boot] command=service cron start` to `/etc/wsl.conf`. Encrypted disks that must be unlocked at boot, and laptops that sleep, pause a Silicon until the machine is unlocked or awake.
+
+### What recovers by itself
+
+- **Restore.** Saved Silicons are restored in the background, each one attempted before any is retried. A failed restore (the network not up yet, an app service down, a volume not mounted) is retried after 5 seconds, doubling to 10 minutes, with ±20% jitter, forever; its error is logged in full when it first happens and when it changes. `silicon connect` of a waiting Silicon retries it at once, and `silicon disconnect` forgets it. Events for a Silicon still being restored get 503, so Ting delivers them later.
+- **Ting registration.** A Silicon whose Ting registration fails stays connected and keeps its inbox; registration alone is retried with the same backoff and re-asserted every six hours.
+- **Routing.** A Caddy that cannot start does not stop the interpreter. Caddy is checked every five seconds (its process, its admin socket, and about once a minute that it alone answers port 80) and restarted with backoff from 1 second to 5 minutes. A Caddy left by an interpreter that crashed is stopped at the next start.
+- **The interpreter itself.** An error accepting connections rebinds the same port; if that keeps failing for five minutes, the interpreter stops in order and exits non-zero so its supervisor restarts it. A panic in a background loop is logged and the loop continues. An Omni daemon left by an interpreter that crashed is stopped, never adopted. The soft open-file limit is raised to the hard limit (at most 65,536). A `connections.json` that cannot be read is left in place and the interpreter exits, so its supervisor retries.
+- **Sessions.** Session-addressed workers idle for `SILICON_IDLE_SESSION_MINUTES` (default 60) stop their Omni daemon and provider; the next send, heartbeat, or reply resumes the same Omni session. Global ISIs are never retired. A turn that hears nothing from Omni for `SILICON_TURN_STALL_MINUTES` (default 360, counted in awake time) fails its session with the full picture, which also releases an update waiting for idle.
+- **Disk.** Logs rotate (see [Files, storage, and logs](#files-storage-and-logs)), old releases are pruned, and each Silicon's Ting inbox is capped.
+
+### Time limits
+
+Every tool the interpreter runs has a time limit. At the limit its whole process group gets SIGTERM, then SIGKILL five seconds later, and the failure shows everything the tool printed, followed by a `silicon: stopped after …` line. Tools still running when the interpreter stops are ended too.
+
+| Kind | Limit | Override |
+| --- | --- | --- |
+| `!` Bash expressions: DNA, heartbeats, credentials, flow values | 5 minutes | `SILICON_EXPRESSION_TIMEOUT_SECS` |
+| `silicon.setup` scripts | 30 minutes | `SILICON_SETUP_TIMEOUT_SECS` |
+| Honeycomb installs, updates, and removals | 20 minutes | `SILICON_INSTALL_TIMEOUT_SECS` |
+| IAM and application CLIs | 2 minutes | `SILICON_APP_TIMEOUT_SECS` |
+| Ting CLI | 60 seconds | `SILICON_TING_TIMEOUT_SECS` |
+| Unattended update installs | 30 minutes | `SILICON_UPDATE_TIMEOUT_SECS` |
+
+Expressions that CLI commands such as `silicon compile` evaluate in your terminal have no limit, so a credential command there can still prompt.
 
 ## Updates
 
-Managed installations check GitHub's latest stable release once per hour while the interpreter is running. The first periodic check occurs after an hour. Drafts, prereleases, malformed version tags, and versions no newer than the running interpreter are not installed.
+Managed installations check GitHub's latest stable release while the interpreter is running: 5–10 minutes after it starts when the last check is over an hour old, then hourly with ±10 minutes of jitter. The schedule, ETag, and failure history persist in `update-state.json`; an unchanged answer (304) does not count against GitHub's rate limit, and rate-limit waits are honored. Drafts, prereleases, malformed version tags, and versions no newer than the installed release are not installed. When a newer release is already installed (after `silicon update`), the interpreter restarts into it without downloading it again.
 
 The updater uses the same embedded installer and checksum-verified complete bundle as public installation. It clears source-build/release-mirror overrides before the update install. The installer separately downloads Honeycomb’s latest official release and verifies its checksum. Its logs are in the interpreter state directory's `updates.log`.
 
-After successful automatic activation, the interpreter waits for active dispatches, nested activity, and pending provider work to finish. It then closes the admission gate, stops its owned children, and executes the newly installed interpreter. Connections and durable sessions are restored from disk. Incoming work is rejected once restart begins. Continuous active work can postpone the restart.
+After successful automatic activation, the interpreter first runs the new release's `--version`; a release that fails this check is not started, the current one keeps running, and the check is repeated hourly. It then waits for active dispatches, nested activity, and pending provider work to finish, closes the admission gate, stops its owned children, and executes the newly installed interpreter, falling back to the release it was running if that cannot start. Connections and durable sessions are restored from disk. Incoming work is rejected once restart begins. Continuous active work can postpone the restart; a waiting restart is reported after an hour, then daily.
 
-`silicon update` performs a manual check/install and reports whether a restart is required. After a manual update, use `silicon stop` followed by `silicon serve` when ready. The command reports the currently running version if there is no newer eligible release.
+A failed install of a release is retried after 1 hour, 2, 4, and so on up to 7 days. Each distinct error is reported in full once, in `daemon.log` and every connected Silicon's log, and otherwise once a day; a missing network is reported only after it has lasted a day. Unattended installs are limited to 30 minutes and are stopped when the interpreter stops. `updates.log` rotates like the other logs.
+
+`silicon update` performs a manual check and install and asks the running interpreter to restart into the new release as soon as no work is running. When the installed release is already current but the running interpreter is older, it asks for the same restart.
 
 Set `SILICON_AUTO_UPDATE=0` in the interpreter's environment to disable periodic updates. Source builds remain under your control and cannot use the managed-prefix update path. The interpreter, its CLI, Omni, and Caddy can change together; Honeycomb apps update independently; YAML files, memories, workspaces, archives, and application state are never part of a release payload.
 
@@ -881,7 +952,7 @@ Start with the complete error. It already contains the failing command's exit st
 | `silicon` is not found | Add the installation prefix's `bin` to `PATH`; inspect the installer's printed path. |
 | Release bundle unavailable | Check access to GitHub and the requested version's release assets. Use the versioned command above or the source-install path for development. |
 | Checksum mismatch or missing binary | Keep the current installation; investigate/re-download the release. The installer fails before selecting incomplete payloads. |
-| Port 80 cannot bind | Check for another server. On Linux, install libcap tools and let the installer grant the bundled Caddy capability. Use `serve --no-proxy` for direct development access. |
+| Port 80 cannot bind | Check for another server. On Linux the error lists `ip_unprivileged_port_start`, the `getcap` output, and whether Caddy's filesystem is mounted `nosuid`; install libcap tools and let the installer grant the bundled Caddy capability, or run `sudo sysctl net.ipv4.ip_unprivileged_port_start=80`. A service unit must not set `NoNewPrivileges=`. Use `serve --no-proxy` for direct development access. |
 | Interpreter did not use 1823 | Read `silicon web --no-open`, startup output, or the private daemon descriptor; it selected a lower free port. |
 | `.localhost` does not resolve in a client | Test with `curl --resolve HOST:80:127.0.0.1`; do not assume Caddy edits DNS. |
 | Original template will not compile | It contains placeholders and invalid example expressions. Create your own corrected file; see the template notes below. |
@@ -892,7 +963,7 @@ Start with the complete error. It already contains the failing command's exit st
 | No authenticated provider or unknown model/provider | Verify Omni's installed/authenticated providers and model keys with its own help/tools. Configuration compilation alone is not provider readiness. |
 | Omni startup failed | The error quotes omnid's exit status and what it wrote during this run; the full log is `.silicon/omni/<UUID>/daemon.log`. Also check `PATH`, `OMNI_DAEMON`, and the provider's own installation/authentication. |
 | Flow acknowledged but model is still working | Ting’s 204 means durable acceptance before flow processing. Individual flow sends wait for provider delivery, not final inference output. Inspect progress/logs. |
-| Event retry repeats an action | Ting IDs are deduplicated, but a crash can replay a partially processed accepted batch. There is no flow transaction; use ting/app IDs for side-effect idempotency. |
+| Event retry repeats an action | Ting IDs are deduplicated, but a crash, stop, or disconnect can replay a partially processed accepted batch. There is no flow transaction; use ting/app IDs for side-effect idempotency. |
 | Session send needs an ID | The target uses `primary_send_mode: session`. Supply `--id`; use `--new` for a missing persistent session. |
 | Ephemeral session has disappeared | Expected after completion for a `global` + `ephemeral` ISI, which is the only combination that is discarded. Give the ISI `primary_send_mode: session`, or use a persistent ISI, when later recovery/querying is required. |
 | Archive search seems empty | Bare `--archived` is only 72 hours. Supply explicit filters for older history and check the Silicon timezone. |
@@ -906,11 +977,15 @@ Start with the complete error. It already contains the failing command's exit st
 | Honeycomb cannot resolve a configured app | The error shows each candidate command passed over with its reason, and Honeycomb's exit status and output if Honeycomb itself failed. Check the bare app ID, CLI discovery, package availability for this platform, and the selected IAM organization. |
 | Space Station asks for an organization | Install the CLI through Honeycomb and supply `--org ORG` or `SPACE_STATION_ORG` when invoking it directly; see the upstream issue ledger. |
 | Disconnect reports cleanup errors | The Silicon/capabilities are removed; inspect Ting’s hook state and Caddy/interpreter logs. |
-| Startup skipped a saved connection | Confirm the saved YAML path still exists, compiles, and can authenticate its managed apps. |
-| Automatic update did not restart yet | Inspect update logs and active work. Restart waits until the interpreter can safely stop admitting work. |
-| Automatic update needs Linux privileges | Rerun the installer/update interactively so a changed Caddy binary can receive port 80 capability. |
+| A saved Silicon shows `waiting` in `silicon ls` | Read its error there: the interpreter retries it by itself. Fix what it names (a moved YAML, a failing setup script, an app that cannot install) and run `silicon connect` to retry at once. |
+| The interpreter did not come back after a reboot | Run `silicon service status`. On macOS it starts only after a desktop login; on Linux without lingering it starts at login; without systemd it needs a cron daemon. Read `service.log` and `daemon.log` in the interpreter directory. |
+| `silicon stop` did not stop it | `silicon stop --force` ends an orderly stop that is stuck. To keep it from starting at the next login or boot, run `silicon service uninstall`. |
+| A tool failed with `silicon: stopped after …` | It reached its [time limit](#time-limits). Fix what hangs, or raise the limit with the matching `SILICON_*_TIMEOUT_SECS`. |
+| Another server answers port 80 | Routing stays down until that server stops; the error quotes what answered. |
+| Automatic update did not restart yet | Inspect update logs and active work. Restart waits until the interpreter can safely stop admitting work, and a failed check of the new release keeps the current one. |
+| Automatic update needs Linux privileges | The installer exited 77. Run `silicon update` in a terminal as a user who can use `sudo` so a changed Caddy binary can receive port 80 capability (on Windows, rerun the Windows installer). |
 
-Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state, `SILICON_CADDY` for the Caddy executable, `OMNI_DAEMON` for the Omni daemon executable, and `SILICON_AUTO_UPDATE=0` for development runs. They affect the process in which they are set; an already-running daemon does not inherit new variables from a later terminal command.
+Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state, `SILICON_CADDY` for the Caddy executable, `OMNI_DAEMON` for the Omni daemon executable, `SILICON_AUTO_UPDATE=0` and `SILICON_NO_SERVICE=1` for development runs, the `SILICON_*_TIMEOUT_SECS` [time limits](#time-limits), `SILICON_IDLE_SESSION_MINUTES`, and `SILICON_TURN_STALL_MINUTES`. They affect the process in which they are set; an already-running daemon does not inherit new variables from a later terminal command.
 
 ## The repository's reference template
 
@@ -937,12 +1012,12 @@ Keep development and testing on the production authentication paths. An imported
 
 ### Contract versions
 
-| Consumer or dependency | Silicon 5.0.2 contract |
+| Consumer or dependency | Silicon 5.1.0 contract |
 | --- | --- |
 | Existing 3.5 configurations | Migrate to `silicon.id: si:handle`, explicit `silicon.org_id`, and bare app IDs. `login` remains accepted. Remove `webhook` and `webhooks`; Ting is registered automatically. `sticky` and `archive_on_end` have been removed; replace them with `primary_send_mode` and `session_type` using the table above. |
 | IAM application discovery | JSON bare `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |
 | Authentication | Primary `login` / `login status --json`; legacy `auth token` / `auth status --json` remains supported. IAM is installed through Honeycomb without a version constraint; `--approve-scopes` is used only when its CLI exposes support. |
-| Inference | Omni 0.9.0 Rust/client-daemon contract at `c23d80a7251a1f6a77e76172a197126e693c00f1`. |
+| Inference | Omni 0.9.1 Rust/client-daemon contract at `62c2adc57983be37c1de2064d169073bddf71291`. |
 | Local interpreter API | Protocol `1`, reported by `silicon info`; protected `POST /control` and `POST /si`. |
 | Honeycomb / Space Station | Latest standalone Honeycomb; Space Station CLI installed only when configured or explicitly requested. Interpreter telemetry uses its compiled Space Station Rust dependency. |
 
@@ -996,6 +1071,14 @@ The recorded 4.0.8–4.0.9 protocol E2E used the real pinned Omni daemon (0.8.0)
 | 4.0.0 native bundles | [All four Unix jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35139170050) passed on `83fbefe`, including interpreter tests, Clippy, real Omni/Caddy E2E, required CLI execution, and live IAM discovery. The workflow's duplicate Windows jobs were cancelled after the Unix jobs passed because Windows was tested separately. All 32 bundled application binaries match the latest verified Honeycomb packages exactly. |
 | 4.0.0 Windows x64 | [Windows verification](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35140947343) passed on `8fa368d` with the unchanged verified Linux runtime. Fresh PS5.1 installation, Ubuntu updates, missing-only WSL interoperability repair, full Omni/Caddy E2E, Unicode/quoted arguments, UNC paths, pipes, exit status, settings, browser launch, configuration redaction, and connection lifecycle passed. ARM64 native tests and packaging passed; ARM64 WSL2 remains unverified. |
 | 4.0.0 public Unix installation | The exact public curl one-liner installed into a fresh macOS ARM64 prefix. All 34 installed files matched the verified archive. Same-version reinstall repaired missing Honeycomb/Space Station files and links while preserving a marker YAML, and the public installed bundle passed the complete real Omni/Caddy E2E. |
+| Autostart on every platform (5.1.0) | `service::tests::launchd_install_writes_the_agent_and_bootstraps_it`, `launchd_without_a_gui_login_keeps_the_agent_for_the_next_login`, `systemd_install_enables_the_unit_and_explains_a_refused_linger`, `cron_install_merges_the_crontab_and_starts_the_supervisor`, `crontab_merge_is_idempotent_and_keeps_foreign_lines`, `plist_golden_and_valid_for_launchd` (checked with `plutil -lint`), and the portable supervisor tests `the_supervisor_restarts_a_crashing_serve_and_stops_after_a_clean_exit` and `supervisor_backoff_doubles_to_five_minutes_and_resets_after_a_healthy_run`. Every service command runs through a scripted runner; the real LaunchAgent was also exercised on macOS: after `kill -9` launchd restarted the interpreter in about 16 seconds with no orphaned Caddy, `silicon stop` stayed stopped, and uninstall removed the job. systemd, cron, and the Windows logon task are covered by unit tests and the Windows CI suite, not by a live boot. |
+| Restore never forgets and never starves (5.1.0) | `server::tests::registry_changes_never_drop_saved_silicons_that_wait_for_restore`, `a_failed_restore_waits_its_backoff_and_reports_each_new_error_once`, `a_slow_failing_restore_does_not_keep_the_others_waiting`, `a_waiting_interactive_request_gets_the_lock_before_the_next_restore`, `a_restore_whose_ting_registration_fails_stays_connected_and_retries_ting_alone`, `a_corrupt_registry_is_moved_aside_whole_and_the_interpreter_starts_empty`, and `events_for_a_silicon_still_being_restored_ask_ting_to_retry`; the E2E waits for background restore after its restart. |
+| Handover to a service starts it first (5.1.0) | `server::tests::a_handover_starts_the_service_first_and_stays_put_when_it_cannot` and `service::tests::installing_beside_an_unsupervised_interpreter_does_not_queue_a_second_one`. |
+| Tools have time limits (5.1.0) | `process::tests::a_tool_past_its_limit_is_stopped_with_everything_it_said`, `a_tool_ignoring_sigterm_is_killed`, `a_background_child_holding_the_pipe_does_not_hold_the_answer`, and `a_stopping_interpreter_ends_the_tools_still_running`. |
+| Caddy is supervised and its orphans stopped (5.1.0) | `server::tests::routing_that_cannot_start_is_retried_with_backoff_and_never_fails_a_caller`, `proxy::tests::an_earlier_caddy_that_accepts_stop_is_not_signalled`, `a_caddy_that_accepted_stop_is_waited_for_whatever_its_command_line_shows`, and the ignored real-Caddy tests. |
+| Wall-clock heartbeats and idle retirement (5.1.0) | `runtime::tests::heartbeat_schedules_survive_restarts_and_a_clock_that_went_back`, `idle_session_workers_retire_and_resume_the_same_omni_session`, `an_ephemeral_reply_resumes_a_caller_retired_while_it_waited`, and `work_silent_past_the_stall_limit_is_reported_in_full`. |
+| Updater backs off, reclaims locks, and prunes (5.1.0) | `update::tests::checks_are_scheduled_by_wall_clock_with_jitter_and_backoff`, `a_new_release_and_a_clock_set_back_reset_the_backoff`, `an_installer_past_its_limit_is_stopped_with_its_whole_group`, and `the_installer_reclaims_a_stale_lock_and_prunes_what_nothing_needs`, which runs the real `install.sh` functions in a temporary prefix. |
+| Logs rotate and readers follow (5.1.0) | `tests::logs_rotate_at_their_cap_and_readers_follow_the_move` and `tests::a_silicon_log_past_its_cap_starts_a_new_file_and_keeps_the_old`. |
 | Slow heartbeat cannot accumulate work | `runtime::tests::slow_heartbeat_coalesces_ticks_without_blocking_other_sessions` blocks a real protocol connection over several scheduler ticks, verifies independent-session progress, releases it, and verifies foreground delivery and no queued backlog. The final Windows WSL2 suite also passed heartbeat, suggestion, and busy-DNA checks. |
 | Private bundle tools and Silicon home | `tests/bundle_path.rs` verifies actual native interpreter execution through a public symlink, bundled dependency discovery, home command priority, working directory, preservation of app update preferences, PATH deduplication, and refusal to trust an unmarked bundle directory. |
 | 3.6.1 public release | [Version 3.6.1](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v3.6.1) was published as the latest stable release on 16 September at 17:19:29 UTC from `3f604bb1d99c2060b70377f6f8afe92693264475`. [All four native jobs](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35124053286) and [source checks](https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35124052640) passed. All six asset sizes/digests and five checksum entries matched; each native archive contained the expected 34 payload files, architecture, installer, notices, and version. |

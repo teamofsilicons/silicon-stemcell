@@ -589,16 +589,15 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
                 &["-c", &failure::mask(home, &redact(command, env), &[])],
             )
         };
-        let output = crate::command("bash", home)
-            .arg("-c")
-            .arg(command)
-            .env("ISI", isi)
-            .env(
-                "SILICON_ORG",
-                env["silicon"]["SILICON_ORG"].as_str().unwrap_or_default(),
-            )
-            .output()
-            .map_err(|error| failure::spawn(home, &name, &error))?;
+        let mut bash = crate::command("bash", home);
+        bash.arg("-c").arg(command).env("ISI", isi).env(
+            "SILICON_ORG",
+            env["silicon"]["SILICON_ORG"].as_str().unwrap_or_default(),
+        );
+        let output =
+            bounded(&mut bash, mode).map_err(|error| failure::spawn(home, &name, &error))?;
+        // A script stopped at its time limit still shows what it printed before it was
+        // stopped, and the closing `silicon: stopped after` line says why it ended.
         if matches!(mode, Mode::Setup) {
             for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
                 for line in String::from_utf8_lossy(bytes).lines() {
@@ -642,6 +641,32 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
             .with_context(|| format!("could not read DNA file {}", path.display()));
     }
     Ok(expanded)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's time limit for its expressions, standing in for the daemon's.
+    static TEST_LIMIT: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The interpreter bounds every expression so one hung script cannot hold a lock or a
+/// queue. A CLI command such as `silicon compile` keeps the terminal, so a credential
+/// command there can still prompt.
+fn bounded(bash: &mut std::process::Command, mode: Mode) -> std::io::Result<Output> {
+    #[cfg(test)]
+    if let Some(limit) = TEST_LIMIT.with(std::cell::Cell::get) {
+        return crate::process::output_within(bash, limit);
+    }
+    if crate::process_role() != "daemon" {
+        return bash.output();
+    }
+    let limit = if matches!(mode, Mode::Setup) {
+        crate::process::Limit::Setup
+    } else {
+        crate::process::Limit::Expression
+    };
+    crate::process::output(bash, limit)
 }
 
 /// One failing candidate is the error; several are listed in the order they were tried.
@@ -1197,6 +1222,75 @@ mod tests {
         assert!(fs::read_to_string(dir.path().join(".silicon/silicon.log"))
             .unwrap()
             .contains("running: printf runtime-visible"));
+    }
+
+    /// Run `action` with this thread's expressions stopped after `limit`, as the daemon's are.
+    fn within<T>(limit: std::time::Duration, action: impl FnOnce() -> T) -> T {
+        TEST_LIMIT.with(|cell| cell.set(Some(limit)));
+        let result = action();
+        TEST_LIMIT.with(|cell| cell.set(None));
+        result
+    }
+
+    #[test]
+    fn a_stopped_credential_command_still_withholds_what_it_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = json!({"silicon": {}});
+        let started = std::time::Instant::now();
+        let error = within(std::time::Duration::from_millis(300), || {
+            evaluate_secret(
+                "! printf stopped-private-credential; echo 'vault: waiting for unlock' >&2; sleep 30",
+                &env,
+                dir.path(),
+                "interpreter",
+            )
+        })
+        .unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        let error = format!("{error:#}");
+        for reason in [
+            "`[credential expression]` failed: signal: 15",
+            "stderr:\nvault: waiting for unlock\nsilicon: stopped after 0s without finishing (its time limit)",
+            "\nstdout: (withheld; it is the credential)",
+        ] {
+            assert!(error.contains(reason), "missing {reason:?} in {error}");
+        }
+        assert!(!error.contains("stopped-private-credential"), "{error}");
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(!logs.contains("stopped-private-credential"), "{logs}");
+    }
+
+    #[test]
+    fn a_stopped_setup_script_logs_everything_it_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = json!({"silicon": {}});
+        let error = within(std::time::Duration::from_millis(300), || {
+            setup(
+                "! echo 'downloading python'; echo 'mirror slow' >&2; sleep 30",
+                &env,
+                dir.path(),
+            )
+        })
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("failed: signal: 15")
+                && error.contains("stdout:\ndownloading python")
+                && error.contains("silicon: stopped after 0s"),
+            "{error}"
+        );
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        // Another test may mark this process as the daemon, so the role is not checked.
+        for line in [
+            "[setup] [stdout/",
+            "] [downloading python]",
+            "[setup] [stderr/",
+            "] [mirror slow]",
+            "] [silicon: stopped after 0s without finishing (its time limit): SIGTERM to its process group, then SIGKILL 5s later]",
+            "] [finished: signal: 15",
+        ] {
+            assert!(logs.contains(line), "missing {line:?} in {logs}");
+        }
     }
 
     fn fake_app(home: &Path, name: &str, script: &str) {

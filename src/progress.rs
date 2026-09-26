@@ -4,13 +4,17 @@ use crate::failure::{also, panic_message};
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File},
-    io::{IsTerminal, Read, Seek, SeekFrom, Write},
+    fs,
+    io::{IsTerminal, Write},
     path::Path,
     thread,
     time::Duration,
 };
 
+/// Run `action`, recording it as progress. Progress is a view of the work, never a gate on
+/// it: the action runs even when its "running" record cannot be written, and a record that
+/// fails after a successful action goes to the interpreter's stderr (daemon.log) instead of
+/// turning that success into a failure.
 pub(crate) fn step<T>(
     home: &Path,
     generation: Option<uuid::Uuid>,
@@ -28,14 +32,24 @@ pub(crate) fn step<T>(
         )
         .with_context(|| format!("record {state} progress"))
     };
-    record("running", working)?;
+    let started = record("running", working);
     let result = action();
     let reported = record(
         if result.is_ok() { "done" } else { "failed" },
         if result.is_ok() { complete } else { working },
     );
+    let reported = match (started, reported) {
+        (Ok(()), reported) => reported,
+        (Err(started), Ok(())) => Err(started),
+        (Err(started), Err(reported)) => Err(also(started, Err(reported))),
+    };
     match result {
-        Ok(value) => reported.map(|()| value),
+        Ok(value) => {
+            if let Err(error) = reported {
+                crate::stderr_line(&format!("{error:#} (for: {working})"));
+            }
+            Ok(value)
+        }
         // Reporting must not replace the original operation's failure, nor vanish.
         Err(error) => Err(also(error, reported)),
     }
@@ -86,20 +100,11 @@ impl<W: Write> Display<W> {
     }
 
     fn lines(&mut self, path: &Path, offset: &mut u64) -> Result<()> {
-        let mut file = match File::open(path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        file.seek(SeekFrom::Start(*offset))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        // A writer may still be appending a record (including a multibyte character).
-        let Some(end) = bytes.iter().rposition(|b| *b == b'\n') else {
-            return Ok(());
-        };
-        *offset += end as u64 + 1;
-        for line in String::from_utf8_lossy(&bytes[..=end]).lines() {
+        // A writer may still be appending a record (including a multibyte character);
+        // only complete lines are read, across a rotation of the log.
+        let bytes = crate::complete_lines_since(path, offset)
+            .with_context(|| format!("read {}", path.display()))?;
+        for line in String::from_utf8_lossy(&bytes).lines() {
             if let Some(body) = strip_origin(line, "[progress]", "interpreter")
                 .and_then(|line| line.split_once("] [").map(|(_, body)| body))
                 .and_then(|body| body.strip_suffix(']'))
@@ -166,6 +171,7 @@ pub(crate) fn connect(yaml: std::path::PathBuf) -> Result<Value> {
     display
         .show("done", "Validated configuration")
         .context(PRINT)?;
+    crate::cli::supervise(&cfg);
     let path = cfg.home.join(".silicon/silicon.log");
     let mut offset = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     display
@@ -351,6 +357,35 @@ mod tests {
             shown.contains("[error] [demo/cli] [")
                 && shown.contains("] [login refused:\n    stderr:\n    quota]\n"),
             "{shown}"
+        );
+    }
+
+    #[test]
+    fn progress_that_cannot_be_recorded_never_decides_the_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where silicon.log should be: every progress record fails.
+        fs::create_dir_all(dir.path().join(".silicon/silicon.log")).unwrap();
+        let mut ran = false;
+        let value = step(dir.path(), None, "Registering", "Registered", || {
+            ran = true;
+            Ok(7)
+        })
+        .unwrap();
+        assert!(ran && value == 7);
+        let error = step(
+            dir.path(),
+            None,
+            "Registering",
+            "Registered",
+            || -> Result<()> { anyhow::bail!("ting: connection refused") },
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.starts_with(
+                "ting: connection refused\nalso: record running progress: cannot append to "
+            ) && error.contains("also: record failed progress: cannot append to "),
+            "{error}"
         );
     }
 

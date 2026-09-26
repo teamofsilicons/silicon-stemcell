@@ -6,7 +6,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
 };
 
 /// Honeycomb's bare app handle grammar; these values are arguments, never shell text.
@@ -191,11 +190,9 @@ fn invoke(home: &Path, packages: &Path, binary: &Path, args: &[&str]) -> Result<
     };
     // Packages live in a private registry. Unrelated commands on the user's PATH
     // must not block its installs; Honeycomb and expose still reject owned-home collisions.
-    let output = crate::command(binary, packages)
-        .env_remove("PATH")
-        .args(&args)
-        .stdin(Stdio::null())
-        .output()
+    let mut honeycomb = crate::command(binary, packages);
+    honeycomb.env_remove("PATH").args(&args);
+    let output = crate::process::output(&mut honeycomb, crate::process::Limit::Install)
         .map_err(|error| failure::spawn(home, &command, &error))
         .with_context(context)?;
     if !output.status.success() {
@@ -284,11 +281,11 @@ fn commands(home: &Path, records: &Value, id: &str) -> Result<BTreeMap<String, P
 /// Ok when `executable iam --json` names `id`; otherwise what it actually did.
 fn advertises(home: &Path, executable: &Path, id: &str) -> Result<()> {
     let command = failure::argv(executable, &["iam", "--json"]);
-    let output = crate::command(executable, home)
-        .args(["iam", "--json"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| failure::spawn(home, &command, &error))?;
+    let output = crate::process::output(
+        crate::command(executable, home).args(["iam", "--json"]),
+        crate::process::Limit::App,
+    )
+    .map_err(|error| failure::spawn(home, &command, &error))?;
     if !output.status.success() {
         return Err(failure::command(home, &command, &output, &[]));
     }
@@ -469,9 +466,10 @@ fn install_using(home: &Path, id: &str, binary: &Path) -> Result<Value> {
             shown(home, &result)
         );
     };
+    // `json!` of a path panics when it is not UTF-8; this field only informs.
     object.insert(
         "silicon_bin_directory".into(),
-        json!(home.join(".silicon/bin")),
+        json!(home.join(".silicon/bin").to_string_lossy()),
     );
     Ok(result)
 }
@@ -492,10 +490,24 @@ pub fn install(id: &str) -> Result<Value> {
 }
 
 /// Resolve the latest release afresh on every connect; authentication has its own cache.
+///
+/// A Silicon must come back after a reboot without the network: when Honeycomb cannot
+/// install the latest release (no DNS yet, Honeycomb or its backend down, a registry
+/// lock) but a working copy is already installed, the failure is logged in full and the
+/// installed copy is used. Only an app that is not installed at all stops the connection.
 pub(crate) fn install_all(
     home: &Path,
     configured: &[String],
     generation: uuid::Uuid,
+) -> Result<()> {
+    install_all_using(home, configured, generation, &honeycomb)
+}
+
+fn install_all_using(
+    home: &Path,
+    configured: &[String],
+    generation: uuid::Uuid,
+    honeycomb: &dyn Fn(&Path) -> Result<PathBuf>,
 ) -> Result<()> {
     let mut ids = Vec::new();
     // Login entries that are commands rather than app IDs authenticate without Honeycomb.
@@ -511,15 +523,177 @@ pub(crate) fn install_all(
         ids.insert(0, "iam".into());
     }
     for id in ids {
-        crate::progress::step(
-            home,
-            Some(generation),
-            &format!("Installing latest {id} through Honeycomb"),
-            &format!("Installed latest {id}"),
-            || install_at(home, &id),
-        )?;
+        install_or_keep(home, &id, generation, honeycomb)?;
     }
     Ok(())
+}
+
+/// Install the app IDs this home's managed app registry lists but `configured` (the YAML's
+/// apps, as [`install_all`] was given them) does not: ones added by `si auth setup`, and by
+/// older interpreters for every app they checked. They are installed like configured
+/// apps, but one that Honeycomb cannot install and that has no working installed copy
+/// (unpublished or renamed since) is logged in full and left out, so the Silicon still
+/// connects and `si auth remove` can drop it. Its automatic check then reports it too.
+pub fn install_registered(
+    home: &Path,
+    configured: &[String],
+    generation: uuid::Uuid,
+) -> Result<()> {
+    let registered = crate::auth::registered(home)?;
+    install_registered_using(home, &registered, configured, generation, &honeycomb)
+}
+
+fn install_registered_using(
+    home: &Path,
+    registered: &[String],
+    configured: &[String],
+    generation: uuid::Uuid,
+    honeycomb: &dyn Fn(&Path) -> Result<PathBuf>,
+) -> Result<()> {
+    let mut done: Vec<&str> = configured.iter().map(String::as_str).collect();
+    // `install_all` always installs IAM first.
+    done.push("iam");
+    for id in registered.iter().filter(|id| valid_id(id)) {
+        if done.contains(&id.as_str()) {
+            continue;
+        }
+        done.push(id);
+        if let Err(error) = install_or_keep(home, id, generation, honeycomb) {
+            logged(
+                home,
+                generation,
+                id,
+                &format!(
+                    "{error:#}; continuing without it, since it is in the managed app registry but not in the YAML; remove it with `si auth remove {id}`"
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Ask Honeycomb for the latest `id`. When that fails but a working copy is installed, the
+/// failure is logged and the copy kept; only when no usable copy exists is it returned.
+fn install_or_keep(
+    home: &Path,
+    id: &str,
+    generation: uuid::Uuid,
+    honeycomb: &dyn Fn(&Path) -> Result<PathBuf>,
+) -> Result<()> {
+    let installed = step(
+        home,
+        Some(generation),
+        &format!("Installing latest {id} through Honeycomb"),
+        &format!("Installed latest {id}"),
+        || install_using(home, id, &honeycomb(home)?),
+    );
+    let Err(error) = installed else {
+        return Ok(());
+    };
+    match usable(home, id, honeycomb) {
+        Ok(Some(path)) => {
+            logged(
+                home,
+                generation,
+                id,
+                &format!(
+                    "could not install the latest {id} through Honeycomb, so {} (which answers as {id}) stays in use: {error:#}; continuing with the installed {id}",
+                    path.display()
+                ),
+            );
+            Ok(())
+        }
+        Ok(None) => Err(error),
+        Err(checked) => Err(failure::also(
+            error,
+            Err(checked.context(format!("looking for an installed copy of {id}"))),
+        )),
+    }
+}
+
+/// An `[error]` line under `id` in silicon.log, or in daemon.log when silicon.log cannot
+/// take it; the connection goes on either way.
+fn logged(home: &Path, generation: uuid::Uuid, id: &str, message: &str) {
+    if let Err(error) = crate::log_line_scoped(home, Some(generation), "error", id, message) {
+        crate::stderr_line(&format!(
+            "{error:#}; the {id} error it was recording: {}",
+            failure::mask(home, message, &[])
+        ));
+    }
+}
+
+/// The copy of `id` this home already runs, when there is one. An app must answer as
+/// itself ([`resolve`]). The IAM issuer is not an IAM app and answers no `iam --json`,
+/// so its command (this home's, else the one on PATH) must answer its login help instead.
+fn usable(
+    home: &Path,
+    id: &str,
+    honeycomb: &dyn Fn(&Path) -> Result<PathBuf>,
+) -> Result<Option<PathBuf>> {
+    if id != "iam" {
+        return Ok(resolve_using(home, id, honeycomb)?.ok());
+    }
+    let own = home.join(".silicon/bin/iam");
+    let path = if executable(&own) {
+        own
+    } else if let Some(path) = on_path("iam") {
+        path
+    } else {
+        return Ok(None);
+    };
+    const HELP: &[&str] = &["silicon-login", "--help"];
+    let shown = failure::argv(&path, HELP);
+    let output = crate::process::output(
+        crate::command(&path, home).args(HELP),
+        crate::process::Limit::App,
+    )
+    .map_err(|error| failure::spawn(home, &shown, &error))?;
+    if !output.status.success() {
+        return Err(failure::command(home, &shown, &output, &[]));
+    }
+    Ok(Some(path))
+}
+
+/// [`crate::progress::step`] for work whose progress is only a display: a failed progress
+/// record is reported (in daemon.log, since silicon.log is what failed) and never stops
+/// the work or replaces its outcome.
+pub(crate) fn step<T>(
+    home: &Path,
+    generation: Option<uuid::Uuid>,
+    working: &str,
+    complete: &str,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let mut action = Some(action);
+    let mut value = None;
+    let recorded = crate::progress::step(home, generation, working, complete, || {
+        if let Some(action) = action.take() {
+            value = Some(action()?);
+        }
+        Ok(())
+    });
+    let unrecorded = |error: &anyhow::Error| {
+        crate::stderr_line(&format!(
+            "progress of \"{working}\" was not recorded: {error:#}"
+        ))
+    };
+    match (value, recorded) {
+        (Some(value), Ok(())) => Ok(value),
+        (Some(value), Err(error)) => {
+            unrecorded(&error);
+            Ok(value)
+        }
+        (None, Err(error)) => match action.take() {
+            // The record before the work failed, so the work has not run yet.
+            Some(action) => {
+                unrecorded(&error);
+                action()
+            }
+            // The work ran and failed; a failed record already rides along with it.
+            None => Err(error),
+        },
+        (None, Ok(())) => Err(anyhow!("\"{working}\" finished without its result")),
+    }
 }
 
 /// Honeycomb removes only its owned package files; application credentials remain app-owned.
@@ -842,6 +1016,142 @@ esac
         assert!(
             missing.contains("could not run `absent installed --json`: No such file or directory"),
             "{missing}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_install_keeps_an_installed_copy_and_fails_only_a_missing_app() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let canonical = dir.path().canonicalize()?;
+        let home = canonical.as_path();
+        // Honeycomb cannot reach its backend; nothing it is asked to install arrives.
+        let cli = home.join("tools/honeycomb");
+        script(
+            &cli,
+            "#!/bin/sh\necho \"$*\" >> \"$SILICON_HOME/../../honeycomb-calls\"\necho 'error sending request for url (https://10.255.255.1/api/v2/apps)' >&2\nexit 1\n",
+        )?;
+        let honeycomb = |_: &Path| Ok(cli.clone());
+        script(
+            &home.join(".silicon/bin/iam"),
+            "#!/bin/sh\n[ \"$*\" = 'silicon-login --help' ] && echo '--approve-scopes'\n",
+        )?;
+        script(
+            &home.join(".silicon/bin/kept-test-app"),
+            "#!/bin/sh\necho '{\"app_id\":\"kept-test-app\"}'\n",
+        )?;
+        let generation = uuid::Uuid::new_v4();
+        install_all_using(home, &["kept-test-app".into()], generation, &honeycomb)?;
+        assert_eq!(
+            fs::read_to_string(home.join("honeycomb-calls"))?,
+            "install iam --json\ninstall kept-test-app --json\n"
+        );
+        let log = fs::read_to_string(home.join(".silicon/silicon.log"))?;
+        for id in ["iam", "kept-test-app"] {
+            let line = log
+                .lines()
+                .find(|line| line.starts_with(&format!("[error] [{id}/")))
+                .unwrap_or_else(|| panic!("no error line for {id}:\n{log}"));
+            assert!(
+                line.contains(&format!(
+                    "could not install the latest {id} through Honeycomb, so {} (which answers as {id}) stays in use: ",
+                    home.join(".silicon/bin").join(id).display()
+                )) && line.contains(&format!("`honeycomb install {id} --json` failed: exit status: 1"))
+                    && line.contains("stderr:\\nerror sending request for url")
+                    && line.ends_with(&format!("; continuing with the installed {id}]")),
+                "{line}"
+            );
+        }
+        // Progress still shows the failed install.
+        assert!(log.contains("\"state\":\"failed\""), "{log}");
+
+        // An app with no installed copy stops the connection with Honeycomb's own failure.
+        let error = format!(
+            "{:#}",
+            install_all_using(home, &["absent-test-app".into()], generation, &honeycomb)
+                .unwrap_err()
+        );
+        assert!(
+            error.contains("`honeycomb install absent-test-app --json` failed: exit status: 1")
+                && error.contains("error sending request for url")
+                && !error.contains("also:"),
+            "{error}"
+        );
+        // A copy that is there but cannot run does not count, and says why.
+        script(
+            &home.join(".silicon/bin/iam"),
+            "#!/bin/sh\necho 'dyld: Library not loaded: libiam.dylib' >&2\nexit 134\n",
+        )?;
+        let error = format!(
+            "{:#}",
+            install_all_using(home, &["kept-test-app".into()], generation, &honeycomb).unwrap_err()
+        );
+        assert!(
+            error.contains("`honeycomb install iam --json` failed: exit status: 1")
+                && error.contains(
+                    "\nalso: looking for an installed copy of iam: `iam silicon-login --help` failed: exit status: 134\nstderr:\ndyld: Library not loaded: libiam.dylib"
+                ),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_registered_app_that_cannot_be_installed_does_not_stop_the_connection() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let canonical = dir.path().canonicalize()?;
+        let home = canonical.as_path();
+        // The package was unpublished, so Honeycomb cannot install it.
+        let cli = home.join("tools/honeycomb");
+        script(
+            &cli,
+            "#!/bin/sh\necho \"$*\" >> \"$SILICON_HOME/../../honeycomb-calls\"\necho \"app $2 not found\" >&2\nexit 1\n",
+        )?;
+        let honeycomb = |_: &Path| Ok(cli.clone());
+        script(
+            &home.join(".silicon/bin/kept-test-app"),
+            "#!/bin/sh\necho '{\"app_id\":\"kept-test-app\"}'\n",
+        )?;
+        let registered = [
+            "iam",
+            "ting",
+            "configured-test-app",
+            "gone-test-app",
+            "kept-test-app",
+            "! legacy-command --flag",
+            "test>app",
+        ]
+        .map(String::from);
+        let configured = ["configured-test-app".to_owned(), "ting".to_owned()];
+        install_registered_using(
+            home,
+            &registered,
+            &configured,
+            uuid::Uuid::new_v4(),
+            &honeycomb,
+        )?;
+        // IAM and configured apps are `install_all`'s; commands never go through Honeycomb.
+        assert_eq!(
+            fs::read_to_string(home.join("honeycomb-calls"))?,
+            "install gone-test-app --json\ninstall kept-test-app --json\n"
+        );
+        let log = fs::read_to_string(home.join(".silicon/silicon.log"))?;
+        let line = |id: &str| {
+            log.lines()
+                .find(|line| line.starts_with(&format!("[error] [{id}/")))
+                .unwrap_or_else(|| panic!("no error line for {id}:\n{log}"))
+                .to_owned()
+        };
+        let gone = line("gone-test-app");
+        assert!(
+            gone.contains("`honeycomb install gone-test-app --json` failed: exit status: 1")
+                && gone.contains("stderr:\\napp gone-test-app not found")
+                && gone.ends_with("; continuing without it, since it is in the managed app registry but not in the YAML; remove it with `si auth remove gone-test-app`]"),
+            "{gone}"
+        );
+        assert!(
+            line("kept-test-app").ends_with("; continuing with the installed kept-test-app]"),
+            "{log}"
         );
         Ok(())
     }

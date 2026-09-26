@@ -856,8 +856,8 @@ dependencies = [
 
 [[package]]
 name = "omni-core"
-version = "0.9.0"
-source = "git+https://github.com/teamofsilicons/silicon-omni?rev=c23d80a7251a1f6a77e76172a197126e693c00f1#c23d80a7251a1f6a77e76172a197126e693c00f1"
+version = "0.9.1"
+source = "git+https://github.com/teamofsilicons/silicon-omni?rev=62c2adc57983be37c1de2064d169073bddf71291#62c2adc57983be37c1de2064d169073bddf71291"
 dependencies = [
  "libc",
  "serde",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "silicon"
-version = "5.0.2"
+version = "5.1.0"
 dependencies = [
  "anyhow",
  "cel-interpreter",
@@ -1248,8 +1248,8 @@ dependencies = [
 
 [[package]]
 name = "silicon-omni"
-version = "0.9.0"
-source = "git+https://github.com/teamofsilicons/silicon-omni?rev=c23d80a7251a1f6a77e76172a197126e693c00f1#c23d80a7251a1f6a77e76172a197126e693c00f1"
+version = "0.9.1"
+source = "git+https://github.com/teamofsilicons/silicon-omni?rev=62c2adc57983be37c1de2064d169073bddf71291#62c2adc57983be37c1de2064d169073bddf71291"
 dependencies = [
  "libc",
  "omni-core",

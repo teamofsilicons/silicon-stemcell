@@ -14,6 +14,8 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 foreach ($command in 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook ting'.Split(' ')) {
     Copy-Item "$PSScriptRoot/launcher/target/$target/release/silicon-windows-launcher.exe" "$stage/$command.exe"
 }
+# The logon task's supervisor (install.ps1 registers it); built by the same cargo build.
+Copy-Item "$PSScriptRoot/launcher/target/$target/release/silicon-service.exe" "$stage/silicon-service.exe"
 Copy-Item $LinuxArchive "$stage/runtime.tar.gz"
 [IO.File]::WriteAllText("$stage/RUNTIME.sha256", (Get-FileHash $LinuxArchive -Algorithm SHA256).Hash.ToLowerInvariant() + "`n")
 [IO.File]::WriteAllText("$stage/VERSION", "v$version`n")
