@@ -482,8 +482,25 @@ esac
         cli("disconnect", "./alias.yaml", cwd=other_home)
         assert [row["id"] for row in control("list")] == ["si:e2e"]
         post("/control", {"action": "list", "args": {}}, status=401)
-        post("/events", {"type": "ping", "data": {}, "metadata": {}}, host="e2e.local.localhost", status=400)
-        event({"type": "ping", "data": [], "metadata": {}}, host="e2e.local.localhost", status=400)
+        # A live generic flow receives each JSON shape without the Ting envelope. Malformed
+        # Ting-shaped JSON is ordinary data too, and repeated generic inputs are distinct.
+        config.write_text(original.decode().split("\nflow:\n", 1)[0] + "\nflow:\n  - log: {message: 'GENERIC_FLOW_RECEIVED {request}'}\n")
+        generic_requests = [
+            {"type": "ping", "data": {}, "metadata": {}},
+            {"tings": [{"id": "malformed-ting", "type": "ping", "data": [], "metadata": {}}]},
+            [1, {"nested": True}], "generic-string", 42, True, None,
+            {"type": "ping", "data": {}, "metadata": {}},
+        ]
+        generic_counts = {}
+        try:
+            for payload in generic_requests:
+                post("/events", payload, host="e2e.local.localhost", status=204)
+                rendered = payload if isinstance(payload, str) else json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                marker = "[GENERIC_FLOW_RECEIVED " + rendered + "]"
+                generic_counts[marker] = generic_counts.get(marker, 0) + 1
+                eventually(lambda: (home / ".silicon/silicon.log").read_text().count(marker) == generic_counts[marker])
+        finally:
+            config.write_bytes(original)
         event({"type": "ping", "data": {}, "metadata": {}}, host="other.local.localhost", status=404)
         # A Ting acknowledgement means durable receipt; a blocked flow must not hold it open.
         gate_batch = {"tings": [{"id": "gate-event", "type": "gated", "data": {"message": "gated delivery"}, "metadata": {}}]}
@@ -581,10 +598,12 @@ esac
         batch = {"tings": [{"id": "batch-first", "type": "batch", "data": {"message": "batch first"}, "metadata": {}},
                             {"id": "batch-second", "type": "ping", "data": {"message": "batch second"}, "metadata": {}}]}
         post("/events", batch, host="e2e.local.localhost", status=204)
-        eventually(lambda: messages("source", "batch second"))
+        batch_message = "batch first\nbatch second"
+        eventually(lambda: messages("source", batch_message))
         post("/events", batch, host="e2e.local.localhost", status=204)
         eventually(lambda: session("source")["status"] == "idle")
-        assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
+        assert len(messages("source", batch_message)) == 1
+        assert not messages("source", "batch first") and not messages("source", "batch second")
         assert len(messages("source", "gated delivery")) == 1
 
         # Omni 0.9 rotates the provider twice after a context limit while retaining this ISI session.
@@ -705,7 +724,8 @@ esac
         migrated = {**saved_connections[0], "id": "si:e2e", "host": "e2e.local.localhost"}
         eventually(lambda: json.loads(connection_path.read_text()) == [migrated])
         post("/events", batch, host="e2e.local.localhost", status=204)
-        assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
+        assert len(messages("source", batch_message)) == 1
+        assert not messages("source", "batch first") and not messages("source", "batch second")
         for name, records in restored.items():
             assert {row["session_id"] for row in control("sessions", silicon="si:e2e", isi=name)} == {row["session_id"] for row in records}
             assert any(row["id"] == name + "-history" for row in control("sessions", silicon="si:e2e", isi=name, archived=True))
@@ -716,7 +736,8 @@ esac
         event({"type": "ping", "data": {"message": "after restart"}, "metadata": {}}, host="e2e.local.localhost")
         eventually(lambda: messages("source", "after restart"))
         eventually(lambda: session("source")["status"] == "idle")
-        assert len(messages("source", "batch first")) == len(messages("source", "batch second")) == 1
+        assert len(messages("source", batch_message)) == 1
+        assert not messages("source", "batch first") and not messages("source", "batch second")
         assert config.read_bytes() == original
         cli("disconnect", "si:e2e")
         assert json.loads((home / "ting-hook.json").read_text())["state"] == "detached"
@@ -726,7 +747,7 @@ esac
         process.wait(timeout=15)
         assert process.returncode == 0, (work / "server.log").read_text()
         assert not (state / "daemon.json").exists()
-        print("E2E passed: si app install/config/uninstall, org propagation, implicit Ting install/auth/register, durable batch acknowledgement, dedup/reconnect, Omni context recovery, setup output/exactly-once, settings, redacted configuration, local ping, bug report preview, port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
+        print("E2E passed: si app install/config/uninstall, org propagation, implicit Ting install/auth/register, durable generic JSON/batch acknowledgement, aggregation, dedup/reconnect, Omni context recovery, setup output/exactly-once, settings, redacted configuration, local ping, bug report preview, port fallback, HTTP validation, relative-path disconnect isolation, live injection, ISI context/access, archives, ephemeral reply, heartbeat, suggestion limits, busy DNA refresh, session rollover, restart restore, disconnect, shutdown.")
     finally:
         (home / "flow-release").touch()
         if process.poll() is None:

@@ -107,6 +107,17 @@ struct SendReceipt {
     deadline: Instant,
 }
 
+#[derive(Debug)]
+struct ReceiptPending;
+
+impl std::fmt::Display for ReceiptPending {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("timed out after 60s awaiting provider START/INJECTED; the accepted delivery may still run")
+    }
+}
+
+impl std::error::Error for ReceiptPending {}
+
 impl SendReceipt {
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -135,9 +146,7 @@ impl SendReceipt {
         match result.as_ref() {
             Some(Ok(())) => Ok(()),
             Some(Err(error)) => bail!("{error}"),
-            None => bail!(
-                "timed out after 60s awaiting provider START/INJECTED; the accepted delivery may still run"
-            ),
+            None => Err(ReceiptPending.into()),
         }
     }
 }
@@ -162,6 +171,9 @@ pub struct Connected {
     pub cfg: Config,
     pub app_settings: RwLock<crate::config::Silicon>,
     pub ting: crate::ting::Inbox,
+    outbox: crate::outbox::Outbox,
+    /// Accepted dispatches awaiting acknowledgement, keyed by their stable outbox run/slot.
+    pending_outgoing: Mutex<HashMap<String, Sent>>,
     generation: Uuid,
     workers: Mutex<BTreeMap<Uuid, Arc<Worker>>>,
     pub enabled: AtomicBool,
@@ -490,9 +502,12 @@ impl Runtime {
     fn connect_prepared(self: &Arc<Self>, mut cfg: Config) -> Result<()> {
         let id = cfg.silicon.id.clone().context("silicon.id missing")?;
         let ting = crate::ting::Inbox::new(&cfg)?;
+        let outbox = crate::outbox::Outbox::new(&cfg);
+        outbox.reconcile(&ting.pending_ids()?)?;
         let app_settings = RwLock::new(cfg.silicon.clone());
         // Flows belong to the source file and are reloaded for every accepted batch.
         cfg.flow = serde_yaml::Value::Null;
+        cfg.functions = serde_yaml::Value::Null;
         log_line_scoped(
             &cfg.home,
             Some(cfg.generation),
@@ -508,6 +523,8 @@ impl Runtime {
                 cfg,
                 app_settings,
                 ting,
+                outbox,
+                pending_outgoing: Mutex::new(HashMap::new()),
                 workers: Mutex::new(BTreeMap::new()),
                 enabled: AtomicBool::new(true),
                 beats: Mutex::new(beats),
@@ -623,7 +640,11 @@ impl Runtime {
     }
 
     pub fn event(self: &Arc<Self>, id: &str, request: Value) -> Result<Value> {
-        self.event_connected(&self.get(id)?, request, 1)
+        let connected = self.get(id)?;
+        let run = Uuid::new_v4().to_string();
+        let result = self.event_connected(&connected, &run, request, 1)?;
+        connected.outbox.complete(&run)?;
+        Ok(result)
     }
 
     /// Run the flow for one Ting batch. `attempt` counts tries of the same head batch: its
@@ -632,17 +653,14 @@ impl Runtime {
     fn event_connected(
         self: &Arc<Self>,
         connected: &Arc<Connected>,
+        run: &str,
         request: Value,
         attempt: u32,
     ) -> Result<Value> {
         let _activity = self.activity()?;
-        if !request.get("tings").is_some_and(Value::is_array) {
-            bail!("event requires tings:array");
-        }
         if !connected.enabled.load(Ordering::SeqCst) {
             bail!("silicon disconnected");
         }
-        let event_id = Uuid::new_v4();
         let cfg = &connected.cfg;
         log_line_scoped(
             &cfg.home,
@@ -651,48 +669,100 @@ impl Runtime {
             "webhook",
             &if attempt <= 1 {
                 request.to_string()
-            } else {
+            } else if !ting_ids(&request).is_empty() {
                 format!(
                     "retrying the Ting batch of tings {} (attempt {attempt}); its full request was written on the first attempt",
                     ting_ids(&request).join(", ")
                 )
+            } else {
+                format!("retrying webhook request {run} (attempt {attempt}); its full request was written on the first attempt")
             },
         )?;
         let mut env = environment(cfg);
         env["request"] = request;
-        let steps = cfg
-            .load_flow()
+        let (steps, functions) = cfg
+            .load_program()
             .with_context(|| format!("loading the flow from {}", cfg.path.display()))?;
-        flow::execute(
+        let mut slot = 0;
+        flow::execute_with_functions(
             &steps,
+            &functions,
             env,
             &cfg.home,
             "interpreter",
-            |target, message, session| {
-                let options = SendOptions {
-                    id: session.map(str::to_owned),
-                    title: session.map(str::to_owned),
-                    new: true,
-                    ..Default::default()
-                };
-                self.send_connected(connected, None, target, message, &options, false)
-                    .and_then(|sent| sent.wait_started())
-                    .map_err(|error| {
-                        // Teardown ends a session mid-delivery with its own words ("session
-                        // ended before provider delivery"); the batch must still run again.
-                        if self.stopping.load(Ordering::SeqCst)
-                            || !connected.enabled.load(Ordering::SeqCst)
-                        {
-                            error.context(flow::Interrupted(format!(
-                                "the interpreter began stopping or the Silicon disconnected during `send {target}`"
-                            )))
-                        } else {
-                            error
-                        }
-                    })
+            |delivery| {
+                let result = connected.outbox.deliver(
+                    run,
+                    slot,
+                    delivery,
+                    cfg.silicon.max_retries,
+                    |key, delivery| self.deliver_outgoing(connected, key, delivery),
+                    || self.delivery_ready(connected),
+                );
+                slot += 1;
+                result
             },
         )?;
-        Ok(json!({"status":"ok","event_id":event_id}))
+        Ok(json!({"status":"ok","event_id":run}))
+    }
+
+    fn delivery_ready(&self, connected: &Connected) -> Result<()> {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(flow::Interrupted("interpreter is stopping".into()).into());
+        }
+        if !connected.enabled.load(Ordering::SeqCst) {
+            return Err(flow::Interrupted("silicon disconnected".into()).into());
+        }
+        Ok(())
+    }
+
+    /// Actual provider delivery, bypassing the public send's outbox recovery hook.
+    fn deliver_outgoing(
+        self: &Arc<Self>,
+        connected: &Arc<Connected>,
+        key: &str,
+        delivery: &flow::Delivery,
+    ) -> Result<()> {
+        self.delivery_ready(connected)?;
+        // Outbox serializes this callback. Do not hold the receipt-map lock while sending
+        // or waiting: provider callbacks and session teardown must remain able to progress.
+        let pending = connected.pending_outgoing.lock().recover().remove(key);
+        let sent = match pending {
+            Some(sent) => Ok(sent),
+            None => self.send_marked(
+                connected,
+                None,
+                &delivery.isi,
+                &delivery.message,
+                &SendOptions {
+                    id: delivery.session_id.clone(),
+                    title: delivery.session_id.clone(),
+                    new: true,
+                    ..Default::default()
+                },
+                false,
+                false,
+            ),
+        };
+        let result = sent.and_then(|sent| {
+            let result = sent.wait_started();
+            if result
+                .as_ref()
+                .is_err_and(|error| error.is::<ReceiptPending>())
+            {
+                connected
+                    .pending_outgoing
+                    .lock()
+                    .recover()
+                    .insert(key.to_owned(), sent);
+            }
+            result
+        });
+        result.map_err(|error| match self.delivery_ready(connected) {
+            Err(interrupted) => error.context(flow::Interrupted(format!("{interrupted:#}"))),
+            Ok(()) if error.is::<ReceiptPending>() => error.context(crate::outbox::AwaitingReceipt),
+            Ok(()) => error,
+        })
     }
 
     pub fn start_inbox(self: &Arc<Self>, connected: &Arc<Connected>) {
@@ -722,12 +792,18 @@ impl Runtime {
                         #[cfg(test)]
                         tests::injected_inbox_panic(&connected.cfg.home);
                         let _activity = runtime.activity()?;
-                        connected.ting.process(|request| {
-                            let attempt = next_attempt(&mut head, &request);
-                            runtime
-                                .event_connected(&connected, request, attempt)
-                                .map(|_| ())
-                        })
+                        let mut completed = None;
+                        connected.ting.process_identified(|run, request| {
+                            let attempt = next_attempt(&mut head, run);
+                            runtime.event_connected(&connected, run, request, attempt)?;
+                            completed = Some(run.to_owned());
+                            Ok(())
+                        })?;
+                        if let Some(run) = completed {
+                            connected.outbox.complete(&run)?;
+                            head = None;
+                        }
+                        Ok(())
                     }))
                     .unwrap_or_else(|panic| {
                         Err(anyhow!(
@@ -801,22 +877,42 @@ impl Runtime {
         options: &SendOptions,
         control: bool,
     ) -> Result<Sent> {
+        self.validate_send(connected, caller, target, options)?;
+        self.recover_outgoing(connected, target, options)?;
         self.send_marked(connected, caller, target, message, options, control, false)
     }
 
-    /// [`Runtime::send_connected`], saying whether the message is a heartbeat.
-    #[allow(clippy::too_many_arguments)]
-    fn send_marked(
+    fn recover_outgoing(
         self: &Arc<Self>,
+        connected: &Arc<Connected>,
+        target: &str,
+        options: &SendOptions,
+    ) -> Result<()> {
+        if !options.archived {
+            let delivery = flow::Delivery {
+                isi: target.to_owned(),
+                session_id: options.id.clone(),
+                message: String::new(),
+            };
+            if !connected.outbox.flush(
+                &delivery,
+                connected.cfg.silicon.max_retries,
+                |key, pending| self.deliver_outgoing(connected, key, pending),
+                || self.delivery_ready(connected),
+            )? {
+                bail!("{target} is still unavailable; earlier flow messages remain stashed for this session");
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_send(
+        &self,
         connected: &Arc<Connected>,
         caller: Option<&Caller>,
         target: &str,
-        message: &str,
         options: &SendOptions,
-        control: bool,
-        heartbeat: bool,
-    ) -> Result<Sent> {
-        let _activity = self.activity()?;
+    ) -> Result<()> {
         if let Some(caller) = caller {
             if !Arc::ptr_eq(connected, &self.caller_connection(caller)?) {
                 bail!("ISI capability belongs to another silicon connection");
@@ -838,6 +934,31 @@ impl Runtime {
         {
             bail!("session id must contain 1–1024 bytes");
         }
+        let isi = connected
+            .cfg
+            .isi
+            .get(target)
+            .ok_or_else(|| anyhow!("unknown isi: {target}"))?;
+        if isi.primary_send_mode.as_deref() == Some("session") && options.id.is_none() {
+            bail!("{target} uses session addressing; session_id/--id is required");
+        }
+        Ok(())
+    }
+
+    /// [`Runtime::send_connected`], saying whether the message is a heartbeat.
+    #[allow(clippy::too_many_arguments)]
+    fn send_marked(
+        self: &Arc<Self>,
+        connected: &Arc<Connected>,
+        caller: Option<&Caller>,
+        target: &str,
+        message: &str,
+        options: &SendOptions,
+        control: bool,
+        heartbeat: bool,
+    ) -> Result<Sent> {
+        let _activity = self.activity()?;
+        self.validate_send(connected, caller, target, options)?;
         let worker = self.worker(connected, target, options)?;
         match worker.send_as(message, caller.cloned(), control, heartbeat) {
             // The worker retired for inactivity between the lookup and the send; the session
@@ -1800,6 +1921,10 @@ impl Worker {
                 Err(error) => return Err(self.discard_disposable(&mut client, error)),
             }
         }
+        if let Some(exit) = self.daemon_exit() {
+            let error = anyhow!("Omni did not accept the message for session {}: its daemon had already exited\n{exit}", self.session_id);
+            return Err(self.discard_disposable(&mut client, error));
+        }
         let id = Uuid::new_v4();
         let receipt = SendReceipt::new();
         let connected = self
@@ -1843,7 +1968,10 @@ impl Worker {
             .as_ref()
             .unwrap()
             .send(&self.session_id.to_string(), message);
-        if !matches!(result, Ok(true)) {
+        if matches!(
+            &result,
+            Ok(false) | Err(silicon_omni::DaemonError::Daemon(_))
+        ) {
             // "the omni daemon went away" means nothing without the daemon's own last words.
             let error = self.with_daemon_exit(match result {
                 Err(error) => format!(
@@ -1863,12 +1991,23 @@ impl Worker {
             }
             return Err(self.discard_disposable(&mut client, anyhow!("{error}")));
         }
+        if let Err(error) = result {
+            // A lost/malformed transport acknowledgement does not prove rejection: Omni
+            // may already be running the message. Its provider receipt remains authoritative.
+            log_error(
+                &connected.cfg.home,
+                Some(connected.cfg.generation),
+                &self.state.lock().recover().record.isi,
+                &format!("Omni did not confirm acceptance for delivery {id}: {error}; retained its receipt because the message may still run"),
+            );
+        }
         let mut state = self.state.lock().recover();
         if !control {
             state.record.new_messages += 1;
         }
         if let Err(error) = state.record.save(&connected.cfg.home) {
-            // Accepted work keeps running even if metadata persistence fails; the caller sees the failure.
+            // Provider acceptance cannot be undone by a metadata failure. Keep its receipt
+            // so delivery recovery never turns this bookkeeping failure into a second send.
             let error = error.context(format!(
                 "{} accepted the message, but saving its session state failed",
                 state.record.isi
@@ -1879,9 +2018,8 @@ impl Worker {
                 &state.record.isi,
                 &format!("{error:#}"),
             );
-            return Err(error);
         }
-        log_line_scoped(
+        if let Err(error) = log_line_scoped(
             &connected.cfg.home,
             Some(connected.cfg.generation),
             "send",
@@ -1891,7 +2029,14 @@ impl Worker {
                 // Flow and interpreter sends have no ISI sender to name.
                 None => message.to_owned(),
             },
-        )?;
+        ) {
+            log_error(
+                &connected.cfg.home,
+                Some(connected.cfg.generation),
+                &state.record.isi,
+                &format!("message accepted, but recording its send failed: {error:#}"),
+            );
+        }
         let sent = Sent {
             session: state.record.clone(),
             id,
@@ -2303,20 +2448,39 @@ impl Worker {
                     if !reply_to_caller {
                         continue;
                     }
-                    let Some(origin) = dispatch.origin.as_ref() else {
+                    let Some(origin) = dispatch.origin else {
                         continue;
                     };
-                    if let Err(error) = self.reply(
-                        &runtime,
-                        &connected,
-                        origin,
-                        &format!("{name} completed:\n{reply}"),
-                    ) {
+                    let worker = self.clone();
+                    let reply_runtime = runtime.clone();
+                    let reply_connected = connected.clone();
+                    let message = format!("{name} completed:\n{reply}");
+                    let replying_isi = name.clone();
+                    // Recovery waits for provider events, so it must run off this listener.
+                    // Reserve activity before spawn so an idle restart cannot race this job.
+                    runtime.activities.fetch_add(1, Ordering::SeqCst);
+                    let started = thread::Builder::new()
+                        .name(format!("reply from {}", self.session_id))
+                        .spawn(move || {
+                            let _activity = Activity(&reply_runtime.activities);
+                            if let Err(error) =
+                                worker.reply(&reply_runtime, &reply_connected, &origin, &message)
+                            {
+                                log_error(
+                                    &reply_connected.cfg.home,
+                                    Some(reply_connected.cfg.generation),
+                                    &replying_isi,
+                                    &format!("ephemeral reply: {error:#}"),
+                                );
+                            }
+                        });
+                    if let Err(error) = started {
+                        runtime.activities.fetch_sub(1, Ordering::SeqCst);
                         log_error(
                             &cfg.home,
                             Some(cfg.generation),
                             &name,
-                            &format!("ephemeral reply: {error:#}"),
+                            &format!("could not start ephemeral reply: {error}"),
                         );
                     }
                 }
@@ -2385,18 +2549,24 @@ impl Worker {
                 origin.isi, origin.session
             )
         };
-        if let Some(target) = origin
-            .worker
-            .upgrade()
-            .filter(|worker| !worker.stopped.load(Ordering::SeqCst))
-        {
-            match target.send(text, None, true) {
-                Err(error) if error.is::<Retired>() => {}
-                sent => return sent.map(|_| ()).with_context(context),
-            }
-        }
+        runtime.delivery_ready(connected).with_context(context)?;
+        let target = self.reply_target(runtime, connected, origin)?;
+        let by_session = connected
+            .cfg
+            .isi
+            .get(&origin.isi)
+            .and_then(|isi| isi.primary_send_mode.as_deref())
+            == Some("session");
+        let options = SendOptions {
+            id: by_session.then(|| target.state.lock().recover().record.id.clone()),
+            ..Default::default()
+        };
+        runtime
+            .recover_outgoing(connected, &origin.isi, &options)
+            .with_context(context)?;
         // Twice: the worker found can itself retire between the lookup and the send.
         for _ in 0..2 {
+            runtime.delivery_ready(connected).with_context(context)?;
             let target = self.reply_target(runtime, connected, origin)?;
             match target.send(text, None, true) {
                 Err(error) if error.is::<Retired>() => {}
@@ -3193,15 +3363,14 @@ fn ting_ids(request: &Value) -> Vec<String> {
 }
 
 /// Which try this is at `request`, the batch now at the head of the Ting inbox.
-fn next_attempt(head: &mut Option<(String, u32)>, request: &Value) -> u32 {
-    let key = ting_ids(request).join("\n");
+fn next_attempt(head: &mut Option<(String, u32)>, key: &str) -> u32 {
     match head {
-        Some((current, attempts)) if *current == key => {
-            *attempts += 1;
+        Some((current, attempts)) if current == key => {
+            *attempts = attempts.saturating_add(1);
             *attempts
         }
         _ => {
-            *head = Some((key, 1));
+            *head = Some((key.to_owned(), 1));
             1
         }
     }
@@ -3850,18 +4019,12 @@ fn run_heartbeat(
         })?;
         let message = eval::evaluate(source, &environment(cfg), &cfg.home, address)
             .context("evaluating heartbeat.message")?;
-        runtime.send_marked(
-            connected,
-            None,
-            name,
-            &message,
-            &SendOptions {
-                id: session,
-                ..Default::default()
-            },
-            true,
-            true,
-        )?;
+        let options = SendOptions {
+            id: session,
+            ..Default::default()
+        };
+        runtime.recover_outgoing(connected, name, &options)?;
+        runtime.send_marked(connected, None, name, &message, &options, true, true)?;
         Ok(())
     })()
     .context("heartbeat")
@@ -4002,6 +4165,8 @@ flow: []
         cfg.home = dir.path().to_owned();
         cfg.path = dir.path().join("silicon.yaml");
         cfg.flow = flow;
+        // Transport tests control each receipt; retry policy has its own outbox checks.
+        cfg.silicon.max_retries = 0;
         let runtime = Runtime::new("http://127.0.0.1:1823".into());
         connect(&runtime, cfg);
         let connected = runtime.get("si:test").unwrap();
@@ -4244,7 +4409,7 @@ flow: []
                 })).unwrap());
             } else {
                 cfg.flow = serde_yaml::to_value(json!([
-                    {"send":{"isi":"a", "message":message, "catch":[{"log":{"message":"caught: {error}"}}]}},
+                    {"send":{"isi":"a", "message":message, "aggregate":false, "catch":[{"log":{"message":"caught: {self.error}"}}]}},
                     {"log":{"message":"continued"}}
                 ])).unwrap();
             }
@@ -4509,7 +4674,7 @@ flow: []
     }
 
     #[test]
-    fn flow_waits_for_delivery_and_runs_send_catch_before_continuing() {
+    fn flow_aggregates_before_delivery_and_stashes_failure_without_send_catch() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
         use std::sync::mpsc;
@@ -4521,7 +4686,7 @@ flow: []
     isi: a
     message: hello
     catch:
-      - log: {message: 'caught: {error}'}
+      - log: {message: 'caught: {self.error}'}
 - log: {message: continued}
 "#,
             )
@@ -4568,7 +4733,7 @@ flow: []
             delivered.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(response.recv_timeout(Duration::from_millis(50)).is_err());
             let log = dir.path().join(".silicon/silicon.log");
-            assert!(!fs::read_to_string(&log).unwrap().contains("[continued]"));
+            assert!(fs::read_to_string(&log).unwrap().contains("[continued]"));
             if failed {
                 let mut error = Event::new(Event::ERROR);
                 error.kind = "crash".into();
@@ -4585,7 +4750,8 @@ flow: []
             assert!(log.contains("[continued]"));
             if failed {
                 assert!(log.contains("blocked before START"));
-                assert!(log.find("[caught:").unwrap() < log.find("[continued]").unwrap());
+                assert!(log.contains("exhausted 0 retries"));
+                assert!(!log.contains("[caught:"));
             } else {
                 assert!(!log.contains("[caught:"));
                 assert!(!runtime.idle(), "ACK must not wait for provider END");
@@ -4607,8 +4773,9 @@ flow: []
 - send:
     isi: a
     message: hello
+    aggregate: false
     catch:
-      - log: {message: 'caught: {error}'}
+      - log: {message: 'caught: {self.error}'}
 - log: {message: continued}
 "#,
         )
@@ -5022,6 +5189,169 @@ flow: []
             Duration::from_secs(1)
         );
         runtime.shutdown();
+    }
+
+    #[test]
+    fn outgoing_timeouts_reuse_the_accepted_receipt_until_it_settles() {
+        let (_home, runtime, connected, worker) = worker(false);
+        let daemon = transport_ending(&worker, false);
+        let delivery = flow::Delivery {
+            isi: "a".into(),
+            session_id: None,
+            message: "retry after rejection".into(),
+        };
+        for succeeded in [true, false] {
+            let key = format!("{}/0", Uuid::new_v4());
+            let receipt = Arc::new(SendReceipt {
+                result: Mutex::new(None),
+                changed: Condvar::new(),
+                deadline: Instant::now(),
+            });
+            let id = Uuid::new_v4();
+            connected.pending_outgoing.lock().recover().insert(
+                key.clone(),
+                Sent {
+                    session: worker.state.lock().recover().record.clone(),
+                    id,
+                    receipt: receipt.clone(),
+                },
+            );
+            for _ in 0..2 {
+                let error = runtime
+                    .deliver_outgoing(&connected, &key, &delivery)
+                    .unwrap_err();
+                assert!(error.is::<crate::outbox::AwaitingReceipt>(), "{error:#}");
+                assert_eq!(connected.pending_outgoing.lock().recover()[&key].id, id);
+            }
+            receipt.finish(if succeeded {
+                Ok(())
+            } else {
+                Err("provider rejected it".into())
+            });
+            let result = runtime.deliver_outgoing(&connected, &key, &delivery);
+            assert_eq!(result.is_ok(), succeeded);
+            assert!(!connected
+                .pending_outgoing
+                .lock()
+                .recover()
+                .contains_key(&key));
+            if !succeeded {
+                runtime
+                    .deliver_outgoing(&connected, &key, &delivery)
+                    .unwrap();
+            }
+        }
+        runtime.shutdown();
+        assert_eq!(daemon.join().unwrap(), ["retry after rejection"]);
+    }
+
+    #[test]
+    fn accepted_sends_keep_their_receipts_when_recording_fails() {
+        for broken_log in [false, true] {
+            let (home, runtime, _connected, worker) = worker(false);
+            let daemon = transport_ending(&worker, false);
+            let path = if broken_log {
+                home.path().join(".silicon/silicon.log")
+            } else {
+                worker.state.lock().recover().record.path(home.path())
+            };
+            if path.exists() {
+                fs::remove_file(&path).unwrap();
+            }
+            fs::create_dir_all(&path).unwrap();
+            let sent = worker.send("accepted once", None, false).unwrap();
+            sent.wait_started().unwrap();
+            fs::remove_dir(&path).unwrap();
+            runtime.shutdown();
+            assert_eq!(daemon.join().unwrap(), ["accepted once"]);
+        }
+    }
+
+    #[test]
+    fn an_uncertain_transport_ack_keeps_the_provider_receipt() {
+        use std::io::{BufRead, BufReader, Write};
+        let (_home, runtime, _connected, worker) = worker(false);
+        let (client, mut daemon) = UnixStream::pair().unwrap();
+        *worker.client.lock().recover() = Some(Client::from_stream(client).unwrap());
+        let received = worker.clone();
+        let server = thread::spawn(move || {
+            let mut reader = BufReader::new(daemon.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "send");
+            // Omni accepted the message, but its transport reply cannot be decoded.
+            writeln!(
+                daemon,
+                "{}",
+                json!({"id":request["id"],"ok":true,"result":{}})
+            )
+            .unwrap();
+            received
+                .on_event(
+                    Event::new(Event::START).saying("accepted despite bad ack"),
+                    false,
+                    0,
+                )
+                .unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let stop: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(stop["op"], "stop");
+            writeln!(
+                daemon,
+                "{}",
+                json!({"id":stop["id"],"ok":true,"result":{"stopped":true}})
+            )
+            .unwrap();
+        });
+        let sent = worker
+            .send("accepted despite bad ack", None, false)
+            .unwrap();
+        sent.wait_started().unwrap();
+        runtime.shutdown();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_heartbeat_recovers_stashed_messages_before_its_own_message() {
+        let (_home, runtime, connected, worker) = worker(false);
+        let daemon = transport(&worker);
+        let run = Uuid::new_v4().to_string();
+        connected
+            .outbox
+            .deliver(
+                &run,
+                0,
+                &flow::Delivery {
+                    isi: "a".into(),
+                    session_id: None,
+                    message: "stashed first".into(),
+                },
+                0,
+                |_, _| bail!("offline"),
+                || Ok(()),
+            )
+            .unwrap();
+        connected.outbox.complete(&run).unwrap();
+        run_heartbeat(
+            &runtime,
+            &connected,
+            "a",
+            &serde_yaml::from_str("next: 13min\nmessage: heartbeat").unwrap(),
+            "a",
+            None,
+            Job::Fire(Utc::now()),
+        )
+        .unwrap();
+        assert!(wait_until(|| worker
+            .state
+            .lock()
+            .recover()
+            .pending
+            .is_empty()));
+        runtime.shutdown();
+        assert_eq!(daemon.join().unwrap(), ["stashed first", "heartbeat"]);
     }
 
     #[test]
@@ -5683,6 +6013,13 @@ flow: []
             .on_event(Event::new(Event::TEXT).saying("the answer"), false, 0)
             .unwrap();
         answering.on_event(Event::new(Event::END), true, 0).unwrap();
+        assert!(wait_until(|| resumed
+            .state
+            .lock()
+            .recover()
+            .pending
+            .iter()
+            .any(|dispatch| dispatch.message == "b completed:\nthe answer")));
         runtime.shutdown();
         let messages = second.join().unwrap();
         let log = silicon_log(dir.path());

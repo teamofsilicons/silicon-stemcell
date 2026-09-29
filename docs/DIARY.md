@@ -1,6 +1,14 @@
 # Building Silicon
 
 
+## 6.0.0: Structured flows and durable delivery
+
+Flow logic now has native YAML steps: `for: {list, var, then}`, `switch`, `collect`, and `continue`, `break`, and `exit` with logged reasons. CEL adds ordered `groupBy`, loops expose `self.for.index`, and optional top-level functions can be declared before or after the flow or imported from relative files. Calls take arguments and run list-valued `then`/`catch` branches with scoped `self.result` and `self.error`. Existing CEL-generated steps and Python or shell commands remain available.
+
+The local webhook durably accepts any valid JSON value without requiring a Ting envelope. Canonical Ting batches retain ID deduplication. Flow sends combine by ISI and session by default; `aggregate: false` flushes older messages for that destination and sends immediately. Outgoing messages are persisted before dispatch, retry up to `silicon.max_retries` (default ten retries after the initial attempt), and remain stashed after exhaustion. Only a later send to the same ISI and session wakes that stash. Delivery failures and recovery are logged. Persisted request IDs and delivery slots retain the original delivery plan across retries; a provider receipt lost in a crash can still cause duplicate delivery.
+
+The major version reflects changed send timing and catch behavior: every catch now uses `self.error`, and `send.catch` covers expression or target-validation errors rather than transport delivery failures. Existing configurations need the [5.x flow migration](GUIDE.md#upgrading-from-5x) before updating. This release adds neither Jev integration nor sample-event previews.
+
 ## 5.1.0: Running unattended
 
 The goal for 5.1.0 was an interpreter that, once started, keeps running for months without anyone watching it. An audit of every module against that goal, with each finding checked by a second reader, found the gaps. Nothing started the interpreter after a reboot or a crash. Restore ran once, before the network was up, and a Silicon it could not restore was erased from `connections.json` by the next unrelated connect. A single failed `accept()` (running out of descriptors, or a client resetting mid-handshake) ended the process. No tool had a time limit, so a hung credential command or app CLI could hold a lock forever. Nothing watched Caddy, and a Caddy orphaned by a crash blocked every later start on port 80. Logs and release directories only grew: one machine had kept thirteen releases, a gigabyte, in nine days. An installer killed mid-update left a lock that stopped every later update. Heartbeat timers counted awake time only, and reset on every restart.

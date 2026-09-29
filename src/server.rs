@@ -310,7 +310,7 @@ fn routable(host: &str) -> bool {
 
 pub fn compile(path: impl AsRef<Path>) -> Result<Config> {
     let cfg = Config::load(path)?;
-    flow::validate(&cfg.flow).context("invalid flow")?;
+    flow::validate_with_functions(&cfg.flow, &cfg.functions).context("invalid flow")?;
     for (name, isi) in &cfg.isi {
         if let Some(dna) = &isi.dna {
             crate::eval::validate(dna).with_context(|| format!("isi.{name}.dna"))?;
@@ -3424,7 +3424,7 @@ fn retryable(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Queue a Ting batch. Ting alone hears the reply, so a rejection also goes to the Silicon's log
+/// Queue a JSON webhook request. The sender alone hears the reply, so a rejection also goes to the Silicon's log
 /// (and, through `respond`, to daemon.log).
 fn deliver(app: &App, id: &str, body: Value) -> Result<Value> {
     let connected = app.runtime.get(id).map_err(|error| Rejected {
@@ -3445,7 +3445,7 @@ fn deliver(app: &App, id: &str, body: Value) -> Result<Value> {
         .map_err(|error| {
             let retry = retryable(&error);
             let reason = failure::mask(home, &format!("{error:#}"), &[]);
-            let message = format!("rejected a Ting delivery: {reason}");
+            let message = format!("rejected a webhook delivery: {reason}");
             let repeated = retry
                 && REFUSED
                     .lock()
@@ -3631,7 +3631,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             let connected = app.runtime.get(text(args, "silicon")?)?;
             let mut cfg = connected.cfg.clone();
             cfg.silicon = connected.app_settings.read().recover().clone();
-            cfg.flow = cfg.load_flow()?;
+            (cfg.flow, cfg.functions) = cfg.load_program()?;
             configuration(&cfg)
         }
         "install" => crate::apps::install(text(args, "app_id")?),

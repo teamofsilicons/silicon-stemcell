@@ -214,6 +214,43 @@ fn context(env: &Json) -> Result<Context<'static>> {
                 .into())
         },
     );
+    context.add_function(
+        "groupBy",
+        |ctx: &FunctionContext,
+         This(items): This<Arc<Vec<Value>>>,
+         Identifier(binding): Identifier,
+         key: IdedExpr|
+         -> Result<Value, ExecutionError> {
+            if ctx.args.len() != 2 {
+                return Err(ctx.error(format!(
+                    "expected groupBy(binding, key), got {} arguments",
+                    ctx.args.len()
+                )));
+            }
+            let mut scope = ctx.ptx.new_inner_scope();
+            let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
+            // ponytail: quadratic CEL equality scan; hash canonical keys if batches grow large.
+            for item in items.iter() {
+                scope.add_variable_from_value(binding.as_str(), item.clone());
+                let key = scope.resolve(&key)?;
+                if let Some((_, items)) = groups.iter_mut().find(|(existing, _)| existing == &key) {
+                    items.push(item.clone());
+                } else {
+                    groups.push((key, vec![item.clone()]));
+                }
+            }
+            Ok(groups
+                .into_iter()
+                .map(|(key, items)| {
+                    Value::from(HashMap::from([
+                        ("key".to_owned(), key),
+                        ("items".to_owned(), Value::from(items)),
+                    ]))
+                })
+                .collect::<Vec<_>>()
+                .into())
+        },
+    );
     for name in ["join", "distinct", "slice", "reverse", "flatten"] {
         context.add_function(name, list_function);
     }
@@ -851,6 +888,55 @@ fn validate_value(value: &Yaml, mode: Mode) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn group_by_preserves_order_json_keys_and_binding_scope() {
+        let env = serde_json::json!({"item": "outer", "values": [
+            {"owner": "b", "message": 1}, {"owner": "a", "message": 2},
+            {"owner": "b", "message": 3}
+        ]});
+        assert_eq!(
+            cel("values.groupBy(item, item.owner)", &env, false).unwrap(),
+            json!([
+                {"key": "b", "items": [{"owner": "b", "message": 1}, {"owner": "b", "message": 3}]},
+                {"key": "a", "items": [{"owner": "a", "message": 2}]}
+            ])
+        );
+        assert_eq!(
+            cel(
+                "values.groupBy(item, item.owner).size() == 2 && item == 'outer'",
+                &env,
+                false
+            )
+            .unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            cel(
+                "[1, true, null, {'n': 1}, [2], 1, {'n': 1}, [2]].groupBy(item, item)",
+                &env,
+                false
+            )
+            .unwrap(),
+            json!([
+                {"key": 1, "items": [1, 1]}, {"key": true, "items": [true]},
+                {"key": null, "items": [null]}, {"key": {"n": 1}, "items": [{"n": 1}, {"n": 1}]},
+                {"key": [2], "items": [[2], [2]]}
+            ])
+        );
+        assert_eq!(
+            cel("[].groupBy(item, item.missing)", &env, false).unwrap(),
+            json!([])
+        );
+        for expression in [
+            "[1].groupBy(item, item, 2)",
+            "[1].groupBy('item', item)",
+            "[1].groupBy(item, item.missing)",
+            "'text'.groupBy(item, item)",
+        ] {
+            assert!(cel(expression, &env, false).is_err(), "{expression}");
+        }
+    }
 
     #[test]
     fn ting_list_extensions_compose_and_validate_arguments() {
