@@ -174,121 +174,109 @@ access:
 #   }
 # }
 flow:
-  - var: {name: ting_index, value: 0}
-  # Expand each ting into ordered steps; keep event data behind a CEL lookup.
-  - |-
-      {request.tings.map(ting, [
-        {"var": {"name": "ting", "value": "{request.tings[var.ting_index]}"}},
-        {
-          "var": {
-            "name": "ting_kind",
-            "value": "{(var.ting.type in [\"new_message\", \"dm.msg.received\", \"tos>dm.msg.received\"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message) && has(var.ting.data.sender_timezone)) ? \"new_message\" : (var.ting.type in [\"message_sent\", \"dm.msg.sent\", \"tos>dm.msg.sent\"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message)) ? \"message_sent\" : (var.ting.type == \"event\" && has(var.ting.data.timestamp)) ? \"event\" : \"other\"}"
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"new_message\"}",
-            "then": [
-              {
-                "var": {
-                  "name": "new_message",
-                  "value": "New message from {var.ting.data.from} to {var.ting.data.to} at {tz_time(var.ting.data.sent_at, var.ting.data.sender_timezone)} sender time, or {tz_time(var.ting.data.sent_at, silicon.timezone)} your time:\\n\\n<|message:{var.ting.data.msg_id}|>\\n{var.ting.data.message}\\n<|message:{var.ting.data.msg_id}|>"
-                }
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"new_message\" && var.ting.data.to.startswith(\"deliberate\")}",
-            "then": [
-              {"send": {"isi": "deliberate", "message": "{var.new_message}", "catch": null}},
-              {
-                "send": {"isi": "intuit", "message": "Deliberate got a direct reply & has been sent to deleberate. This is for your information only.\\n{var.new_message}"}
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"new_message\" && var.ting.data.to.startswith(\"deliberate\") && has(var.ting.data.reply_to) && var.ting.data.reply_to != null}",
-            "then": [
-              {
-                "var": {
-                  "name": "time_delay",
-                  "value": "! './time_delay.sh {tz_time(var.ting.data.sent_at, var.ting.data.sender_timezone)} {convert_time(var.ting.data.reply_to.sent_at, var.ting.data.reply_to.sender_timezone)}'",
-                  "catch": [{"var": {"name": "time_delay", "value": "unknown"}}]
-                }
-              },
-              {
-                "send": {
-                  "isi": "advisor",
-                  "message": "Deliberate got a direct reply which was sent after a delay of {var.time_delay}. This is for your information only.",
-                  "catch": [
-                    {"var": {"name": "advisor_error", "value": "{error}"}},
-                    {"send": {"isi": "intuit", "message": "Advisor got an error {var.advisor_error}"}},
-                    {"log": {"message": "Advisor got an error {var.advisor_error}"}}
-                  ]
-                }
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"new_message\" && var.ting.data.to.startswith(\"worker\")}",
-            "then": [
-              {"var": {"name": "worker", "value": "{var.ting.data.to.split(\"@\")[0]}"}},
-              {"send": {"isi": "deliberate", "message": "Worker {var.worker} got a direct message. This is for your information only\\n{var.new_message}"}},
-              {"send": {"isi": "intuit", "message": "Worker {var.worker} got a direct message. This is for your information only.\\n{var.new_message}"}},
-              {"var": {"name": "worker_isi", "value": "{var.worker.split(\":\")[0]}"}},
-              {"var": {"name": "worker_session_id", "value": "{var.worker.split(\":\")[1]}"}},
-              {"send": {"isi": "{var.worker_isi}", "session_id": "{var.worker_session_id}", "message": "{var.new_message}"}}
-            ]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"new_message\" && var.ting.data.to.startswith(\"advisor\")}",
-            "then": [
-              {"send": {"isi": "advisor", "message": "{var.new_message}"}},
-              {"send": {"isi": "intuit", "message": "Advisor got a direct reply & has been sent to advisor. This is for your information only.\\n{var.new_message}"}}
-            ]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"new_message\" && !var.ting.data.to.startswith(\"deliberate\") && !var.ting.data.to.startswith(\"worker\") && !var.ting.data.to.startswith(\"advisor\")}",
-            "then": [{"send": {"isi": "intuit", "message": "{var.new_message}"}}]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"message_sent\"}",
-            "then": [
-              {
-                "var": {
-                  "name": "message_sent_recipt",
-                  "value": "New message sent by {var.ting.data.from} to {var.ting.data.to} at {tz_time(var.ting.data.sent_at, silicon.timezone)} your time:\\n\\n<|message:{var.ting.data.msg_id}|>\\n{var.ting.data.message}\\n<|message:{var.ting.data.msg_id}|>"
-                }
-              },
-              {"send": {"isi": "intuit", "message": "{var.message_sent_recipt}"}}
-            ]
-          }
-        },
-        {
-          "if": {
-            "condition": "{var.ting_kind == \"event\"}",
-            "then": [
-              {
-                "var": {"name": "event", "value": "New event received at {tz_time(var.ting.data.timestamp, silicon.timezone)} your time:\\n\\n{make_readable(var.ting.data)}"}
-              },
-              {"send": {"isi": "intuit", "message": "{var.event}"}}
-            ]
-          }
-        },
-        {
-          "if": {"condition": "{var.ting_kind == \"other\"}", "then": [{"send": {"isi": "intuit", "message": "New Ting notification:\\n{make_readable(var.ting)}"}}]}
-        },
-        {"var": {"name": "ting_index", "value": "{var.ting_index + 1}"}}
-      ]).flatten()}
+  - for:
+      list: "{request.tings}"
+      var: ting
+      then:
+        - var:
+            name: ting_kind
+            value: '{(var.ting.type in ["new_message", "dm.msg.received", "tos>dm.msg.received"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message) && has(var.ting.data.sender_timezone)) ? "new_message" : (var.ting.type in ["message_sent", "dm.msg.sent", "tos>dm.msg.sent"] && has(var.ting.data.from) && has(var.ting.data.to) && has(var.ting.data.sent_at) && has(var.ting.data.msg_id) && has(var.ting.data.message)) ? "message_sent" : (var.ting.type == "event" && has(var.ting.data.timestamp)) ? "event" : "other"}'
+        - if:
+            condition: '{var.ting_kind == "new_message"}'
+            then:
+              - var:
+                  name: new_message
+                  value: New message from {var.ting.data.from} to {var.ting.data.to} at {tz_time(var.ting.data.sent_at, var.ting.data.sender_timezone)} sender time, or {tz_time(var.ting.data.sent_at, silicon.timezone)} your time:\n\n<|message:{var.ting.data.msg_id}|>\n{var.ting.data.message}\n<|message:{var.ting.data.msg_id}|>
+        - if:
+            condition: '{var.ting_kind == "new_message" && var.ting.data.to.startswith("deliberate")}'
+            then:
+              - send:
+                  isi: deliberate
+                  message: "{var.new_message}"
+                  catch:
+              - send:
+                  isi: intuit
+                  message: Deliberate got a direct reply & has been sent to deleberate. This is for your information only.\n{var.new_message}
+        - if:
+            condition: '{var.ting_kind == "new_message" && var.ting.data.to.startswith("deliberate") && has(var.ting.data.reply_to) && var.ting.data.reply_to != null}'
+            then:
+              - var:
+                  name: time_delay
+                  value: "! './time_delay.sh {tz_time(var.ting.data.sent_at, var.ting.data.sender_timezone)} {convert_time(var.ting.data.reply_to.sent_at, var.ting.data.reply_to.sender_timezone)}'"
+                  catch:
+                    - var:
+                        name: time_delay
+                        value: unknown
+              - send:
+                  isi: advisor
+                  message: Deliberate got a direct reply which was sent after a delay of {var.time_delay}. This is for your information only.
+                  catch:
+                    - var:
+                        name: advisor_error
+                        value: "{self.error}"
+                    - send:
+                        isi: intuit
+                        message: Advisor got an error {var.advisor_error}
+                    - log:
+                        message: Advisor got an error {var.advisor_error}
+        - if:
+            condition: '{var.ting_kind == "new_message" && var.ting.data.to.startswith("worker")}'
+            then:
+              - var:
+                  name: worker
+                  value: '{var.ting.data.to.split("@")[0]}'
+              - send:
+                  isi: deliberate
+                  message: Worker {var.worker} got a direct message. This is for your information only\n{var.new_message}
+              - send:
+                  isi: intuit
+                  message: Worker {var.worker} got a direct message. This is for your information only.\n{var.new_message}
+              - var:
+                  name: worker_isi
+                  value: '{var.worker.split(":")[0]}'
+              - var:
+                  name: worker_session_id
+                  value: '{var.worker.split(":")[1]}'
+              - send:
+                  isi: "{var.worker_isi}"
+                  session_id: "{var.worker_session_id}"
+                  message: "{var.new_message}"
+        - if:
+            condition: '{var.ting_kind == "new_message" && var.ting.data.to.startswith("advisor")}'
+            then:
+              - send:
+                  isi: advisor
+                  message: "{var.new_message}"
+              - send:
+                  isi: intuit
+                  message: Advisor got a direct reply & has been sent to advisor. This is for your information only.\n{var.new_message}
+        - if:
+            condition: '{var.ting_kind == "new_message" && !var.ting.data.to.startswith("deliberate") && !var.ting.data.to.startswith("worker") && !var.ting.data.to.startswith("advisor")}'
+            then:
+              - send:
+                  isi: intuit
+                  message: "{var.new_message}"
+        - if:
+            condition: '{var.ting_kind == "message_sent"}'
+            then:
+              - var:
+                  name: message_sent_recipt
+                  value: New message sent by {var.ting.data.from} to {var.ting.data.to} at {tz_time(var.ting.data.sent_at, silicon.timezone)} your time:\n\n<|message:{var.ting.data.msg_id}|>\n{var.ting.data.message}\n<|message:{var.ting.data.msg_id}|>
+              - send:
+                  isi: intuit
+                  message: "{var.message_sent_recipt}"
+        - if:
+            condition: '{var.ting_kind == "event"}'
+            then:
+              - var:
+                  name: event
+                  value: New event received at {tz_time(var.ting.data.timestamp, silicon.timezone)} your time:\n\n{make_readable(var.ting.data)}
+              - send:
+                  isi: intuit
+                  message: "{var.event}"
+        - if:
+            condition: '{var.ting_kind == "other"}'
+            then:
+              - send:
+                  isi: intuit
+                  message: New Ting notification:\n{make_readable(var.ting)}

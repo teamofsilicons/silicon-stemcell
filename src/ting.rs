@@ -1,4 +1,4 @@
-//! Ting owns transport retries; the interpreter durably accepts batches before running flows.
+//! Durably accept JSON webhook requests before running flows; deduplicate canonical Ting batches.
 use crate::Recover;
 use crate::{auth, config::Config, failure, state};
 use anyhow::{anyhow, bail, Context, Result};
@@ -38,8 +38,8 @@ const LIMITS: Limits = Limits {
     bytes: 256 * 1024 * 1024,
 };
 
-/// The inbox cannot take this batch now: it is full, or its storage failed. Nothing was
-/// saved, so Ting must deliver the batch again later; the server answers HTTP 503.
+/// The inbox cannot take this request now: it is full, or its storage failed. Nothing was
+/// saved, so the sender must retry later; the server answers HTTP 503.
 #[derive(Debug)]
 pub struct Unavailable(pub String);
 
@@ -135,25 +135,12 @@ impl Stamp {
     }
 }
 
-/// The parts of a stored batch the queue index needs. The tings' data is skipped rather
-/// than built, so listing a large backlog stays cheap.
+/// Read one stored request at a time when rebuilding the queue index.
 #[derive(Deserialize)]
 struct Stored {
     id: String,
     #[serde(default)]
-    request: Option<StoredRequest>,
-}
-
-#[derive(Deserialize)]
-struct StoredRequest {
-    #[serde(default)]
-    tings: Vec<StoredTing>,
-}
-
-#[derive(Deserialize)]
-struct StoredTing {
-    #[serde(default)]
-    id: Option<String>,
+    request: Value,
 }
 
 /// Releases a directory's flow claim however `process` leaves it, a panic included, so one
@@ -203,8 +190,7 @@ fn settle(seen: &mut BTreeMap<String, i64>, now: i64) {
 
 /// The ting IDs a stored batch holds.
 fn ids(batch: &Value) -> impl Iterator<Item = &str> {
-    batch["request"]["tings"]
-        .as_array()
+    canonical_tings(&batch["request"])
         .into_iter()
         .flatten()
         .filter_map(|ting| ting["id"].as_str())
@@ -508,11 +494,10 @@ impl Inbox {
                             name,
                             id: stored.id,
                             bytes: size,
-                            tings: stored
-                                .request
+                            tings: canonical_tings(&stored.request)
                                 .into_iter()
-                                .flat_map(|request| request.tings)
-                                .filter_map(|ting| ting.id)
+                                .flatten()
+                                .filter_map(|ting| ting["id"].as_str().map(str::to_owned))
                                 .collect(),
                         },
                     );
@@ -708,47 +693,24 @@ impl Inbox {
     }
 
     pub fn accept(&self, request: Value) -> Result<()> {
-        let tings = match request.get("tings") {
-            Some(Value::Array(tings)) => tings,
-            Some(other) => bail!("Ting requires a tings array; `tings` was {other}"),
-            None => match &request {
-                Value::Object(fields) => bail!(
-                    "Ting requires a tings array; the request has no `tings` field, only [{}]",
-                    fields.keys().cloned().collect::<Vec<_>>().join(", ")
-                ),
-                other => bail!("Ting requires a tings array; the request was {other}"),
-            },
-        };
         let size = serde_json::to_vec(&request)?.len();
-        if tings.is_empty() || tings.len() > 100 || size > 1024 * 1024 {
-            bail!(
-                "Ting batches require 1–100 tings and at most 1 MiB; this batch has {} tings in {size} bytes",
-                tings.len()
-            );
-        }
-        let problems: Vec<_> = tings
-            .iter()
-            .enumerate()
-            .flat_map(|(index, ting)| problems(index, ting))
-            .collect();
-        if !problems.is_empty() {
-            bail!(
-                "each ting requires id:string, type:string, data:object, metadata:object; rejected the whole batch:\n{}",
-                problems.join("\n")
-            );
+        if size > 1024 * 1024 {
+            bail!("webhook requests require at most 1 MiB; this request has {size} bytes");
         }
         let mut shared = self.shared.lock().recover();
-        self.enqueue(&mut shared, tings)
+        self.enqueue(&mut shared, request)
     }
 
-    /// Queue the tings not taken before as one new batch file. That file is the only one
-    /// written, so the batch and its deduplication become durable together; the IDs move
-    /// to seen.json once the batch is processed.
-    fn enqueue(&self, shared: &mut Shared, tings: &[Value]) -> Result<()> {
+    /// Queue any JSON request. Canonical Ting batches omit previously accepted IDs;
+    /// every other request is preserved whole, including fields that happen to be named tings.
+    /// The single file makes acceptance and pending deduplication durable together.
+    fn enqueue(&self, shared: &mut Shared, mut request: Value) -> Result<()> {
         let unavailable = |error: anyhow::Error| {
             anyhow::Error::new(Unavailable(format!(
                 "{:#}",
-                error.context("the Ting batch was not accepted, so Ting must deliver it again")
+                error.context(
+                    "the webhook request was not accepted, so the sender must deliver it again"
+                )
             )))
         };
         let Shared {
@@ -759,30 +721,34 @@ impl Inbox {
             ..
         } = shared;
         let queue = self.queue(slot, seen).map_err(unavailable)?;
-        let seen = self.seen(seen).map_err(unavailable)?;
-        settle(&mut seen.ids, chrono::Utc::now().timestamp());
-        let mut taken: HashSet<&str> = queue
-            .batches
-            .values()
-            .flat_map(|pending| pending.tings.iter().map(String::as_str))
-            .collect();
-        let fresh: Vec<_> = tings
-            .iter()
-            .filter(|ting| {
-                let id = ting["id"].as_str().unwrap_or_default();
-                !seen.ids.contains_key(id) && taken.insert(id)
-            })
-            .cloned()
-            .collect();
-        if fresh.is_empty() {
-            return Ok(());
+        let mut taking = Vec::new();
+        if let Some(tings) = canonical_tings(&request) {
+            let seen = self.seen(seen).map_err(unavailable)?;
+            settle(&mut seen.ids, chrono::Utc::now().timestamp());
+            let mut taken: HashSet<&str> = queue
+                .batches
+                .values()
+                .flat_map(|pending| pending.tings.iter().map(String::as_str))
+                .collect();
+            let fresh: Vec<_> = tings
+                .iter()
+                .filter(|ting| {
+                    let id = ting["id"].as_str().unwrap_or_default();
+                    !seen.ids.contains_key(id) && taken.insert(id)
+                })
+                .cloned()
+                .collect();
+            if fresh.is_empty() {
+                return Ok(());
+            }
+            taking = fresh
+                .iter()
+                .filter_map(|ting| ting["id"].as_str().map(str::to_owned))
+                .collect();
+            request["tings"] = Value::Array(fresh);
         }
-        let taking: Vec<String> = fresh
-            .iter()
-            .filter_map(|ting| ting["id"].as_str().map(str::to_owned))
-            .collect();
         let id = uuid::Uuid::new_v4();
-        let batch = json!({"id":id,"request":{"tings":fresh}});
+        let batch = json!({"id":id,"request":request});
         // What the compact file will hold, newline included.
         let size = serde_json::to_vec(&batch).map_or(0, |bytes| bytes.len() as u64 + 1);
         if queue.batches.len() >= self.limits.batches || queue.bytes + size > self.limits.bytes {
@@ -820,7 +786,7 @@ impl Inbox {
             (None, false) => "no run of it has failed since the interpreter started".to_owned(),
         };
         anyhow::Error::new(Unavailable(format!(
-            "the Ting inbox {} is full: it holds {} pending batches in {} bytes and takes at most {} batches or {} bytes, so Ting must deliver this batch again later. The oldest pending batch {head} is not finishing; {blocking}",
+            "the webhook inbox {} is full: it holds {} pending batches in {} bytes and takes at most {} batches or {} bytes, so the sender must deliver this request again later. The oldest pending batch {head} is not finishing; {blocking}",
             self.directory.display(),
             queue.batches.len(),
             queue.bytes,
@@ -830,15 +796,34 @@ impl Inbox {
     }
 
     pub fn process(&self, run: impl FnOnce(Value) -> Result<()>) -> Result<()> {
+        self.process_identified(|_, request| run(request))
+    }
+
+    /// Snapshot retained request IDs before reconnecting the outgoing delivery journal.
+    pub(crate) fn pending_ids(&self) -> Result<HashSet<String>> {
+        let mut shared = self.shared.lock().recover();
+        let Shared { queue, seen, .. } = &mut *shared;
+        Ok(self
+            .queue(queue, seen)?
+            .batches
+            .values()
+            .map(|batch| batch.id.clone())
+            .collect())
+    }
+
+    /// The durable request ID stays the same across retries, even for identical JSON payloads.
+    pub fn process_identified(&self, run: impl FnOnce(&str, Value) -> Result<()>) -> Result<()> {
         let Some((claim, head)) = self.claim()? else {
             return Ok(());
         };
         // Acceptance stays available while the flow runs. Replacement connections wait
         // for this generation's flow to finish before attempting the same pending batch.
-        let id = &head.batch["id"];
+        let id = head.batch["id"]
+            .as_str()
+            .context("the pending webhook request has no string id")?;
         // A panicking flow fails like any other: the batch stays queued, this thread lives on.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(head.batch["request"].clone())
+            run(id, head.batch["request"].clone())
         }))
         .unwrap_or_else(|panic| {
             Err(anyhow!(
@@ -929,12 +914,16 @@ impl Inbox {
     fn remove(&self, shared: &mut Shared, head: &Head) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         // The IDs become the deduplication record before the batch leaves the queue.
-        let recorded = self.seen(&mut shared.seen).and_then(|seen| {
-            settle(&mut seen.ids, now);
-            seen.ids
-                .extend(ids(&head.batch).map(|id| (id.to_owned(), now)));
-            self.store_seen(seen)
-        });
+        let recorded = if canonical_tings(&head.batch["request"]).is_some() {
+            self.seen(&mut shared.seen).and_then(|seen| {
+                settle(&mut seen.ids, now);
+                seen.ids
+                    .extend(ids(&head.batch).map(|id| (id.to_owned(), now)));
+                self.store_seen(seen)
+            })
+        } else {
+            Ok(())
+        };
         match recorded {
             Ok(()) => shared.unrecorded = None,
             Err(error) => {
@@ -1189,49 +1178,28 @@ fn listed(home: &Path, url: &str, saved: &Path) -> Result<Option<String>> {
     Ok(found.pop())
 }
 
-/// Every way one ting breaks the inbox contract, named by its position and ID.
-fn problems(index: usize, ting: &Value) -> Vec<String> {
-    let Some(fields) = ting.as_object() else {
-        return vec![format!("ting {index} must be an object, got {ting}")];
-    };
-    let id = fields.get("id").and_then(Value::as_str);
-    let name = id.map_or(format!("ting {index}"), |id| {
-        format!("ting {index} (id {id:?})")
-    });
-    let got = |field: &str| {
-        fields.get(field).map_or(
-            "nothing (the field is missing)".to_owned(),
-            Value::to_string,
-        )
-    };
-    let mut problems = Vec::new();
-    match id {
-        Some(id) if !id.is_empty() && id.len() <= 256 => {}
-        Some(id) => problems.push(format!(
-            "{name}: id must be 1–256 bytes, got {} bytes",
-            id.len()
-        )),
-        None => problems.push(format!("{name}: id must be a string, got {}", got("id"))),
+/// Only the exact Ting envelope opts into ID deduplication. An arbitrary webhook may use
+/// the same field names; never discard its fields or treat a malformed event as a Ting ID.
+fn canonical_tings(request: &Value) -> Option<&[Value]> {
+    let fields = request.as_object()?;
+    if fields.len() != 1 {
+        return None;
     }
-    if !fields
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty())
-    {
-        problems.push(format!(
-            "{name}: type must be a non-empty string, got {}",
-            got("type")
-        ));
+    let tings = fields.get("tings")?.as_array()?;
+    if tings.is_empty() || tings.len() > 100 {
+        return None;
     }
-    for field in ["data", "metadata"] {
-        if !fields.get(field).is_some_and(Value::is_object) {
-            problems.push(format!(
-                "{name}: {field} must be an object, got {}",
-                got(field)
-            ));
-        }
-    }
-    problems
+    tings
+        .iter()
+        .all(|ting| {
+            ting["id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+                && ting["type"].as_str().is_some_and(|kind| !kind.is_empty())
+                && ting["data"].is_object()
+                && ting["metadata"].is_object()
+        })
+        .then_some(tings.as_slice())
 }
 
 #[cfg(test)]
@@ -1422,23 +1390,6 @@ esac
     fn batches_are_atomic_durable_and_deduplicated() -> Result<()> {
         let home = tempfile::tempdir()?;
         let inbox = Inbox::at(home.path().into());
-        let ting = |id| json!({"id":id,"type":"tos>app.event","data":{},"metadata":{}});
-        let rejected = inbox
-            .accept(json!({"tings":[ting("a"),{"id":"bad","type":"","data":[]},7]}))
-            .unwrap_err()
-            .to_string();
-        for problem in [
-            r#"ting 1 (id "bad"): type must be a non-empty string, got """#,
-            r#"ting 1 (id "bad"): data must be an object, got []"#,
-            r#"ting 1 (id "bad"): metadata must be an object, got nothing (the field is missing)"#,
-            "ting 2 must be an object, got 7",
-        ] {
-            assert!(rejected.contains(problem), "{rejected}");
-        }
-        assert!(!rejected.contains("ting 0"), "{rejected}");
-        let empty = inbox.accept(json!({"events":[]})).unwrap_err().to_string();
-        assert!(empty.contains("no `tings` field, only [events]"), "{empty}");
-        assert!(queued(home.path()).is_empty());
         inbox.accept(json!({"tings":[ting("a"),ting("b"),ting("a")]}))?;
         let replacement = Inbox::at(home.path().into());
         inbox.process(|request| {
@@ -1458,6 +1409,94 @@ esac
         })?;
         let reopened = Inbox::at(home.path().into());
         reopened.accept(json!({"tings":[ting("a"),ting("b")]}))?;
+        assert!(queued(home.path()).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn generic_json_and_malformed_tings_survive_restart_unchanged() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let inbox = Inbox::at(home.path().into());
+        let requests = vec![
+            json!({"event":"created", "data":{"id":1}}),
+            json!([1, {"nested":true}, null]),
+            json!("hello"),
+            json!(42),
+            json!(true),
+            Value::Null,
+            json!({}),
+            json!({"tings":[]}),
+            json!({"tings":"arbitrary field"}),
+            json!({"tings":[ting("a"), {"id":"bad", "type":"", "data":[]}, 7]}),
+            json!({"tings":[ting("a")], "source":"keep this metadata"}),
+            json!({"tings":vec![ting("a"); 101]}),
+        ];
+        for request in &requests {
+            inbox.accept(request.clone())?;
+        }
+        // Generic fields named id/tings do not reserve canonical Ting IDs, even after restart.
+        restart(home.path()).accept(json!({"tings":[ting("a")]}))?;
+        let expected: Vec<_> = requests
+            .iter()
+            .cloned()
+            .chain([json!({"tings":[ting("a")]})])
+            .collect();
+        let persisted: Vec<_> = queued(home.path())
+            .into_iter()
+            .map(|batch| batch["request"].clone())
+            .collect();
+        assert_eq!(persisted, expected);
+        for request in &expected {
+            let mut ran = false;
+            restart(home.path()).process(|actual| {
+                assert_eq!(&actual, request);
+                ran = true;
+                Ok(())
+            })?;
+            assert!(ran, "a valid JSON request was quarantined or dropped");
+        }
+        let inbox = restart(home.path());
+        // Generic requests repeat verbatim; canonical Ting deliveries still deduplicate.
+        inbox.accept(json!({"tings":[ting("a")]}))?;
+        assert!(queued(home.path()).is_empty());
+        for request in &requests {
+            inbox.accept(request.clone())?;
+        }
+        assert_eq!(queued(home.path()).len(), requests.len());
+        let seen: BTreeMap<String, i64> =
+            serde_json::from_slice(&fs::read(home.path().join("seen.json"))?)?;
+        assert_eq!(seen.keys().collect::<Vec<_>>(), ["a"]);
+        Ok(())
+    }
+
+    #[test]
+    fn generic_requests_have_durable_distinct_ids_and_respect_backpressure() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let mut inbox = Inbox::at(home.path().into());
+        inbox.limits.batches = 2;
+        inbox.accept(json!([1]))?;
+        inbox.accept(json!([1]))?;
+        let error = inbox.accept(Value::Null).unwrap_err();
+        assert!(error.downcast_ref::<Unavailable>().is_some());
+        let mut first_id = String::new();
+        let error = inbox
+            .process_identified(|id, request| {
+                first_id = id.to_owned();
+                assert_eq!(request, json!([1]));
+                bail!("retry")
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "retry");
+        let inbox = restart(home.path());
+        inbox.process_identified(|id, request| {
+            assert_eq!(id, first_id);
+            assert_eq!(request, json!([1]));
+            Ok(())
+        })?;
+        inbox.process_identified(|id, _| {
+            assert_ne!(id, first_id);
+            Ok(())
+        })?;
         assert!(queued(home.path()).is_empty());
         Ok(())
     }
@@ -1839,7 +1878,7 @@ esac
         let head = queued(home.path())[0]["id"].to_string();
         for said in [
             "is full: it holds 2 pending batches in ",
-            "takes at most 2 batches or 1048576 bytes, so Ting must deliver this batch again later",
+            "takes at most 2 batches or 1048576 bytes, so the sender must deliver this request again later",
             &format!("The oldest pending batch {head} is not finishing"),
             "its last run failed: flow step 0: unknown flow operation: sned",
         ] {
@@ -1874,13 +1913,14 @@ esac
         let error = broken.accept(json!({"tings":[ting("e")]})).unwrap_err();
         let reason = error.downcast_ref::<Unavailable>().unwrap().to_string();
         assert!(
-            reason.starts_with("the Ting batch was not accepted, so Ting must deliver it again: ")
-                && reason.contains(&blocker.join("org/pending").display().to_string())
+            reason.starts_with(
+                "the webhook request was not accepted, so the sender must deliver it again: "
+            ) && reason.contains(&blocker.join("org/pending").display().to_string())
                 && reason.contains("os error"),
             "{reason}"
         );
-        // Invalid batches stay a plain rejection.
-        let invalid = inbox.accept(json!({"tings":[]})).unwrap_err();
+        // Oversized requests stay a plain rejection.
+        let invalid = inbox.accept(json!("x".repeat(1024 * 1024))).unwrap_err();
         assert!(invalid.downcast_ref::<Unavailable>().is_none());
         Ok(())
     }

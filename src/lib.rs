@@ -5,6 +5,7 @@ pub mod config;
 pub mod eval;
 pub(crate) mod failure;
 pub mod flow;
+mod outbox;
 pub(crate) mod process;
 mod progress;
 pub mod proxy;

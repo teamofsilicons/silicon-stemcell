@@ -33,6 +33,12 @@ pub struct Silicon {
     pub space_station: Option<SpaceStation>,
     #[serde(default)]
     pub login: Vec<String>,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: usize,
+}
+
+fn default_max_retries() -> usize {
+    10
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -73,6 +79,8 @@ pub struct Config {
     pub isi: BTreeMap<String, Isi>,
     pub access: BTreeMap<String, Vec<String>>,
     pub flow: Yaml,
+    #[serde(default)]
+    pub functions: Yaml,
     #[serde(skip)]
     pub path: PathBuf,
     #[serde(skip)]
@@ -87,10 +95,11 @@ impl Config {
     /// Flow stays editable while a Silicon is connected; compile-time expressions are untouched.
     /// Every batch sees the file as it is now; the parse is reused only while it is unchanged.
     pub fn load_flow(&self) -> Result<Yaml> {
-        let flow = flow_at(&self.path, SETTLE)?;
-        // Sends are checked against this connection's ISIs, which a reconnect may change.
-        validate_static_sends(&flow, &self.isi)?;
-        Ok(flow)
+        self.load_program().map(|(flow, _)| flow)
+    }
+
+    pub fn load_program(&self) -> Result<(Yaml, Yaml)> {
+        program_at(&self.path, SETTLE)
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -104,10 +113,18 @@ impl Config {
             fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let mut document = parse_document(&source, &mut warnings)
             .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
-        validate_expressions(&document).context("invalid silicon expression syntax")?;
         let base = path
             .parent()
             .ok_or_else(|| anyhow!("config {} has no parent directory", path.display()))?;
+        document["functions"] = resolve_functions(
+            &document["functions"],
+            base,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut warnings,
+        )?;
+        validate_expressions(&document).context("invalid silicon expression syntax")?;
+        crate::flow::validate_with_functions(&document["flow"], &document["functions"])?;
         #[cfg(target_os = "linux")]
         if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
             crate::state::validate_wsl_filesystem(base)?;
@@ -378,7 +395,6 @@ impl Config {
                 }
             }
         }
-        validate_static_sends(&self.flow, &self.isi)?;
         Ok(())
     }
 }
@@ -439,35 +455,117 @@ impl Stamp {
     }
 }
 
-/// Parsed, syntax-checked flows by canonical YAML path, with the stamp they were read at.
-static FLOWS: std::sync::Mutex<BTreeMap<PathBuf, (Stamp, Yaml)>> =
-    std::sync::Mutex::new(BTreeMap::new());
+#[derive(Clone)]
+struct Program {
+    files: Vec<(PathBuf, Stamp)>,
+    flow: Yaml,
+    functions: Yaml,
+}
 
-/// The flow in `path` as it is on disk now. Every Ting batch loads it, so the parse and CEL
-/// syntax check are reused while the file keeps its stamp; any change reads it again.
-fn flow_at(path: &Path, settle: std::time::Duration) -> Result<Yaml> {
+/// Cache a flow together with its definitions and all imported file stamps.
+static FLOWS: std::sync::Mutex<BTreeMap<PathBuf, Program>> = std::sync::Mutex::new(BTreeMap::new());
+
+fn program_at(path: &Path, settle: std::time::Duration) -> Result<(Yaml, Yaml)> {
     use crate::Recover;
     let before = Stamp::of(path)?;
-    if let Some((stamp, flow)) = FLOWS.lock().recover().get(path) {
-        if *stamp == before {
-            return Ok(flow.clone());
+    if let Some(program) = FLOWS.lock().recover().get(path) {
+        if program
+            .files
+            .iter()
+            .all(|(path, stamp)| Stamp::of(path).is_ok_and(|now| now == *stamp))
+        {
+            return Ok((program.flow.clone(), program.functions.clone()));
         }
     }
     let source = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let document = parse_document(&source, &mut Vec::new())
         .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
     let flow = document["flow"].clone();
-    crate::eval::validate(&flow).context("invalid flow expression syntax")?;
+    let mut files = vec![(path.to_owned(), before)];
+    let functions = resolve_functions(
+        &document["functions"],
+        path.parent().unwrap(),
+        &mut files,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    )?;
+    crate::flow::validate_with_functions(&flow, &functions)?;
     // Kept only when nothing changed while it was read and the change before is settled.
-    if before.settled(settle) && Stamp::of(path).is_ok_and(|after| after == before) {
+    if files.iter().all(|(path, stamp)| {
+        stamp.settled(settle) && Stamp::of(path).is_ok_and(|now| now == *stamp)
+    }) {
         let mut flows = FLOWS.lock().recover();
         // One entry per connected YAML; files connected long ago are simply dropped.
         if flows.len() >= 64 {
             flows.clear();
         }
-        flows.insert(path.to_owned(), (before, flow.clone()));
+        flows.insert(
+            path.to_owned(),
+            Program {
+                files,
+                flow: flow.clone(),
+                functions: functions.clone(),
+            },
+        );
     }
-    Ok(flow)
+    Ok((flow, functions))
+}
+
+/// Import paths are literal, relative to their containing file; loading never executes them.
+fn resolve_functions(
+    value: &Yaml,
+    base: &Path,
+    files: &mut Vec<(PathBuf, Stamp)>,
+    loading: &mut Vec<PathBuf>,
+    warnings: &mut Vec<String>,
+) -> Result<Yaml> {
+    if loading.len() >= 64 {
+        bail!("function imports exceed 64 levels");
+    }
+    match value {
+        Yaml::Null => Ok(Yaml::Mapping(Mapping::new())),
+        Yaml::Mapping(_) => Ok(value.clone()),
+        Yaml::Sequence(sources) => {
+            let mut merged = Mapping::new();
+            for source in sources {
+                let functions = resolve_functions(source, base, files, loading, warnings)?;
+                for (name, definition) in functions.as_mapping().unwrap() {
+                    if merged.insert(name.clone(), definition.clone()).is_some() {
+                        bail!("duplicate function {}", key_name(name));
+                    }
+                }
+            }
+            Ok(Yaml::Mapping(merged))
+        }
+        Yaml::String(source) => {
+            if source.trim().is_empty() {
+                bail!("functions import path must not be empty");
+            }
+            let path = base.join(source);
+            let canonical = path
+                .canonicalize()
+                .with_context(|| format!("read functions {}", path.display()))?;
+            if loading.contains(&canonical) {
+                bail!("circular functions import: {}", path.display());
+            }
+            files.push((path.clone(), Stamp::of(&path)?));
+            let source = fs::read_to_string(&path)
+                .with_context(|| format!("read functions {}", path.display()))?;
+            let node: Node = serde_yaml::from_str(&prepare_scalars(&source)?)
+                .with_context(|| format!("invalid functions YAML in {}", path.display()))?;
+            let functions = function_definitions(node, "functions", warnings)
+                .with_context(|| format!("invalid functions in {}", path.display()))?;
+            loading.push(canonical);
+            let result =
+                resolve_functions(&functions, path.parent().unwrap(), files, loading, warnings);
+            loading.pop();
+            result
+        }
+        _ => bail!(
+            "functions must be a mapping, a file path, or a list of these, found {}",
+            shown(value)
+        ),
+    }
 }
 
 /// Rebuild the chain link by link so every cause survives with only credential values masked.
@@ -484,7 +582,11 @@ fn masked(error: anyhow::Error, secrets: &[String]) -> anyhow::Error {
 }
 
 fn validate_expressions(document: &Yaml) -> Result<()> {
-    fields(document, "config", &["silicon", "isi", "access", "flow"])?;
+    fields(
+        document,
+        "config",
+        &["silicon", "isi", "access", "flow", "functions"],
+    )?;
     for (key, value) in document.as_mapping().unwrap() {
         let section = key_name(key);
         crate::eval::validate(key).with_context(|| format!("top-level key {section}"))?;
@@ -513,6 +615,7 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                     "app_configs",
                     "space_station",
                     "login",
+                    "max_retries",
                 ],
             )?;
             if !value["space_station"].is_null() {
@@ -1076,49 +1179,6 @@ fn validate_isi_blocks(name: &str, isi: &Isi, warnings: &mut Vec<String>) -> Res
     Ok(())
 }
 
-fn validate_static_sends(value: &Yaml, isies: &BTreeMap<String, Isi>) -> Result<()> {
-    match value {
-        Yaml::Sequence(values) => {
-            for value in values {
-                validate_static_sends(value, isies)?;
-            }
-        }
-        Yaml::Mapping(map) => {
-            if let Some(send) = map.get(Yaml::String("send".into())) {
-                if let Some(target) = send["isi"]
-                    .as_str()
-                    .filter(|s| !s.starts_with('!') && !s.contains('{') && !s.contains("!>>"))
-                {
-                    let isi = isies.get(target).ok_or_else(|| {
-                        anyhow!(
-                            "flow sends to unknown isi {target:?}; known ISIs are {}",
-                            isies.keys().cloned().collect::<Vec<_>>().join(", ")
-                        )
-                    })?;
-                    if isi.primary_send_mode.as_deref() == Some("session")
-                        && send["session_id"].is_null()
-                    {
-                        bail!("flow send to {target} requires session_id");
-                    }
-                }
-            }
-            for (action, body) in map {
-                if action.as_str() == Some("else") {
-                    validate_static_sends(body, isies)?;
-                } else {
-                    for branch in ["then", "else", "catch"] {
-                        if !body[branch].is_null() {
-                            validate_static_sends(&body[branch], isies)?;
-                        }
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 // Keep map entries until flow has been converted: a YAML Mapping would discard
 // or reject the reference DSL's repeated `if` actions.
 #[derive(Debug)]
@@ -1204,6 +1264,8 @@ fn parse_document(source: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
         }
         let value = if key == "flow" {
             steps(node, "flow", warnings)?
+        } else if key == "functions" {
+            function_definitions(node, "functions", warnings)?
         } else {
             ordinary(node, &key)?
         };
@@ -1215,6 +1277,51 @@ fn parse_document(source: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
         }
     }
     Ok(Yaml::Mapping(result))
+}
+
+fn function_definitions(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
+    match node {
+        Node::Scalar(Yaml::Null | Yaml::String(_)) => ordinary(node, path),
+        Node::Seq(sources) => Ok(Yaml::Sequence(
+            sources
+                .into_iter()
+                .map(|source| function_definitions(source, path, warnings))
+                .collect::<Result<_>>()?,
+        )),
+        Node::Map(entries) => {
+            let mut functions = Mapping::new();
+            for (name, definition) in entries {
+                if functions.contains_key(&name) {
+                    bail!("duplicate function {name}");
+                }
+                let Node::Map(fields) = definition else {
+                    bail!(
+                        "{path}.{name} must be a mapping, found {}",
+                        definition.describe()
+                    );
+                };
+                let mut function = Mapping::new();
+                for (key, node) in fields {
+                    let field = format!("{path}.{name}.{key}");
+                    if function.contains_key(&key) {
+                        bail!("duplicate field {field}");
+                    }
+                    let value = match key.as_str() {
+                        "do" => steps(node, &field, warnings)?,
+                        "params" => ordinary(node, &field)?,
+                        _ => bail!("unknown field {field}"),
+                    };
+                    function.insert(key.into(), value);
+                }
+                functions.insert(name.into(), Yaml::Mapping(function));
+            }
+            Ok(Yaml::Mapping(functions))
+        }
+        _ => bail!(
+            "{path} must be a mapping, a file path, or a list of these, found {}",
+            node.describe()
+        ),
+    }
 }
 
 fn ordinary(node: Node, path: &str) -> Result<Yaml> {
@@ -1289,11 +1396,24 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
                 output.push(Yaml::Mapping(wrapper));
                 continue;
             }
+            if action == "return" {
+                let value = ordinary(payload, &format!("{step_path}.return"))?;
+                output.push(Yaml::Mapping(Mapping::from_iter([(
+                    "return".into(),
+                    value,
+                )])));
+                continue;
+            }
             let allowed: &[&str] = match action.as_str() {
                 "if" => &["condition", "then", "else", "catch"],
                 "var" => &["name", "value", "catch"],
-                "send" => &["isi", "session_id", "message", "catch"],
+                "send" => &["isi", "session_id", "message", "aggregate", "catch"],
                 "log" => &["message", "catch"],
+                "for" => &["list", "var", "then", "catch"],
+                "call" => &["function", "args", "then", "catch"],
+                "switch" => &["value", "cases", "default", "catch"],
+                "collect" => &["name", "value", "catch"],
+                "continue" | "break" | "exit" => &["reason", "catch"],
                 _ => bail!("unknown flow action {action} at {step_path}"),
             };
             let Node::Map(fields) = payload else {
@@ -1310,8 +1430,10 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
                 if body.contains_key(Yaml::String(key.clone())) {
                     bail!("duplicate field {step_path}.{action}.{key}");
                 }
-                let value = if ["then", "else", "catch"].contains(&key.as_str()) {
+                let value = if ["then", "else", "catch", "default"].contains(&key.as_str()) {
                     steps(node, &format!("{step_path}.{action}.{key}"), warnings)?
+                } else if action == "switch" && key == "cases" {
+                    switch_cases(node, &format!("{step_path}.switch.cases"), warnings)?
                 } else {
                     ordinary(node, &format!("{step_path}.{action}.{key}"))?
                 };
@@ -1319,15 +1441,19 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
             }
             let required: &[&str] = match action.as_str() {
                 "if" => &["condition", "then"],
-                "var" => &["name", "value"],
+                "var" | "collect" => &["name", "value"],
                 "send" => &["isi", "message"],
+                "for" => &["list", "var", "then"],
+                "call" => &["function"],
+                "switch" => &["value", "cases"],
+                "continue" | "break" | "exit" => &["reason"],
                 _ => &["message"],
             };
             for field in required {
                 if !body.contains_key(Yaml::String((*field).into())) {
                     bail!("{step_path}.{action}.{field} is required");
                 }
-                if !["then", "value"].contains(field) {
+                if !["then", "value", "list", "cases"].contains(field) {
                     nonempty_scalar(
                         &body[Yaml::String((*field).into())],
                         &format!("{step_path}.{action}.{field}"),
@@ -1338,6 +1464,36 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
             wrapper.insert(Yaml::String(action), Yaml::Mapping(body));
             output.push(Yaml::Mapping(wrapper));
         }
+    }
+    Ok(Yaml::Sequence(output))
+}
+
+fn switch_cases(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
+    let Node::Seq(cases) = node else {
+        bail!("{path} must be a list, found {}", node.describe());
+    };
+    let mut output = Vec::new();
+    for (index, node) in cases.into_iter().enumerate() {
+        let Node::Map(fields) = node else {
+            bail!(
+                "{path}[{index}] must be a mapping, found {}",
+                node.describe()
+            );
+        };
+        let mut case = Mapping::new();
+        for (key, node) in fields {
+            let field = format!("{path}[{index}].{key}");
+            if case.contains_key(&key) {
+                bail!("duplicate field {field}");
+            }
+            let value = match key.as_str() {
+                "case" => ordinary(node, &field)?,
+                "then" => steps(node, &field, warnings)?,
+                _ => bail!("unknown field {field}"),
+            };
+            case.insert(key.into(), value);
+        }
+        output.push(Yaml::Mapping(case));
     }
     Ok(Yaml::Sequence(output))
 }
@@ -1561,14 +1717,9 @@ mod tests {
         .unwrap();
         validate_expressions(&config).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let generated = crate::eval::value(
-            &config["flow"][1],
-            &json!({"request":{"tings":[{}]}}),
-            dir.path(),
-            "interpreter",
-        )
-        .unwrap();
-        let reply_condition = generated[4]["if"]["condition"].as_str().unwrap();
+        let reply_condition = config["flow"][0]["for"]["then"][3]["if"]["condition"]
+            .as_str()
+            .unwrap();
         for data in [
             json!({"to":"deliberate@si:demo"}),
             json!({"to":"deliberate@si:demo","reply_to": null}),
@@ -1627,11 +1778,10 @@ mod tests {
             .unwrap();
             assert_eq!(sent.len(), replies, "{kind}: {target}: {sent:?}");
             assert!(sent[0].1.contains("hola"), "{sent:?}");
+            assert_eq!(vars, json!({}), "loop variables must stay local");
             if target.starts_with("deliberate") {
-                assert!(vars["time_delay"]
-                    .as_str()
-                    .unwrap()
-                    .contains("07:28:04 17:09:26 UTC"));
+                let advisor = sent.iter().find(|(isi, _, _)| isi == "advisor").unwrap();
+                assert!(advisor.1.contains("07:28:04 17:09:26 UTC"), "{advisor:?}");
             }
             if target.starts_with("worker") {
                 assert_eq!(
@@ -1650,11 +1800,12 @@ mod tests {
                 {"id":"other-id","type":"example>app.changed","data":{"text":"! touch must-not-run"}}
             ]}
         }), dir.path(), "interpreter", |_, message, _| { sent.push(message.to_owned()); Ok(()) }).unwrap();
-        assert_eq!(sent.len(), 4);
+        assert_eq!(sent.len(), 1);
         assert!(sent[0].contains("first {untrusted}"));
-        assert!(sent[1].contains("second"));
-        assert!(sent[2].contains("canonical-id") && sent[2].contains("real notification"));
-        assert!(sent[3].contains("other-id") && sent[3].contains("! touch must-not-run"));
+        assert!(sent[0].contains("second"));
+        assert!(sent[0].contains("canonical-id") && sent[0].contains("real notification"));
+        assert!(sent[0].contains("other-id") && sent[0].contains("! touch must-not-run"));
+        assert!(sent[0].find("first {untrusted}") < sent[0].find("second"));
         assert!(!dir.path().join("must-not-run").exists());
         let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
         assert!(!logs.contains("[error]"), "{logs}");
@@ -1675,15 +1826,13 @@ mod tests {
             config["isi"]["intuit"]["dna"]["assemble"][2].as_str(),
             Some("! ./contacts.sh !>> \"You have no contacts\"")
         );
-        assert_eq!(config["flow"].as_sequence().unwrap().len(), 2);
+        assert_eq!(config["flow"].as_sequence().unwrap().len(), 1);
+        assert_eq!(config["flow"][0]["for"]["var"].as_str(), Some("ting"));
         assert_eq!(
-            config["flow"][0]["var"]["name"].as_str(),
-            Some("ting_index")
+            config["flow"][0]["for"]["list"].as_str(),
+            Some("{request.tings}")
         );
-        assert!(config["flow"][1]
-            .as_str()
-            .unwrap()
-            .contains("request.tings.map"));
+        assert!(config["flow"][0]["for"]["then"].is_sequence());
         assert!(warnings.is_empty());
         assert!(parse_document(
             "silicon: {}\nsilicon: {}\nisi: {}\naccess: {}\nflow: []\n",
@@ -2226,11 +2375,6 @@ flow:
                 "invalid silicon schema in silicon.id: invalid type: integer `7`, expected a string",
             ),
             (
-                "flow: []",
-                "flow: [{send: {isi: other, message: hi}}]",
-                "flow sends to unknown isi \"other\"; known ISIs are worker",
-            ),
-            (
                 "access: {worker: []}",
                 "access: {worker: [], typo: []}",
                 "access defines unknown isi typo",
@@ -2293,6 +2437,143 @@ flow:
     const MINIMAL: &str = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: [{log: {message: before}}]\n";
 
     #[test]
+    fn functions_load_before_execution_and_reload_with_their_imports() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        fs::create_dir(dir.path().join("helpers"))?;
+        let helper = dir.path().join("helpers/functions.yaml");
+        fs::write(
+            &helper,
+            "greeting: {params: [name], do: [{return: 'Hello, {args.name}'}]}\n",
+        )?;
+        fs::write(
+            dir.path().join("functions.yaml"),
+            "helpers/functions.yaml\n",
+        )?;
+        let source = format!("{}functions:\n  - functions.yaml\n  - local: {{do: [{{return: '! touch must-not-exist'}}]}}\n", MINIMAL);
+        fs::write(&path, &source)?;
+        let cfg = Config::load(&path)?;
+        assert_eq!(cfg.silicon.max_retries, 10);
+        assert_eq!(cfg.functions["greeting"]["params"][0], "name");
+        assert!(!dir.path().join("must-not-exist").exists());
+        let (flow, functions) = program_at(&cfg.path, Duration::ZERO)?;
+        assert_eq!(flow[0]["log"]["message"], "before");
+        assert_eq!(
+            functions["greeting"]["do"][0]["return"],
+            "Hello, {args.name}"
+        );
+        fs::write(
+            &helper,
+            "greeting: {params: [name], do: [{return: 'Goodbye, {args.name}'}]}\n",
+        )?;
+        assert_eq!(
+            cfg.load_program()?.1["greeting"]["do"][0]["return"],
+            "Goodbye, {args.name}"
+        );
+        fs::write(
+            &path,
+            source
+                .replace("before", "after")
+                .replace("token: token", "token: token\n  max_retries: 3"),
+        )?;
+        let (flow, functions) = cfg.load_program()?;
+        assert_eq!(flow[0]["log"]["message"], "after");
+        assert_eq!(
+            functions["greeting"]["do"][0]["return"],
+            "Goodbye, {args.name}"
+        );
+        assert_eq!(Config::load(&path)?.silicon.max_retries, 3);
+        fs::write(
+            &path,
+            format!("functions: {{early: {{do: [{{return: true}}]}}}}\n{MINIMAL}"),
+        )?;
+        assert_eq!(
+            Config::load(&path)?.functions["early"]["do"][0]["return"],
+            true
+        );
+        fs::write(&path, MINIMAL)?;
+        assert!(Config::load(&path)?
+            .functions
+            .as_mapping()
+            .unwrap()
+            .is_empty());
+
+        for (extra, expected) in [
+            (
+                "functions: [functions.yaml, functions.yaml]",
+                "duplicate function greeting",
+            ),
+            (
+                "functions: {same: {do: []}, same: {do: []}}",
+                "duplicate function same",
+            ),
+            (
+                "functions: {bad: {do: [{log: {message: '{args.n +* 2}'}}]}}",
+                "invalid CEL",
+            ),
+            ("functions: '! touch must-not-exist'", "read functions"),
+        ] {
+            fs::write(&path, format!("{MINIMAL}{extra}\n"))?;
+            assert!(
+                format!("{:#}", Config::load(&path).unwrap_err()).contains(expected),
+                "{extra}"
+            );
+            assert!(!dir.path().join("must-not-exist").exists());
+        }
+        fs::write(dir.path().join("functions.yaml"), "functions.yaml\n")?;
+        fs::write(&path, format!("{MINIMAL}functions: functions.yaml\n"))?;
+        assert!(
+            format!("{:#}", Config::load(&path).unwrap_err()).contains("circular functions import")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_control_steps_normalize_with_nested_functions_and_cases() -> Result<()> {
+        let source = format!(
+            r#"{MINIMAL}
+functions:
+  route:
+    params: [input]
+    do:
+      - for:
+          list: "{{args.input}}"
+          var: item
+          then:
+            - switch:
+                value: "{{var.item}}"
+                cases:
+                  - case: skip
+                    then:
+                      - continue: {{reason: skip item}}
+                  - case: finish
+                    then:
+                      - break: {{reason: done}}
+                default:
+                  - collect: {{name: values, value: "{{self.for.index}}"}}
+      - return: "{{var.values}}"
+"#
+        );
+        let mut document = parse_document(&source, &mut Vec::new())?;
+        document["flow"] = serde_yaml::from_str(
+            r#"
+- call:
+    function: route
+    args: {input: [keep, skip, finish]}
+    then: [{log: {message: '{self.result}'}}]
+    catch: [{log: {message: '{self.error}'}}]
+- exit: {reason: complete}
+"#,
+        )?;
+        crate::flow::validate_with_functions(&document["flow"], &document["functions"])?;
+        assert!(
+            document["functions"]["route"]["do"][0]["for"]["then"][0]["switch"]["cases"][0]["then"]
+                .is_sequence()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_flow_is_parsed_once_and_read_again_after_any_edit() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("silicon.yaml");
@@ -2311,23 +2592,20 @@ flow:
             .lock()
             .recover()
             .get(&cfg.path)
-            .is_none_or(|(stamp, _)| *stamp != now));
+            .is_none_or(|program| program.files[0].1 != now));
         // A settled file's parse is reused while its stamp holds...
-        assert_eq!(message(&flow_at(&cfg.path, Duration::ZERO)?), "after!");
-        let stamp = FLOWS.lock().recover()[&cfg.path].0;
-        FLOWS.lock().recover().insert(
-            cfg.path.clone(),
-            (stamp, serde_yaml::from_str("[{log: {message: reused}}]")?),
-        );
-        assert_eq!(message(&flow_at(&cfg.path, Duration::ZERO)?), "reused");
+        assert_eq!(message(&program_at(&cfg.path, Duration::ZERO)?.0), "after!");
+        FLOWS.lock().recover().get_mut(&cfg.path).unwrap().flow =
+            serde_yaml::from_str("[{log: {message: reused}}]")?;
+        assert_eq!(message(&program_at(&cfg.path, Duration::ZERO)?.0), "reused");
         // ...and a change replaces it. (Without the settle time only a stamp that moved is
         // noticed; timestamps may not have ticked yet, so this edit changes the length.)
         fs::write(&path, MINIMAL.replace("before", "edited again"))?;
         assert_eq!(
-            message(&flow_at(&cfg.path, Duration::ZERO)?),
+            message(&program_at(&cfg.path, Duration::ZERO)?.0),
             "edited again"
         );
-        // Send targets are checked against the connection's ISIs on every load, cached or not.
+        // Target/session validation happens at execution, where send.catch can report it.
         fs::write(
             &path,
             MINIMAL.replace(
@@ -2335,12 +2613,8 @@ flow:
                 "{send: {isi: ghost, message: hi}}",
             ),
         )?;
-        flow_at(&cfg.path, Duration::ZERO)?;
-        let error = format!("{:#}", cfg.load_flow().unwrap_err());
-        assert!(
-            error.contains("flow sends to unknown isi \"ghost\""),
-            "{error}"
-        );
+        program_at(&cfg.path, Duration::ZERO)?;
+        assert_eq!(cfg.load_flow()?[0]["send"]["isi"], "ghost");
         // A missing file names itself.
         fs::remove_file(&path)?;
         let error = format!("{:#}", cfg.load_flow().unwrap_err());

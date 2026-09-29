@@ -14,11 +14,11 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
 </style></head>
 <body><a class="skip" href="#content">Skip to documentation</a>
-<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v5.1.0</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="#implementation-diary">The diary</a></div></header>
-<div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#510-running-unattended">5.1.0: Running unattended</a><a href="#502-errors-in-full">5.0.2: Errors in full</a><a href="#501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</a><a href="#500-public-identifier-contract">5.0.0: Public identifier contract</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#510-running-unattended">5.1.0: Running unattended</a><a href="#502-errors-in-full">5.0.2: Errors in full</a><a href="#501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</a><a href="#500-public-identifier-contract">5.0.0: Public identifier contract</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></details></aside>
-<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter and runtime. Honeycomb installs IAM, Ting, and configured apps independently.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#identifier-migration">Migrate to 5.0 →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
+<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v6.0.0</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="#implementation-diary">The diary</a></div></header>
+<div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#600-structured-flows-and-durable-delivery">6.0.0: Structured flows and durable delivery</a><a href="#510-running-unattended">5.1.0: Running unattended</a><a href="#502-errors-in-full">5.0.2: Errors in full</a><a href="#501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</a><a href="#500-public-identifier-contract">5.0.0: Public identifier contract</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#iam-application-contract">IAM application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#verification-and-requirement-to-evidence-map">Verification and requirement-to-evidence map</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a><a href="#600-structured-flows-and-durable-delivery">6.0.0: Structured flows and durable delivery</a><a href="#510-running-unattended">5.1.0: Running unattended</a><a href="#502-errors-in-full">5.0.2: Errors in full</a><a href="#501-completing-the-identifier-migration">5.0.1: Completing the identifier migration</a><a href="#500-public-identifier-contract">5.0.0: Public identifier contract</a><a href="#410-omni-090-and-ting-delivery">4.1.0: Omni 0.9.0 and Ting delivery</a><a href="#409-retained-ephemeral-sessions-and-clearer-logs">4.0.9: Retained ephemeral sessions and clearer logs</a><a href="#408-omni-080-and-provider-removal-logging">4.0.8: Omni 0.8.0 and provider removal logging</a><a href="#407-repairing-the-package-home-406-left-unconfigurable">4.0.7: Repairing the package home 4.0.6 left unconfigurable</a><a href="#406-independent-honeycomb-applications">4.0.6: Independent Honeycomb applications</a></nav></details></aside>
+<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter and runtime. Honeycomb installs IAM, Ting, and configured apps independently.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#flow-migration">Migrate flows to 6.0 →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
 <section class="chapter"><h2 id="start-here">Start here</h2>
-<p>Silicon 5.1.0 uses the IAM and Honeycomb identifier contract introduced in 5.0, Omni 0.9.1, and Ting for notification delivery. It is built to run unattended: it starts at login or boot, restarts after a crash, and recovers by itself from network loss, sleep, and updates; see <a href="#running-unattended">Running unattended</a>. Existing 4.x Silicons must complete the <a href="#identifier-migration">identifier migration</a> before upgrading or reconnecting.</p>
+<p>Silicon 6.0.0 uses the IAM and Honeycomb identifier contract introduced in 5.0, Omni 0.9.1, and Ting for notification delivery. It is built to run unattended: it starts at login or boot, restarts after a crash, and recovers by itself from network loss, sleep, and updates; see <a href="#running-unattended">Running unattended</a>. Existing 5.x Silicons need the <a href="#upgrading-from-5x">flow migration</a> when updating. Existing 4.x Silicons must also complete the <a href="#identifier-migration">identifier migration</a> before upgrading or reconnecting.</p>
 <ol>
 <li><a href="#installation">Install Silicon and its dependencies</a> with the one-line command below.</li>
 <li><a href="#first-silicon">Create your first Silicon</a> in a new directory, with your own IAM identity and token.</li>
@@ -36,16 +36,18 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </section><section class="chapter"><h2 id="installation">Installation</h2>
 <h3 id="public-binary-installation">Public binary installation</h3>
 <blockquote>
-<p>Upgrading from 4.x to 5.1.0: disconnect and stop the old interpreter, then follow the <a href="#identifier-migration">identifier migration</a>. It changes Silicon IDs, adds <code>silicon.org_id</code>, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.</p>
+<p>Upgrading from 5.x: prepare the <a href="#upgrading-from-5x">6.0 flow migration</a>, then stop the old interpreter before updating and applying it. Default send aggregation and catch behavior have changed; the installer does not rewrite your flow.</p>
+<p>Upgrading from 4.x to 6.0.0: disconnect and stop the old interpreter, then follow the <a href="#identifier-migration">identifier migration</a>. It changes Silicon IDs, adds <code>silicon.org_id</code>, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.</p>
 <p>Upgrading from 4.0.x or earlier: also migrate per-app webhook configuration and event flows using the <a href="#ting-migration">Ting migration</a>. IAM and Ting are implicit dependencies; the interpreter installs both through Honeycomb.</p>
 <p>Upgrading from 4.0.6–4.0.8: replace any <code>sticky</code> and <code>archive_on_end</code> fields using the <a href="#legacy-mode-fields-removed">migration table</a>, then run <code>silicon update</code> and restart the interpreter. No reinstallation is needed.</p>
-<p>Upgrading from 4.0.5 or earlier: rerun the 5.1.0 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.</p>
+<p>Upgrading from 4.0.5 or earlier: rerun the 6.0.0 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.</p>
 </blockquote>
-<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v5.1.0</code> with:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh | sh
+<p>The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install <code>v6.0.0</code> with:</p>
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh | sh
 </code></pre>
-<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v5.1.0">v5.1.0 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
+<p>Find the platform bundles and their checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v6.0.0">v6.0.0 release page</a>. An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.</p>
 <p>Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.</p>
+<p><strong>6.0.0</strong> makes flow structure native YAML: <code>for: {list, var, then}</code>, reusable functions and imports, <code>switch</code>, <code>continue</code>, <code>break</code>, <code>exit</code>, <code>collect</code>, CEL <code>groupBy</code>, and <code>self.for.index</code>. Local webhooks accept any valid JSON value. Sends aggregate per ISI and session, are saved before delivery, and retry up to <code>silicon.max_retries</code> (default <code>10</code>) after the initial attempt. Exhausted messages remain stashed until another send to that destination triggers recovery. <code>send.catch</code> covers expression and target-validation failures; all catches use <code>self.error</code>. This is a breaking release; follow <a href="#upgrading-from-5x">Upgrading from 5.x</a> before updating.</p>
 <p><strong>5.1.0</strong> runs unattended for months. The first <code>silicon connect</code> sets up autostart (a LaunchAgent on macOS, a systemd user service with linger on Linux, cron and a built-in supervisor elsewhere, and a logon task on Windows), so the interpreter starts at login or boot and restarts after a crash; <code>silicon service</code> manages it. Saved Silicons restore in the background and are retried until they come back, and a Silicon whose restore fails is never forgotten. Caddy is supervised and an orphaned one is cleaned up, every tool the interpreter runs has a time limit, logs rotate, old releases are pruned, heartbeats keep wall-clock time across sleep and restarts, idle session workers are retired, and the updater backs off and reclaims a stale installer lock. It moves to Omni 0.9.1, whose Codex chats no longer stall after a mid-turn message. Upgrading from 5.0.x needs only <code>silicon update</code>; see <a href="#running-unattended">Running unattended</a> for what changed in behavior.</p>
 <p><strong>5.0.2</strong> shows every failure in full. An app CLI, IAM, Ting, Honeycomb, Caddy, Omni, Bash expression, updater, or installer failure now carries the command, its exit status, and its complete stderr and stdout, plus parser positions, HTTP bodies, and the whole cause chain, in CLI output, <code>si</code> output, flow catches, the dashboard, and <code>silicon.log</code>. Only literal credential values are masked. See <a href="#reading-errors">Reading errors</a>. Upgrading from 5.0.1 needs only <code>silicon update</code> and an interpreter restart.</p>
 <p><strong>5.0.1</strong> strengthens the identifier migration introduced in 5.0.0. Its mapping tool preserves sessions, explicit executable aliases and Ting delivery state; authentication checks bind the full Silicon identity, owning organization and selected grant. Existing 5.0.0 YAML and local hostnames remain compatible.</p>
@@ -64,7 +66,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </code></pre>
 <p>For the default prefix, the installer adds this path once to the startup file for your detected shell. Open a new terminal, or run the printed export command in your current terminal. Set <code>SILICON_NO_PATH=1</code> to leave shell startup files alone. Custom prefixes print the path without changing startup files.</p>
 <p>To choose another dedicated prefix, set the variable on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>The target matrix covers macOS, Linux, and Windows on ARM64 and x86-64. Windows runs the Linux bundle through WSL2. Native Unix bundles target macOS 15 and Ubuntu 24.04; the Linux binaries require glibc 2.39 or newer. Platform verification is recorded in the release evidence below; testing one architecture does not verify another.</p>
@@ -79,7 +81,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <tbody>
 <tr>
 <td><code>silicon</code>, <code>si</code></td>
-<td>Interpreter and internal CLI, 5.1.0</td>
+<td>Interpreter and internal CLI, 6.0.0</td>
 </tr>
 <tr>
 <td><code>omnid</code>, <code>silicon-omni</code>, <code>omni</code>, <code>so</code></td>
@@ -93,21 +95,31 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 </table>
 <p>Honeycomb is installed separately from its checksum-verified latest release; existing update preferences and services are preserved. Each Silicon connection runs <code>honeycomb install 'app' --json</code> for configured and registered canonical app IDs, the IAM issuer (<code>iam</code>), and Ting (<code>ting</code>). Omitting <code>--version</code> selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain bundled runtime dependencies.</p>
 <p>Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create an IAM identity or grant provider access.</p>
+<h3 id="upgrading-from-5x">Upgrading from 5.x</h3>
+<p>Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support <code>aggregate</code>, native loops/functions, or <code>self.error</code>. Stop the old interpreter before installing 6.0.0 and applying the edited configuration. These changes also apply to older configurations after their identifier and webhook migrations. The installer preserves YAML and does not translate it.</p>
+<ol>
+<li>Replace bare <code>{error}</code> in every catch with <code>{self.error}</code>. Result and error values are scoped to their <code>then</code> or <code>catch</code> branch; save a value with <code>var</code> when it is needed later.</li>
+<li>Review each send that must happen immediately or remain a separate message. Add <code>aggregate: false</code> to it; otherwise messages to the same <code>(isi, session_id)</code> are joined in order and sent when the flow finishes. An immediate send also flushes earlier queued messages for that destination.</li>
+<li>Move transport-failure handling out of <code>send.catch</code>. It now catches expression and target errors only. The runtime persists outgoing messages, retries delivery, logs failures, and stashes exhausted messages. A later send to the same ISI and session replays the stash first; no timer or alternate destination is used. <code>silicon.max_retries</code> defaults to ten retries after the initial attempt; set it explicitly if another limit is needed.</li>
+<li>Keep existing Ting flows on <code>request.tings</code>. Only change their input handling if sending another JSON shape; generic webhook bodies now reach <code>request</code> unchanged. Existing CEL-generated steps and <code>!</code> Python or shell commands remain supported, so adoption of native loops and functions can be incremental.</li>
+<li>Run <code>silicon stop</code>, then <code>silicon update</code> while the interpreter is stopped. Apply the prepared configuration edits, check <code>silicon --version</code>, and compile each configuration with the new <code>silicon compile /path/to/silicon.yaml</code>. Then reconnect with <code>silicon connect /path/to/silicon.yaml</code>. Prepare all saved configurations before the first reconnect, since it starts the interpreter and restores its other saved Silicons.</li>
+</ol>
+<p>To hold updates while preparing this migration, keep the interpreter stopped or set <code>SILICON_AUTO_UPDATE=0</code> in the environment of the interpreter process before starting it; see <a href="#updates">Updates</a>. Finish the edits before restarting on 6.0.0. Incoming and outgoing journals survive restarts, but crash recovery is at least once; application side effects should use event IDs for idempotency.</p>
 <h3 id="identifier-migration">Identifier migration</h3>
 <p>Use <code>silicon.id: si:handle</code>, an explicit <code>silicon.org_id</code>, and bare IDs in <code>apps</code> and <code>app_configs</code>. Carbon recipients use <code>c:handle</code>; ISI recipients use <code>isi@si:handle</code>. Bundle IDs remain <code>org&gt;bundle</code>. Follow the <a href="https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md">state-preserving migration procedure</a> before reconnecting an existing home. It uses IAM's verified mapping, preserves sessions and Ting delivery state, and migrates Honeycomb's registry without moving package bytes.</p>
 <h3 id="ting-migration">Ting migration</h3>
-<p>For configurations from 4.0.x or earlier, before reconnecting on 5.1.0:</p>
+<p>For configurations from 4.0.x or earlier, before reconnecting on 6.0.0:</p>
 <ol>
 <li>Remove <code>silicon.webhooks</code> and <code>silicon.webhook</code>. Keep application IDs in <code>silicon.apps</code>; applications publish notifications through Ting and no longer register separate interpreter webhooks.</li>
-<li>Change the flow to read <code>request.tings</code>, a list of notification objects with <code>id</code>, <code>type</code>, <code>data</code>, and <code>metadata</code>. The old top-level <code>{type, data, metadata}</code> HTTP envelope is rejected. Use CEL <code>map</code>, <code>filter</code>, and the list helpers to process a whole batch; the <a href="#first-silicon">first Silicon example</a> shows a minimal flow.</li>
+<li>Change the flow to read <code>request.tings</code>, a list of notification objects with <code>id</code>, <code>type</code>, <code>data</code>, and <code>metadata</code>. Other JSON shapes are also accepted, but Ting publishers use the batch envelope. Use native <code>for</code> steps or CEL list helpers to process a whole batch; the <a href="#first-silicon">first Silicon example</a> shows a minimal flow.</li>
 <li>Check that the Silicon identity can authenticate IAM and Ting. Both are installed through Honeycomb automatically, even with an empty <code>apps</code> list. The interpreter registers only Ting at <code>http://HANDLE.OWNER_ORG.localhost/events</code>, retaining its hook ID for reconnects.</li>
 <li>Run <code>silicon compile /path/to/silicon.yaml</code>, then reconnect or restart the interpreter. The updater and installer do not rewrite your YAML.</li>
 </ol>
-<p>Ting receives an empty HTTP 204 after the complete batch is durably saved, before the flow runs. Follow logs or session progress to inspect processing. The interpreter loads the latest flow from the YAML for every batch. Other manual configuration changes require reconnecting; <code>si app install</code> and <code>si app uninstall</code> update connected app settings immediately.</p>
+<p>Ting receives an empty HTTP 204 after the complete batch is durably saved, before the flow runs. Follow logs or session progress to inspect processing. The interpreter loads the latest flow and function definitions for every request. Other manual configuration changes require reconnecting; <code>si app install</code> and <code>si app uninstall</code> update connected app settings immediately.</p>
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>Existing Windows installations should rerun this release's PowerShell installer to add the native <code>ting.exe</code> entry point. <code>silicon update</code> updates the WSL2 runtime but does not add Windows launcher files.</p>
 <p>In PowerShell:</p>
-<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.ps1 | iex
+<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.ps1 | iex
 </code></pre>
 <p>Windows uses a native launcher and a dedicated WSL2 distribution named <code>Silicon</code>, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user <code>silicon</code>.</p>
 <p>Keep each project, its YAML, and its <code>SILICON_HOME</code> inside the distribution's Linux filesystem. Open <code>\\wsl.localhost\Silicon\home\silicon</code> in File Explorer and copy or create your project folder there. For example:</p>
@@ -123,13 +135,13 @@ silicon web
 <p>Version 4 removes the remote <code>login</code>, <code>logout</code>, and <code>watch</code> commands and the <code>realtime</code> setting. Use local <code>silicon logs</code>, <code>silicon config</code>, and <code>silicon ping</code>. Saved Silicon configurations, sessions, and managed-app authentication are retained. The interpreter no longer connects to the retired relay.</p>
 <h3 id="upgrading-from-35x">Upgrading from 3.5.x</h3>
 <p>The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new <code>install.sh</code> as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.</p>
-<p>First complete the <a href="#identifier-migration">identifier migration</a>, including disconnecting the old YAML paths and stopping the interpreter. Rerun the <strong>5.0.2 public installer into the same prefix</strong>:</p>
+<p>First complete the <a href="#identifier-migration">identifier migration</a>, including disconnecting the old YAML paths and stopping the interpreter. Rerun the <strong>6.0.0 public installer into the same prefix</strong>:</p>
 <pre><code class="language-sh">silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh | sh
 silicon serve
 </code></pre>
 <p>Skip <code>silicon stop</code> if no interpreter is running. <code>silicon serve</code> runs the new interpreter; reconnect each migrated YAML path after compiling it. The default command uses <code>~/.local/share/silicon</code>; if your existing installation uses another prefix, preserve it on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v5.1.0/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>Replace that example path with your existing prefix. Run this migration once even if an automatic update or <code>silicon update</code> already reports 5.0.2. The current installer installs Honeycomb independently; configured apps are installed when the Silicon connects. Your Silicon YAML and runtime state remain outside the bundle payload.</p>
@@ -183,9 +195,13 @@ access:
   assistant: []
 
 flow:
-  - send:
-      isi: assistant
-      message: '{request.tings.map(ting, make_readable(ting)).join(&quot;\n\n&quot;)}'
+  - for:
+      list: '{request.tings}'
+      var: ting
+      then:
+        - send:
+            isi: assistant
+            message: '{make_readable(var.ting)}'
 </code></pre>
 <p>Setup creates a workspace directory on each connection; <code>mkdir -p</code> is safe to repeat. IAM and Ting are implicit dependencies, even with an empty <code>apps</code> list. Add other application IDs under <code>apps</code> when the corresponding Silicon identity and application permissions are ready. Add the optional <code>space_station</code> fields shown below only after creating your table and obtaining its key. <code>token</code> remains required even if the first test does not use an IAM application.</p>
 <pre><code class="language-sh">silicon compile /absolute/path/to/silicon.yaml
@@ -197,7 +213,7 @@ silicon web
 </code></pre>
 <p><code>compile</code> validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including <code>SILICON_HOME</code>, so it is not a side-effect-free shell dry run. All expression syntax is checked before those commands execute. <code>setup</code>, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.</p>
 <p><code>connect</code> starts the interpreter if necessary, compiles the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, <code>… Authenticating dm</code> changes to <code>✓ Authenticated dm</code>; failures use <code>✗</code>. Redirected output uses separate lines without terminal control codes. <code>--json</code> returns the normal complete JSON response with its progress records. Setup, installation, authentication, and Ting commands run with the <a href="#time-limits">time limits</a> the interpreter enforces. A failed automatic app authentication no longer fails the connection: it shows as <code>✗</code> with the app's complete answer, and the app is checked again later (see the <a href="#iam-application-contract">IAM application contract</a>). Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical <code>SILICON_HOME</code> are rejected.</p>
-<p>The local identity is the canonical YAML path. The global identity is <code>silicon.id</code>; <code>silicon.org_id</code> supplies its owning organization separately. Moving a file changes its local identity. The interpreter reads <code>flow</code> from disk for each incoming batch, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. <code>si app install</code> and <code>si app uninstall</code> update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.</p>
+<p>The local identity is the canonical YAML path. The global identity is <code>silicon.id</code>; <code>silicon.org_id</code> supplies its owning organization separately. Moving a file changes its local identity. The interpreter reads <code>flow</code> and optional <code>functions</code> definitions from disk for each incoming request, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. <code>si app install</code> and <code>si app uninstall</code> update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.</p>
 <p><code>silicon disconnect ./silicon.yaml</code> resolves the path in your terminal's working directory. Direct control-API requests must supply a Silicon ID or an absolute YAML path. Delayed flow sends, heartbeat work, session capabilities, and ephemeral replies stay bound to their original connection or worker; reconnecting the same ID does not transfer them to the replacement.</p>
 <p>Send an event through the Silicon's host:</p>
 <pre><code class="language-sh">curl --fail-with-body \
@@ -207,7 +223,7 @@ silicon web
 </code></pre>
 <p>Caddy routes the hostname but does not edit DNS or <code>/etc/hosts</code>. If a particular client does not resolve <code>.localhost</code> names, the equivalent diagnostic command can add <code>--resolve assistant.my-org.localhost:80:127.0.0.1</code>.</p>
 </section><section class="chapter"><h2 id="configuration-reference">Configuration reference</h2>
-<p>The four required top-level keys are <code>silicon</code>, <code>isi</code>, <code>access</code>, and <code>flow</code>. Unknown fields are errors. Ordinary duplicate YAML keys are errors. Flow action order is preserved, including the reference dialect's repeated <code>if</code> keys, but the recommended form is an explicit list of steps.</p>
+<p>The four required top-level keys are <code>silicon</code>, <code>isi</code>, <code>access</code>, and <code>flow</code>. <code>functions</code> is optional and may appear anywhere at the top level. Unknown fields are errors. Ordinary duplicate YAML keys are errors. Flow action order is preserved, including the reference dialect's repeated <code>if</code> keys, but the recommended form is an explicit list of steps.</p>
 <h3 id="silicon"><code>silicon</code></h3>
 <table>
 <thead>
@@ -260,6 +276,10 @@ silicon web
 <tr>
 <td><code>space_station</code></td>
 <td>Optional object with nonempty <code>table_name</code> and <code>table_key</code> for a user-owned telemetry destination. This destination remains enabled when TOS telemetry is turned off.</td>
+</tr>
+<tr>
+<td><code>max_retries</code></td>
+<td>Optional nonnegative integer, default <code>10</code>; retries after the first outgoing flow delivery attempt before stashing for the next send to that destination.</td>
 </tr>
 <tr>
 <td><code>login</code></td>
@@ -433,8 +453,20 @@ No contacts are available.
 <td>Variables created during this flow; starts empty for each event.</td>
 </tr>
 <tr>
-<td><code>error</code></td>
-<td>Present only while running a catch branch.</td>
+<td><code>args</code></td>
+<td>The current YAML function's arguments.</td>
+</tr>
+<tr>
+<td><code>self.result</code></td>
+<td>The current call's return value, scoped to its <code>then</code> branch.</td>
+</tr>
+<tr>
+<td><code>self.error</code></td>
+<td>Complete failure text, scoped to the current catch branch.</td>
+</tr>
+<tr>
+<td><code>self.for.index</code></td>
+<td>Zero-based index of the nearest active <code>for</code> loop.</td>
 </tr>
 </tbody>
 </table>
@@ -477,6 +509,10 @@ No contacts are available.
 <td>Split a string into a list.</td>
 </tr>
 <tr>
+<td><code>{request.items.groupBy(item, item.owner)}</code></td>
+<td>Groups as <code>{key, items}</code>, in first-key order with input order within each group.</td>
+</tr>
+<tr>
 <td><code>{request.tings.sortBy(ting, ting.id)}</code></td>
 <td>Stable ascending sort by a CEL key expression; equal keys retain input order.</td>
 </tr>
@@ -497,7 +533,7 @@ No contacts are available.
 <p>Use CEL syntax, including <code>null</code>, <code>&amp;&amp;</code>, and <code>!=</code>. Python expressions such as <code>is not None</code> are not valid CEL.</p>
 <p>Escape literal braces as <code>\{</code> and <code>\}</code>. YAML single-quoted strings are often convenient for CEL and backslashes. YAML double-quoted strings require their own escaping. Bash parameter forms such as <code>${NAME}</code> also contain braces; escape literal braces when they are intended for Bash rather than CEL. <code>$NAME</code> avoids that particular ambiguity.</p>
 <p>For JSON variables, the interpreter recursively evaluates strings in YAML maps/lists and JSON container strings. Object keys are evaluated too; two keys that evaluate to the same name cause an error. A string result containing valid JSON is decoded, so <code>"123"</code> can become a number and <code>"{\"name\":\"Ada\"}"</code> can become an object. Subsequent CEL expressions can address that structure.</p>
-<p>Fallback candidates are separated by unquoted <code>!&gt;&gt;</code> outside CEL. Each candidate is tried in order. A failure is logged; the next candidate does not receive an <code>error</code> variable from the failed candidate. If every candidate fails, the error lists each one's complete reason in the order tried:</p>
+<p>Fallback candidates are separated by unquoted <code>!&gt;&gt;</code> outside CEL. Each candidate is tried in order. A failure is logged; the next candidate does not receive <code>self.error</code> from the failed candidate. If every candidate fails, the error lists each one's complete reason in the order tried:</p>
 <pre><code class="language-yaml">message: ! ./message.sh !&gt;&gt; ! cat message.txt !&gt;&gt; &quot;No message is available.&quot;
 </code></pre>
 <p>Inside a flow, exhausted fallbacks go to the action's catch branch, if present, or log and skip the action. Required compile-time settings still have to produce valid values; there is no usable configuration if its required identity or home cannot be evaluated. DNA entries and scheduling failures follow the behavior described above.</p>
@@ -507,15 +543,16 @@ No contacts are available.
 <p><code>assemble: [! pwd]</code> is rejected with a diagnostic because YAML would otherwise discard the anonymous tag. Multiline quoted strings and literal/folded YAML blocks are preserved by the parser. Avoid changing quotation just to silence an error without understanding whether it is YAML syntax, a CEL expression, a literal fallback, or shell argument quoting.</p>
 <p>Bash runs as the current operating-system user, with the resolved home as its working directory. It receives <code>SILICON_HOME</code>, <code>SILICON_ORG</code>, and <code>ISI</code>. The runtime also gives Omni/provider sessions the configured <code>TZ</code>, <code>SI_URL</code>, and an ISI capability in <code>SI_TOKEN</code>.</p>
 </section><section class="chapter"><h2 id="event-flow">Event flow</h2>
-<p>Ting delivers batches to the connected Silicon’s local URL:</p>
+<p>The local webhook accepts any valid JSON value at <code>POST /</code> or <code>POST /events</code>: an object, array, string, number, boolean, or <code>null</code>. Its body becomes <code>request</code> unchanged. Requests must use <code>Content-Type: application/json</code> and fit within 1 MiB. The flow decides which fields its input requires.</p>
+<p>Ting remains a supported input format:</p>
 <pre><code class="language-json">{
   &quot;tings&quot;: [
     {&quot;id&quot;: &quot;event-1&quot;, &quot;type&quot;: &quot;dm.new_message&quot;, &quot;data&quot;: {&quot;message&quot;: &quot;Hello&quot;}, &quot;metadata&quot;: {}}
   ]
 }
 </code></pre>
-<p>A batch contains 1–100 tings and is at most 1 MiB. Each ting requires a nonempty string <code>id</code> and <code>type</code>, plus object <code>data</code> and <code>metadata</code>. Apps choose their event types; flow sees the complete <code>request.tings</code> list and decides how to route it. The previous top-level <code>{type, data, metadata}</code> envelope is rejected; wrap notifications in <code>tings</code>.</p>
-<p>A flow is an ordered list of steps, or an expression producing a step or list. Steps can also appear in branches. A generated flow is validated before execution.</p>
+<p>Only an object containing exactly <code>tings</code>, with 1–100 valid records, opts into Ting ID deduplication. Each record needs a string <code>id</code> of 1–256 bytes, a nonempty string <code>type</code>, and object <code>data</code> and <code>metadata</code>. Previously accepted IDs are removed from those canonical batches. Other JSON—including an empty/malformed <code>tings</code> field or an envelope with extra fields—is preserved whole and does not participate in Ting deduplication.</p>
+<p>A flow is an ordered list of steps. Function bodies, loop bodies, <code>then</code>, and <code>catch</code> use the same structure. Existing expression-generated steps/lists remain supported and are validated before execution.</p>
 <table>
 <thead>
 <tr>
@@ -533,17 +570,57 @@ No contacts are available.
 <tr>
 <td><code>var</code></td>
 <td><code>name</code>, <code>value</code>, optional <code>catch</code></td>
-<td>Evaluate the name and JSON-capable value, then store it under <code>var</code>.</td>
+<td>Store a JSON-compatible value under <code>var</code>.</td>
+</tr>
+<tr>
+<td><code>for</code></td>
+<td><code>list</code>, <code>var</code>, <code>then</code>, optional <code>catch</code></td>
+<td>Run steps for each list item, accessible as <code>var.NAME</code>.</td>
+</tr>
+<tr>
+<td><code>switch</code></td>
+<td><code>value</code>, <code>cases</code>, optional <code>default</code>, <code>catch</code></td>
+<td>Run the first matching case; each case has <code>case</code> and <code>then</code>.</td>
+</tr>
+<tr>
+<td><code>call</code></td>
+<td><code>function</code>, optional <code>args</code>, <code>then</code>, <code>catch</code></td>
+<td>Call a named YAML function; its return value is <code>self.result</code> inside <code>then</code>.</td>
+</tr>
+<tr>
+<td><code>return</code></td>
+<td>Any JSON-compatible value</td>
+<td>Finish the current function with that value.</td>
+</tr>
+<tr>
+<td><code>collect</code></td>
+<td><code>name</code>, <code>value</code>, optional <code>catch</code></td>
+<td>Append to a list variable in the enclosing loop's parent scope; create the list if absent.</td>
+</tr>
+<tr>
+<td><code>continue</code></td>
+<td><code>reason</code></td>
+<td>Log the reason and skip to the nearest loop's next item.</td>
+</tr>
+<tr>
+<td><code>break</code></td>
+<td><code>reason</code></td>
+<td>Log the reason and leave the nearest loop.</td>
+</tr>
+<tr>
+<td><code>exit</code></td>
+<td><code>reason</code></td>
+<td>Log the reason and finish the entire flow, including when called inside a function.</td>
 </tr>
 <tr>
 <td><code>send</code></td>
-<td><code>isi</code>, <code>message</code>, optional <code>session_id</code>, <code>catch</code></td>
-<td>Immediately dispatch to an ISI; a session-addressed target requires <code>session_id</code>.</td>
+<td><code>isi</code>, <code>message</code>, optional <code>session_id</code>, <code>aggregate</code>, <code>catch</code></td>
+<td>Queue a message; <code>aggregate: false</code> requests immediate delivery.</td>
 </tr>
 <tr>
 <td><code>log</code></td>
 <td><code>message</code>, optional <code>catch</code></td>
-<td>Append a runtime entry to the Silicon log.</td>
+<td>Append an entry to the Silicon log.</td>
 </tr>
 <tr>
 <td>standalone <code>else</code></td>
@@ -552,21 +629,112 @@ No contacts are available.
 </tr>
 </tbody>
 </table>
-<p>Consecutive <code>if</code> steps are independent. More than one can run. A trailing standalone <code>else</code> belongs to that entire consecutive chain, not only the last <code>if</code>. Any non-<code>if</code> action ends the chain. Use an <code>else</code> inside one <code>if</code> when you want an ordinary two-way branch.</p>
+<p>Consecutive <code>if</code> steps are independent: more than one can run. A trailing standalone <code>else</code> belongs to that consecutive chain. Any non-<code>if</code> action ends the chain. Use an <code>else</code> inside one <code>if</code> for a two-way branch, or <code>switch</code> for exactly one matching branch.</p>
+<h3 id="loops-and-collection">Loops and collection</h3>
 <pre><code class="language-yaml">flow:
-  - send:
-      isi: coordinator
-      message: '{request.tings.sortBy(ting, ting.id).map(ting, make_readable(ting)).join(&quot;\n\n&quot;)}'
-      catch:
-        - log:
-            message: 'Delivery failed: {error}'
+  - var: {name: accepted, value: []}
+  - for:
+      list: '{request.items}'
+      var: item
+      then:
+        - if:
+            condition: '{!var.item.enabled}'
+            then:
+              - continue: {reason: 'Item {self.for.index} is disabled'}
+        - collect:
+            name: accepted
+            value:
+              owner: '{var.item.owner}'
+              message: '{var.item.message}'
+        - send:
+            isi: trainer
+            session_id: '{var.item.owner}'
+            message: '{var.item.message}'
+  - log:
+      message: 'Accepted {size(var.accepted)} items'
 </code></pre>
-<p>Catch branches receive a scoped string named <code>error</code> holding the complete failure text described in <a href="#reading-errors">Reading errors</a>, such as a tool's exit status, stderr, and stdout. Nested catches temporarily replace it and restore the outer error afterward. A catch does not leak <code>error</code> into later ordinary steps. Variables intentionally created inside a catch remain ordinary flow variables. Without a catch, an evaluation/action failure is logged as an <code>[error]</code> entry naming the step's full source, and execution continues with the next step.</p>
-<p>A flow send can create a missing session-addressed session automatically. An internal CLI send to a missing persistent session requires <code>--new</code>. This is a deliberate difference between flow routing and interactive session addressing.</p>
-<h3 id="acknowledgment-and-delivery">Acknowledgment and delivery</h3>
-<p>Ting’s batch delivery contract requires a prompt empty HTTP 204. The interpreter validates and durably saves the complete batch before acknowledging it, then processes its flow from the local inbox. Ting IDs are deduplicated across batches and restarts. Invalid batches are rejected as a whole (400). Flow loading, validation, and other overall processing failures remain in the inbox for retry, and accepted pending batches survive interpreter restarts. A batch is refused with 503 and <code>Retry-After</code>, so Ting delivers it again later, when its Silicon is still being restored, when the interpreter is stopping, or when the Silicon's inbox is full: 10,000 pending batches or 256 MiB, usually a flow that keeps failing (the answer names the oldest batch and its error). A batch's complete request is written to <code>silicon.log</code> on its first attempt; each retry writes one short <code>[event]</code> line.</p>
-<p>Each flow send still waits for its provider delivery receipt (<code>START</code> or <code>INJECTED</code>) before the next step, including its catch branch. This does not wait for the model’s entire turn. The ordinary send CLI returns session and delivery information after dispatch acceptance.</p>
-<p>Messages are forwarded into active provider work as soon as their flow reaches a send. Ting’s durable transport inbox does not wait for an inference turn to end. Provider startup and delivery can take time; delivery receipts have a 60-second deadline. A crash during processing can replay completed flow actions, and so can a stop or disconnect: a send cut short because the interpreter is stopping or the Silicon disconnected stops the flow without running its catch, and the batch stays queued and runs again from the start on the next connection (at-least-once). Durable side effects should use ting IDs for idempotency. There is no transactional rollback of app actions. Flows nest at most 64 levels; deeper nesting fails that step and names the step path.</p>
+<p>Each iteration gets its own local variables, initialized from the enclosing scope; changes do not leak to the next item. <code>self.for.index</code> is zero-based and belongs to the nearest loop. Nested loops restore the outer index afterward. <code>collect</code> deliberately writes to the enclosing loop's parent scope, so the list remains available after that loop. An existing collection target must be a list. Ordinary message batching needs no collection variable: <code>send</code> already combines messages by destination.</p>
+<p>For explicit grouping, <code>{request.items.groupBy(item, item.owner)}</code> produces a list of <code>{key, items}</code> groups. Keys may be any JSON value. Groups follow first occurrence of their key, and items retain input order. Iterate over the result with another <code>for</code>, using <code>var.group.key</code> and <code>var.group.items</code>.</p>
+<pre><code class="language-yaml">- switch:
+    value: '{var.item.type}'
+    cases:
+      - case: message
+        then:
+          - log: {message: 'A message arrived'}
+      - case: shutdown
+        then:
+          - exit: {reason: 'The sender requested shutdown of this flow'}
+    default:
+      - log: {message: 'Unrecognized item type'}
+</code></pre>
+<p><code>continue</code> and <code>break</code> require an enclosing loop; <code>exit</code> finishes the flow without stopping the interpreter or disconnecting the Silicon. All three require a nonempty <code>reason</code>, support expressions in it, and log it. <code>exit</code> still flushes messages already queued by the flow.</p>
+<h3 id="functions-and-scoped-results">Functions and scoped results</h3>
+<p>The optional top-level <code>functions</code> section is separate from <code>flow</code>. It can appear before or after it; all definitions are registered before any step runs. Function bodies use <code>do</code>, parameters use <code>params</code>, and arguments are available as <code>args.NAME</code>:</p>
+<pre><code class="language-yaml">flow:
+  - call:
+      function: greeting
+      args:
+        name: '{request.name}'
+      then:
+        - log: {message: '{self.result.message}'}
+        - var: {name: greeting, value: '{self.result}'}
+      catch:
+        - log: {message: 'Greeting failed: {self.error}'}
+
+functions:
+  greeting:
+    params: [name]
+    do:
+      - return:
+          message: 'Hello, {args.name}'
+</code></pre>
+<p>Each call has its own local <code>var</code> and arguments. Functions can use all flow steps and call other functions. <code>return</code> accepts objects, lists, scalars, or null; falling through without a return produces null. An unhandled function error reaches <code>call.catch</code> and skips its success branch. Functions share the enclosing flow's outgoing queue: returning or failing does not roll back messages already queued.</p>
+<p><code>then</code> exposes <code>self.result</code>; catches expose the complete error string as <code>self.error</code>. Nested calls/catches restore the outer context afterward. Neither result nor error leaks into later ordinary steps. Use <code>var</code> explicitly inside <code>then</code> when a later step needs the result. Outside functions, uncaught step errors are logged and the flow continues; inside functions they propagate to the caller. A send's catch handles evaluation and target-validation errors, such as an unknown ISI, missing required session ID, or failed message expression. Actual delivery failures are handled by the runtime, including with <code>aggregate: false</code>.</p>
+<p>Definitions can also live in a separate file containing a bare function map:</p>
+<pre><code class="language-yaml">functions: ./functions.yaml
+</code></pre>
+<p>Or combine imports and inline definitions:</p>
+<pre><code class="language-yaml">functions:
+  - ./functions.yaml
+  - greeting:
+      params: [name]
+      do:
+        - return: 'Hello, {args.name}'
+</code></pre>
+<p>Import paths resolve relative to the file that contains them, and imports may themselves contain a path or list of sources. Duplicate names and circular imports are errors. The interpreter reloads the flow and definitions when their files change, before the next request; YAML key order does not affect availability. Omit <code>functions</code> entirely when none are needed. Existing <code>!</code> commands, including <code>! python3 ./route.py</code>, remain available inside expressions.</p>
+<h3 id="send-aggregation-and-delivery">Send aggregation and delivery</h3>
+<p>By default, all flow sends to the same <code>(isi, session_id)</code> are combined, preserving their message order, and flushed when the flow finishes. Different destinations stay separate. No temporary grouping variable or second delivery loop is needed:</p>
+<pre><code class="language-yaml">flow:
+  - for:
+      list: '{request.tings}'
+      var: ting
+      then:
+        - send:
+            isi: coordinator
+            message: '{make_readable(var.ting)}'
+            catch:
+              - log: {message: 'Invalid send: {self.error}'}
+  - send:
+      isi: audit
+      message: 'Routing finished'
+      aggregate: false
+</code></pre>
+<p>An immediate send first flushes older queued messages for the same destination, then sends its own message. It does not flush unrelated destinations. A flow can create a missing session-addressed session automatically; an internal CLI send to a missing persistent session still requires <code>--new</code>. Session-addressed ISIs require <code>session_id</code>.</p>
+<p>The runtime persists outgoing delivery state before dispatch. <code>silicon.max_retries</code> defaults to <code>10</code>: ten retries after the first attempt. Set it to <code>0</code> to make only the initial attempt before stashing a failure. Failed groups remain on disk across restart, with attempts, failures, stashing, and recovery reported in logs. After exhaustion there is no timer-driven fallback: the next send to the same ISI and session triggers replay of its stashed messages before the new message. No message is redirected to another ISI or session.</p>
+<p>Delivery checks wait for provider receipts (<code>START</code> or <code>INJECTED</code>), not completion of the model's turn; provider delivery has a 60-second deadline. A timeout after dispatch acceptance keeps that pending receipt for a later check instead of immediately submitting the same message again. Active provider work can receive flushed messages mid-turn. The ordinary send CLI retains its own dispatch response behavior; YAML flow aggregation applies to flow <code>send</code> steps.</p>
+<h3 id="durable-acceptance-and-recovery">Durable acceptance and recovery</h3>
+<p>An empty HTTP 204 means the JSON request was durably accepted, before its flow runs. It does not promise that a provider received a message. Canonical Ting IDs are deduplicated across pending requests, completed requests, and restarts; generic requests are distinct deliveries even when their bodies are identical. Flow-loading and overall processing failures keep the request in the inbox for retry. Accepted requests survive interpreter restarts, and the complete body is logged on the first processing attempt with short notes on subsequent retries.</p>
+<p>The inbox holds at most 10,000 pending requests or 256 MiB. A full inbox, failing storage, a Silicon still being restored, or interpreter shutdown returns 503 with <code>Retry-After</code>; the sender must retry. The response names the oldest blocked request and its error where available. Invalid JSON is rejected with 400; a valid JSON shape is never rejected just for lacking <code>tings</code>.</p>
+<p>Outgoing journals are stored under <code>.silicon/outbox/&lt;silicon-id&gt;/&lt;org&gt;/&lt;request-id&gt;.json</code>, separately from the incoming inbox. A stable request ID and delivery slot track outgoing state across processing retries. The persisted message remains the delivery plan even if a timestamp or other expression changes on replay; changing that slot's destination raises an error rather than rerouting it. On reconnect, completed delivery receipts whose incoming requests are already gone are cleaned up, while undelivered messages remain. Crash recovery is at least once: a crash between provider receipt and persisting that receipt can still duplicate delivery. Other completed app/shell side effects may also repeat when a flow retries, so use application event IDs for idempotency. There is no transactional rollback of actions or queued sends. Flow nesting is limited to 64 levels.</p>
+<h3 id="flow-migration">Flow migration</h3>
+<p>For the installation sequence, follow <a href="#upgrading-from-5x">Upgrading from 5.x</a>.</p>
+<ul>
+<li>Replace bare <code>{error}</code> in catches with <code>{self.error}</code>.</li>
+<li>Sends aggregate by destination unless <code>aggregate: false</code> is specified. That override also flushes earlier queued messages for its destination.</li>
+<li>Move delivery-failure handling out of <code>send.catch</code>; the runtime retries and stashes delivery failures. Keep expression/target error handling in catches.</li>
+<li>Read the payload shape your webhook actually receives. Ting publishers still send <code>request.tings</code>; other JSON payloads require no envelope.</li>
+<li>Native loops and YAML functions can replace generated step lists incrementally. No Python migration is required.</li>
+</ul>
 </section><section class="chapter"><h2 id="cli-reference">CLI reference</h2>
 <p>Use <code>silicon --help</code>, <code>si --help</code>, and subcommand help as the primary command reference. <code>--json</code> is global on both commands.</p>
 <h3 id="interpreter-commands">Interpreter commands</h3>
@@ -644,7 +812,7 @@ stdout:
 <ul>
 <li><code>silicon</code> and <code>si</code> exit with status 1 and print <code>Error:</code> and the complete text on stderr, including any <code>Caused by:</code> lines. <code>--json</code> changes successful output only.</li>
 <li>The control and internal APIs answer with <code>{"error": "..."}</code>. The dashboard shows that text whole, or the HTTP status and raw body when an answer is not JSON.</li>
-<li>A flow catch receives it as <code>{error}</code>.</li>
+<li>A flow catch receives expression and validation failures as <code>{self.error}</code>; outgoing delivery failures appear in runtime logs and durable delivery state.</li>
 <li><code>silicon.log</code> records it as an <code>[error]</code> entry. The file escapes newlines; <code>silicon logs show</code>, connection progress, and the dashboard unfold error entries so multi-line output reads as the tool wrote it, and <code>--json</code> returns the stored line. Errors logged during <code>connect</code> appear as they happen, even when the connection then succeeds.</li>
 <li>Failures with no caller, such as DNA refreshes, heartbeats, restoration, rejected Ting deliveries, and automatic updates, go to <code>silicon.log</code>. The last three also go to the interpreter's <code>daemon.log</code>.</li>
 </ul>
@@ -731,7 +899,7 @@ APP auth token SLT
 <p>All six paired hosted testing environments now pass login. <a href="https://github.com/teamofsilicons/silicon-commit/pull/2">Commit PR #2</a>, merged and externally deployed as <code>cbe3cd1</code>, stores and selects the encrypted imported IAM test-app credential. The retained Commit sandbox was paired through its production-owner API; its version advanced from 1 to 2 while both linked environment keys were preserved. The unchanged public interpreter and corrected Commit CLI then passed login, authenticated status, a protected todos read, logout, and previous-token inactivity. The other five apps passed login/logout with their released CLIs. Existing unpaired Commit environments still require their owner or authorized manager to supply the matching imported app credential.</p>
 <p>Separate Silicon homes isolate application state, but an application's local relay may also need a distinct TCP port. A DM testing login saved valid credentials and then failed because a production-test relay still occupied its port. A retry with a separate available relay port passed; the owned test relays were stopped afterward.</p>
 <h3 id="ting-registration-and-app-notifications">Ting registration and app notifications</h3>
-<p>Proactive IAM apps publish notifications through <a href="https://ting.teamofsilicons.com/">Ting</a>. Only Ting delivers to the interpreter; application CLIs no longer need their own <code>webhook</code> or <code>unhook</code> commands.</p>
+<p>Proactive IAM apps publish notifications through <a href="https://ting.teamofsilicons.com/">Ting</a>. Ting handles app notification delivery and registration; application CLIs no longer need their own <code>webhook</code> or <code>unhook</code> commands. The local endpoint also accepts other JSON webhook callers.</p>
 <p>The interpreter installs <code>ting</code> through Honeycomb and authenticates its CLI just like other IAM apps. After the Silicon route is ready, it inspects <code>ting webhook list --limit 100 --json</code> and registers with <code>ting webhook http://HANDLE.OWNER_ORG.localhost/events --json</code>. A saved hook is reused with <code>--id WEBHOOK_ID</code>; the stable ID is retained across reconnects and restarts. Ting delivers <code>tings</code> batches to that endpoint with an empty HTTP 204 acknowledgment after durable acceptance.</p>
 <p>Disconnect runs <code>ting unhook WEBHOOK_ID --json</code>. It still removes the local connection and ISI capabilities if unhooking fails, reporting the cleanup error. A failed registration rolls back the local connection and routing. Ting owns remote delivery, retries, and its local bridge; app-specific transport daemons are not registered with Silicon.</p>
 <p>Apps that accept configuration expose <code>APP config set JSON</code>. The interpreter sends each configured object after authentication. If the app rejects it, the error names <code>silicon.app_configs.APP</code>, shows the command with its JSON argument as <code>'[redacted]'</code>, and includes the app's exit status and complete stderr and stdout, with configured values masked as described in <a href="#reading-errors">Reading errors</a>. Apps store credentials and configuration in their own state beneath <code>SILICON_HOME</code> (or their chosen remote configuration service), respect <code>SILICON_ORG</code>, and work when <code>ISI</code> is absent.</p>
@@ -771,7 +939,7 @@ silicon settings set auto_update --off
     table_key: REPLACE_WITH_YOUR_TABLE_KEY
 </code></pre>
 <p><code>table_key</code> authorizes ingestion; <code>table_name</code> identifies the configured destination. <code>silicon settings set telemetry --off</code> disables TOS telemetry and keeps this explicitly configured destination active. Remove <code>space_station</code> and reconnect to stop the user destination. The Space Station Rust client handles buffering, its local spool, delivery, and retries. When Space Station itself is a managed app, the interpreter supplies its required organization during login.</p>
-<p>The interpreter removes Silicon tokens, app configuration, and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events, logs, and errors. Redaction is the only reduction: every failure reaches the CLI, <code>si</code>, the dashboard, flow catches, and <code>silicon.log</code> in full, as described in <a href="#reading-errors">Reading errors</a>. Configured values shorter than eight characters are treated as settings and are not redacted. Compile-time Bash logs <code>running: [compile-time expression]</code> and its exit status, because runtime redaction is not yet registered; if it fails, the error shows the command with known credentials masked, its status, and both streams. A credential expression logs <code>running: [credential expression]</code>; its error shows its exit status, stderr, and parser or CEL text, but names the source <code>[credential expression]</code>, masks the source's words of eight or more characters wherever the parser quotes them, and never shows its stdout, which is the credential. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.</p>
+<p>The interpreter removes Silicon tokens, app configuration, and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events, logs, and errors. Redaction is the only reduction: errors retain their complete text in the relevant CLI, <code>si</code>, dashboard, flow catch, or <code>silicon.log</code>, as described in <a href="#reading-errors">Reading errors</a>. Configured values shorter than eight characters are treated as settings and are not redacted. Compile-time Bash logs <code>running: [compile-time expression]</code> and its exit status, because runtime redaction is not yet registered; if it fails, the error shows the command with known credentials masked, its status, and both streams. A credential expression logs <code>running: [credential expression]</code>; its error shows its exit status, stderr, and parser or CEL text, but names the source <code>[credential expression]</code>, masks the source's words of eight or more characters wherever the parser quotes them, and never shows its stdout, which is the credential. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.</p>
 <p>The documentation website has its own <strong>Share documentation usage with TOS</strong> checkbox in the footer. Its preference is saved in that browser's local storage and is independent of local interpreter settings. The page submits telemetry to its same-origin <code>/api/telemetry</code> endpoint; the destination credential stays on the server.</p>
 </section><section class="chapter"><h2 id="files-storage-and-logs">Files, storage, and logs</h2>
 <p>The default interpreter state directory is <code>~/.silicon-interpreter</code>. <code>SILICON_INTERPRETER_HOME</code> selects another directory, useful for an independent test installation.</p>
@@ -805,7 +973,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>Interpreter <code>daemon.log</code></td>
-<td>Background interpreter stdout/stderr, including restoration, update, and rejected Ting delivery failures. Those failures also go to the affected Silicon's <code>silicon.log</code>; automatic-update failures go to every connected Silicon's log.</td>
+<td>Background interpreter stdout/stderr, including restoration, update, and rejected webhook delivery failures. Those failures also go to the affected Silicon's <code>silicon.log</code>; automatic-update failures go to every connected Silicon's log.</td>
 </tr>
 <tr>
 <td>Interpreter <code>updates.log</code></td>
@@ -865,7 +1033,11 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td><code>&lt;SILICON_HOME&gt;/.silicon/ting/&lt;silicon-id&gt;/&lt;org&gt;/</code></td>
-<td><code>pending/</code> (one file per accepted batch, run oldest first), <code>seen.json</code> (ting IDs processed in the last 100 days), and <code>hook.json</code> (the retained webhook ID). An earlier <code>inbox.json</code> is moved into these on first use. A damaged file is moved to <code>NAME.corrupt-&lt;UTC&gt;</code> and reported, and the inbox carries on.</td>
+<td><code>pending/</code> (one file per accepted JSON request, run oldest first), <code>seen.json</code> (ting IDs processed in the last 100 days), and <code>hook.json</code> (the retained webhook ID). An earlier <code>inbox.json</code> is moved into these on first use. A damaged file is moved to <code>NAME.corrupt-&lt;UTC&gt;</code> and reported, and the inbox carries on.</td>
+</tr>
+<tr>
+<td><code>&lt;SILICON_HOME&gt;/.silicon/outbox/&lt;silicon-id&gt;/&lt;org&gt;/&lt;request-id&gt;.json</code></td>
+<td>Durable outgoing flow messages, delivery attempts, and undelivered groups retained for destination-triggered replay.</td>
 </tr>
 <tr>
 <td><code>&lt;SILICON_HOME&gt;/.silicon/org.json</code></td>
@@ -891,7 +1063,7 @@ silicon settings set auto_update --off
 <p><code>silicon web</code> opens the direct localhost dashboard with the current interpreter token in the URL fragment. <code>--no-open</code> prints that URL. The dashboard consumes the fragment, removes it from the displayed URL, and stores the token in browser session storage. Treat the printed URL and stored token as a management credential.</p>
 <p>The dashboard can list, compile, connect, disconnect, send events/messages, inspect/end sessions, search archives, start successor sessions, authenticate/remove apps, and read/follow logs. Its log following polls the latest tail; the CLI follower is the continuous file-oriented view.</p>
 <p>The underlying control API is <code>POST /control</code> with <code>Authorization: Bearer &lt;interpreter-token&gt;</code> and a JSON body of <code>{ "action": "...", "args": {...} }</code>. The internal API is <code>POST /si</code> with the corresponding ISI capability. Events use <code>POST /</code> or <code>POST /events</code> on a connected Silicon hostname.</p>
-<p>Requests require <code>Content-Type: application/json</code>. Event batches are limited to 1 MiB; control and internal requests are limited to 16 MiB. Cross-origin browser requests are rejected. During shutdown/restart, requests are rejected with 503 so callers can retry after the interpreter resumes. More than 256 requests in flight also get 503. The CLI never sends its requests through <code>HTTP(S)_PROXY</code>, and quick actions such as <code>ping</code> and <code>list</code> time out after 15 seconds. Every interpreter error answer is JSON <code>{"error": "..."}</code> whose text is the complete failure, masked only for credential values; see <a href="#reading-errors">Reading errors</a>.</p>
+<p>Requests require <code>Content-Type: application/json</code>. JSON webhook requests are limited to 1 MiB; control and internal requests are limited to 16 MiB. Cross-origin browser requests are rejected. During shutdown/restart, requests are rejected with 503 so callers can retry after the interpreter resumes. More than 256 requests in flight also get 503. The CLI never sends its requests through <code>HTTP(S)_PROXY</code>, and quick actions such as <code>ping</code> and <code>list</code> time out after 15 seconds. Every interpreter error answer is JSON <code>{"error": "..."}</code> whose text is the complete failure, masked only for credential values; see <a href="#reading-errors">Reading errors</a>.</p>
 <table>
 <thead>
 <tr>
@@ -906,11 +1078,11 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>204</td>
-<td>A validated Ting batch durably saved for processing.</td>
+<td>A valid JSON webhook request durably saved for processing.</td>
 </tr>
 <tr>
 <td>400</td>
-<td>Invalid JSON, invalid event shape, unreadable body, configuration error, or failed control/runtime operation.</td>
+<td>Invalid JSON, unreadable body, configuration error, or failed control/runtime operation.</td>
 </tr>
 <tr>
 <td>401</td>
@@ -938,7 +1110,7 @@ silicon settings set auto_update --off
 </tr>
 <tr>
 <td>503</td>
-<td>Interpreter stopping or restarting, the Silicon still being restored, its Ting inbox full, or its storage failing. Sent with <code>Retry-After</code>.</td>
+<td>Interpreter stopping or restarting, the Silicon still being restored, its webhook inbox full, or its storage failing. Sent with <code>Retry-After</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -999,12 +1171,13 @@ silicon service uninstall
 <p>On macOS, a LaunchAgent runs only after someone logs in to the Mac's desktop: over SSH the agent loads at the next login, and a headless Mac needs automatic login, which FileVault prevents. macOS shows a "Background Items Added" notice, and the agent appears under System Settings › General › Login Items, where turning it off stops autostart. Programs launchd starts cannot read <code>~/Desktop</code>, <code>~/Documents</code>, <code>~/Downloads</code>, iCloud Drive, or <code>/Volumes</code> without Full Disk Access; keep YAML files and homes elsewhere, such as <code>~/silicon</code>. <code>connect</code> warns when one is there. On Linux without systemd, starting at boot needs a running cron daemon; on WSL without systemd, add <code>[boot] command=service cron start</code> to <code>/etc/wsl.conf</code>. Encrypted disks that must be unlocked at boot, and laptops that sleep, pause a Silicon until the machine is unlocked or awake.</p>
 <h3 id="what-recovers-by-itself">What recovers by itself</h3>
 <ul>
-<li><strong>Restore.</strong> Saved Silicons are restored in the background, each one attempted before any is retried. A failed restore (the network not up yet, an app service down, a volume not mounted) is retried after 5 seconds, doubling to 10 minutes, with ±20% jitter, forever; its error is logged in full when it first happens and when it changes. <code>silicon connect</code> of a waiting Silicon retries it at once, and <code>silicon disconnect</code> forgets it. Events for a Silicon still being restored get 503, so Ting delivers them later.</li>
+<li><strong>Restore.</strong> Saved Silicons are restored in the background, each one attempted before any is retried. A failed restore (the network not up yet, an app service down, a volume not mounted) is retried after 5 seconds, doubling to 10 minutes, with ±20% jitter, forever; its error is logged in full when it first happens and when it changes. <code>silicon connect</code> of a waiting Silicon retries it at once, and <code>silicon disconnect</code> forgets it. Events for a Silicon still being restored get 503, so the sender can deliver them later.</li>
 <li><strong>Ting registration.</strong> A Silicon whose Ting registration fails stays connected and keeps its inbox; registration alone is retried with the same backoff and re-asserted every six hours.</li>
 <li><strong>Routing.</strong> A Caddy that cannot start does not stop the interpreter. Caddy is checked every five seconds (its process, its admin socket, and about once a minute that it alone answers port 80) and restarted with backoff from 1 second to 5 minutes. A Caddy left by an interpreter that crashed is stopped at the next start.</li>
 <li><strong>The interpreter itself.</strong> An error accepting connections rebinds the same port; if that keeps failing for five minutes, the interpreter stops in order and exits non-zero so its supervisor restarts it. A panic in a background loop is logged and the loop continues. An Omni daemon left by an interpreter that crashed is stopped, never adopted. The soft open-file limit is raised to the hard limit (at most 65,536). A <code>connections.json</code> that cannot be read is left in place and the interpreter exits, so its supervisor retries.</li>
 <li><strong>Sessions.</strong> Session-addressed workers idle for <code>SILICON_IDLE_SESSION_MINUTES</code> (default 60) stop their Omni daemon and provider; the next send, heartbeat, or reply resumes the same Omni session. Global ISIs are never retired. A turn that hears nothing from Omni for <code>SILICON_TURN_STALL_MINUTES</code> (default 360, counted in awake time) fails its session with the full picture, which also releases an update waiting for idle.</li>
-<li><strong>Disk.</strong> Logs rotate (see <a href="#files-storage-and-logs">Files, storage, and logs</a>), old releases are pruned, and each Silicon's Ting inbox is capped.</li>
+<li><strong>Flow delivery.</strong> Outgoing messages are persisted and retried up to <code>silicon.max_retries</code> times after the initial attempt (default 10). Exhausted groups stay stashed; the next send to the same ISI/session triggers replay. Other destinations are isolated.</li>
+<li><strong>Disk.</strong> Logs rotate (see <a href="#files-storage-and-logs">Files, storage, and logs</a>), old releases are pruned, and each Silicon's webhook inbox is capped.</li>
 </ul>
 <h3 id="time-limits">Time limits</h3>
 <p>Every tool the interpreter runs has a time limit. At the limit its whole process group gets SIGTERM, then SIGKILL five seconds later, and the failure shows everything the tool printed, followed by a <code>silicon: stopped after …</code> line. Tools still running when the interpreter stops are ended too.</p>
@@ -1121,11 +1294,11 @@ silicon service uninstall
 </tr>
 <tr>
 <td>Flow acknowledged but model is still working</td>
-<td>Ting’s 204 means durable acceptance before flow processing. Individual flow sends wait for provider delivery, not final inference output. Inspect progress/logs.</td>
+<td>HTTP 204 means durable acceptance before flow processing. Flow sends aggregate until flush; runtime delivery checks wait for provider receipts, not final inference output. Inspect progress/logs.</td>
 </tr>
 <tr>
 <td>Event retry repeats an action</td>
-<td>Ting IDs are deduplicated, but a crash, stop, or disconnect can replay a partially processed accepted batch. There is no flow transaction; use ting/app IDs for side-effect idempotency.</td>
+<td>Canonical Ting IDs are deduplicated; generic JSON requests are distinct. Durable outgoing state prevents replay of recorded deliveries, but a crash before persisting a receipt may duplicate a send. App/shell actions have no flow transaction; use event IDs for idempotency.</td>
 </tr>
 <tr>
 <td>Session send needs an ID</td>
@@ -1217,7 +1390,7 @@ silicon service uninstall
 <li><code>silicon.id</code>, <code>silicon.org_id</code>, <code>silicon.token</code>, <code>SILICON_ORG</code>, and the optional Space Station fields are <code>...</code> placeholders.</li>
 <li>It refers to missing scripts/files including <code>install_python.sh</code>, <code>contacts.sh</code>, <code>tools.sh</code>, <code>team.sh</code>, <code>time_delay.sh</code>, and <code>learn.sh</code>. The repository has <code>CONTACTS.md</code>, <code>tools.md</code>, and <code>learn.md</code>; those names do not make the scripts exist automatically.</li>
 <li>Some suggestion messages still show old command forms. Current rollover uses <code>si session new --archive-current-session --id ... --title ... --description ...</code>.</li>
-<li>Its flow expands the batch into ordered per-ting routing using CEL <code>map</code> and <code>flatten</code>. The per-ting lookup keeps notification data separate from executable flow expressions.</li>
+<li>Its flow uses native <code>for</code> steps for ordered per-ting routing, keeps each item in <code>var.ting</code>, and aggregates messages by destination.</li>
 </ul>
 <p>Correct a separate copy for your deployment. Compilation can report expression syntax before reaching the placeholder checks because syntax validation runs before any compile-time shell command. The absence of one particular placeholder error does not make the reference configuration valid.</p>
 </section><section class="chapter"><h2 id="development-and-compatibility">Development and compatibility</h2>
@@ -1230,7 +1403,7 @@ silicon service uninstall
 <thead>
 <tr>
 <th>Consumer or dependency</th>
-<th>Silicon 5.1.0 contract</th>
+<th>Silicon 6.0.0 contract</th>
 </tr>
 </thead>
 <tbody>
@@ -1498,8 +1671,8 @@ silicon service uninstall
 <td><code>cli::tests::tail_snapshot_follows_exact_read_boundary_and_colors_only_prefix</code>.</td>
 </tr>
 <tr>
-<td>Delivery receipts reach flow catches before the next step</td>
-<td><code>runtime::tests::flow_waits_for_delivery_and_runs_send_catch_before_continuing</code> uses the real Omni Rust client over a controlled Unix transport.</td>
+<td>Flow delivery recovery</td>
+<td>Runtime delivery failures are persisted/retried separately from flow catches; see the runtime and outbox tests.</td>
 </tr>
 <tr>
 <td>Delivery acknowledgment precedes turn completion</td>
@@ -1718,6 +1891,10 @@ cargo test --lib proxy::tests::real_caddy_routes_reload_rollback_and_child_clean
 <p>The Windows x64 <a href="https://github.com/teamofsilicons/silicon-stemcell/actions/runs/35139664235">verification run</a> imported the checksum-pinned Ubuntu 24.04 image, upgraded systemd from <code>255.4-1ubuntu8</code> to <code>255.4-1ubuntu8.17</code>, and reloaded the dedicated distribution. The full interpreter E2E passed, but <code>silicon web</code> failed to execute Windows PowerShell with <code>Exec format error</code>. This matches the registration-loss mechanism described in <a href="https://ubuntu.com/wsl/docs/stable/explanation/binfmt/">Canonical's binfmt documentation</a> and <a href="https://wsl.dev/technical-documentation/interop/">Microsoft's WSL interoperability architecture</a>.</p>
 <p>The Windows installer now probes real Windows process execution after provisioning. If that fails, it restores only a missing WSL interoperability registration using <a href="https://github.com/microsoft/WSL/blob/40f18621d54abc1472657c07cc9fbb50cb9f2351/src/linux/init/binfmt.h">Microsoft's exact WSL2 <code>FP</code> registration</a>, then probes again. It refuses to replace an existing registration or enable globally disabled binfmt, and it does not shut down other WSL distributions. A persistent distribution configuration preserves the registration for future service starts. The native integration test additionally checks Windows PowerShell output and exit status after the distribution reload. Final hosted verification is recorded in the implementation diary; the patch does not change WSL or Ubuntu source.</p>
 </section><section class="chapter"><h2 id="implementation-diary">Implementation diary</h2>
+</section><section class="chapter"><h2 id="600-structured-flows-and-durable-delivery">6.0.0: Structured flows and durable delivery</h2>
+<p>Flow logic now has native YAML steps: <code>for: {list, var, then}</code>, <code>switch</code>, <code>collect</code>, and <code>continue</code>, <code>break</code>, and <code>exit</code> with logged reasons. CEL adds ordered <code>groupBy</code>, loops expose <code>self.for.index</code>, and optional top-level functions can be declared before or after the flow or imported from relative files. Calls take arguments and run list-valued <code>then</code>/<code>catch</code> branches with scoped <code>self.result</code> and <code>self.error</code>. Existing CEL-generated steps and Python or shell commands remain available.</p>
+<p>The local webhook durably accepts any valid JSON value without requiring a Ting envelope. Canonical Ting batches retain ID deduplication. Flow sends combine by ISI and session by default; <code>aggregate: false</code> flushes older messages for that destination and sends immediately. Outgoing messages are persisted before dispatch, retry up to <code>silicon.max_retries</code> (default ten retries after the initial attempt), and remain stashed after exhaustion. Only a later send to the same ISI and session wakes that stash. Delivery failures and recovery are logged. Persisted request IDs and delivery slots retain the original delivery plan across retries; a provider receipt lost in a crash can still cause duplicate delivery.</p>
+<p>The major version reflects changed send timing and catch behavior: every catch now uses <code>self.error</code>, and <code>send.catch</code> covers expression or target-validation errors rather than transport delivery failures. Existing configurations need the <a href="GUIDE.md#upgrading-from-5x">5.x flow migration</a> before updating. This release adds neither Jev integration nor sample-event previews.</p>
 </section><section class="chapter"><h2 id="510-running-unattended">5.1.0: Running unattended</h2>
 <p>The goal for 5.1.0 was an interpreter that, once started, keeps running for months without anyone watching it. An audit of every module against that goal, with each finding checked by a second reader, found the gaps. Nothing started the interpreter after a reboot or a crash. Restore ran once, before the network was up, and a Silicon it could not restore was erased from <code>connections.json</code> by the next unrelated connect. A single failed <code>accept()</code> (running out of descriptors, or a client resetting mid-handshake) ended the process. No tool had a time limit, so a hung credential command or app CLI could hold a lock forever. Nothing watched Caddy, and a Caddy orphaned by a crash blocked every later start on port 80. Logs and release directories only grew: one machine had kept thirteen releases, a gigabyte, in nine days. An installer killed mid-update left a lock that stopped every later update. Heartbeat timers counted awake time only, and reset on every restart.</p>
 <p>5.1.0 answers each of those. <code>silicon service</code> installs the platform's own supervisor on the first connect: a LaunchAgent, a systemd user unit with linger, cron with a small built-in supervisor where there is no user systemd, and on Windows a logon task whose helper keeps the WSL distribution alive. A clean stop exits 0 and every supervisor restarts only on failure, so <code>silicon stop</code> still means stop. An interpreter started by an earlier connect hands over to the service once idle, after the service has started and is waiting for the lock. The registry is now the source of truth: restore runs in the background with backoff forever, and only an explicit disconnect forgets a Silicon. The accept loop rebinds, Caddy is supervised and its orphans reaped, and <code>src/process.rs</code> gives every tool a limit that stops its whole process group while keeping everything it printed. Poisoned locks recover, background loops survive panics, logs rotate, releases are pruned, the installer lock records its owner and is reclaimed, and the updater persists its schedule and backs off. Heartbeat due times are wall-clock and saved per address; idle session workers retire after an hour and resume the same Omni session.</p>
