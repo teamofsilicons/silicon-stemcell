@@ -64,6 +64,8 @@ impl Silicon {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Isi {
+    #[serde(default)]
+    pub apps: Vec<String>,
     pub model: Option<String>,
     pub primary_send_mode: Option<String>,
     pub session_type: Option<String>,
@@ -92,6 +94,17 @@ pub struct Config {
 }
 
 impl Config {
+    /// Apps are shared by the Silicon; ISI lists only organize their declarations.
+    pub fn managed_apps(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        self.isi
+            .values()
+            .flat_map(|isi| isi.apps.iter().cloned())
+            .chain(self.silicon.managed_apps())
+            .filter(|app| seen.insert(app.clone()))
+            .collect()
+    }
+
     /// Flow stays editable while a Silicon is connected; compile-time expressions are untouched.
     /// Every batch sees the file as it is now; the parse is reused only while it is unchanged.
     pub fn load_flow(&self) -> Result<Yaml> {
@@ -99,14 +112,28 @@ impl Config {
     }
 
     pub fn load_program(&self) -> Result<(Yaml, Yaml)> {
-        program_at(&self.path, SETTLE)
+        program_at(&self.path, &self.home, SETTLE)
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::load_with_starters(path.as_ref(), false, |_| Ok(()))
+    }
+
+    pub(crate) fn load_for_connect(
+        path: impl AsRef<Path>,
+        before_starters: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Self> {
+        Self::load_with_starters(path.as_ref(), true, before_starters)
+    }
+
+    fn load_with_starters(
+        path: &Path,
+        refresh: bool,
+        before_starters: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<Self> {
         let path = path
-            .as_ref()
             .canonicalize()
-            .with_context(|| format!("config not found: {}", path.as_ref().display()))?;
+            .with_context(|| format!("config not found: {}", path.display()))?;
         utf8(&path, "the config path")?;
         let mut warnings = Vec::new();
         let source =
@@ -116,15 +143,18 @@ impl Config {
         let base = path
             .parent()
             .ok_or_else(|| anyhow!("config {} has no parent directory", path.display()))?;
-        document["functions"] = resolve_functions(
+        validate_expressions(&document).context("invalid silicon expression syntax")?;
+        // Check local imports and control flow before evaluating even SILICON_HOME.
+        // Starter files need that home first; their syntax is checked immediately after download.
+        let local_functions = resolve_functions(
             &document["functions"],
             base,
             &mut Vec::new(),
             &mut Vec::new(),
-            &mut warnings,
+            &mut Vec::new(),
+            &mut None,
         )?;
-        validate_expressions(&document).context("invalid silicon expression syntax")?;
-        crate::flow::validate_with_functions(&document["flow"], &document["functions"])?;
+        crate::flow::validate_with_functions(&document["flow"], &local_functions)?;
         #[cfg(target_os = "linux")]
         if std::env::var("SILICON_WSL").as_deref() == Ok("1") {
             crate::state::validate_wsl_filesystem(base)?;
@@ -159,6 +189,29 @@ impl Config {
             crate::state::validate_wsl_filesystem(&home)?;
         }
         let text = utf8(&home, "silicon.SILICON_HOME")?.to_owned();
+        before_starters(&home)?;
+        let mut starters = Some(crate::starters::Resolver::new(&home, refresh));
+        starters
+            .as_mut()
+            .unwrap()
+            .resolve_isi(&mut document["isi"])?;
+        document["functions"] = resolve_functions(
+            &document["functions"],
+            base,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut warnings,
+            &mut starters,
+        )?;
+        let mut flow = document["flow"].clone();
+        starters
+            .as_mut()
+            .unwrap()
+            .resolve_program(&mut flow, &mut document["functions"])?;
+        document["flow"] = flow;
+        validate_expressions(&document).context("invalid silicon expression syntax")?;
+        crate::flow::validate_with_functions(&document["flow"], &document["functions"])?;
+        env["isi"] = to_json(&document["isi"], "isi")?;
         document["silicon"]["SILICON_HOME"] = Yaml::String(text.clone());
         env["silicon"]["SILICON_HOME"] = Json::String(text);
         for key in ["id", "org_id", "token", "timezone", "SILICON_ORG"] {
@@ -228,6 +281,14 @@ impl Config {
                     .ok_or_else(|| anyhow!("isi names must be strings, found {}", shown(name)))?;
                 for key in ["model", "primary_send_mode", "session_type"] {
                     evaluate_field(isi, &format!("isi.{name}"), key, &env, &home, name)?;
+                }
+                if let Some(apps) = isi["apps"].as_sequence_mut() {
+                    for (index, app) in apps.iter_mut().enumerate() {
+                        *app = Yaml::String(
+                            crate::eval::app_command(app.as_str().unwrap(), &env, &home)
+                                .with_context(|| format!("evaluate isi.{name}.apps[{index}]"))?,
+                        );
+                    }
                 }
                 // Removed in favour of the canonical pair. Rejected here, before
                 // deserialization, so the error names the replacement instead of
@@ -304,17 +365,12 @@ impl Config {
             format!("silicon.timezone must be an IANA timezone such as UTC or Asia/Kolkata, found {timezone:?}")
         })?;
         validate_providers(&self.silicon.inference_providers)?;
-        let mut seen = HashSet::new();
-        for app in &self.silicon.apps {
-            if !crate::apps::valid_id(app) {
-                bail!("silicon.apps entries must be bare IAM app IDs, e.g. dm, found {app:?}; migrate old org>app IDs using IAM's verified mapping");
-            }
-            if !seen.insert(app) {
-                bail!("silicon.apps repeats {app}");
-            }
+        validate_apps(&self.silicon.apps, "silicon.apps")?;
+        for (name, isi) in &self.isi {
+            validate_apps(&isi.apps, &format!("isi.{name}.apps"))?;
         }
+        let managed = self.managed_apps();
         for (app, config) in &self.silicon.app_configs {
-            let managed = self.silicon.managed_apps();
             if !crate::apps::valid_id(app) || !managed.contains(app) {
                 bail!(
                     "silicon.app_configs keys must be managed bare IAM app IDs, e.g. dm, found {app:?}; managed apps are {}",
@@ -457,6 +513,7 @@ impl Stamp {
 
 #[derive(Clone)]
 struct Program {
+    home: PathBuf,
     files: Vec<(PathBuf, Stamp)>,
     flow: Yaml,
     functions: Yaml,
@@ -465,14 +522,15 @@ struct Program {
 /// Cache a flow together with its definitions and all imported file stamps.
 static FLOWS: std::sync::Mutex<BTreeMap<PathBuf, Program>> = std::sync::Mutex::new(BTreeMap::new());
 
-fn program_at(path: &Path, settle: std::time::Duration) -> Result<(Yaml, Yaml)> {
+fn program_at(path: &Path, home: &Path, settle: std::time::Duration) -> Result<(Yaml, Yaml)> {
     use crate::Recover;
     let before = Stamp::of(path)?;
     if let Some(program) = FLOWS.lock().recover().get(path) {
-        if program
-            .files
-            .iter()
-            .all(|(path, stamp)| Stamp::of(path).is_ok_and(|now| now == *stamp))
+        if program.home == home
+            && program
+                .files
+                .iter()
+                .all(|(path, stamp)| Stamp::of(path).is_ok_and(|now| now == *stamp))
         {
             return Ok((program.flow.clone(), program.functions.clone()));
         }
@@ -480,15 +538,22 @@ fn program_at(path: &Path, settle: std::time::Duration) -> Result<(Yaml, Yaml)> 
     let source = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let document = parse_document(&source, &mut Vec::new())
         .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
-    let flow = document["flow"].clone();
+    let mut flow = document["flow"].clone();
+    let mut starters = Some(crate::starters::Resolver::new(home, false));
     let mut files = vec![(path.to_owned(), before)];
-    let functions = resolve_functions(
+    let mut functions = resolve_functions(
         &document["functions"],
         path.parent().unwrap(),
         &mut files,
         &mut Vec::new(),
         &mut Vec::new(),
+        &mut starters,
     )?;
+    let starters = starters.as_mut().unwrap();
+    starters.resolve_program(&mut flow, &mut functions)?;
+    for path in starters.cached_files() {
+        files.push((path.clone(), Stamp::of(path)?));
+    }
     crate::flow::validate_with_functions(&flow, &functions)?;
     // Kept only when nothing changed while it was read and the change before is settled.
     if files.iter().all(|(path, stamp)| {
@@ -502,6 +567,7 @@ fn program_at(path: &Path, settle: std::time::Duration) -> Result<(Yaml, Yaml)> 
         flows.insert(
             path.to_owned(),
             Program {
+                home: home.to_owned(),
                 files,
                 flow: flow.clone(),
                 functions: functions.clone(),
@@ -518,6 +584,7 @@ fn resolve_functions(
     files: &mut Vec<(PathBuf, Stamp)>,
     loading: &mut Vec<PathBuf>,
     warnings: &mut Vec<String>,
+    starters: &mut Option<crate::starters::Resolver>,
 ) -> Result<Yaml> {
     if loading.len() >= 64 {
         bail!("function imports exceed 64 levels");
@@ -528,7 +595,8 @@ fn resolve_functions(
         Yaml::Sequence(sources) => {
             let mut merged = Mapping::new();
             for source in sources {
-                let functions = resolve_functions(source, base, files, loading, warnings)?;
+                let functions =
+                    resolve_functions(source, base, files, loading, warnings, starters)?;
                 for (name, definition) in functions.as_mapping().unwrap() {
                     if merged.insert(name.clone(), definition.clone()).is_some() {
                         bail!("duplicate function {}", key_name(name));
@@ -538,6 +606,12 @@ fn resolve_functions(
             Ok(Yaml::Mapping(merged))
         }
         Yaml::String(source) => {
+            if crate::starters::is_reference(source) {
+                return match starters {
+                    Some(starters) => starters.function_source(source),
+                    None => Ok(Yaml::Mapping(Mapping::new())),
+                };
+            }
             if source.trim().is_empty() {
                 bail!("functions import path must not be empty");
             }
@@ -556,8 +630,14 @@ fn resolve_functions(
             let functions = function_definitions(node, "functions", warnings)
                 .with_context(|| format!("invalid functions in {}", path.display()))?;
             loading.push(canonical);
-            let result =
-                resolve_functions(&functions, path.parent().unwrap(), files, loading, warnings);
+            let result = resolve_functions(
+                &functions,
+                path.parent().unwrap(),
+                files,
+                loading,
+                warnings,
+                starters,
+            );
             loading.pop();
             result
         }
@@ -696,6 +776,28 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
             }
             crate::eval::validate(&silicon).context("silicon")?;
         } else {
+            if key.as_str() == Some("isi") {
+                if let Some(isies) = value.as_mapping() {
+                    for (name, isi) in isies {
+                        if let Some(apps) = isi.as_mapping().and_then(|map| map.get("apps")) {
+                            let path = format!("isi.{}.apps", key_name(name));
+                            let apps = apps.as_sequence().with_context(|| {
+                                format!("{path} must be a list, found {}", shown(apps))
+                            })?;
+                            for (index, app) in apps.iter().enumerate() {
+                                let source = app.as_str().with_context(|| {
+                                    format!(
+                                        "{path}[{index}] must be a string, found {}",
+                                        shown(app)
+                                    )
+                                })?;
+                                crate::eval::validate_app_command(source)
+                                    .with_context(|| format!("{path}[{index}]"))?;
+                            }
+                        }
+                    }
+                }
+            }
             crate::eval::validate(value).with_context(|| section.clone())?;
         }
     }
@@ -760,8 +862,8 @@ fn evaluate_app_config(value: &mut Yaml, path: &str, env: &Json, home: &Path) ->
     Ok(())
 }
 
-/// Update only the Silicon section, preserving live flow and other source verbatim.
-pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> {
+/// Update app declarations, preserving live flow and all other source verbatim.
+pub(crate) fn set_app(path: &Path, isi_name: &str, id: &str, installed: bool) -> Result<Config> {
     use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
     if !crate::apps::valid_id(id) {
         bail!("expected a bare Honeycomb app ID (e.g. dm), got {id:?}");
@@ -782,31 +884,68 @@ pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> 
             path.display()
         );
     }
-    if installed && current.silicon.apps.iter().any(|app| app == id) {
+    if !current.isi.contains_key(isi_name) {
+        bail!("unknown isi {isi_name}");
+    }
+    if installed && current.isi[isi_name].apps.iter().any(|app| app == id) {
         return Ok(current);
     }
     let mut document = parse_document(&source, &mut Vec::new())
         .with_context(|| format!("invalid silicon YAML in {}", path.display()))?;
-    let found = kind(&document["silicon"]);
-    let silicon = document["silicon"]
-        .as_mapping_mut()
-        .with_context(|| format!("silicon must be a mapping, found {found}"))?;
-    let apps = silicon
-        .entry(Yaml::String("apps".into()))
-        .or_insert(Yaml::Sequence(Vec::new()));
-    let found = shown(apps);
-    let apps = apps
-        .as_sequence_mut()
-        .with_context(|| format!("silicon.apps must be a list, found {found}"))?;
-    if installed {
-        apps.push(Yaml::String(id.to_owned()));
-    } else {
-        let mut index = 0;
-        apps.retain(|_| {
-            let keep = current.silicon.apps[index] != id;
-            index += 1;
-            keep
-        });
+    let original = document.clone();
+    // A Starter ISI needs a local override even when its original value was `default`.
+    for (key, isi) in document["isi"].as_mapping_mut().unwrap() {
+        let key = key.as_str().unwrap();
+        let name = key
+            .strip_prefix("starter:isi:")
+            .or_else(|| key.strip_prefix("starter:"))
+            .unwrap_or(key)
+            .split('@')
+            .next()
+            .unwrap();
+        let configured = &current.isi[name].apps;
+        if (installed && name != isi_name)
+            || (!installed && !configured.iter().any(|app| app == id))
+        {
+            continue;
+        }
+        if !isi.is_mapping() {
+            *isi = Yaml::Mapping(Mapping::new());
+        }
+        let mut apps = isi["apps"]
+            .as_sequence()
+            .cloned()
+            .unwrap_or_else(|| configured.iter().cloned().map(Yaml::String).collect());
+        if installed {
+            apps.push(id.into());
+        } else {
+            apps = apps
+                .into_iter()
+                .zip(configured)
+                .filter_map(|(source, app)| (app != id).then_some(source))
+                .collect();
+        }
+        isi["apps"] = Yaml::Sequence(apps);
+    }
+    if !installed {
+        let silicon = document["silicon"].as_mapping_mut().unwrap();
+        for (key, configured) in [
+            ("apps", &current.silicon.apps),
+            ("login", &current.silicon.login),
+        ] {
+            if let Some(apps) = silicon.get_mut(key).and_then(Yaml::as_sequence_mut) {
+                *apps = apps
+                    .iter()
+                    .zip(configured)
+                    .filter_map(|(source, app)| {
+                        let command = app.trim().strip_prefix('!').unwrap_or(app).trim();
+                        let matches = shell_words::split(command)
+                            .is_ok_and(|args| args.first().is_some_and(|program| program == id));
+                        (!matches).then_some(source.clone())
+                    })
+                    .collect();
+            }
+        }
         if let Some(configs) = silicon
             .get_mut("app_configs")
             .and_then(Yaml::as_mapping_mut)
@@ -814,38 +953,18 @@ pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> 
             configs.remove(id);
         }
     }
-    let mut start = None;
-    let mut end = source.len();
-    let mut offset = 0;
-    for line in source.split_inclusive('\n') {
-        if !line.starts_with(char::is_whitespace) && !line.starts_with('#') {
-            if let Some(colon) = mapping_colon(line) {
-                let key = serde_yaml::from_str::<String>(&line[..colon]).ok();
-                if key.as_deref() == Some("silicon") {
-                    start = Some(offset);
-                } else if start.is_some() {
-                    end = offset;
-                    break;
-                }
-            }
+    let mut next = source.clone();
+    for section in ["silicon", "isi"] {
+        if original[section] == document[section] {
+            continue;
         }
-        offset += line.len();
+        next = replace_section(&next, section, &document[section])?;
     }
-    // ponytail: preserve block-style YAML; add a source-span parser if compact root maps need editing.
-    let start = start.with_context(|| {
-        format!(
-            "si app requires silicon as a top-level YAML block in {}",
-            path.display()
-        )
-    })?;
-    let replacement = serde_yaml::to_string(&BTreeMap::from([("silicon", &document["silicon"])]))
-        .context("serialize the updated silicon block")?;
-    let next = format!("{}{}{}", &source[..start], replacement, &source[end..]);
     let reparsed =
-        parse_document(&next, &mut Vec::new()).context("re-read the rewritten silicon block")?;
+        parse_document(&next, &mut Vec::new()).context("re-read the rewritten app declarations")?;
     if reparsed != document {
         bail!(
-            "cannot safely update the YAML layout of {}; use a top-level silicon block",
+            "cannot safely update the YAML layout of {}; use top-level silicon and isi blocks",
             path.display()
         );
     }
@@ -900,6 +1019,56 @@ pub(crate) fn set_app(path: &Path, id: &str, installed: bool) -> Result<Config> 
         )),
         _ => error,
     })
+}
+
+fn replace_section(source: &str, section: &str, value: &Yaml) -> Result<String> {
+    let mut start = None;
+    let mut end = source.len();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if !line.starts_with(char::is_whitespace) && !line.starts_with('#') {
+            if let Some(colon) = mapping_colon(line) {
+                let key = serde_yaml::from_str::<String>(&line[..colon]).ok();
+                if key.as_deref() == Some(section) {
+                    start = Some(offset);
+                } else if start.is_some() {
+                    end = offset;
+                    break;
+                }
+            }
+        }
+        offset += line.len();
+    }
+    // ponytail: preserve block-style YAML; add source spans if compact root maps need editing.
+    let start =
+        start.with_context(|| format!("si app requires {section} as a top-level YAML block"))?;
+    for line in source[start..end].split_inclusive('\n').rev() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            end -= line.len();
+        } else {
+            break;
+        }
+    }
+    let replacement = serde_yaml::to_string(&BTreeMap::from([(section, value)]))?;
+    Ok(format!(
+        "{}{}{}",
+        &source[..start],
+        replacement,
+        &source[end..]
+    ))
+}
+
+fn validate_apps(apps: &[String], path: &str) -> Result<()> {
+    let mut seen = HashSet::new();
+    for app in apps {
+        if !crate::apps::valid_id(app) {
+            bail!("{path} entries must be bare IAM app IDs, e.g. dm, found {app:?}; migrate old org>app IDs using IAM's verified mapping");
+        }
+        if !seen.insert(app) {
+            bail!("{path} repeats {app}");
+        }
+    }
+    Ok(())
 }
 
 fn required<'a>(value: &'a Option<String>, path: &str) -> Result<&'a str> {
@@ -1279,6 +1448,22 @@ fn parse_document(source: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
     Ok(Yaml::Mapping(result))
 }
 
+pub(crate) fn parse_starter_functions(source: &str) -> Result<Yaml> {
+    let node: Node = serde_yaml::from_str(&prepare_scalars(source)?)?;
+    let Node::Map(mut entries) = node else {
+        bail!("Starter function.yaml must be a mapping");
+    };
+    if entries.len() != 1 || entries[0].0 != "functions" {
+        bail!("Starter function.yaml must contain one functions mapping");
+    }
+    function_definitions(entries.remove(0).1, "functions", &mut Vec::new())
+}
+
+pub(crate) fn parse_starter_isi(source: &str) -> Result<Yaml> {
+    let node: Node = serde_yaml::from_str(&prepare_scalars(source)?)?;
+    ordinary(node, "Starter isi.yaml")
+}
+
 fn function_definitions(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
     match node {
         Node::Scalar(Yaml::Null | Yaml::String(_)) => ordinary(node, path),
@@ -1383,6 +1568,29 @@ fn steps(node: Node, path: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
             entries = vec![(action, Node::Map(entries))];
         }
         for (action, payload) in entries {
+            if crate::starters::is_reference(&action) {
+                // Reuse call parsing, including ordered steps in then/catch branches.
+                let mut fields = match payload {
+                    Node::Map(fields) => fields,
+                    Node::Scalar(Yaml::Null) => Vec::new(),
+                    Node::Scalar(Yaml::String(value)) if value == "default" => Vec::new(),
+                    other => bail!(
+                        "{step_path}.{action} expects an args/then/catch mapping, found {}",
+                        other.describe()
+                    ),
+                };
+                if fields.iter().any(|(key, _)| key == "function") {
+                    bail!("{step_path}.{action} cannot override its function reference");
+                }
+                fields.insert(0, ("function".into(), Node::Scalar(action.into())));
+                let parsed = steps(
+                    Node::Map(vec![("call".into(), Node::Map(fields))]),
+                    &step_path,
+                    warnings,
+                )?;
+                output.extend(parsed.as_sequence().unwrap().iter().cloned());
+                continue;
+            }
             if action == "else" {
                 let branch = steps(payload, &format!("{step_path}.else"), warnings)?;
                 if !output
@@ -1817,7 +2025,7 @@ mod tests {
         let mut warnings = Vec::new();
         let config = parse_document(source, &mut warnings).unwrap();
         assert_eq!(config["silicon"]["SILICON_HOME"].as_str(), Some("! pwd"));
-        assert_eq!(config["silicon"]["apps"][0].as_str(), Some("dm"));
+        assert_eq!(config["isi"]["intuit"]["apps"][0].as_str(), Some("dm"));
         assert_eq!(
             config["silicon"]["setup"][0].as_str(),
             Some("! ./install_python.sh")
@@ -2197,6 +2405,69 @@ flow: []
     }
 
     #[test]
+    fn isi_apps_are_shared_validated_and_edited_at_the_caller() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        let source = r#"silicon:
+  id: si:test
+  org_id: org
+  token: token
+  timezone: UTC
+  SILICON_HOME: ! pwd
+  inference_providers: [all-available-providers]
+  login: ['! dm']
+  app_configs: {waveform: {default_tts_provider: google}}
+isi:
+  a:
+    model: code
+    primary_send_mode: global
+    session_type: persistent
+    dna: {assemble: [], next_refresh: 30min}
+    apps: ['{"waveform"}', dm]
+  b:
+    model: code
+    primary_send_mode: session
+    session_type: ephemeral
+    dna: {assemble: [], next_refresh: 30min}
+    apps: [dm, hook]
+access: {a: [], b: []}
+# Preserve the ordered flow exactly.
+flow:
+  log: {message: one}
+  log: {message: two}
+"#;
+        fs::write(&path, source)?;
+        let cfg = Config::load(&path)?;
+        assert_eq!(
+            cfg.managed_apps(),
+            ["waveform", "dm", "hook", "! dm", "ting"]
+        );
+        assert_eq!(cfg.isi["a"].apps, ["waveform", "dm"]);
+        let added = set_app(&path, "b", "browser", true)?;
+        assert!(added.silicon.apps.is_empty());
+        assert_eq!(added.isi["b"].apps, ["dm", "hook", "browser"]);
+        let removed = set_app(&path, "a", "dm", false)?;
+        assert!(!removed.managed_apps().contains(&"dm".to_owned()));
+        assert!(removed.silicon.login.is_empty());
+        assert_eq!(removed.isi["b"].apps, ["hook", "browser"]);
+        set_app(&path, "a", "waveform", false)?;
+        assert!(Config::load(&path)?.silicon.app_configs.is_empty());
+        assert!(fs::read_to_string(&path)?.ends_with(source.split_once("# Preserve").unwrap().1));
+        for invalid in [
+            "[dm, dm]",
+            "[tos>dm]",
+            "[true]",
+            "dm",
+            "['! touch should-not-run']",
+        ] {
+            fs::write(&path, source.replace("['{\"waveform\"}', dm]", invalid))?;
+            assert!(Config::load(&path).is_err(), "accepted {invalid}");
+            assert!(!dir.path().join("should-not-run").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn app_settings_and_mutations_preserve_live_flow_and_secret_sources() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("silicon.yaml");
@@ -2240,20 +2511,27 @@ flow:
             })
         );
         assert_eq!(cfg.silicon.managed_apps(), ["waveform", "ting"]);
-        let added = set_app(&path, "dm", true)?;
+        let added = set_app(&path, "worker", "dm", true)?;
         assert_eq!(added.path, path.canonicalize()?);
-        assert_eq!(added.silicon.apps, ["waveform", "dm"]);
-        assert_eq!(set_app(&path, "dm", true)?.silicon.apps.len(), 2);
-        let removed = set_app(&path, "waveform", false)?;
-        assert_eq!(removed.silicon.apps, ["dm"]);
+        assert_eq!(added.silicon.apps, ["waveform"]);
+        assert_eq!(added.isi["worker"].apps, ["dm"]);
+        assert_eq!(
+            set_app(&path, "worker", "dm", true)?.isi["worker"]
+                .apps
+                .len(),
+            1
+        );
+        let removed = set_app(&path, "worker", "waveform", false)?;
+        assert!(removed.silicon.apps.is_empty());
+        assert_eq!(removed.isi["worker"].apps, ["dm"]);
         assert!(removed.silicon.app_configs.is_empty());
         let updated = fs::read_to_string(&path)?;
         assert!(updated.starts_with("# leave the source expressions intact\n"));
-        assert!(updated.ends_with(source.split_once("isi:\n").unwrap().1));
+        assert!(updated.ends_with(source.split_once("# This exact flow").unwrap().1));
         assert!(updated.contains("! printf private-token"));
         assert!(!updated.contains("token: private-token"));
         for id in ["ting", "iam", "not>an-id"] {
-            assert!(set_app(&path, id, false).is_err());
+            assert!(set_app(&path, "worker", id, false).is_err());
             assert_eq!(fs::read_to_string(&path)?, updated);
         }
         fs::write(
@@ -2423,18 +2701,49 @@ flow:
             source.replace("timezone: UTC", "timezone: Mars/Olympus"),
         )
         .unwrap();
-        let error = format!("{:#}", set_app(&path, "dm", true).unwrap_err());
+        let error = format!("{:#}", set_app(&path, "worker", "dm", true).unwrap_err());
         let current = format!(
             "the current {} does not compile",
             path.canonicalize().unwrap().display()
         );
         assert!(error.starts_with(&current), "{error}");
         assert!(error.contains("found \"Mars/Olympus\""), "{error}");
-        let error = format!("{:#}", set_app(&path, "Bad App", true).unwrap_err());
+        let error = format!(
+            "{:#}",
+            set_app(&path, "worker", "Bad App", true).unwrap_err()
+        );
         assert!(error.contains("got \"Bad App\""), "{error}");
     }
 
     const MINIMAL: &str = "silicon:\n  id: si:test\n  org_id: org\n  token: token\n  timezone: UTC\n  SILICON_HOME: ! pwd\n  inference_providers: [all-available-providers]\nisi:\n  worker:\n    model: code\n    primary_send_mode: global\n    session_type: persistent\n    dna: {assemble: [], next_refresh: 30min}\naccess: {worker: []}\nflow: [{log: {message: before}}]\n";
+
+    #[test]
+    fn a_connection_rejected_for_its_home_never_refreshes_starters() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("silicon.yaml");
+        fs::write(
+            &path,
+            MINIMAL.replace("assemble: []", "assemble: [starter:gene:careful]"),
+        )?;
+        let bin = dir.path().join(".silicon/bin");
+        fs::create_dir_all(&bin)?;
+        let starter = bin.join("starter");
+        fs::write(
+            &starter,
+            "#!/bin/sh\ntouch \"$SILICON_HOME/download-ran\"\nexit 1\n",
+        )?;
+        fs::set_permissions(&starter, fs::Permissions::from_mode(0o700))?;
+        let error = Config::load_for_connect(&path, |home| {
+            assert_eq!(home, dir.path().canonicalize()?);
+            bail!("already connected");
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "already connected");
+        assert!(!dir.path().join("download-ran").exists());
+        assert!(!dir.path().join(".fromstarter").exists());
+        Ok(())
+    }
 
     #[test]
     fn functions_load_before_execution_and_reload_with_their_imports() -> Result<()> {
@@ -2456,7 +2765,7 @@ flow:
         assert_eq!(cfg.silicon.max_retries, 10);
         assert_eq!(cfg.functions["greeting"]["params"][0], "name");
         assert!(!dir.path().join("must-not-exist").exists());
-        let (flow, functions) = program_at(&cfg.path, Duration::ZERO)?;
+        let (flow, functions) = program_at(&cfg.path, &cfg.home, Duration::ZERO)?;
         assert_eq!(flow[0]["log"]["message"], "before");
         assert_eq!(
             functions["greeting"]["do"][0]["return"],
@@ -2594,15 +2903,21 @@ functions:
             .get(&cfg.path)
             .is_none_or(|program| program.files[0].1 != now));
         // A settled file's parse is reused while its stamp holds...
-        assert_eq!(message(&program_at(&cfg.path, Duration::ZERO)?.0), "after!");
+        assert_eq!(
+            message(&program_at(&cfg.path, &cfg.home, Duration::ZERO)?.0),
+            "after!"
+        );
         FLOWS.lock().recover().get_mut(&cfg.path).unwrap().flow =
             serde_yaml::from_str("[{log: {message: reused}}]")?;
-        assert_eq!(message(&program_at(&cfg.path, Duration::ZERO)?.0), "reused");
+        assert_eq!(
+            message(&program_at(&cfg.path, &cfg.home, Duration::ZERO)?.0),
+            "reused"
+        );
         // ...and a change replaces it. (Without the settle time only a stamp that moved is
         // noticed; timestamps may not have ticked yet, so this edit changes the length.)
         fs::write(&path, MINIMAL.replace("before", "edited again"))?;
         assert_eq!(
-            message(&program_at(&cfg.path, Duration::ZERO)?.0),
+            message(&program_at(&cfg.path, &cfg.home, Duration::ZERO)?.0),
             "edited again"
         );
         // Target/session validation happens at execution, where send.catch can report it.
@@ -2613,7 +2928,7 @@ functions:
                 "{send: {isi: ghost, message: hi}}",
             ),
         )?;
-        program_at(&cfg.path, Duration::ZERO)?;
+        program_at(&cfg.path, &cfg.home, Duration::ZERO)?;
         assert_eq!(cfg.load_flow()?[0]["send"]["isi"], "ghost");
         // A missing file names itself.
         fs::remove_file(&path)?;

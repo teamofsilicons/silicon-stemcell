@@ -1,6 +1,14 @@
 # Building Silicon
 
 
+## 6.1.0: Starter blocks and ISI apps
+
+Starter genes, functions, and ISIs can now be referenced directly from YAML. Downloads are cached beneath `SILICON_HOME/.fromstarter`; compilation reuses cached blocks, and each connection refreshes them. Starter ISIs accept recursive field overrides, with replacement lists, while function calls use the existing flow scopes and delivery queue. Source YAML remains unchanged by downloads.
+
+Apps can be declared under each ISI, including Starter definitions. The interpreter installs and authenticates their combined set for the whole Silicon, and DNA includes managed apps' Honeycomb names, descriptions, and CLI help commands. `si app install` writes to the calling ISI's app list; `si app uninstall` removes matching configured entries. Existing 6.0.0 YAML, including `silicon.apps`, remains compatible, so moving app lists is optional.
+
+Local validation passed 325 Rust tests: 323 library tests and two integration tests, with nine helper tests ignored. Formatting and Clippy passed. The complete protocol E2E passed with real Omni and Caddy and a scripted provider, covering integration and lifecycle behavior. Starter bootstrapping requires version 0.3.0 or newer and upgrades older managed installations before downloading blocks. Platform builds and public release verification are recorded separately after completion.
+
 ## 6.0.0: Structured flows and durable delivery
 
 Flow logic now has native YAML steps: `for: {list, var, then}`, `switch`, `collect`, and `continue`, `break`, and `exit` with logged reasons. CEL adds ordered `groupBy`, loops expose `self.for.index`, and optional top-level functions can be declared before or after the flow or imported from relative files. Calls take arguments and run list-valued `then`/`catch` branches with scoped `self.result` and `self.error`. Existing CEL-generated steps and Python or shell commands remain available.

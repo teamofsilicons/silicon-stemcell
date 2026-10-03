@@ -16,13 +16,6 @@ silicon:
   setup:
     - ! ./install_python.sh
   
-  apps:
-    - dm
-    - briefcase
-    - hook
-    - browser
-    - waveform
-  
   app_configs:
     waveform:
       default_tts_provider: google
@@ -43,6 +36,13 @@ isi:
         - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
         - ../memories/learnings/workers/advertising.md
       next_refresh: 30min # time in min or shell evaluating to Xmin or a new session started, whichever is sooner. evaluated at each refresh.
+
+    apps:
+    - dm
+    - briefcase
+    - hook
+    - browser
+    - waveform
 
     heartbeat:
       next: 13min # or shell command that evaluates to a Xmin time.
@@ -68,6 +68,13 @@ isi:
         - ../memories/learnings/workers/advertising.md
       next_refresh: 30min
     
+    apps:
+    - dm
+    - briefcase
+    - hook
+    - browser
+    - waveform
+
     heartbeat:
       next: 41min # or shell command that evaluates to a Xmin time.
       message: This is a heartbeat. Make it count.
@@ -91,6 +98,13 @@ isi:
         - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
         - ../memories/learnings/workers/advertising.md
       next_refresh: 30min
+
+    apps:
+    - dm
+    - briefcase
+    - hook
+    - browser
+    - waveform
 
     heartbeat:
       next: 41min # or shell command that evaluates to a Xmin time.

@@ -169,7 +169,7 @@ impl Drop for Activity<'_> {
 
 pub struct Connected {
     pub cfg: Config,
-    pub app_settings: RwLock<crate::config::Silicon>,
+    pub app_settings: RwLock<Config>,
     pub ting: crate::ting::Inbox,
     outbox: crate::outbox::Outbox,
     /// Accepted dispatches awaiting acknowledgement, keyed by their stable outbox run/slot.
@@ -350,6 +350,18 @@ pub struct Worker {
 }
 
 impl Connected {
+    fn ensure_apps(&self) -> Result<()> {
+        let apps = self.app_settings.read().recover().managed_apps();
+        auth::ensure_all_scoped(
+            &self.cfg.home,
+            self.cfg.silicon.id.as_deref().unwrap_or_default(),
+            self.cfg.silicon.org_id.as_deref().unwrap_or_default(),
+            self.cfg.silicon.token.as_deref().unwrap_or_default(),
+            &apps,
+            self.cfg.generation,
+        )
+    }
+
     /// Write a background failure in full when it first happens, when its text changes,
     /// and at most every ten minutes while it keeps repeating unchanged.
     fn report(&self, key: &str, origin: &str, message: &str) {
@@ -472,7 +484,7 @@ impl Runtime {
                     format!("silicon.setup[{index}] failed; connection was not started")
                 })?;
             }
-            let apps = cfg.silicon.managed_apps();
+            let apps = cfg.managed_apps();
             crate::apps::install_all(&cfg.home, &apps, cfg.generation)?;
             // Apps only the registry lists never stop a connection, so `si auth remove`
             // stays reachable for one that can no longer be installed.
@@ -482,12 +494,13 @@ impl Runtime {
                 &id,
                 cfg.silicon.org_id.as_deref().unwrap_or_default(),
                 cfg.silicon.token.as_deref().unwrap_or_default(),
-                &cfg.silicon.managed_apps(),
+                &apps,
                 cfg.generation,
             )?;
             // One app that rejects its configuration is logged in full and does not keep the
             // Silicon offline.
             auth::configure_all(&cfg.home, &cfg.silicon.app_configs, cfg.generation);
+            crate::apps::refresh_dna(&cfg)?;
             Ok(())
         })();
         if let Err(error) = preparation {
@@ -504,7 +517,7 @@ impl Runtime {
         let ting = crate::ting::Inbox::new(&cfg)?;
         let outbox = crate::outbox::Outbox::new(&cfg);
         outbox.reconcile(&ting.pending_ids()?)?;
-        let app_settings = RwLock::new(cfg.silicon.clone());
+        let app_settings = RwLock::new(cfg.clone());
         // Flows belong to the source file and are reloaded for every accepted batch.
         cfg.flow = serde_yaml::Value::Null;
         cfg.functions = serde_yaml::Value::Null;
@@ -1091,16 +1104,7 @@ impl Runtime {
             }
         }
         if creating {
-            let silicon = &connected.cfg.silicon;
-            auth::ensure_all_scoped(
-                &connected.cfg.home,
-                silicon.id.as_deref().unwrap_or_default(),
-                silicon.org_id.as_deref().unwrap_or_default(),
-                silicon.token.as_deref().unwrap_or_default(),
-                &connected.app_settings.read().recover().managed_apps(),
-                connected.cfg.generation,
-            )
-            .with_context(|| {
+            connected.ensure_apps().with_context(|| {
                 format!("checking app credentials before starting a {target} session")
             })?;
         }
@@ -3136,7 +3140,19 @@ fn assemble_dna(cfg: &Config, isi: &str, address: &str) -> Result<String> {
             format!("{name} ({mode})")
         })
         .collect();
-    parts.push(format!("You are {address}. SILICON_HOME is {}. Allowed ISIs: {}.\nUse `si isi send NAME MESSAGE`{}; `si isi --help`, `si session --help`, `si auth --help` explain the available commands.", cfg.home.display(), allowed.join(", "), if allowed.is_empty() { "" } else { " (session targets require --id)" }));
+    parts.push(format!("You are {address}. SILICON_HOME is {}. Allowed ISIs: {}.\nUse `si isi send NAME MESSAGE`{}; `si isi --help`, `si session --help`, `si auth --help` explain the available commands. `si app install APP_ID` installs and authenticates an app and adds it to isi.{isi}.apps. All ISIs can use installed apps; these lists describe intended use, not access restrictions.", cfg.home.display(), allowed.join(", "), if allowed.is_empty() { "" } else { " (session targets require --id)" }));
+    let apps = cfg.home.join(".silicon/apps.md");
+    match fs::read_to_string(&apps) {
+        Ok(text) if !text.is_empty() => parts.push(format!(".silicon/apps.md\n{text}")),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => log_error(
+            &cfg.home,
+            Some(cfg.generation),
+            address,
+            &format!("app DNA skipped: cannot read {}: {error}", apps.display()),
+        ),
+    }
     Ok(parts.join("\n\n\n"))
 }
 
@@ -4011,6 +4027,9 @@ fn run_heartbeat(
     };
     connected.set_beat(address, Beat::new(after(fired, delta(every)), every, &next));
     (|| -> Result<()> {
+        connected
+            .ensure_apps()
+            .context("checking app credentials before heartbeat")?;
         let source = heartbeat["message"].as_str().ok_or_else(|| {
             anyhow!(
                 "heartbeat.message must be a string, got {}",
@@ -4097,9 +4116,13 @@ flow: []
         )
         .unwrap();
         cfg.home = dir.path().to_owned();
+        fs::create_dir_all(dir.path().join(".silicon")).unwrap();
+        fs::write(dir.path().join(".silicon/apps.md"), "App Name: Silicon DM\nApp Id: dm\nCLI: run `dm --help` to know about it\n\nAbout: Direct messages.").unwrap();
         let prompt = assemble_dna(&cfg, "a", "a:job").unwrap();
         assert!(prompt.starts_with("prompt.md\nfile contents\n\n\n! printf \"$ISI\"\na:job\n\n\nabsent.md !>> \"No contacts\"\nNo contacts\n\n\nYou are a:job."));
         assert_eq!(prompt.matches("absent.md").count(), 1);
+        assert!(prompt.ends_with(".silicon/apps.md\nApp Name: Silicon DM\nApp Id: dm\nCLI: run `dm --help` to know about it\n\nAbout: Direct messages."));
+        assert!(prompt.contains("adds it to isi.a.apps"));
         let log = std::fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
         // The skipped entry is named, and its failure follows in full.
         assert!(

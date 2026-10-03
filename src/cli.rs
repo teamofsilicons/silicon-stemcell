@@ -197,7 +197,7 @@ enum SiCommand {
 }
 #[derive(Subcommand)]
 enum AppCommand {
-    /// Install a Honeycomb app and add its canonical bare app ID to silicon.apps.
+    /// Install a Honeycomb app and add its bare app ID to this ISI's apps.
     Install { app_id: String },
     /// Uninstall a Honeycomb app and remove its app entry and configuration.
     Uninstall { app_id: String },

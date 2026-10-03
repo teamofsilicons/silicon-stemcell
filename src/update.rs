@@ -39,7 +39,7 @@ const DAY: TimeDelta = TimeDelta::days(1);
 /// The longest wait before retrying a release that failed to install.
 const MAX_BACKOFF_HOURS: u64 = 7 * 24;
 
-fn version(tag: &str) -> Option<[u64; 3]> {
+pub(crate) fn version(tag: &str) -> Option<[u64; 3]> {
     let parts: Vec<_> = tag.strip_prefix('v').unwrap_or(tag).split('.').collect();
     if parts.len() != 3 {
         return None;

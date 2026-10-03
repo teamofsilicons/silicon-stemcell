@@ -767,6 +767,11 @@ pub fn dna(source: &str, env: &Json, home: &Path, isi: &str) -> Result<String> {
     run(source, env, home, isi, Mode::Dna)
 }
 
+/// Reuse the evaluator's quoting and CEL-aware fallback boundaries for Starter file paths.
+pub(crate) fn dna_sources(source: &str) -> Result<Vec<&str>> {
+    fallbacks(source, Mode::Dna)
+}
+
 /// Login/webhook entries name deferred app invocations: expand CEL and fallbacks,
 /// retain argv quoting, and remove a literal leading `!` marker without running Bash.
 pub fn app_command(source: &str, env: &Json, home: &Path) -> Result<String> {

@@ -2528,7 +2528,19 @@ fn restore_next(
 /// compile, connect, route, start the inbox, register with Ting. A Ting failure does not undo
 /// the rest: the Silicon's inbox, sends and heartbeats work without it, and it is retried.
 fn attempt_restore(app: &App, saved: &Connection) -> Result<Restored> {
-    let cfg = compile(&saved.yaml)?;
+    // A partially completed restore must not refresh files under its live workers.
+    let live = app
+        .runtime
+        .silicons
+        .read()
+        .recover()
+        .values()
+        .find(|live| live.cfg.path == saved.yaml)
+        .map(|live| live.cfg.clone());
+    let cfg = match live {
+        Some(cfg) => cfg,
+        None => compile_connection(app, &saved.yaml)?,
+    };
     let connection = descriptor(&cfg);
     // An earlier attempt that was cut short (a panic) may have connected it already.
     let connected = match app.runtime.get(&connection.id) {
@@ -3629,8 +3641,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
         }
         "configuration" => {
             let connected = app.runtime.get(text(args, "silicon")?)?;
-            let mut cfg = connected.cfg.clone();
-            cfg.silicon = connected.app_settings.read().recover().clone();
+            let mut cfg = connected.app_settings.read().recover().clone();
             (cfg.flow, cfg.functions) = cfg.load_program()?;
             configuration(&cfg)
         }
@@ -3743,11 +3754,29 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
     }
 }
 
+/// Refuse a shared live home before refreshing its Starter cache.
+fn compile_connection(app: &App, yaml: impl AsRef<Path>) -> Result<Config> {
+    Config::load_for_connect(yaml, |home| {
+        if let Some(live) = app
+            .runtime
+            .silicons
+            .read()
+            .recover()
+            .values()
+            .find(|live| live.cfg.home == home)
+        {
+            bail!("{} is already connected with SILICON_HOME {}; disconnect it before refreshing Starter blocks",
+                live.cfg.silicon.id.as_deref().unwrap_or_default(), home.display());
+        }
+        Ok(())
+    })
+}
+
 /// Connect a YAML while its caller waits. A saved Silicon still waiting for its restore is
 /// connected here instead; when this fails too it goes back to waiting, with this error.
 fn connect(app: &App, yaml: &str) -> Result<Value> {
     let _guard = interactive(app);
-    let cfg = compile(yaml)?;
+    let cfg = compile_connection(app, yaml)?;
     let connection = descriptor(&cfg);
     let mut warnings = cfg.warnings.clone();
     let log = cfg.home.join(".silicon/silicon.log");
@@ -3948,22 +3977,26 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
                     cfg.generation,
                 )?;
             }
-            let updated = if install {
-                crate::config::set_app(&cfg.path, id, install)?
+            let mut updated = if install {
+                crate::config::set_app(&cfg.path, &caller.isi, id, install)?
             } else {
                 // Each step runs even when an earlier one fails: a broken app must still
                 // leave the registry, its package and the YAML.
                 let removed = auth::remove(&cfg.home, id);
                 let uninstalled = crate::apps::uninstall_at(&cfg.home, id).map(|_| ());
-                let updated = crate::config::set_app(&cfg.path, id, install);
+                let updated = crate::config::set_app(&cfg.path, &caller.isi, id, install);
                 let first = match removed {
                     Ok(()) => uninstalled,
                     Err(error) => Err(crate::failure::also(error, uninstalled)),
                 };
                 match (first, updated) {
                     (Ok(()), updated) => updated?,
-                    (Err(error), Ok(updated)) => {
-                        *connected.app_settings.write().recover() = updated.silicon.clone();
+                    (Err(error), Ok(mut updated)) => {
+                        updated.generation = cfg.generation;
+                        *connected.app_settings.write().recover() = updated.clone();
+                        if let Err(later) = crate::apps::refresh_dna(&updated) {
+                            return Err(crate::failure::also(error, Err(later)));
+                        }
                         return Err(error);
                     }
                     (Err(error), Err(later)) => {
@@ -3971,10 +4004,12 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
                     }
                 }
             };
+            updated.generation = cfg.generation;
             let mut redactions = cfg.clone();
             redactions.silicon.app_configs = updated.silicon.app_configs.clone();
             crate::telemetry::register(&redactions);
-            *connected.app_settings.write().recover() = updated.silicon.clone();
+            *connected.app_settings.write().recover() = updated.clone();
+            crate::apps::refresh_dna(&updated)?;
             if install {
                 let configs = updated
                     .silicon

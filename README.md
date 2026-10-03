@@ -1,32 +1,36 @@
-# Silicon 6.0.0
+# Silicon 6.1.0
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route JSON events through YAML flows with CEL expressions, run ISIs with Silicon Omni, and manage their sessions and IAM applications.
 
 macOS and Linux:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.1.0/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.1.0/install.ps1 | iex
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v6.0.0).
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v6.1.0).
+
+**Upgrading from 6.0.0:** run `silicon update` and reconnect. Existing YAML remains compatible, including `silicon.apps`; moving apps into ISI definitions is optional.
 
 **Upgrading from 5.x:** prepare the flow migration, then stop the old interpreter before updating and applying it. Catch branches now use `self.error`; sends aggregate by ISI and session unless `aggregate: false` is set; `send.catch` handles expression and target errors, while the runtime retries and stashes delivery failures. Follow the [6.0 flow migration](https://docs.teamofsilicons.com/#upgrading-from-5x) before running `silicon update`. These flow changes also apply when upgrading from older releases.
 
 **Upgrading from 4.x requires an identifier migration:** configurations now use `silicon.id: si:handle`, a separate `silicon.org_id`, and bare app IDs such as `dm`. Follow the [migration procedure](docs/PUBLIC-IDENTIFIER-MIGRATION.md) before upgrading or reconnecting an existing home. Disconnect and stop the old interpreter first; installers do not rewrite YAML or migrate local state.
 
-**Upgrading from 4.0.x or earlier:** also remove `silicon.webhooks` and `silicon.webhook`, retain app IDs in `silicon.apps`, and update flows to read `request.tings` batches. Only Ting registers the local webhook; IAM and Ting are installed through Honeycomb even when omitted from `apps`. See the [Ting migration](https://docs.teamofsilicons.com/#ting-migration) before restarting.
+**Upgrading from 4.0.x or earlier:** also remove `silicon.webhooks` and `silicon.webhook`, retain app IDs under `isi.<name>.apps` (legacy `silicon.apps` remains supported), and update flows to read `request.tings` batches. Only Ting registers the local webhook; IAM and Ting are installed through Honeycomb even when omitted from `apps`. See the [Ting migration](https://docs.teamofsilicons.com/#ting-migration) before restarting.
 
 **Upgrading from 4.0.6–4.0.8:** replace any `sticky` and `archive_on_end` fields with `primary_send_mode` and `session_type` using the [migration table](https://docs.teamofsilicons.com/#legacy-mode-fields-removed), then run `silicon update`; the interpreter restarts into the new release once idle. 4.0.9 retains session-addressed ephemeral history and adds process, sender, and flow details to logs.
 
 **Upgrading from 4.0.5 or earlier:** rerun the installer above once into your existing installation prefix, even if an older update has already changed the reported version. The old updater requires bundled app executables; current releases install apps independently through Honeycomb. Stop the running interpreter with `silicon stop` before reinstalling, then start it again with `silicon connect`. For a custom prefix, set `SILICON_PREFIX` on the `sh` side of the pipeline; see the [migration instructions](https://docs.teamofsilicons.com/#upgrading-from-35x).
 
 Silicon is distributed through GitHub Releases and the installers above. It does not need a Honeycomb listing or its own IAM app registration. Honeycomb supplies the application dependencies.
+
+**6.1.0** adds reusable Starter blocks with `starter:gene:ID` in DNA, `starter:function:ID` in `call.function`, and `starter:isi:ID: default` or a mapping of overrides under `isi`. Downloads are cached in `.fromstarter` and refreshed on each connection. Declare apps under each ISI's `apps`; the interpreter installs and authenticates their union, including apps supplied by Starter ISIs. These lists organize configuration and do not restrict which ISI can use an app. DNA includes each managed app's Honeycomb name, description, and CLI help command. See [Starter blocks](docs/GUIDE.md#reusable-starter-blocks).
 
 **6.0.0** adds native `for: {list, var, then}` loops, reusable YAML functions and imports, `switch`, reason-logged `continue`/`break`/`exit`, `collect`, CEL `groupBy`, and `self.for.index`. The local webhook durably accepts any JSON value. Flow sends combine by destination, with durable delivery retries (`silicon.max_retries: 10` by default); exhausted messages stay on disk until the next send to the same ISI and session triggers recovery. See the [flow guide](https://docs.teamofsilicons.com/#event-flow).
 
