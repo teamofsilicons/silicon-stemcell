@@ -134,6 +134,12 @@ if settings.exists() and "auto_update" not in json.loads(settings.read_text()):
 args = sys.argv[1:]
 if args == ["installed", "--json"]:
     print(json.dumps(records))
+elif args[:2] == ["apps", "get"]:
+    assert len(args) == 4 and args[3] == "--json", args
+    app_id = args[2]
+    assert app_id in records, app_id
+    print(json.dumps({"app_id": app_id, "name": "Mock " + app_id,
+                      "description": "Honeycomb description for " + app_id + "."}))
 elif args[:2] == ["uninstall", "dynamic"]:
     assert args == ["uninstall", "dynamic", "--json"], args
     records.pop("dynamic")
@@ -384,7 +390,8 @@ flow:
         progress_config = progress_home / "silicon.yaml"
         progress_config.write_text(original.decode().replace("id: si:e2e", "id: si:progress")
             .replace(json.dumps(str(home)), json.dumps(str(progress_home)))
-            .replace("  inference_providers:", "  apps: ['progress']\n  inference_providers:"))
+            .replace("  source:\n", "  source:\n    apps: ['progress']\n")
+            .replace("  target:\n", "  target:\n    apps: ['progress']\n"))
         progress_app = progress_home / "progress-app"
         progress_app.write_text('''#!/bin/sh
 case "$*" in
@@ -534,6 +541,8 @@ esac
         assert provider_info["TZ"] == "Asia/Kolkata"
         prompt = provider_info["argv"][provider_info["argv"].index("--system-prompt") + 1]
         assert "isi=source" in prompt and "target (session)" in prompt and "restricted" not in prompt
+        assert ".silicon/apps.md\nApp Name: Mock ting\nApp Id: ting" in prompt
+        assert "CLI: run `ting --help` to know about it\n\nAbout: Honeycomb description for ting." in prompt
         child_env = dict(env, **{key: provider_info[key] for key in ("SILICON_HOME", "ISI", "SI_URL", "SI_TOKEN", "TZ")})
         def si(*args, ok=True, context=child_env):
             result = subprocess.run([str(binary_dir / "si"), *args], env=context, capture_output=True, text=True, timeout=35)
@@ -542,6 +551,11 @@ esac
         si("app", "uninstall", "ting", ok=False)
         si("app", "install", "dynamic")
         assert "dynamic" in config.read_text() and (home / ".silicon/bin/dynamic").is_symlink()
+        app_config = control("configuration", silicon="si:e2e")
+        assert app_config["isi"]["source"]["apps"] == ["dynamic"]
+        assert all("dynamic" not in isi["apps"] for name, isi in app_config["isi"].items() if name != "source")
+        assert not app_config["silicon"]["apps"], "new app installs belong to the calling ISI"
+        assert "App Name: Mock dynamic\nApp Id: dynamic" in (home / ".silicon/apps.md").read_text()
         assert (home / "dynamic-authenticated").exists()
         config.write_text(config.read_text().replace("silicon:\n", '''silicon:
   app_configs:
@@ -553,6 +567,7 @@ esac
         assert json.loads((home / "dynamic-config.json").read_text()) == {"org": "local", "nested": [True, 3, "quoted space"]}
         si("app", "uninstall", "dynamic")
         assert "dynamic" not in config.read_text(), "uninstall must remove both app and configuration"
+        assert "App Id: dynamic" not in (home / ".silicon/apps.md").read_text()
         assert not (home / ".silicon/bin/dynamic").exists() and not (home / "dynamic-authenticated").exists()
         cli("compile", str(config))
         original = config.read_bytes()  # Subsequent operations must preserve the deliberately edited YAML.

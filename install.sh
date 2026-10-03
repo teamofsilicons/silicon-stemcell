@@ -15,7 +15,7 @@ case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="$PATH:/usr/sbin" ;; esac
 case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
 export PATH
 
-version=${SILICON_VERSION:-v6.0.0}
+version=${SILICON_VERSION:-v6.1.0}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi

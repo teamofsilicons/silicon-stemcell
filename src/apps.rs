@@ -1,9 +1,10 @@
 //! Honeycomb owns package downloads, platform selection, verification and removal.
 use crate::failure;
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -179,6 +180,16 @@ fn run(home: &Path, binary: &Path, args: &[&str]) -> Result<Value> {
 
 /// Honeycomb's own diagnostic is the error: exit status and both streams, verbatim.
 fn invoke(home: &Path, packages: &Path, binary: &Path, args: &[&str]) -> Result<Value> {
+    invoke_limited(home, packages, binary, args, crate::process::Limit::Install)
+}
+
+fn invoke_limited(
+    home: &Path,
+    packages: &Path,
+    binary: &Path,
+    args: &[&str],
+    limit: crate::process::Limit,
+) -> Result<Value> {
     let args = [args, &["--json"]].concat();
     let command = failure::argv(binary, &args);
     let context = || {
@@ -192,7 +203,7 @@ fn invoke(home: &Path, packages: &Path, binary: &Path, args: &[&str]) -> Result<
     // must not block its installs; Honeycomb and expose still reject owned-home collisions.
     let mut honeycomb = crate::command(binary, packages);
     honeycomb.env_remove("PATH").args(&args);
-    let output = crate::process::output(&mut honeycomb, crate::process::Limit::Install)
+    let output = crate::process::output(&mut honeycomb, limit)
         .map_err(|error| failure::spawn(home, &command, &error))
         .with_context(context)?;
     if !output.status.success() {
@@ -214,6 +225,88 @@ fn invoke(home: &Path, packages: &Path, binary: &Path, args: &[&str]) -> Result<
 /// Honeycomb's answer as the reader should see it in an error.
 fn shown(home: &Path, value: &Value) -> String {
     failure::mask(home, &value.to_string(), &[])
+}
+
+#[derive(Deserialize, Serialize)]
+struct AppDescription {
+    app_id: String,
+    name: String,
+    description: String,
+}
+
+/// A shared DNA file: declaring an app on an ISI does not restrict other ISIs' access.
+/// Keep Honeycomb's last successful metadata so offline reconnects retain the descriptions.
+pub(crate) fn refresh_dna(cfg: &crate::config::Config) -> Result<()> {
+    let packages = prepare_honeycomb(&cfg.home)?;
+    let binary = honeycomb(&cfg.home);
+    refresh_dna_using(&cfg.home, &cfg.managed_apps(), cfg.generation, |id| {
+        let binary = binary.as_ref().map_err(|error| anyhow!("{error:#}"))?;
+        invoke_limited(
+            &cfg.home,
+            &packages,
+            binary,
+            &["apps", "get", id],
+            crate::process::Limit::App,
+        )
+    })
+}
+
+fn refresh_dna_using(
+    home: &Path,
+    configured: &[String],
+    generation: uuid::Uuid,
+    mut fetch: impl FnMut(&str) -> Result<Value>,
+) -> Result<()> {
+    let path = home.join(".silicon/app-descriptions.json");
+    let cached = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<BTreeMap<String, AppDescription>>(&bytes)
+            .with_context(|| format!("invalid app metadata cache {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let mut cached = cached.unwrap_or_else(|error| {
+        logged(home, generation, "honeycomb", &format!("{error:#}"));
+        BTreeMap::new()
+    });
+    let ids: BTreeSet<_> = configured.iter().filter(|id| valid_id(id)).collect();
+    cached.retain(|id, app| ids.contains(id) && app.app_id == *id && !app.name.trim().is_empty());
+    let mut entries = Vec::new();
+    for id in ids {
+        let metadata = fetch(id).and_then(|value| {
+            let app: AppDescription = serde_json::from_value(value).with_context(|| {
+                format!(
+                    "Honeycomb metadata for {id} must include app_id, name and description strings"
+                )
+            })?;
+            if app.app_id != *id || app.name.trim().is_empty() {
+                bail!("Honeycomb metadata identity or name does not match {id}");
+            }
+            Ok(app)
+        });
+        match metadata {
+            Ok(app) => { cached.insert(id.clone(), app); }
+            Err(error) => logged(home, generation, id, &format!("could not refresh app DNA from Honeycomb: {error:#}; keeping cached details when available")),
+        }
+        let (name, description) = cached
+            .get(id)
+            .map(|app| (app.name.as_str(), app.description.as_str()))
+            .unwrap_or((
+                "Unavailable",
+                "Honeycomb metadata is unavailable. Use the CLI help for this app.",
+            ));
+        entries.push(format!("App Name: {name}\nApp Id: {id}\nCLI: run `{id} --help` to know about it\n\nAbout: {description}"));
+    }
+    crate::state::write_json(&path, &cached)?;
+    let dna = home.join(".silicon/apps.md");
+    let staged = home.join(format!(".silicon/.{}.tmp", uuid::Uuid::new_v4()));
+    fs::write(&staged, entries.join("\n\n\n"))
+        .with_context(|| format!("cannot write app DNA {}", staged.display()))?;
+    let result = fs::rename(&staged, &dna)
+        .with_context(|| format!("cannot replace app DNA {}", dna.display()));
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    result
 }
 
 fn commands(home: &Path, records: &Value, id: &str) -> Result<BTreeMap<String, PathBuf>> {
@@ -731,6 +824,71 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap())?;
         fs::write(path, body)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+
+    #[test]
+    fn app_dna_uses_honeycomb_metadata_and_keeps_cached_details_offline() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path().canonicalize()?;
+        let cli = home.join("honeycomb");
+        script(
+            &cli,
+            r#"#!/bin/sh
+set -eu
+[ "$PWD" = "$SILICON_HOME" ]
+case "$*" in
+'apps get dm --json') echo '{"app_id":"dm","name":"Silicon DM","description":"Direct messages.","revision":3}' ;;
+'apps get ting --json') echo '{"app_id":"ting","name":"Silicon Ting","description":"Events."}' ;;
+*) exit 2 ;;
+esac
+"#,
+        )?;
+        let packages = prepare_honeycomb(&home)?;
+        let generation = uuid::Uuid::new_v4();
+        let mut requested = Vec::new();
+        refresh_dna_using(
+            &home,
+            &[
+                "dm".into(),
+                "ting".into(),
+                "dm".into(),
+                "./legacy login".into(),
+            ],
+            generation,
+            |id| {
+                requested.push(id.to_owned());
+                invoke_limited(
+                    &home,
+                    &packages,
+                    &cli,
+                    &["apps", "get", id],
+                    crate::process::Limit::App,
+                )
+            },
+        )?;
+        assert_eq!(requested, ["dm", "ting"]);
+        let dna = fs::read_to_string(home.join(".silicon/apps.md"))?;
+        assert!(dna.contains("App Name: Silicon DM\nApp Id: dm\nCLI: run `dm --help` to know about it\n\nAbout: Direct messages."));
+        assert_eq!(dna.matches("App Id: dm").count(), 1);
+
+        refresh_dna_using(&home, &["dm".into(), "newapp".into()], generation, |id| {
+            if id == "dm" {
+                bail!("network unavailable");
+            }
+            Ok(json!({"app_id":"wrong-app","name":"Forged name","description":"Wrong details"}))
+        })?;
+        let dna = fs::read_to_string(home.join(".silicon/apps.md"))?;
+        assert!(dna.contains("App Name: Silicon DM"));
+        assert!(dna.contains("App Id: newapp\nCLI: run `newapp --help`"));
+        assert!(dna.contains("Honeycomb metadata is unavailable"));
+        assert!(!dna.contains("ting") && !dna.contains("Forged name"));
+        let cached: Value =
+            serde_json::from_slice(&fs::read(home.join(".silicon/app-descriptions.json"))?)?;
+        assert_eq!(cached.as_object().unwrap().len(), 1);
+        let log = fs::read_to_string(home.join(".silicon/silicon.log"))?;
+        assert!(log.contains("network unavailable"));
+        assert!(log.contains("metadata identity or name does not match newapp"));
         Ok(())
     }
 

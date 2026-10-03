@@ -107,7 +107,6 @@ silicon:
         table_key           space station table key
     inference_providers     omni supported inference providers
     setup                   optional; list of shell command that is run once during connecting silicon
-    apps                    optional; list of bare iam app ids, automatically logged in using silicon token
     app_configs             optional; sets key value pairs for apps
 
 inference_providers can take in either a list of inference providers that omni supports.
@@ -124,10 +123,7 @@ now, ideally all-available-providers should already have claude code cli, but la
 move from top to bottom, and add / remove from the group.
 if only all-available-providers is written, use the native option instead of computing.
 
-apps mentioned inside `apps`, plus implicit IAM and Ting, should be automatically installed from honeycomb. Apps and Ting are logged in using the IAM CLI.
-
-app's follow iam auth methods.
-`app iam --json` -> extract app_id -> generate a short lived auth token for this app_id -> `app login "..."` -> check -> `app login status --json` and check authenticated: true
+get an union of apps among all isi, and authenticate them.
 
 app config setup:
 every app with configs supports running `app config set "{key: value, ...}"`
@@ -151,6 +147,7 @@ if isi has primary send mode global, its just the isi name, if it is session, th
         dna:                        prompt sent
             assemble                list of file-loc relative SILICON_HOME, bash scripts echoing text
             next_refresh            refresh this dna after X min. can be bash. eval on each refresh
+        apps                        optional; list of bare iam app ids, automatically logged in using silicon token
         heartbeat:                  optional; a regular heartbeat for isi
             next                    next heartbeat in X min. can be bash.
             message                 message to send during heartbeat.
@@ -317,6 +314,34 @@ Silicon IAM – Identify & Access Management which allows authentication.
 Install and Use their CLI. Use with SILICON_HOME
 
 
+#### Reusable Genes, Functions and ISIs
+Starters now supports adding genes (dna assemble components), Functions (that can be used inside functions or flow) and ISI with defaults set and overwrittable.
+
+let people use them as starter:...
+so if you see one in dna, it has to be a gene and resoled as such
+if you see one in flow, it has to be a fuction that is being called
+if you see one in isi, then it has to be an isi.
+because isi is a key-value pair. let the default be starter:isi:isiid: default
+
+download those things inside a .fromstarter folder when connecting a silicon.yaml and use it from there.
+re-download it fresh when a silicon is connected again. this way, its always upto date and silicon.yaml needs very few updates.
+
+#### Apps inside ISI
+apps are now a list inside ISI. This does not mean that an isi with no app mentioned can not use it, just that this is a mirage so people can think of apps in terms of ISI and not that all of silicons get access to it.
+
+Some remote ISIs from starters can have their own apps, so be sure to download them too.
+
+Where we add a details for the `si` cli, add another file into the dna for that silicon in the style:
+"""
+App Name: {app name from honeycomb}
+App Id: {app id}
+CLI: run `{app id} --help` to know about it
+
+About: {app description from honeycomb}
+
+
+...another app...
+"""
 
 # External Expectation (from iam apps)
 CLIs respect SILICON_HOME and store each their local states inside that folder itself. Its home, so they should use that as base, and make their own hidden folders to keep their information.
