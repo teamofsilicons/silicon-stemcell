@@ -92,7 +92,7 @@ pub(super) fn verify(app: &str, status: &Value, sid: &str, org: &str) -> Result<
 pub(super) fn profile(app: &str, status: &Value) -> Option<String> {
     if !matches!(
         app,
-        "briefcase" | "dm" | "hook" | "commit" | "peek" | "spacestation" | "starter"
+        "briefcase" | "dm" | "hook" | "waveform" | "commit" | "peek" | "spacestation" | "starter"
     ) {
         return None;
     }
@@ -115,6 +115,9 @@ pub(super) fn same_selection(before: &Value, after: &Value) -> bool {
         before
             .get(key)
             .is_none_or(|value| after.get(key) == Some(value))
+    }) && before.get("testing_environment").is_none_or(|value| {
+        // Extend includes mutable counters alongside its world ID.
+        value.get("environment_id") == after["testing_environment"].get("environment_id")
     })
 }
 
@@ -203,5 +206,23 @@ mod tests {
         ] {
             assert!(!same_selection(&before, &after));
         }
+        assert_eq!(profile("waveform", &before).as_deref(), Some("work"));
+        let selected = json!({"authenticated":false,"profile":"work","world":"testing:test-a"});
+        assert!(same_selection(
+            &selected,
+            &json!({"authenticated":true,"profile":"work","world":"testing:test-a","testing_environment_id":"iam-world"})
+        ));
+        assert!(!same_selection(
+            &selected,
+            &json!({"authenticated":true,"profile":"work","world":"production"})
+        ));
+        assert!(same_selection(
+            &json!({"testing_environment":{"environment_id":"a","paired_devices":1}}),
+            &json!({"testing_environment":{"environment_id":"a","paired_devices":2}})
+        ));
+        assert!(!same_selection(
+            &json!({"testing_environment":null}),
+            &json!({"testing_environment":{"environment_id":"a"}})
+        ));
     }
 }

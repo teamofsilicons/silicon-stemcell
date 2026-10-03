@@ -212,6 +212,7 @@ impl App {
             return Ok(());
         }
         let fallback = match app {
+            "waveform" => Some("WAVEFORM_PROFILE"),
             "commit" => Some("COMMIT_PROFILE"),
             "peek" => Some("PEEK_PROFILE"),
             "spacestation" => Some("SPACE_STATION_PROFILE"),
