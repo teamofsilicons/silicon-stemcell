@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde_yaml::{Mapping, Value as Yaml};
 use std::{
     collections::{BTreeMap, HashSet},
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
 };
@@ -63,6 +64,7 @@ pub(crate) struct Resolver {
     downloaded: HashSet<String>,
     files: Vec<PathBuf>,
     functions: BTreeMap<String, Yaml>,
+    starter: Option<OsString>,
 }
 
 impl Resolver {
@@ -73,6 +75,7 @@ impl Resolver {
             downloaded: HashSet::new(),
             files: Vec::new(),
             functions: BTreeMap::new(),
+            starter: None,
         }
     }
 
@@ -126,32 +129,58 @@ impl Resolver {
         Ok(target)
     }
 
-    fn download(&self, reference: &Reference, target: &Path) -> Result<()> {
-        let binary = std::env::var_os("SILICON_STARTER").unwrap_or_else(|| "starter".into());
-        let run = || {
-            let mut command = crate::command(&binary, &self.home);
-            command
-                .args(["download", &reference.spec, "--dir"])
-                .arg(target);
-            crate::process::output(&mut command, crate::process::Limit::Install)
-        };
-        let output = match run() {
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && std::env::var_os("SILICON_STARTER").is_none() =>
-            {
-                crate::apps::install_at(&self.home, "starter")?;
-                run().context("start Starter after installing it with Honeycomb")?
+    fn prepare_starter(
+        &mut self,
+        binary: OsString,
+        explicit: bool,
+        install: impl FnOnce(&Path) -> Result<()>,
+    ) -> Result<()> {
+        if self.starter.is_some() {
+            return Ok(());
+        }
+        if let Some(reason) = starter_upgrade_reason(&self.home, &binary)? {
+            if explicit {
+                return Err(reason).context("SILICON_STARTER must point to Starter 0.3.0 or newer; explicit overrides are not replaced");
             }
-            result => result.context("start Starter CLI")?,
-        };
+            install(&self.home).with_context(|| {
+                format!("{reason:#}; installing Starter 0.3.0 or newer with Honeycomb")
+            })?;
+            if let Some(reason) = starter_upgrade_reason(&self.home, &binary)
+                .context("check Starter after installing it with Honeycomb")?
+            {
+                return Err(reason)
+                    .context("Honeycomb installation did not provide Starter 0.3.0 or newer");
+            }
+        }
+        self.starter = Some(binary);
+        Ok(())
+    }
+
+    fn download(&mut self, reference: &Reference, target: &Path) -> Result<()> {
+        let override_binary = std::env::var_os("SILICON_STARTER");
+        let explicit = override_binary.is_some();
+        self.prepare_starter(
+            override_binary.unwrap_or_else(|| "starter".into()),
+            explicit,
+            |home| crate::apps::install_at(home, "starter").map(|_| ()),
+        )?;
+        let binary = self.starter.as_ref().unwrap();
+        let args = [
+            "download",
+            &reference.spec,
+            "--dir",
+            target
+                .to_str()
+                .context("Starter cache path must be UTF-8")?,
+        ];
+        let shown = crate::failure::argv(binary, &args);
+        let output = crate::process::output(
+            crate::command(binary, &self.home).args(args),
+            crate::process::Limit::Install,
+        )
+        .map_err(|error| crate::failure::spawn(&self.home, &shown, &error))?;
         if !output.status.success() {
-            return Err(crate::failure::command(
-                &self.home,
-                &format!("starter download {}", reference.spec),
-                &output,
-                &[],
-            ));
+            return Err(crate::failure::command(&self.home, &shown, &output, &[]));
         }
         if !target.is_dir() {
             bail!("Starter download did not create {}", target.display());
@@ -446,6 +475,46 @@ impl Resolver {
     }
 }
 
+/// An actionable missing/old version can be repaired; other CLI failures stay diagnostic.
+fn starter_upgrade_reason(home: &Path, binary: &OsStr) -> Result<Option<anyhow::Error>> {
+    let shown = crate::failure::argv(binary, &["--version"]);
+    let output = match crate::process::output(
+        crate::command(binary, home).arg("--version"),
+        crate::process::Limit::App,
+    ) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some(crate::failure::spawn(home, &shown, &error)));
+        }
+        Err(error) => return Err(crate::failure::spawn(home, &shown, &error)),
+    };
+    if !output.status.success() {
+        return Err(crate::failure::command(home, &shown, &output, &[]));
+    }
+    let version = std::str::from_utf8(&output.stdout)
+        .ok()
+        .and_then(|text| text.split_whitespace().last())
+        .and_then(crate::update::version)
+        .ok_or_else(|| {
+            crate::failure::answer(
+                home,
+                &shown,
+                "did not report a valid x.y.z Starter version",
+                &output,
+                &[],
+            )
+        })?;
+    Ok((version < [0, 3, 0]).then(|| {
+        crate::failure::answer(
+            home,
+            &shown,
+            "reported a version older than Starter 0.3.0; reusable blocks require 0.3.0 or newer",
+            &output,
+            &[],
+        )
+    }))
+}
+
 fn call(source: &str, options: Yaml) -> Result<Yaml> {
     let mut options = match options {
         Yaml::Null => Mapping::new(),
@@ -530,6 +599,140 @@ mod tests {
             .join(filename);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(target, source).unwrap();
+    }
+
+    fn starter_cli(home: &Path, version: &str) -> Result<OsString> {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = home.join(".silicon/bin/starter");
+        fs::create_dir_all(binary.parent().unwrap())?;
+        fs::write(
+            &binary,
+            format!(
+                r#"#!/bin/sh
+set -eu
+if [ "$1" = --version ]; then
+  echo checked >> "$SILICON_HOME/version-checks"
+  echo 'version diagnostic' >&2
+  echo 'starter {version}'
+  exit 0
+fi
+[ "$1" = download ] && [ "$3" = --dir ]
+mkdir -p "$4"
+name=${{2#gene:}}
+echo downloaded > "$4/$name.md"
+"#
+            ),
+        )?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        Ok(binary.into_os_string())
+    }
+
+    #[test]
+    fn first_download_upgrades_missing_or_old_starter_and_checks_only_once() -> Result<()> {
+        for old in [None, Some("0.2.1"), Some("0.3.0"), Some("0.4.0")] {
+            let dir = tempfile::tempdir()?;
+            let binary = match old {
+                Some(version) => starter_cli(dir.path(), version)?,
+                None => dir.path().join(".silicon/bin/starter").into_os_string(),
+            };
+            let installs = std::cell::Cell::new(0);
+            let mut resolver = Resolver::new(dir.path(), true);
+            // The injection stands in for Honeycomb installing its verified release.
+            resolver.prepare_starter(binary.clone(), false, |home| {
+                installs.set(installs.get() + 1);
+                starter_cli(home, "0.3.0").map(|_| ())
+            })?;
+            let mut isi: Yaml = serde_yaml::from_str(
+                "a: {dna: {assemble: ['starter:gene:one', 'starter:gene:two']}}",
+            )?;
+            resolver.resolve_isi(&mut isi)?;
+            resolver.prepare_starter(binary, false, |_| panic!("must not reinstall"))?;
+            assert_eq!(
+                installs.get(),
+                usize::from(old.is_none() || old == Some("0.2.1"))
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join("version-checks"))?
+                    .lines()
+                    .count(),
+                if old == Some("0.2.1") { 2 } else { 1 }
+            );
+            assert!(dir.path().join(".fromstarter/gene/one/one.md").is_file());
+            assert!(dir.path().join(".fromstarter/gene/two/two.md").is_file());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn incompatible_overrides_and_failed_upgrades_keep_cli_diagnostics() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let binary = starter_cli(dir.path(), "0.2.1")?;
+        let error = Resolver::new(dir.path(), true)
+            .prepare_starter(binary.clone(), true, |_| {
+                panic!("explicit overrides must not be replaced")
+            })
+            .unwrap_err();
+        let error = format!("{error:#}");
+        for message in [
+            "SILICON_STARTER",
+            "0.3.0",
+            "starter 0.2.1",
+            "version diagnostic",
+            "exit status: 0",
+        ] {
+            assert!(error.contains(message), "missing {message:?}: {error}");
+        }
+        let error = Resolver::new(dir.path(), true)
+            .prepare_starter(binary.clone(), false, |_| Ok(()))
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("Honeycomb installation did not provide")
+                && error.contains("starter 0.2.1"),
+            "{error}"
+        );
+        let error = Resolver::new(dir.path(), true)
+            .prepare_starter(binary.clone(), false, |_| {
+                bail!("Honeycomb registry offline")
+            })
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("Honeycomb registry offline")
+                && error.contains("starter 0.2.1")
+                && error.contains("version diagnostic"),
+            "{error}"
+        );
+        starter_cli(dir.path(), "invalid")?;
+        let error = Resolver::new(dir.path(), true)
+            .prepare_starter(binary.clone(), false, |_| {
+                panic!("invalid version is not silently replaced")
+            })
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("valid x.y.z")
+                && error.contains("starter invalid")
+                && error.contains("version diagnostic"),
+            "{error}"
+        );
+        fs::write(
+            Path::new(&binary),
+            "#!/bin/sh\necho version-out\necho version-err >&2\nexit 7\n",
+        )?;
+        let error = Resolver::new(dir.path(), true)
+            .prepare_starter(binary, false, |_| {
+                panic!("failing version checks are not silently replaced")
+            })
+            .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("exit status: 7")
+                && error.contains("version-out")
+                && error.contains("version-err"),
+            "{error}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -772,6 +975,7 @@ flow:
             &starter,
             r##"#!/bin/sh
 set -eu
+[ "$1" != --version ] || { echo 'starter 0.3.0'; exit 0; }
 [ "$1" = download ] && [ "$2" = gene:careful ] && [ "$3" = --dir ]
 [ ! -e "$SILICON_HOME/fail" ] || exit 3
 count=0
