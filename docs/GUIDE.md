@@ -556,7 +556,7 @@ Without a command, `silicon` lists connections. `silicon list` is an alias for `
 
 Quote Honeycomb IDs because `>` is a shell redirection operator. `install` and `uninstall` operate on Honeycomb-managed applications. `ping` checks the local interpreter's connection without prompting a model. `config` returns the connected configuration with credentials redacted. `info` returns version, protocol, source, documentation, and dependency details.
 
-Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer and Ting. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences. It restores Honeycomb's default once where an older interpreter forced this private home's `auto_update` off, and it repairs a home left without that required setting, which Honeycomb otherwise rejects as invalid configuration. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication has its own 48-hour cache and is independent of installation.
+Application installation uses the current `SILICON_HOME`, or your ordinary home when it is unset. Set `SILICON_HOME=/path/to/home` when installing for a particular Silicon. Every connection installs each configured or registered canonical app ID through Honeycomb without a version argument, plus the IAM issuer and Ting. Explicit `silicon install` also asks Honeycomb for the latest version even if a matching native command exists. Honeycomb owns package verification, installation, and updates; its registry lives beneath `<home>/.silicon/packages`. App login credentials remain under the original Silicon home. The interpreter preserves app update preferences. It restores Honeycomb's default once where an older interpreter forced this private home's `auto_update` off, and it repairs a home left without that required setting, which Honeycomb otherwise rejects as invalid configuration. Unrelated commands on the global PATH remain untouched; conflicting files inside the Silicon’s private command directory still cause an error. Legacy explicit executable commands are used as supplied. Authentication is independent of installation; IAM 5 consumers verify their selected identity at each connection or new session, while legacy consumers retain the 48-hour status cache.
 
 Commands are exposed through owned links under `<home>/.silicon/bin`; the interpreter adds those to its command environment. `uninstall` removes packages installed in this managed Honeycomb home and matching interpreter links while preserving application credentials. Remove configured `apps` entries before reconnecting if you do not want an application installed again, or use `si app uninstall` from the running Silicon to update the YAML too.
 
@@ -652,7 +652,9 @@ Bare `--archived` selects the previous 72 hours. With explicit filters, the sear
 
 The interpreter owns orchestration of authentication. IAM issues short-lived application tokens. Each app exchanges and stores its own access/refresh tokens and maintains them afterward.
 
-Applications from `apps`, implicit Ting, and legacy `login` are checked on YAML connection and new ISI session creation, only when their last successful automatic check is at least 48 hours old. Check timestamps are saved per app and Silicon identity in `.silicon/auth-checked.json`, so reconnects and interpreter restarts reuse them. Previously unchecked apps are checked immediately; failed checks do not advance their timestamps. Existing sessions and heartbeats do not trigger checks. Explicit `si auth setup APP` always bypasses the timestamps. Canonical app IDs resolve through Honeycomb to installed CLI commands. Apps added with `si auth setup` are remembered in the Silicon's managed-app registry and join those checks. A currently authenticated app can be reused. Removing an app from the dynamic registry does not override a configured entry; that app can be authenticated again at the next eligible boundary once its cached check expires.
+Applications from `apps` and legacy `login` are checked on YAML connection and new ISI session creation. IAM 5 consumers (Briefcase, DM, Hook, Extend, Waveform, Commit, Remind, Peek, Space Station, and Starter) must report their selected Silicon actor and organization at every check. A prior timestamp cannot prove that a profile, account, or organization is still selected. An authenticated Carbon, another Silicon, a different organization, or an incomplete legacy status is rejected without replacing its credentials; select a separate matching app profile or account before connecting.
+
+Browser, Ting, and other consumers retain their existing boolean status contract and 48-hour status cache in `.silicon/auth-checked.json`. Discovery still runs to identify each app, including explicit wrapper commands. Discovery alone does not renew a cached status timestamp. Existing sessions and heartbeats do not trigger checks. Explicit `si auth setup APP` bypasses timestamps. Canonical IDs resolve through Honeycomb to installed CLI commands; dynamically authenticated apps join the managed-app registry. Removal clears that command's check and grant receipts. A configured app can therefore authenticate again at the next connection or new session, even when it has been removed from the dynamic registry.
 
 The supported discovery contract is:
 
@@ -669,7 +671,7 @@ APP login status --json
 APP auth status --json
 ```
 
-One must provide a boolean `authenticated`. A false state can be reported with a nonzero exit code. A true state must also have a successful exit status. Invalid JSON, an absent boolean, or a transport error must not masquerade as successful authentication.
+One must provide a boolean `authenticated`. A false state can be reported with a nonzero exit code. A true state must also have a successful exit status. Invalid JSON, an absent boolean, or a transport error must not masquerade as successful authentication. IAM 5 identity validation uses each app's public status schema: for example DM reports `organization_id`, Extend reports `team` and a single `teams` entry, and Briefcase reports a single `organizations` entry. Every supported identity must be a Silicon with the exact global `si:` identifier and selected organization.
 
 When authentication is needed, Silicon invokes IAM with its own identity:
 
@@ -684,7 +686,7 @@ APP login SLT
 APP auth token SLT
 ```
 
-It checks that the app reports `authenticated: true` afterward. It does not retry a different login spelling with the same potentially consumed one-use token. Captured token-bearing stdout/stderr is not forwarded to the Silicon log or exposed in the CLI result.
+It checks the authenticated identity again afterward. The invocation environment is captured once, and supported CLI profiles are pinned across status, login, and final verification. Public profile, origin, and testing-context metadata reported before login must remain unchanged afterward. It does not retry a different login spelling with the same potentially consumed one-use token. Captured token-bearing stdout/stderr is not forwarded to the Silicon log or exposed in the CLI result. Feature authorization, enrollment, and queued-action retries remain explicit application flows; logging in does not approve them.
 
 Removal supports `auth remove`, `auth logout`, or `logout`, selected through command help, followed by a false-status check. `si auth setup` returns the public app ID; it does not return the SLT or application tokens.
 
@@ -762,7 +764,7 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 | Interpreter `caddy/` | Owned Caddy configuration, logs, data, and storage. |
 | `<SILICON_HOME>/.silicon/silicon.log` | Append-only Silicon event, flow, send, runtime, error, and provider log. |
 | `.silicon/auth-apps.json` | Commands for configured/dynamically managed application authentication. |
-| `.silicon/auth-checked.json`, `.silicon/auth-grants.json` | Recent authentication checks and granted organizations; changing `SILICON_ORG` renews the application grant. |
+| `.silicon/auth-checked.json`, `.silicon/auth-grants.json` | Legacy authentication check receipts and granted organizations; IAM 5 app status must prove the selected organization at every connection or new session. |
 | `.silicon/bin/` | Owned command links for applications installed through Honeycomb. |
 | `.silicon/packages/` | Private Honeycomb package/authentication state, retaining Honeycomb's update settings. |
 | `.silicon/sessions/active/<isi>/<UUID>.json` | Durable active persistent-session records. |

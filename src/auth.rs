@@ -1,4 +1,7 @@
 //! IAM owns token issuance; applications own their exchanged sessions.
+mod context;
+#[cfg(all(test, unix))]
+mod context_tests;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::{
@@ -66,7 +69,27 @@ fn remember(home: &Path, app: &App, present: bool) -> Result<()> {
     crate::state::write_json(&home.join(".silicon/auth-apps.json"), &commands)
 }
 
-/// Check managed apps at connect/session creation, reusing successful checks for 48 hours.
+fn forget_cached(home: &Path, reference: &str) -> Result<()> {
+    for name in ["auth-checked.json", "auth-grants.json"] {
+        let path = home.join(".silicon").join(name);
+        let mut values: BTreeMap<String, Value> = match fs::read(&path) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).context("invalid app authentication receipts")?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        values.retain(|key, _| {
+            serde_json::from_str::<Value>(key)
+                .ok()
+                .is_none_or(|parts| parts[2].as_str() != Some(reference))
+        });
+        crate::state::write_json(&path, &values)?;
+    }
+    Ok(())
+}
+
+/// Check migrated apps live at connect/session creation. Legacy apps retain their 48-hour status cache.
 pub fn ensure_all(
     home: &Path,
     sid: &str,
@@ -120,24 +143,24 @@ fn ensure_all_using(
     for command in commands {
         let key = serde_json::to_string(&(sid, org, &command))?;
         let now = chrono::Utc::now().timestamp();
-        if grants.get(&key).map(String::as_str).unwrap_or(identity_org) == grant_org
+        let cached = grants.get(&key).map(String::as_str).unwrap_or(identity_org) == grant_org
             && checked
                 .get(&key)
                 .and_then(|last| now.checked_sub(*last))
-                .is_some_and(|age| (0..48 * 60 * 60).contains(&age))
-        {
-            continue;
-        }
-        setup_locked(
+                .is_some_and(|age| (0..48 * 60 * 60).contains(&age));
+        let app_id = setup_locked(
             home,
             SiliconIdentity { sid, org, stk },
             &command,
             Path::new("iam"),
             true,
             generation,
+            cached,
         )?;
-        checked.insert(key, chrono::Utc::now().timestamp());
-        crate::state::write_json(&path, &checked)?;
+        if !cached || context::migrated(&app_id) {
+            checked.insert(key, chrono::Utc::now().timestamp());
+            crate::state::write_json(&path, &checked)?;
+        }
     }
     Ok(())
 }
@@ -147,6 +170,7 @@ struct App {
     argv: Vec<String>,
     reference: String,
     expected_id: Option<String>,
+    environment: BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 }
 
 #[derive(Clone, Copy)]
@@ -165,6 +189,52 @@ impl Contract {
 }
 
 impl App {
+    fn pin_profile(&mut self, app: &str, status: &Value) -> Result<()> {
+        let explicit = self.argv.iter().enumerate().find_map(|(i, value)| {
+            value
+                .strip_prefix("--profile=")
+                .map(str::to_owned)
+                .or_else(|| {
+                    (value == "--profile")
+                        .then(|| self.argv.get(i + 1).cloned())
+                        .flatten()
+                })
+        });
+        let reported = context::profile(app, status);
+        if explicit
+            .as_ref()
+            .zip(reported.as_ref())
+            .is_some_and(|(a, b)| a != b)
+        {
+            bail!("the application returned a different selected profile");
+        }
+        if explicit.is_some() {
+            return Ok(());
+        }
+        let fallback = match app {
+            "commit" => Some("COMMIT_PROFILE"),
+            "peek" => Some("PEEK_PROFILE"),
+            "spacestation" => Some("SPACE_STATION_PROFILE"),
+            "starter" => Some("STARTER_PROFILE"),
+            _ => None,
+        };
+        let profile = reported.or_else(|| {
+            fallback.map(|name| {
+                self.environment
+                    .get(std::ffi::OsStr::new(name))
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "default".into())
+            })
+        });
+        if let Some(profile) = profile {
+            if profile.is_empty() || profile.chars().any(char::is_control) {
+                bail!("application status returned an invalid profile");
+            }
+            self.argv.extend(["--profile".into(), profile]);
+        }
+        Ok(())
+    }
+
     fn new(home: &Path, command: &str) -> Result<Self> {
         let command = command
             .trim()
@@ -184,11 +254,23 @@ impl App {
             bail!("the Silicon IAM credential directory must not be a symlink");
         }
         let reference = shell_words::join(&argv);
+        // Freeze the invocation environment, including profile/origin/testing selectors, before
+        // any asynchronous application login can change files or the selected organization.
+        let template = crate::command(&argv[0], &home);
+        let mut environment: BTreeMap<_, _> = std::env::vars_os().collect();
+        for (key, value) in template.get_envs() {
+            if let Some(value) = value {
+                environment.insert(key.to_owned(), value.to_owned());
+            } else {
+                environment.remove(key);
+            }
+        }
         Ok(Self {
             home,
             argv,
             reference,
             expected_id: None,
+            environment,
         })
     }
 
@@ -213,6 +295,7 @@ impl App {
         // Configured commands are argv, never shell programs; captured streams
         // may contain credentials and must not be forwarded to logs or errors.
         let mut command = crate::command(&self.argv[0], &self.home);
+        command.env_clear().envs(&self.environment);
         if let Some(org) = org {
             command.env("SPACE_STATION_ORG", org);
         }
@@ -254,7 +337,7 @@ impl App {
         Ok(app_id.to_owned())
     }
 
-    fn status(&self) -> Result<(Contract, bool)> {
+    fn status(&self) -> Result<(Contract, Value)> {
         for contract in [Contract::Login, Contract::Auth] {
             let output = self.run(contract.status())?;
             let state = serde_json::from_slice::<Value>(&output.stdout).ok();
@@ -265,14 +348,14 @@ impl App {
             {
                 // Some apps use a nonzero status to report an expired session.
                 if !authenticated || output.status.success() {
-                    return Ok((contract, authenticated));
+                    return Ok((contract, state.expect("status was parsed")));
                 }
             }
         }
         bail!("IAM app must support `auth status --json` or `login status --json` with a boolean authenticated field");
     }
 
-    fn check_status(&self, contract: Contract, expected: bool) -> Result<()> {
+    fn check_status(&self, contract: Contract, expected: bool) -> Result<Value> {
         let output = self.run(contract.status())?;
         let state: Value = serde_json::from_slice(&output.stdout)
             .map_err(|_| anyhow!("app auth status returned invalid JSON"))?;
@@ -281,7 +364,7 @@ impl App {
         {
             bail!("app did not confirm the requested authentication state");
         }
-        Ok(())
+        Ok(state)
     }
 }
 
@@ -342,7 +425,15 @@ fn setup_using_scoped(
     generation: Option<uuid::Uuid>,
 ) -> Result<String> {
     let _guard = AUTH_LOCK.lock().unwrap();
-    setup_locked(home, identity, command, iam, only_if_needed, generation)
+    setup_locked(
+        home,
+        identity,
+        command,
+        iam,
+        only_if_needed,
+        generation,
+        false,
+    )
 }
 
 fn setup_locked(
@@ -352,6 +443,7 @@ fn setup_locked(
     iam: &Path,
     only_if_needed: bool,
     generation: Option<uuid::Uuid>,
+    cached: bool,
 ) -> Result<String> {
     let app = if crate::apps::valid_id(command) {
         let path = match crate::apps::resolve(home, command)? {
@@ -391,7 +483,7 @@ fn setup_locked(
     } else {
         App::new(home, command)?
     };
-    authenticate(home, identity, app, iam, only_if_needed, generation)
+    authenticate(home, identity, app, iam, only_if_needed, generation, cached)
 }
 
 fn authenticate(
@@ -401,6 +493,7 @@ fn authenticate(
     iam: &Path,
     only_if_needed: bool,
     generation: Option<uuid::Uuid>,
+    cached: bool,
 ) -> Result<String> {
     // Display an app handle or executable name, never its arguments or credentials.
     let label = app.expected_id.clone().unwrap_or_else(|| {
@@ -415,28 +508,46 @@ fn authenticate(
         generation,
         &format!("Authenticating {label}"),
         &format!("Authenticated {label}"),
-        || authenticate_inner(home, identity, app, iam, only_if_needed, generation),
+        || authenticate_inner(home, identity, app, iam, only_if_needed, generation, cached),
     )
 }
 
 fn authenticate_inner(
     home: &Path,
     identity: SiliconIdentity<'_>,
-    app: App,
+    mut app: App,
     iam: &Path,
     only_if_needed: bool,
     generation: Option<uuid::Uuid>,
+    cached: bool,
 ) -> Result<String> {
     let SiliconIdentity { sid, org, stk } = identity;
     let app_id = app.discover()?;
-    let (contract, authenticated) = app.status()?;
+    if cached && !context::migrated(&app_id) {
+        return Ok(app_id);
+    }
     let grant_org = selected_org(home, org)?;
+    if context::migrated(&app_id) {
+        app.environment
+            .insert("SILICON_ORG".into(), grant_org.clone().into());
+        if app_id == "spacestation" {
+            app.environment
+                .insert("SPACE_STATION_ORG".into(), grant_org.clone().into());
+        }
+    }
+    let (contract, before) = app.status()?;
+    if context::migrated(&app_id) {
+        app.pin_profile(&app_id, &before)?;
+    }
+    let authenticated = before["authenticated"] == true;
     let mut grants = grants(home)?;
     let key = serde_json::to_string(&(sid, org, &app.reference))?;
-    // Legacy sessions were granted the identity's org; a different selected org
-    // requires fresh consent even if the app still reports authenticated:true.
     let granted = grants.get(&key).map(String::as_str).unwrap_or(org);
-    if only_if_needed && authenticated && granted == grant_org {
+    // Never replace an unrelated live account merely because setup asked for a Silicon login.
+    if authenticated {
+        context::verify(&app_id, &before, sid, &grant_org)?;
+    }
+    if only_if_needed && authenticated && (context::migrated(&app_id) || granted == grant_org) {
         remember(home, &app, true)?;
         crate::log_line_scoped(home, generation, "auth", &app_id, "already authenticated")?;
         return Ok(app_id);
@@ -537,7 +648,13 @@ fn authenticate_inner(
         // Never retry another login spelling with a possibly consumed SLT.
         bail!("app rejected the IAM short-lived token; start authentication again after fixing the app's login failure");
     }
-    app.check_status(contract, true)?;
+    let after = app.check_status(contract, true)?;
+    if context::migrated(&app_id) {
+        context::verify(&app_id, &after, sid, &grant_org)?;
+        if !context::same_selection(&before, &after) {
+            bail!("application profile, origin or testing context changed during login; return to the original selection");
+        }
+    }
     grants.insert(key, grant_org);
     crate::state::write_json(&home.join(".silicon/auth-grants.json"), &grants)?;
     remember(&home, &app, true)?;
@@ -548,10 +665,14 @@ fn authenticate_inner(
 /// Remove application credentials using its advertised logout command.
 pub fn remove(home: &Path, command: &str) -> Result<()> {
     let _guard = AUTH_LOCK.lock().unwrap();
-    let app = App::resolve(home, command)?;
-    app.discover()?;
-    let (contract, authenticated) = app.status()?;
-    if !authenticated {
+    let mut app = App::resolve(home, command)?;
+    let app_id = app.discover()?;
+    forget_cached(home, &app.reference)?;
+    let (contract, status) = app.status()?;
+    if context::migrated(&app_id) {
+        app.pin_profile(&app_id, &status)?;
+    }
+    if status["authenticated"] != true {
         remember(home, &app, false)?;
         return Ok(());
     }
@@ -662,7 +783,7 @@ esac
     }
 
     #[test]
-    fn automatic_checks_are_cached_per_app_and_silicon_for_48_hours() -> Result<()> {
+    fn legacy_status_checks_remain_cached_per_app_and_silicon_for_48_hours() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let home = dir.path();
         let app = home.join("app");
@@ -670,10 +791,9 @@ esac
             &app,
             r#"#!/bin/sh
 echo "$*" >> calls
-[ ! -f fail ] || exit 1
 case "$*" in
   'iam --json') echo '{"app_id":"app"}' ;;
-  'login status --json') echo '{"authenticated":true}' ;;
+  'login status --json') [ ! -f fail ] || exit 1; echo '{"authenticated":true}' ;;
   *) exit 1 ;;
 esac
 "#,
@@ -686,7 +806,7 @@ esac
         let path = home.join(".silicon/auth-checked.json");
         let original = fs::read(&path)?;
 
-        // A cached check must skip even discovery, including across connection generations.
+        // Discovery identifies migrated apps even behind wrappers. Legacy status remains cached.
         fs::write(home.join("fail"), "")?;
         ensure_all_scoped(
             home,
@@ -696,7 +816,10 @@ esac
             &configured,
             uuid::Uuid::new_v4(),
         )?;
-        assert_eq!(fs::read_to_string(home.join("calls"))?, calls);
+        assert_eq!(
+            fs::read_to_string(home.join("calls"))?,
+            format!("{calls}iam --json\n")
+        );
         assert!(setup(home, "si:silicon", "test", "", &command).is_err());
         assert!(ensure_all(home, "si:other", "test", "", &configured).is_err());
         let other = home.join("other-app");
@@ -726,7 +849,10 @@ esac
         ensure_all(home, "si:silicon", "test", "", &configured)?;
         let calls = fs::read_to_string(home.join("calls"))?;
         ensure_all(home, "si:silicon", "test", "", &configured)?;
-        assert_eq!(fs::read_to_string(home.join("calls"))?, calls);
+        assert_eq!(
+            fs::read_to_string(home.join("calls"))?,
+            format!("{calls}iam --json\n")
+        );
         Ok(())
     }
 
@@ -762,6 +888,7 @@ case "$1" in
   modern|legacy) mode="$1"; shift ;;
   *) exit 2 ;;
 esac
+if [ "${1:-}" = --profile ]; then [ "$2" = default ]; shift 2; fi
 case "$*" in
   'iam --json')
     if [ -f bad-discovery ]; then echo '{"app_id":null}'
@@ -773,7 +900,9 @@ case "$*" in
     if [ -f active ]; then echo '{"authenticated":true}'; else echo '{"authenticated":false}'; fi ;;
   'login status --json')
     [ "$mode" = legacy ] || exit 2
-    if [ -f active ]; then echo '{"authenticated":true}'; else echo '{"authenticated":false}'; fi ;;
+    if [ -f active ] && [ -f space-app ]; then
+      echo '{"authenticated":true,"org":"test","identity":{"kind":"silicon","id":"si:silicon","org":"test"}}'
+    elif [ -f active ]; then echo '{"authenticated":true}'; else echo '{"authenticated":false}'; fi ;;
   'auth token iam-issued-secret'|'login iam-issued-secret')
     if [ -f space-app ]; then [ "$SPACE_STATION_ORG" = test ]; fi
     if [ -f fail ]; then echo 'stk-secret iam-issued-secret' >&2; exit 1; fi
