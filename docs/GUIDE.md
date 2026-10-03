@@ -497,7 +497,16 @@ flow:
 
 Downloads live under `<SILICON_HOME>/.fromstarter`. Compilation reuses cached blocks and downloads missing ones. Connecting or restoring a Silicon downloads referenced blocks fresh; the active connection and live flow reloads use the local cache. To pick up a newly published block, reconnect. Append `@<sha256>` to pin a reference to an exact publication; unpinned references use the latest publication. Downloading does not rewrite `silicon.yaml`.
 
-The interpreter requires Starter 0.3.0 or newer and installs or upgrades it through Honeycomb before downloading blocks. An explicit `SILICON_STARTER` executable override must already meet that version. Public blocks are readable anonymously; private blocks require an existing Starter login with access to the owning organization. A gene is Markdown text. An ISI archive contains a root `isi.yaml` defining exactly one ISI named for its ID; a function archive contains a root `function.yaml` defining exactly one function and its parameters. Supporting files stay beside those definitions in the cache. File paths in a downloaded ISI's DNA assembly resolve from its block directory; shell commands still run from `SILICON_HOME`.
+The interpreter requires Starter 0.3.0 or newer and installs or upgrades it through Honeycomb before downloading blocks. An explicit `SILICON_STARTER` executable override must already meet that version. Honeycomb installation requires access to its Starter listing. If that listing is unavailable to you, install the [public Starter CLI](https://github.com/teamofsilicons/silicon-starter/releases/latest) first:
+
+```sh
+curl -fsSL https://starter.teamofsilicons.com/install.sh | sh
+starter --version
+```
+
+The installer verifies the downloaded archive's SHA-256 checksum. On Windows, first open the interpreter's Linux environment with `wsl --distribution Silicon --user silicon`, then run those commands there. Restart the interpreter if installation changed its `PATH`.
+
+Public blocks are readable anonymously; private blocks require an existing Starter login with access to the owning organization. A gene is Markdown text. An ISI archive contains a root `isi.yaml` defining exactly one ISI named for its ID; a function archive contains a root `function.yaml` defining exactly one function and its parameters. Supporting files stay beside those definitions in the cache. File paths in a downloaded ISI's DNA assembly resolve from its block directory; shell commands still run from `SILICON_HOME`.
 
 Starter functions can be called from the flow or another function without a separate local definition. They may also be imported with `functions: starter:function:greet`, or included in a list of function sources. Downloaded function bodies use the same arguments, results, catches, and send queue as [local functions](#functions-and-scoped-results). Their shell commands still run from `SILICON_HOME`.
 
