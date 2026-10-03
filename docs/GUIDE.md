@@ -1,10 +1,10 @@
-# Silicon 6.0.0
+# Silicon 6.0.1
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
 ## Start here
 
-Silicon 6.0.0 uses the IAM and Honeycomb identifier contract introduced in 5.0, Omni 0.9.1, and Ting for notification delivery. It is built to run unattended: it starts at login or boot, restarts after a crash, and recovers by itself from network loss, sleep, and updates; see [Running unattended](#running-unattended). Existing 5.x Silicons need the [flow migration](#upgrading-from-5x) when updating. Existing 4.x Silicons must also complete the [identifier migration](#identifier-migration) before upgrading or reconnecting.
+Silicon 6.0.1 uses the IAM and Honeycomb identifier contract introduced in 5.0, Omni 0.9.1, and Ting for notification delivery. It is built to run unattended: it starts at login or boot, restarts after a crash, and recovers by itself from network loss, sleep, and updates; see [Running unattended](#running-unattended). Existing 5.x Silicons need the [flow migration](#upgrading-from-5x) when updating. Existing 4.x Silicons must also complete the [identifier migration](#identifier-migration) before upgrading or reconnecting.
 
 1. [Install Silicon and its dependencies](#installation) with the one-line command below.
 2. [Create your first Silicon](#first-silicon) in a new directory, with your own IAM identity and token.
@@ -33,23 +33,25 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 > Upgrading from 5.x: prepare the [6.0 flow migration](#upgrading-from-5x), then stop the old interpreter before updating and applying it. Default send aggregation and catch behavior have changed; the installer does not rewrite your flow.
 >
-> Upgrading from 4.x to 6.0.0: disconnect and stop the old interpreter, then follow the [identifier migration](#identifier-migration). It changes Silicon IDs, adds `silicon.org_id`, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.
+> Upgrading from 4.x to 6.0.1: disconnect and stop the old interpreter, then follow the [identifier migration](#identifier-migration). It changes Silicon IDs, adds `silicon.org_id`, and uses bare app IDs. Installers do not rewrite YAML or migrate local state.
 >
 > Upgrading from 4.0.x or earlier: also migrate per-app webhook configuration and event flows using the [Ting migration](#ting-migration). IAM and Ting are implicit dependencies; the interpreter installs both through Honeycomb.
 >
 > Upgrading from 4.0.6–4.0.8: replace any `sticky` and `archive_on_end` fields using the [migration table](#legacy-mode-fields-removed), then run `silicon update` and restart the interpreter. No reinstallation is needed.
 >
-> Upgrading from 4.0.5 or earlier: rerun the 6.0.0 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
+> Upgrading from 4.0.5 or earlier: rerun the 6.0.1 installer into the same prefix. Older embedded updaters expect bundled app executables and cannot install this new layout. Existing YAML, credentials, and session state are preserved.
 
-The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v6.0.0` with:
+The public installer downloads a complete, versioned bundle. It does not require a Rust compiler. Install `v6.0.1` with:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/install.sh | sh
 ```
 
-Find the platform bundles and their checksums on the [v6.0.0 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v6.0.0). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
+Find the platform bundles and their checksums on the [v6.0.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v6.0.1). An unavailable or incomplete bundle is a hard installation error; the installer does not substitute an older Stemcell release.
 
 Silicon is distributed through GitHub Releases using the installers above. It does not require its own Honeycomb listing or IAM app registration. Honeycomb installs application dependencies such as IAM and Space Station.
+
+**6.0.1** verifies the selected Silicon and organization for migrated IAM 5 applications at every connection and new session, pins supported profiles and testing-context metadata through login, and leaves unrelated accounts untouched. Browser and Ting retain their existing integration.
 
 **6.0.0** makes flow structure native YAML: `for: {list, var, then}`, reusable functions and imports, `switch`, `continue`, `break`, `exit`, `collect`, CEL `groupBy`, and `self.for.index`. Local webhooks accept any valid JSON value. Sends aggregate per ISI and session, are saved before delivery, and retry up to `silicon.max_retries` (default `10`) after the initial attempt. Exhausted messages remain stashed until another send to that destination triggers recovery. `send.catch` covers expression and target-validation failures; all catches use `self.error`. This is a breaking release; follow [Upgrading from 5.x](#upgrading-from-5x) before updating.
 
@@ -90,7 +92,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -100,7 +102,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 6.0.0 |
+| `silicon`, `si` | Interpreter and internal CLI, 6.0.1 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.9.1 pinned to commit `62c2adc57983be37c1de2064d169073bddf71291` |
 | `caddy` | Caddy 2.11.4 |
 
@@ -110,7 +112,7 @@ Accounts, permissions, remote service availability, and authenticated inference 
 
 ### Upgrading from 5.x
 
-Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 6.0.0 and applying the edited configuration. These changes also apply to older configurations after their identifier and webhook migrations. The installer preserves YAML and does not translate it.
+Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 6.0.1 and applying the edited configuration. These changes also apply to older configurations after their identifier and webhook migrations. The installer preserves YAML and does not translate it.
 
 1. Replace bare `{error}` in every catch with `{self.error}`. Result and error values are scoped to their `then` or `catch` branch; save a value with `var` when it is needed later.
 2. Review each send that must happen immediately or remain a separate message. Add `aggregate: false` to it; otherwise messages to the same `(isi, session_id)` are joined in order and sent when the flow finishes. An immediate send also flushes earlier queued messages for that destination.
@@ -118,7 +120,7 @@ Prepare these edits in a separate copy of your configuration while 5.x is runnin
 4. Keep existing Ting flows on `request.tings`. Only change their input handling if sending another JSON shape; generic webhook bodies now reach `request` unchanged. Existing CEL-generated steps and `!` Python or shell commands remain supported, so adoption of native loops and functions can be incremental.
 5. Run `silicon stop`, then `silicon update` while the interpreter is stopped. Apply the prepared configuration edits, check `silicon --version`, and compile each configuration with the new `silicon compile /path/to/silicon.yaml`. Then reconnect with `silicon connect /path/to/silicon.yaml`. Prepare all saved configurations before the first reconnect, since it starts the interpreter and restores its other saved Silicons.
 
-To hold updates while preparing this migration, keep the interpreter stopped or set `SILICON_AUTO_UPDATE=0` in the environment of the interpreter process before starting it; see [Updates](#updates). Finish the edits before restarting on 6.0.0. Incoming and outgoing journals survive restarts, but crash recovery is at least once; application side effects should use event IDs for idempotency.
+To hold updates while preparing this migration, keep the interpreter stopped or set `SILICON_AUTO_UPDATE=0` in the environment of the interpreter process before starting it; see [Updates](#updates). Finish the edits before restarting on 6.0.1. Incoming and outgoing journals survive restarts, but crash recovery is at least once; application side effects should use event IDs for idempotency.
 
 ### Identifier migration
 
@@ -126,7 +128,7 @@ Use `silicon.id: si:handle`, an explicit `silicon.org_id`, and bare IDs in `apps
 
 ### Ting migration
 
-For configurations from 4.0.x or earlier, before reconnecting on 6.0.0:
+For configurations from 4.0.x or earlier, before reconnecting on 6.0.1:
 
 1. Remove `silicon.webhooks` and `silicon.webhook`. Keep application IDs in `silicon.apps`; applications publish notifications through Ting and no longer register separate interpreter webhooks.
 2. Change the flow to read `request.tings`, a list of notification objects with `id`, `type`, `data`, and `metadata`. Other JSON shapes are also accepted, but Ting publishers use the batch envelope. Use native `for` steps or CEL list helpers to process a whole batch; the [first Silicon example](#first-silicon) shows a minimal flow.
@@ -142,7 +144,7 @@ Existing Windows installations should rerun this release's PowerShell installer 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Honeycomb installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -171,18 +173,18 @@ Version 4 removes the remote `login`, `logout`, and `watch` commands and the `re
 
 The 3.5.x updater runs its embedded installer, whose fixed file inventory predates Honeycomb and Space Station. It can install a newer interpreter while leaving those new dependencies absent. Downloading the new `install.sh` as part of an update does not execute that script. This is a limitation of the older Silicon updater, not a Honeycomb or Space Station defect.
 
-First complete the [identifier migration](#identifier-migration), including disconnecting the old YAML paths and stopping the interpreter. Rerun the **6.0.0 public installer into the same prefix**:
+First complete the [identifier migration](#identifier-migration), including disconnecting the old YAML paths and stopping the interpreter. Rerun the **6.0.1 public installer into the same prefix**:
 
 ```sh
 silicon stop
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/install.sh | sh
 silicon serve
 ```
 
 Skip `silicon stop` if no interpreter is running. `silicon serve` runs the new interpreter; reconnect each migrated YAML path after compiling it. The default command uses `~/.local/share/silicon`; if your existing installation uses another prefix, preserve it on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -1169,7 +1171,7 @@ Keep development and testing on the production authentication paths. An imported
 
 ### Contract versions
 
-| Consumer or dependency | Silicon 6.0.0 contract |
+| Consumer or dependency | Silicon 6.0.1 contract |
 | --- | --- |
 | Existing 3.5 configurations | Migrate to `silicon.id: si:handle`, explicit `silicon.org_id`, and bare app IDs. `login` remains accepted. Remove `webhook` and `webhooks`; Ting is registered automatically. `sticky` and `archive_on_end` have been removed; replace them with `primary_send_mode` and `session_type` using the table above. |
 | IAM application discovery | JSON bare `app_id`; additional public fields are permitted. Canonical IDs must match discovery before a command is trusted. |

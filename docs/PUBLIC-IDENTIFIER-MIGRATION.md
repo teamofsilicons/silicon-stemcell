@@ -2,7 +2,7 @@
 
 Use IAM's verified old-to-new mapping after resolving handle collisions. Silicon IDs are now `si:handle`, Carbon IDs are `c:handle`, and application IDs are bare handles such as `dm`. An organization's identity and authority remain explicit; bundle IDs retain `org>bundle` and Honeycomb release selectors retain forms such as `briefcase>test@2.1.0`.
 
-For 6.0.0, download the [migration script](https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/migrate-identifiers.py) and [this procedure](https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/PUBLIC-IDENTIFIER-MIGRATION.md), and verify both against the release’s [SHA256SUMS](https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.0/SHA256SUMS) before use. The script is also available as `scripts/migrate-identifiers.py` in the matching source checkout.
+For 6.0.1, download the [migration script](https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/migrate-identifiers.py) and [this procedure](https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/PUBLIC-IDENTIFIER-MIGRATION.md), and verify both against the release’s [SHA256SUMS](https://github.com/teamofsilicons/silicon-stemcell/releases/download/v6.0.1/SHA256SUMS) before use. The script is also available as `scripts/migrate-identifiers.py` in the matching source checkout.
 
 This procedure updates local interpreter configuration and state. Coordinate it with IAM, Honeycomb, Ting, and the application's own session migration; a local code update does not prove that those services have completed their cutover.
 
