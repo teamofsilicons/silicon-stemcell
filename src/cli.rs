@@ -58,10 +58,19 @@ enum SiliconCommand {
         #[arg(long)]
         no_proxy: bool,
     },
-    /// Stop the interpreter and its child processes.
-    Stop,
+    /// Stop the interpreter and its child processes, and wait until it has exited.
+    Stop {
+        /// Terminate an interpreter that does not stop: SIGTERM, then SIGKILL 10 seconds later.
+        #[arg(long)]
+        force: bool,
+    },
     /// Install a newer stable GitHub release into a managed bundle installation.
     Update,
+    /// Start the interpreter at login or boot and restart it after a crash.
+    Service {
+        #[command(subcommand)]
+        action: crate::service::Action,
+    },
     /// Install an app for this system through Honeycomb, for example 'dm'.
     Install { app_id: String },
     /// Remove a Honeycomb-managed app from this home.
@@ -188,7 +197,7 @@ enum SiCommand {
 }
 #[derive(Subcommand)]
 enum AppCommand {
-    /// Install a Honeycomb app and add its canonical app ID to silicon.apps.
+    /// Install a Honeycomb app and add its canonical bare app ID to silicon.apps.
     Install { app_id: String },
     /// Uninstall a Honeycomb app and remove its app entry and configuration.
     Uninstall { app_id: String },
@@ -310,6 +319,7 @@ pub fn silicon() -> Result<()> {
         SiliconCommand::Connect { yaml } => {
             let value = if cli.json {
                 let cfg = server::compile(yaml)?;
+                supervise(&cfg);
                 server::call(&server::daemon(true)?, "connect", json!({"yaml":cfg.path}))?
             } else {
                 crate::progress::connect(yaml)?
@@ -328,9 +338,12 @@ pub fn silicon() -> Result<()> {
         SiliconCommand::Disconnect {
             target: Some(target),
         } => {
-            let target = if target.contains(':') && !target.contains('/') {
+            let target = if crate::config::valid_silicon_id(&target) {
                 target
             } else {
+                if target.contains(':') && !target.contains('/') {
+                    bail!("expected a canonical Silicon ID si:<handle> or a YAML path, got {target:?}; migrate legacy IDs using IAM's verified mapping");
+                }
                 Path::new(&target)
                     .canonicalize()
                     .with_context(|| format!("resolve disconnect YAML path {target:?}"))?
@@ -345,6 +358,7 @@ pub fn silicon() -> Result<()> {
             if cli.json {
                 print_json(&value)?;
             } else {
+                warnings(&value["warnings"]);
                 println!("disconnected {}", field(&value, "disconnected")?);
             }
         }
@@ -361,7 +375,7 @@ pub fn silicon() -> Result<()> {
             let filter = glob(pattern.as_deref().unwrap_or("*"), true, false)?;
             let rows: Vec<_> = connections()?
                 .into_iter()
-                .filter(|row| filter.is_match(&row.id))
+                .filter(|row| filter.is_match(row["id"].as_str().unwrap_or("")))
                 .collect();
             if cli.json {
                 print_json(&json!(rows))?;
@@ -378,26 +392,89 @@ pub fn silicon() -> Result<()> {
                 },
         } => logs(&silicon, lines, !no_follow, cli.json)?,
         SiliconCommand::Serve { port, no_proxy } => server::serve(port, no_proxy)?,
-        SiliconCommand::Stop => {
-            let result = server::call(&server::daemon(false)?, "shutdown", json!({}))?;
+        SiliconCommand::Stop { force } => {
+            let terminal = std::io::stderr().is_terminal() && !cli.json;
+            // Before the shutdown: a cron `service ensure` between the interpreter's exit and
+            // a later marker would start it again.
+            if let Err(error) = crate::service::note_stopped() {
+                eprintln!("warning: {error:#}");
+            }
+            let result = server::stop(force, |pid| {
+                if terminal {
+                    eprintln!(
+                        "waiting for the interpreter{} to finish stopping",
+                        pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
+                    );
+                }
+            });
+            // The marker stays even when this failed: the interpreter may be stopping slowly or
+            // waiting out a restart delay, and the portable supervisor must not start it again.
+            // `silicon connect` and `silicon service restart` clear it.
+            let result = match result {
+                Ok(result) => result,
+                // Nothing runs, but the portable supervisor may be waiting to restart it: the
+                // marker keeps it stopped, so this is a stop, not a failure.
+                Err(error)
+                    if !server::interpreter_present()
+                        && matches!(crate::service::installed(), Ok(Some(ref s)) if s.mechanism() == "run") =>
+                {
+                    if cli.json {
+                        print_json(&json!({"stopped": true, "running": false}))?;
+                    } else {
+                        println!("the interpreter was not running ({error:#}); it stays stopped until the next boot or `silicon connect`");
+                    }
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            let supervised = matches!(crate::service::installed(), Ok(Some(_)));
             if cli.json {
                 print_json(&result)?;
+            } else if supervised {
+                println!("interpreter stopped; it starts again at the next login or boot, or with `silicon connect`. `silicon service uninstall` turns autostart off");
             } else {
-                println!("interpreter stopping");
+                println!("interpreter stopped");
             }
         }
+        SiliconCommand::Service { action } => crate::service::cli(action, cli.json)?,
         SiliconCommand::Update => {
             let installed = crate::update::install_latest()?;
+            // A running interpreter restarts into the new release by itself once it is idle;
+            // so does one still running an older release than this, the installed one.
+            let behind = || {
+                server::daemon(false)
+                    .ok()
+                    .filter(|daemon| daemon.version != env!("CARGO_PKG_VERSION"))
+            };
+            let restart = match &installed {
+                Some(_) => Some(
+                    server::daemon(false)
+                        .and_then(|daemon| server::call(&daemon, "restart", json!({}))),
+                ),
+                None => behind().map(|daemon| server::call(&daemon, "restart", json!({}))),
+            };
+            let requested = matches!(restart, Some(Ok(_)));
             if cli.json {
                 print_json(
-                    &json!({"updated": installed.is_some(), "executable": installed, "restart_required": installed.is_some()}),
+                    &json!({"updated": installed.is_some(), "executable": installed, "restart_required": installed.is_some(), "restart_requested": requested}),
                 )?;
-            } else if installed.is_some() {
-                println!(
-                    "updated; restart the interpreter with `silicon stop`, then `silicon serve`"
-                );
             } else {
-                println!("Silicon {} is current", env!("CARGO_PKG_VERSION"));
+                match restart {
+                    None => println!("Silicon {} is current", env!("CARGO_PKG_VERSION")),
+                    Some(Ok(_)) if installed.is_none() => println!(
+                        "Silicon {} is current; the running interpreter is on an older release and restarts into this one as soon as no work is running",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    Some(Ok(_)) => println!(
+                        "updated; the running interpreter restarts into the new release as soon as no work is running"
+                    ),
+                    Some(Err(error)) if never_started(&error) => {
+                        println!("updated; the interpreter uses the new release when it next starts")
+                    }
+                    Some(Err(error)) => println!(
+                        "updated; the interpreter uses the new release when it next starts. The running interpreter could not be asked to restart ({error:#}); to restart it now, run `silicon stop`, then `silicon connect` with your silicon.yaml"
+                    ),
+                }
             }
         }
         SiliconCommand::Web { no_open } => {
@@ -413,13 +490,7 @@ pub fn silicon() -> Result<()> {
                 } else {
                     "xdg-open"
                 };
-                let status = std::process::Command::new(program)
-                    .arg(&url)
-                    .status()
-                    .context("could not open browser; use silicon web --no-open")?;
-                if !status.success() {
-                    bail!("browser launcher failed; use silicon web --no-open");
-                }
+                open_dashboard(program, &url, &daemon.token)?;
                 println!("opened Silicon dashboard");
             }
         }
@@ -428,16 +499,25 @@ pub fn silicon() -> Result<()> {
         SiliconCommand::Settings { command } => {
             let value = match command {
                 Some(SettingsCommand::Set { key, on, .. }) => {
-                    if let Ok(daemon) = server::daemon(false) {
-                        server::call(&daemon, "settings-set", json!({"key":key,"enabled":on}))?
-                    } else {
-                        json!(crate::settings::set(&key, on)?)
+                    // The daemon only serializes this same file write; without one, write it here.
+                    match server::daemon(false) {
+                        Ok(daemon) => {
+                            server::call(&daemon, "settings-set", json!({"key":key,"enabled":on}))?
+                        }
+                        Err(error) => {
+                            if !never_started(&error) {
+                                eprintln!("warning: writing the settings file directly; the interpreter did not answer: {error:#}");
+                            }
+                            json!(crate::settings::set(&key, on)?)
+                        }
                     }
                 }
                 Some(SettingsCommand::Get { key: Some(key) }) => json!(crate::settings::load()?)
                     .get(&key)
                     .cloned()
-                    .ok_or_else(|| anyhow!("unknown setting {key:?}; use silicon settings"))?,
+                    .ok_or_else(|| {
+                        anyhow!("unknown setting {key:?}; expected telemetry or auto_update")
+                    })?,
                 _ => json!(crate::settings::load()?),
             };
             print_json(&value)?;
@@ -469,22 +549,7 @@ pub fn silicon() -> Result<()> {
             if dry_run {
                 print_json(&json!({"title":title,"body":body}))?;
             } else {
-                let status = std::process::Command::new("gh")
-                    .args([
-                        "issue",
-                        "create",
-                        "--repo",
-                        "teamofsilicons/silicon-stemcell",
-                        "--title",
-                        &title,
-                        "--body",
-                        &body,
-                    ])
-                    .status()
-                    .context("GitHub CLI required; install gh and run gh auth login")?;
-                if !status.success() {
-                    bail!("GitHub rejected the bug report ({status}); check gh auth status");
-                }
+                file_bug_report("gh", &title, &body)?;
             }
         }
         SiliconCommand::Send { silicon, send } => {
@@ -572,20 +637,186 @@ pub fn si() -> Result<()> {
     };
     show_result(action, server::internal(action, args)?, cli.json)
 }
-fn connections() -> Result<Vec<server::Connection>> {
-    let Ok(daemon) = server::daemon(false) else {
-        return Ok(Vec::new());
-    };
-    serde_json::from_value(server::call(&daemon, "list", json!({}))?)
-        .context("invalid connection list")
+/// Launchers hand the URL to a browser that can hold captured pipes open for its
+/// whole life, so their output goes straight to the terminal instead of the error.
+fn open_dashboard(program: &str, url: &str, token: &str) -> Result<()> {
+    let home = server::directory();
+    let shown = crate::failure::mask(&home, &crate::failure::argv(program, &[url]), &[token]);
+    let hint = "could not open the Silicon dashboard; use silicon web --no-open to print its URL";
+    let status = std::process::Command::new(program)
+        .arg(url)
+        .status()
+        .map_err(|error| crate::failure::spawn(&home, &shown, &error))
+        .context(hint)?;
+    if !status.success() {
+        return Err(anyhow!(
+            "`{shown}` failed: {status}; its output, if any, is above"
+        ))
+        .context(hint);
+    }
+    Ok(())
 }
-fn print_connections(rows: &[server::Connection]) {
+fn file_bug_report(program: &str, title: &str, body: &str) -> Result<()> {
+    let args = [
+        "issue",
+        "create",
+        "--repo",
+        "teamofsilicons/silicon-stemcell",
+        "--title",
+        title,
+        "--body",
+        body,
+    ];
+    let home = server::directory();
+    let shown = crate::failure::argv(program, &args);
+    let output =
+        crate::process::Starting::output_retrying(std::process::Command::new(program).args(args))
+            .map_err(|error| crate::failure::spawn(&home, &shown, &error))
+            .context(
+                "could not file the bug report; install the GitHub CLI (gh) and run gh auth login",
+            )?;
+    if !output.status.success() {
+        return Err(crate::failure::command(&home, &shown, &output, &[]))
+            .context("GitHub CLI could not file the bug report; check gh auth status");
+    }
+    // gh answers with the new issue's URL.
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+    Ok(())
+}
+/// Before `connect` starts or reaches the interpreter: install autostart the first time
+/// (the interpreter then comes back after a reboot or crash), warn about paths a supervisor
+/// cannot read, and let an interpreter started without a supervisor hand over to it. All of
+/// it goes to stderr, so `--json` output stays JSON, and none of it can fail the connect.
+pub(crate) fn supervise(cfg: &crate::config::Config) {
+    match crate::service::ensure_for_connect() {
+        Ok(Some(note)) => eprintln!("{note}"),
+        Ok(None) => {}
+        Err(error) => eprintln!(
+            "warning: autostart was not set up; the interpreter runs without a supervisor: {error:#}"
+        ),
+    }
+    for warning in crate::service::connect_warnings(&cfg.path, &cfg.home) {
+        eprintln!("warning: {warning}");
+    }
+    let Ok(Some(service)) = crate::service::installed() else {
+        return;
+    };
+    // Started in the background by an earlier connect, not by a supervisor: it hands over to
+    // one whose interpreter can wait beside it, once no work is running. One run in a terminal
+    // or by the user's own process manager is theirs and is left alone.
+    if !crate::server::HANDOVER_MECHANISMS.contains(&service.mechanism()) {
+        return;
+    }
+    if let Ok(daemon) = server::daemon(false) {
+        if daemon.supervisor.is_none() && daemon.detached {
+            match server::call(&daemon, "restart", json!({"handover": true})) {
+                Ok(_) => eprintln!(
+                    "the running interpreter (pid {}) hands over to the {} service as soon as no work is running",
+                    daemon.pid,
+                    service.mechanism()
+                ),
+                Err(error) => eprintln!(
+                    "warning: the running interpreter (pid {}) was not started by the {} service and could not be asked to hand over to it: {error:#}",
+                    daemon.pid,
+                    service.mechanism()
+                ),
+            }
+        }
+    }
+}
+/// Only a missing daemon.json with nothing holding daemon.lock means no interpreter was
+/// ever started. A leftover file, one that is starting or restarting (it holds the lock
+/// before it writes daemon.json), or any other failure is worth a reason.
+fn never_started(error: &anyhow::Error) -> bool {
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|cause| cause.kind() == std::io::ErrorKind::NotFound)
+        && !server::directory()
+            .join("daemon.json")
+            .try_exists()
+            .unwrap_or(true)
+        && !server::interpreter_present()
+}
+/// Saved Silicons as the interpreter lists them, each with its state.
+fn connections() -> Result<Vec<Value>> {
+    let daemon = match server::daemon(false) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            if !never_started(&error) {
+                eprintln!(
+                    "warning: no connections listed; the interpreter did not answer: {error:#}"
+                );
+            }
+            return Ok(Vec::new());
+        }
+    };
+    let value = server::call(&daemon, "list", json!({}))?;
+    let rows = value.as_array().cloned().ok_or_else(|| {
+        anyhow!(
+            "interpreter returned an invalid connection list (expected an array): {}",
+            shown(&value)
+        )
+    })?;
+    for row in &rows {
+        serde_json::from_value::<server::Listed>(row.clone()).with_context(|| {
+            format!(
+                "interpreter returned an invalid connection list entry: {}",
+                shown(row)
+            )
+        })?;
+    }
+    Ok(rows)
+}
+/// One line per Silicon; one that is not connected shows its state after the host, and a
+/// failure it is retrying is shown whole on the lines below it.
+fn print_connections(rows: &[Value]) {
     if rows.is_empty() {
         println!("No Silicons connected.");
     }
     for row in rows {
-        println!("{}\thttp://{}\t{}", row.id, row.host, row.yaml.display());
+        let Ok(listed) = serde_json::from_value::<server::Listed>(row.clone()) else {
+            println!("{}", shown(row));
+            continue;
+        };
+        for line in connection_lines(&listed) {
+            println!("{line}");
+        }
     }
+}
+fn connection_lines(listed: &server::Listed) -> Vec<String> {
+    let row = &listed.connection;
+    let state = match listed.state.as_str() {
+        "connected" => String::new(),
+        "waiting" => format!(
+            "\twaiting to be restored (attempt {} failed; next attempt {})",
+            listed.attempt.unwrap_or_default(),
+            listed.retry_at.as_deref().unwrap_or("soon")
+        ),
+        other => format!("\t{}", clean(other)),
+    };
+    let mut lines = vec![format!(
+        "{}\thttp://{}{state}\t{}",
+        row.id,
+        row.host,
+        row.yaml.display()
+    )];
+    let indented = |error: &str, lines: &mut Vec<String>| {
+        lines.extend(error.lines().map(|line| format!("    {}", clean(line))));
+    };
+    if let Some(error) = &listed.error {
+        indented(error, &mut lines);
+    }
+    if let Some(error) = &listed.ting_error {
+        lines.push(format!(
+            "  Ting webhook registration is failing (attempt {}; next attempt {}):",
+            listed.ting_attempt.unwrap_or_default(),
+            listed.ting_retry_at.as_deref().unwrap_or("soon")
+        ));
+        indented(error, &mut lines);
+    }
+    lines
 }
 fn warnings(value: &Value) {
     for warning in value
@@ -602,9 +833,16 @@ fn print_json(value: &Value) -> Result<()> {
     Ok(())
 }
 fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
-    value[key]
-        .as_str()
-        .ok_or_else(|| anyhow!("interpreter response is missing {key}"))
+    value[key].as_str().ok_or_else(|| {
+        anyhow!(
+            "interpreter response has no string {key:?}: {}",
+            shown(value)
+        )
+    })
+}
+/// A response as JSON for an error, with only credential values masked.
+fn shown(value: &Value) -> String {
+    crate::failure::mask(&server::directory(), &value.to_string(), &[])
 }
 fn public_action(action: &str, silicon: &str, mut args: Value, json: bool) -> Result<()> {
     args["silicon"] = json!(silicon);
@@ -654,7 +892,7 @@ fn glob(pattern: &str, anchored: bool, insensitive: bool) -> Result<Regex> {
         .case_insensitive(insensitive)
         .dot_matches_new_line(true)
         .build()
-        .context("invalid glob")
+        .with_context(|| format!("invalid glob {pattern:?}"))
 }
 enum ArchiveFilter {
     Dates(NaiveDate, NaiveDate),
@@ -669,9 +907,9 @@ pub fn filter_sessions(
     timezone: &str,
     now: DateTime<Utc>,
 ) -> Result<Value> {
-    let timezone: Tz = timezone
-        .parse()
-        .context("archive timezone must be an IANA timezone")?;
+    let timezone: Tz = timezone.parse().with_context(|| {
+        format!("archive timezone must be an IANA timezone such as UTC or Asia/Kolkata, got {timezone:?}")
+    })?;
     let mut parsed = Vec::new();
     for filter in filters.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if filter.contains(':')
@@ -680,25 +918,30 @@ pub fn filter_sessions(
                 .all(|c| c.is_ascii_digit() || c == ':' || c == '-')
         {
             let (first, last) = filter.split_once('-').unwrap_or((filter, filter));
-            let first = NaiveDate::parse_from_str(first, "%d:%m:%Y")
-                .context("archive dates use DD:MM:YYYY")?;
-            let last = NaiveDate::parse_from_str(last, "%d:%m:%Y")
-                .context("archive dates use DD:MM:YYYY")?;
+            let date = |date: &str| {
+                NaiveDate::parse_from_str(date, "%d:%m:%Y").with_context(|| {
+                    format!("archive date {date:?} in filter {filter:?} must be DD:MM:YYYY")
+                })
+            };
+            let (first, last) = (date(first)?, date(last)?);
             if first > last {
-                bail!("archive range start must not be after its end");
+                bail!("archive range {filter:?} starts after it ends");
             }
             parsed.push(ArchiveFilter::Dates(first, last));
         } else {
             parsed.push(ArchiveFilter::Text(glob(filter, false, true)?));
         }
     }
-    let records = value
-        .as_array()
-        .ok_or_else(|| anyhow!("interpreter returned an invalid session list"))?;
+    let records = value.as_array().ok_or_else(|| {
+        anyhow!(
+            "interpreter returned an invalid session list (expected an array): {}",
+            shown(&value)
+        )
+    })?;
     let mut found = Vec::new();
     for record in records {
         let timestamp = DateTime::parse_from_rfc3339(field(record, "archived_at")?)
-            .context("invalid session archive timestamp")?;
+            .with_context(|| format!("invalid session archive timestamp in {}", shown(record)))?;
         let day = timestamp.with_timezone(&timezone).date_naive();
         let matches = if parsed.is_empty() {
             timestamp >= now - chrono::Duration::days(3)
@@ -720,9 +963,12 @@ fn show_sessions(value: Value, json: bool) -> Result<()> {
     if json {
         return print_json(&value);
     }
-    let rows = value
-        .as_array()
-        .ok_or_else(|| anyhow!("invalid session list"))?;
+    let rows = value.as_array().ok_or_else(|| {
+        anyhow!(
+            "interpreter returned an invalid session list (expected an array): {}",
+            shown(&value)
+        )
+    })?;
     if rows.is_empty() {
         println!("No matching sessions.");
     }
@@ -741,13 +987,20 @@ fn show_sessions(value: Value, json: bool) -> Result<()> {
     Ok(())
 }
 fn log_path(id: &str) -> Result<PathBuf> {
-    if let Some(connection) = server::saved()?
+    if !crate::config::valid_silicon_id(id) {
+        bail!("expected a canonical Silicon ID si:<handle>, got {id:?}; migrate legacy IDs using IAM's verified mapping");
+    }
+    if let Some(connection) = server::saved()
+        .with_context(|| format!("look up {id} among saved connections to find its log"))?
         .into_iter()
         .find(|connection| connection.id == id)
     {
         return Ok(connection.home.join(".silicon/silicon.log"));
     }
-    let value = server::call(&server::daemon(false)?, "logs", json!({"silicon":id}))?;
+    let daemon = server::daemon(false).with_context(|| {
+        format!("{id} has no saved connection, so only the interpreter can say where its log is")
+    })?;
+    let value = server::call(&daemon, "logs", json!({"silicon":id}))?;
     Ok(PathBuf::from(field(&value, "path")?))
 }
 fn clean(value: &str) -> String {
@@ -837,13 +1090,24 @@ impl Drop for Footer {
         let _ = std::io::stdout().flush();
     }
 }
+/// silicon.log escapes newlines to keep one entry per line; error entries are
+/// unfolded again so multi-line tool output reads as the tool wrote it.
+fn display_line(line: &str, color: bool) -> String {
+    let text = if color { colored(line) } else { clean(line) };
+    if line
+        .split_once(']')
+        .is_some_and(|(kind, _)| kind.contains("error"))
+    {
+        text.replace("\\n", "\n    ")
+    } else {
+        text
+    }
+}
 fn emit_log(line: &str, id: &str, path: &Path, color: bool, json: bool) {
     if json {
         println!("{}", json!({"silicon":id,"path":path,"line":line}));
-    } else if color {
-        println!("{}", colored(line));
     } else {
-        println!("{}", clean(line));
+        println!("{}", display_line(line, color));
     }
 }
 // Keep the tail and its byte offset from the same open file so appends between
@@ -877,7 +1141,8 @@ fn tail_snapshot(file: &mut File, count: usize) -> Result<(Vec<String>, u64)> {
 fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
     let path = log_path(id)?;
     if !follow {
-        let lines = server::tail(&path, count)?;
+        // tail names the file in its own errors.
+        let lines = server::tail(&path, count).context("read the Silicon log")?;
         if json {
             return print_json(&json!({"silicon":id,"path":path,"lines":lines}));
         }
@@ -895,10 +1160,12 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
         None
     };
     let stopping = Arc::new(AtomicBool::new(false));
-    let sigint = signal_hook::flag::register(libc::SIGINT, stopping.clone())?;
-    let sigterm = signal_hook::flag::register(libc::SIGTERM, stopping.clone())?;
+    let sigint = signal_hook::flag::register(libc::SIGINT, stopping.clone())
+        .context("install the Ctrl-C handler for following the log")?;
+    let sigterm = signal_hook::flag::register(libc::SIGTERM, stopping.clone())
+        .context("install the SIGTERM handler for following the log")?;
     let result = (|| -> Result<()> {
-        let mut file = None;
+        let mut file: Option<File> = None;
         let mut identity = (0, 0);
         let mut offset = 0;
         let mut pending = Vec::new();
@@ -908,9 +1175,23 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
                 Ok(metadata) => {
                     let current = (metadata.dev(), metadata.ino());
                     if file.is_none() || identity != current || metadata.len() < offset {
-                        let mut opened = File::open(&path)?;
+                        let read = || format!("read Silicon log {}", path.display());
+                        // A rotated log keeps its last lines in the file already open.
+                        if let Some(old) = file.as_mut() {
+                            let mut bytes = Vec::new();
+                            old.read_to_end(&mut bytes).with_context(read)?;
+                            pending.extend(bytes);
+                            if !pending.is_empty() && !pending.ends_with(b"\n") {
+                                pending.push(b'\n');
+                            }
+                            for line in String::from_utf8_lossy(&pending).lines() {
+                                emit_log(line, id, &path, color, json);
+                            }
+                        }
+                        let mut opened = File::open(&path).with_context(read)?;
                         if initial {
-                            let (lines, end) = tail_snapshot(&mut opened, count)?;
+                            let (lines, end) =
+                                tail_snapshot(&mut opened, count).with_context(read)?;
                             for line in lines {
                                 emit_log(&line, id, &path, color, json);
                             }
@@ -925,7 +1206,8 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
                     }
                     if let Some(file) = file.as_mut() {
                         let mut bytes = Vec::new();
-                        file.read_to_end(&mut bytes)?;
+                        file.read_to_end(&mut bytes)
+                            .with_context(|| format!("read Silicon log {}", path.display()))?;
                         offset += bytes.len() as u64;
                         pending.extend(bytes);
                         let mut consumed = 0;
@@ -945,7 +1227,10 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("read Silicon log"),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("read Silicon log {}", path.display()))
+                }
             }
             if let Some(footer) = footer.as_mut() {
                 footer.draw()?;
@@ -1030,9 +1315,56 @@ mod tests {
             "Summary"
         ])
         .is_ok());
-        assert!(glob("*:org", true, false).unwrap().is_match("hello:org"));
+        assert!(glob("si:*", true, false).unwrap().is_match("si:hello"));
         assert!(!glob("a*b*c", true, false).unwrap().is_match("ac"));
         assert!(!glob("foo.bar", true, false).unwrap().is_match("fooXbar"));
+    }
+    #[test]
+    fn listed_silicons_show_their_restore_state_and_whole_errors() {
+        let row = |extra: Value| {
+            let mut row =
+                json!({"id":"si:a","yaml":"/a/silicon.yaml","home":"/a","host":"a.o.localhost"});
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<server::Listed>(row).unwrap()
+        };
+        // An older interpreter lists no state: those rows are connected.
+        assert_eq!(
+            connection_lines(&row(json!({}))),
+            ["si:a\thttp://a.o.localhost\t/a/silicon.yaml"]
+        );
+        assert_eq!(
+            connection_lines(&row(json!({"state":"restoring"}))),
+            ["si:a\thttp://a.o.localhost\trestoring\t/a/silicon.yaml"]
+        );
+        let waiting = row(
+            json!({"state":"waiting","attempt":3,"retry_at":"2026-09-26T10:00:00+00:00",
+            "error":"`honeycomb install ting` failed: exit status: 1\nstderr:\nno network"}),
+        );
+        assert_eq!(
+            connection_lines(&waiting),
+            [
+                "si:a\thttp://a.o.localhost\twaiting to be restored (attempt 3 failed; next attempt 2026-09-26T10:00:00+00:00)\t/a/silicon.yaml",
+                "    `honeycomb install ting` failed: exit status: 1",
+                "    stderr:",
+                "    no network",
+            ]
+        );
+        let ting = row(json!({"ting_error":"ting: refused","ting_attempt":2,"ting_retry_at":"T"}));
+        assert_eq!(
+            connection_lines(&ting),
+            [
+                "si:a\thttp://a.o.localhost\t/a/silicon.yaml",
+                "  Ting webhook registration is failing (attempt 2; next attempt T):",
+                "    ting: refused",
+            ]
+        );
+        let parsed = SiliconCli::try_parse_from(["silicon", "stop", "--force"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Some(SiliconCommand::Stop { force: true })
+        ));
     }
     #[test]
     fn tail_snapshot_follows_exact_read_boundary_and_colors_only_prefix() {
@@ -1043,5 +1375,82 @@ mod tests {
         assert_eq!(file.stream_position().unwrap(), end);
         assert!(colored("[error] [worker] [time] [body]").ends_with("\x1b[0m [time] [body]"));
         assert!(!clean("hello\x1b[2J").contains('\x1b'));
+    }
+    #[test]
+    fn error_log_lines_unfold_tool_output_for_people_only() {
+        let line = "[error] [worker/cli] [2026-09-25T00:00:00Z] [`bash -c false` failed: exit status: 1\\nstderr:\\n  boom\\nstdout: (empty)]";
+        assert_eq!(
+            display_line(line, false),
+            "[error] [worker/cli] [2026-09-25T00:00:00Z] [`bash -c false` failed: exit status: 1\n    stderr:\n      boom\n    stdout: (empty)]"
+        );
+        assert!(display_line(line, true)
+            .ends_with("exit status: 1\n    stderr:\n      boom\n    stdout: (empty)]"));
+        let command = "[command] [worker/cli] [t] [running: printf 'a\\nb']";
+        assert_eq!(display_line(command, false), command);
+    }
+    #[test]
+    fn failing_tools_report_their_command_status_and_streams() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".silicon/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tool = |name: &str, script: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let gh = tool(
+            "gh",
+            "echo 'HTTP 401: Bad credentials (https://api.github.com/graphql)' >&2\necho '{\"hint\":\"run gh auth login\"}'\nexit 4\n",
+        );
+        let error = format!(
+            "{:#}",
+            file_bug_report(&gh, "Crash", "it broke").unwrap_err()
+        );
+        assert_eq!(
+            error,
+            "GitHub CLI could not file the bug report; check gh auth status: \
+             `gh issue create --repo teamofsilicons/silicon-stemcell --title Crash --body 'it broke'` failed: exit status: 4\n\
+             stderr:\nHTTP 401: Bad credentials (https://api.github.com/graphql)\n\
+             stdout:\n{\"hint\":\"run gh auth login\"}"
+        );
+        let absent = bin.join("absent").to_string_lossy().into_owned();
+        let error = format!("{:#}", file_bug_report(&absent, "t", "b").unwrap_err());
+        assert!(
+            error.contains("could not run `absent issue create"),
+            "{error}"
+        );
+        assert!(error.contains("No such file or directory"), "{error}");
+        let open = tool("open", "exit 2\n");
+        let error = format!(
+            "{:#}",
+            open_dashboard(
+                &open,
+                "http://127.0.0.1:1823/#dashboard-credential",
+                "dashboard-credential"
+            )
+            .unwrap_err()
+        );
+        assert!(
+            error.contains("#[redacted]'` failed: exit status: 2"),
+            "{error}"
+        );
+        assert!(!error.contains("dashboard-credential"), "{error}");
+        let error = format!("{:#}", field(&json!({"id": 7}), "id").unwrap_err());
+        assert_eq!(
+            error,
+            "interpreter response has no string \"id\": {\"id\":7}"
+        );
+        let error = format!(
+            "{:#}",
+            filter_sessions(json!([]), &["31:02:2020".into()], "UTC", Utc::now()).unwrap_err()
+        );
+        assert!(
+            error.contains(
+                "archive date \"31:02:2020\" in filter \"31:02:2020\" must be DD:MM:YYYY: "
+            ),
+            "{error}"
+        );
     }
 }

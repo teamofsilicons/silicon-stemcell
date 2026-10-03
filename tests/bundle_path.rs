@@ -62,7 +62,11 @@ fn bundle_tools_resolve_through_public_symlink_and_keep_home_priority() {
         .unwrap()
         .starts_with(&format!("{}\nuser-choice\n", home.display())));
     let result = run(&std::env::join_paths([&bin, &system, &old_bin, &bin]).unwrap());
-    assert!(result.status.success());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let receipt = fs::read_to_string(root.join("receipt")).unwrap();
     assert_eq!(
         std::env::split_paths(receipt.lines().nth(2).unwrap())
@@ -98,5 +102,11 @@ fn bundle_tools_resolve_through_public_symlink_and_keep_home_priority() {
     fs::remove_file(bin.parent().unwrap().join("VERSION")).unwrap();
     let result = run(system.as_os_str());
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("bundle-probe"));
+    // The failure names the command, its exit status and what the shell said.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("`bash -c bundle-probe` failed: exit status: 127")
+            && stderr.contains("bundle-probe: command not found"),
+        "{stderr}"
+    );
 }

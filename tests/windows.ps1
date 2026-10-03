@@ -8,6 +8,8 @@ if ('Silicon' -in @($existing | ForEach-Object { $_.Trim() })) { throw 'Tests re
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $env:SILICON_TELEMETRY = '0'
 $env:SILICON_AUTO_UPDATE = '0'
+# The runner must not keep a logon-task interpreter on ports 1823 and 80 between steps.
+$env:SILICON_NO_SERVICE = '1'
 $env:SILICON_INTERPRETER_HOME = '/home/silicon/native-cli-state'
 try {
     if ($ReleaseTag) {
@@ -26,6 +28,19 @@ try {
         $unicodePayload = Join-Path $env:RUNNER_TEMP 'Silicon payload Ω with spaces'
         Copy-Item -LiteralPath $PayloadRoot -Destination $unicodePayload -Recurse
         $PayloadRoot = $unicodePayload
+        # A corrupted runtime is refused before anything changes, and the refusal names both checksums.
+        $tampered = Join-Path $env:RUNNER_TEMP 'Silicon tampered payload'
+        Copy-Item -LiteralPath $PayloadRoot -Destination $tampered -Recurse
+        $wrongHash = '0' * 64
+        [IO.File]::WriteAllText((Join-Path $tampered 'RUNTIME.sha256'), $wrongHash)
+        $tamperedHash = (Get-FileHash (Join-Path $tampered 'runtime.tar.gz') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $refused = & { $ErrorActionPreference = 'Continue'; & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$source/install.ps1" -PayloadRoot $tampered -NoPath 2>&1 } | Out-String
+        # PowerShell wraps long error lines, so compare without whitespace.
+        $flat = $refused -replace '\s', ''
+        if ($LASTEXITCODE -eq 0 -or !$flat.Contains('Linuxruntimechecksummismatch') -or !$flat.Contains($wrongHash) -or !$flat.Contains($tamperedHash)) {
+            throw "A runtime checksum mismatch must fail and name both checksums (exit $LASTEXITCODE):`n$refused"
+        }
+        Remove-Item -LiteralPath $tampered -Recurse -Force
         & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$source/install.ps1" -PayloadRoot $PayloadRoot -NoPath
         if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 provisioning failed.' }
     }

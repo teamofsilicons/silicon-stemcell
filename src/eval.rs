@@ -1,14 +1,68 @@
 //! Shared CEL → Bash → string evaluation. Configuration is trusted executable input.
+use crate::failure::{self, panic_message};
 use anyhow::{anyhow, bail, Context as _, Result};
 use cel_interpreter::{
     extractors::{Identifier, This},
-    Context, ExecutionError, FunctionContext, IdedExpr, Program, Value,
+    Context, ExecutionError, FunctionContext, IdedExpr, ParseErrors, Program, Value,
 };
 use chrono::DateTime;
 use chrono_tz::Tz;
 use serde_json::Value as Json;
 use serde_yaml::Value as Yaml;
-use std::{collections::HashMap, fs, panic::AssertUnwindSafe, path::Path, sync::Arc};
+use std::{
+    collections::HashMap, fs, panic::AssertUnwindSafe, path::Path, process::Output, sync::Arc,
+};
+
+/// A credential expression's source may embed the credential, so its errors use this name.
+const CREDENTIAL: &str = "[credential expression]";
+
+fn shown(source: &str, secret: bool) -> &str {
+    if secret {
+        CREDENTIAL
+    } else {
+        source
+    }
+}
+
+/// CEL and parser text quotes source tokens (`extraneous input ''sk-live-…''`). In a
+/// credential expression those may be the credential, so its words of 8+ characters
+/// (the same floor telemetry uses for secrets) are masked; the message itself stays.
+fn scrub(text: &str, source: &str, secret: bool) -> String {
+    if !secret {
+        return text.to_owned();
+    }
+    let mut words = source
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|word| word.len() >= 8)
+        .collect::<Vec<_>>();
+    words.sort_by_key(|word| std::cmp::Reverse(word.len()));
+    words.into_iter().fold(text.to_owned(), |text, word| {
+        text.replace(word, "[redacted]")
+    })
+}
+
+/// The parser's own words. A credential expression's snippet lines are its source, so they go.
+fn parse_errors(errors: &ParseErrors, source: &str, secret: bool) -> String {
+    errors
+        .errors
+        .iter()
+        .map(|error| {
+            let mut text = if secret {
+                format!(
+                    "ERROR: <input>:{}:{}: {}",
+                    error.pos.0, error.pos.1, error.msg
+                )
+            } else {
+                error.to_string()
+            };
+            if let Some(cause) = &error.source {
+                text.push_str(&format!("\ncaused by: {cause}"));
+            }
+            scrub(&text, source, secret)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 // JSON has no uint type: use CEL int where possible so `request.count + 1` works.
 fn cel_value(value: Json) -> Value {
@@ -34,11 +88,22 @@ fn cel_value(value: Json) -> Value {
     }
 }
 
-fn compile(source: &str) -> Result<Program> {
+fn compile(source: &str, secret: bool) -> Result<Program> {
+    let name = shown(source, secret);
     // cel-parser 0.10's error recovery can panic on malformed input; contain that upstream bug.
     std::panic::catch_unwind(|| Program::compile(source))
-        .map_err(|_| anyhow!("invalid CEL `{source}` (parser rejected malformed input)"))?
-        .map_err(|e| anyhow!("invalid CEL `{source}`: {e}"))
+        .map_err(|panic| {
+            anyhow!(
+                "invalid CEL `{name}`: the CEL parser panicked instead of reporting the syntax error: {}",
+                scrub(panic_message(&*panic), source, secret)
+            )
+        })?
+        .map_err(|errors| {
+            anyhow!(
+                "invalid CEL `{name}`: {}",
+                parse_errors(&errors, source, secret)
+            )
+        })
 }
 
 fn context(env: &Json) -> Result<Context<'static>> {
@@ -53,11 +118,16 @@ fn context(env: &Json) -> Result<Context<'static>> {
         context.add_function(
             name,
             move |when: Arc<String>, zone: Arc<String>| -> Result<Value, ExecutionError> {
-                let time = DateTime::parse_from_rfc3339(&when)
-                    .map_err(|e| ExecutionError::function_error(name, e))?;
-                let tz: Tz = zone
-                    .parse()
-                    .map_err(|e| ExecutionError::function_error(name, e))?;
+                let time = DateTime::parse_from_rfc3339(&when).map_err(|e| {
+                    ExecutionError::function_error(name, format!("{when:?} is not RFC 3339: {e}"))
+                })?;
+                // chrono-tz only says "failed to parse timezone"; name the zone it rejected.
+                let tz: Tz = zone.parse().map_err(|e| {
+                    ExecutionError::function_error(
+                        name,
+                        format!("{zone:?} is not an IANA time zone name: {e}"),
+                    )
+                })?;
                 Ok(format!(
                     "{} {}",
                     time.with_timezone(&tz).format("%H:%M:%S %d:%m:%y"),
@@ -107,7 +177,10 @@ fn context(env: &Json) -> Result<Context<'static>> {
          key: IdedExpr|
          -> Result<Value, ExecutionError> {
             if ctx.args.len() != 2 {
-                return Err(ctx.error("expected sortBy(binding, key)"));
+                return Err(ctx.error(format!(
+                    "expected sortBy(binding, key), got {} arguments",
+                    ctx.args.len()
+                )));
             }
             let mut scope = ctx.ptx.new_inner_scope();
             let mut keyed = items
@@ -127,13 +200,53 @@ fn context(env: &Json) -> Result<Context<'static>> {
                     std::mem::discriminant(key) != std::mem::discriminant(first)
                         || compare(first, key).is_none()
                 }) {
-                    return Err(ctx.error("sort keys must have the same comparable type"));
+                    return Err(ctx.error(format!(
+                        "sort keys must have the same comparable type; got {:?}",
+                        keyed.iter().map(|(key, _)| key).collect::<Vec<_>>()
+                    )));
                 }
             }
             keyed.sort_by(|(a, _), (b, _)| compare(a, b).unwrap());
             Ok(keyed
                 .into_iter()
                 .map(|(_, item)| item)
+                .collect::<Vec<_>>()
+                .into())
+        },
+    );
+    context.add_function(
+        "groupBy",
+        |ctx: &FunctionContext,
+         This(items): This<Arc<Vec<Value>>>,
+         Identifier(binding): Identifier,
+         key: IdedExpr|
+         -> Result<Value, ExecutionError> {
+            if ctx.args.len() != 2 {
+                return Err(ctx.error(format!(
+                    "expected groupBy(binding, key), got {} arguments",
+                    ctx.args.len()
+                )));
+            }
+            let mut scope = ctx.ptx.new_inner_scope();
+            let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
+            // ponytail: quadratic CEL equality scan; hash canonical keys if batches grow large.
+            for item in items.iter() {
+                scope.add_variable_from_value(binding.as_str(), item.clone());
+                let key = scope.resolve(&key)?;
+                if let Some((_, items)) = groups.iter_mut().find(|(existing, _)| existing == &key) {
+                    items.push(item.clone());
+                } else {
+                    groups.push((key, vec![item.clone()]));
+                }
+            }
+            Ok(groups
+                .into_iter()
+                .map(|(key, items)| {
+                    Value::from(HashMap::from([
+                        ("key".to_owned(), key),
+                        ("items".to_owned(), Value::from(items)),
+                    ]))
+                })
                 .collect::<Vec<_>>()
                 .into())
         },
@@ -146,7 +259,10 @@ fn context(env: &Json) -> Result<Context<'static>> {
 
 fn list_function(ctx: &FunctionContext) -> Result<Value, ExecutionError> {
     let Some(Value::List(items)) = &ctx.this else {
-        return Err(ctx.error("expected a list receiver"));
+        return Err(ctx.error(match &ctx.this {
+            Some(this) => format!("expected a list receiver, got {this:?}"),
+            None => "expected a list receiver, got none".to_owned(),
+        }));
     };
     let args = ctx
         .args
@@ -163,7 +279,9 @@ fn list_function(ctx: &FunctionContext) -> Result<Value, ExecutionError> {
                 .iter()
                 .map(|item| match item {
                     Value::String(item) => Ok(item.as_str()),
-                    _ => Err(ctx.error("join requires string elements")),
+                    other => {
+                        Err(ctx.error(format!("join requires string elements, got {other:?}")))
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map(|items| items.join(separator).into())
@@ -190,7 +308,7 @@ fn list_function(ctx: &FunctionContext) -> Result<Value, ExecutionError> {
                 _ => 1,
             };
             if depth < 0 {
-                return Err(ctx.error("flatten depth must not be negative"));
+                return Err(ctx.error(format!("flatten depth must not be negative, got {depth}")));
             }
             fn flatten(items: &[Value], depth: i64, output: &mut Vec<Value>) {
                 for item in items {
@@ -204,17 +322,36 @@ fn list_function(ctx: &FunctionContext) -> Result<Value, ExecutionError> {
             flatten(items, depth, &mut output);
             Ok(output.into())
         }
-        _ => Err(ctx.error("invalid list arguments or slice bounds")),
+        _ => Err(ctx.error(format!(
+            "invalid arguments {args:?} for a list of {} items",
+            items.len()
+        ))),
     }
 }
 
-fn cel(source: &str, env: &Json) -> Result<Json> {
-    let program = compile(source)?;
+fn cel(source: &str, env: &Json, secret: bool) -> Result<Json> {
+    let name = shown(source, secret);
+    let program = compile(source, secret)?;
     let context = context(env)?;
     let value = std::panic::catch_unwind(AssertUnwindSafe(|| program.execute(&context)))
-        .map_err(|_| anyhow!("CEL evaluation failed safely: `{source}`"))?
-        .with_context(|| format!("CEL `{source}`"))?;
-    value.json().map_err(|e| anyhow!(e.to_string()))
+        .map_err(|panic| {
+            anyhow!(
+                "CEL `{name}` panicked during evaluation: {}",
+                scrub(panic_message(&*panic), source, secret)
+            )
+        })?
+        .map_err(|error| {
+            anyhow!(
+                "CEL `{name}`: {}",
+                scrub(&error.to_string(), source, secret)
+            )
+        })?;
+    value.json().map_err(|error| {
+        anyhow!(
+            "CEL `{name}` produced a value JSON cannot hold: {}",
+            scrub(&error.to_string(), source, secret)
+        )
+    })
 }
 
 fn text(value: Json) -> String {
@@ -322,15 +459,19 @@ fn fallbacks(source: &str, mode: Mode) -> Result<Vec<&str>> {
         source[start..].trim()
     });
     if result.iter().any(|part| part.is_empty()) && result.len() > 1 {
-        bail!("empty fallback candidate");
+        bail!(
+            "empty fallback candidate in `{}`: `!>>` needs an expression on each side",
+            shown(source, mode.secret())
+        );
     }
     Ok(result)
 }
 
-fn unquote(source: &str) -> Result<(String, bool)> {
+fn unquote(source: &str, secret: bool) -> Result<(String, bool)> {
     if source.starts_with('"') && source.ends_with('"') && source.len() >= 2 {
         return Ok((
-            serde_json::from_str::<String>(source).context("invalid quoted fallback")?,
+            serde_json::from_str::<String>(source)
+                .with_context(|| format!("invalid quoted fallback `{}`", shown(source, secret)))?,
             true,
         ));
     }
@@ -340,12 +481,16 @@ fn unquote(source: &str) -> Result<(String, bool)> {
     Ok((source.to_owned(), false))
 }
 
-fn interpolate(source: &str, env: &Json) -> Result<String> {
-    template(source)?
+fn parts(source: &str, secret: bool) -> Result<Vec<Part>> {
+    template(source).with_context(|| format!("invalid template `{}`", shown(source, secret)))
+}
+
+fn interpolate(source: &str, env: &Json, secret: bool) -> Result<String> {
+    parts(source, secret)?
         .into_iter()
         .map(|part| match part {
             Part::Text(text) => Ok(text),
-            Part::Cel(source) => cel(&source, env).map(text),
+            Part::Cel(source) => cel(&source, env, secret).map(text),
         })
         .collect()
 }
@@ -359,21 +504,53 @@ enum Mode {
     Setup,
 }
 
+impl Mode {
+    fn secret(self) -> bool {
+        matches!(self, Mode::Secret)
+    }
+}
+
 fn redact(message: &str, env: &Json) -> String {
     let secrets = crate::telemetry::silicon_secrets(&env["silicon"]);
     crate::telemetry::redact_text(message, &secrets)
 }
 
+/// A failed write still carries the entry, so an evaluation error is never swapped for an I/O one.
 fn log(env: &Json, home: &Path, kind: &str, isi: &str, message: &str) -> Result<()> {
     let generation = env["_connection"].as_str().and_then(|id| id.parse().ok());
-    crate::log_line_scoped(home, generation, kind, isi, &redact(message, env))
+    let message = redact(message, env);
+    crate::log_line_scoped(home, generation, kind, isi, &message).with_context(|| {
+        format!(
+            "could not write this [{kind}] entry to silicon.log: {}",
+            failure::mask(home, &message, &[])
+        )
+    })
+}
+
+/// A credential command's error keeps its status and stderr; its stdout would be the credential.
+fn credential_failure(home: &Path, problem: &str, output: &Output) -> anyhow::Error {
+    let streams = failure::describe(&Output {
+        stdout: Vec::new(),
+        ..output.clone()
+    });
+    let streams = streams
+        .strip_suffix("\nstdout: (empty)")
+        .unwrap_or(&streams);
+    anyhow!(
+        "{}",
+        failure::mask(
+            home,
+            &format!("`{CREDENTIAL}` {problem}{streams}\nstdout: (withheld; it is the credential)"),
+            &[]
+        )
+    )
 }
 
 fn candidate_source(source: &str, mode: Mode) -> Result<(String, bool)> {
     let (mut source, quoted) = if matches!(mode, Mode::AppCommand) {
         (source.to_owned(), false)
     } else {
-        unquote(source)?
+        unquote(source, mode.secret())?
     };
     // Decode a quoted Bash body here; app commands need these same quotes for argv.
     if !quoted && !matches!(mode, Mode::AppCommand) {
@@ -390,7 +567,7 @@ fn candidate_source(source: &str, mode: Mode) -> Result<(String, bool)> {
 
 fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Result<String> {
     let (source, quoted) = candidate_source(source, mode)?;
-    let expanded = interpolate(&source, env)?;
+    let expanded = interpolate(&source, env, mode.secret())?;
     if matches!(mode, Mode::AppCommand) {
         let command = expanded.trim();
         let command = if source.trim_start().starts_with('!') {
@@ -398,17 +575,25 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
         } else {
             command
         };
-        let argv = shell_words::split(command).context("invalid app command quoting")?;
+        let argv = shell_words::split(command)
+            .with_context(|| format!("invalid app command quoting in `{command}`"))?;
         if argv.first().is_none_or(|arg| arg.is_empty()) || command.contains(['\n', '\0']) {
-            bail!("app command must contain an executable and valid single-line arguments");
+            bail!(
+                "app command {command:?} must contain an executable and valid single-line arguments"
+            );
         }
-        return Ok(command.to_owned());
+        return Ok(if source.trim_start().starts_with('!') {
+            format!("! {command}")
+        } else {
+            command.to_owned()
+        });
     }
     // A request value beginning with `!` is data, never an implicit shell command.
     if let Some(command) = expanded
         .strip_prefix('!')
         .filter(|_| !quoted && source.starts_with('!'))
     {
+        let command = command.trim_start();
         let kind = if matches!(mode, Mode::Setup) {
             "setup"
         } else {
@@ -423,25 +608,33 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
             isi,
             &format!(
                 "running: {}",
-                if matches!(mode, Mode::Secret) {
-                    "[credential expression]"
+                if mode.secret() {
+                    CREDENTIAL
                 } else if compile_time {
                     "[compile-time expression]"
                 } else {
-                    command.trim_start()
+                    command
                 }
             ),
         )?;
-        let output = crate::command("bash", home)
-            .arg("-c")
-            .arg(command.trim_start())
-            .env("ISI", isi)
-            .env(
-                "SILICON_ORG",
-                env["silicon"]["SILICON_ORG"].as_str().unwrap_or_default(),
+        // Mask before quoting so shell quoting cannot split a credential past the mask.
+        let name = if mode.secret() {
+            CREDENTIAL.to_owned()
+        } else {
+            failure::argv(
+                "bash",
+                &["-c", &failure::mask(home, &redact(command, env), &[])],
             )
-            .output()
-            .context("could not start Bash")?;
+        };
+        let mut bash = crate::command("bash", home);
+        bash.arg("-c").arg(command).env("ISI", isi).env(
+            "SILICON_ORG",
+            env["silicon"]["SILICON_ORG"].as_str().unwrap_or_default(),
+        );
+        let output =
+            bounded(&mut bash, mode).map_err(|error| failure::spawn(home, &name, &error))?;
+        // A script stopped at its time limit still shows what it printed before it was
+        // stopped, and the closing `silicon: stopped after` line says why it ended.
         if matches!(mode, Mode::Setup) {
             for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
                 for line in String::from_utf8_lossy(bytes).lines() {
@@ -457,56 +650,104 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
             &format!("finished: {}", output.status),
         )?;
         if !output.status.success() {
-            bail!(
-                "Bash exited with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
+            return Err(if mode.secret() {
+                credential_failure(home, "failed: ", &output)
+            } else {
+                failure::command(home, &name, &output, &[])
+            });
         }
-        return Ok(String::from_utf8(output.stdout)
-            .context("Bash output is not UTF-8")?
-            .trim_end_matches(['\r', '\n'])
-            .to_owned());
+        return match std::str::from_utf8(&output.stdout) {
+            Ok(stdout) => Ok(stdout.trim_end_matches(['\r', '\n']).to_owned()),
+            Err(error) if mode.secret() => Err(credential_failure(
+                home,
+                &format!("printed a credential that is not UTF-8: {error}\n"),
+                &output,
+            )),
+            Err(error) => Err(failure::answer(
+                home,
+                &name,
+                &format!("printed output that is not UTF-8: {error}"),
+                &output,
+                &[],
+            )),
+        };
     }
     if matches!(mode, Mode::Dna) && !quoted {
-        return fs::read_to_string(home.join(expanded)).context("could not read DNA file");
+        let path = home.join(&expanded);
+        return fs::read_to_string(&path)
+            .with_context(|| format!("could not read DNA file {}", path.display()));
     }
     Ok(expanded)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's time limit for its expressions, standing in for the daemon's.
+    static TEST_LIMIT: std::cell::Cell<Option<std::time::Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The interpreter bounds every expression so one hung script cannot hold a lock or a
+/// queue. A CLI command such as `silicon compile` keeps the terminal, so a credential
+/// command there can still prompt.
+fn bounded(bash: &mut std::process::Command, mode: Mode) -> std::io::Result<Output> {
+    #[cfg(test)]
+    if let Some(limit) = TEST_LIMIT.with(std::cell::Cell::get) {
+        return crate::process::output_within(bash, limit);
+    }
+    if crate::process_role() != "daemon" {
+        return crate::process::Starting::output_retrying(bash);
+    }
+    let limit = if matches!(mode, Mode::Setup) {
+        crate::process::Limit::Setup
+    } else {
+        crate::process::Limit::Expression
+    };
+    crate::process::output(bash, limit)
+}
+
+/// One failing candidate is the error; several are listed in the order they were tried.
+/// Each error is masked once, before it is logged, so the log and the caller read the same text.
 fn run(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Result<String> {
-    let result = (|| {
-        let mut errors = Vec::new();
-        for source in fallbacks(source, mode)? {
-            match candidate(source, env, home, isi, mode) {
-                Ok(value) => return Ok(value),
-                Err(error) => {
-                    let message = if matches!(mode, Mode::Secret) {
-                        "credential expression evaluation failed".to_owned()
-                    } else {
-                        redact(&format!("evaluation failed: {error:#}"), env)
-                    };
-                    log(env, home, "error", isi, &message)?;
-                    errors.push(message);
-                }
+    let masked =
+        |error: anyhow::Error| failure::mask(home, &redact(&format!("{error:#}"), env), &[]);
+    let mut errors = Vec::new();
+    for source in fallbacks(source, mode).map_err(|error| anyhow!(masked(error)))? {
+        match candidate(source, env, home, isi, mode) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let error = masked(error);
+                log(
+                    env,
+                    home,
+                    "error",
+                    isi,
+                    &format!("evaluation failed: {error}"),
+                )?;
+                errors.push(error);
             }
         }
-        bail!("all evaluation candidates failed: {}", errors.join("; "))
-    })();
-    result.map_err(|error| {
-        if matches!(mode, Mode::Secret) {
-            anyhow!("credential expression evaluation failed")
-        } else {
-            anyhow!(redact(&format!("{error:#}"), env))
-        }
-    })
+    }
+    if let [error] = errors.as_slice() {
+        bail!("{error}");
+    }
+    bail!(
+        "all {} fallback candidates failed:{}",
+        errors.len(),
+        errors
+            .iter()
+            .enumerate()
+            .map(|(index, error)| format!("\n{}. {error}", index + 1))
+            .collect::<String>()
+    )
 }
 
 pub fn evaluate(source: &str, env: &Json, home: &Path, isi: &str) -> Result<String> {
     run(source, env, home, isi, Mode::Text)
 }
 
-/// Credential sources, parser errors, and Bash stderr never enter diagnostics.
+/// Errors keep the exit status, stderr and parser text. The source reads as
+/// `[credential expression]` and stdout, being the credential, is never shown.
 pub fn evaluate_secret(source: &str, env: &Json, home: &Path, isi: &str) -> Result<String> {
     run(source, env, home, isi, Mode::Secret)
 }
@@ -544,19 +785,20 @@ pub fn value(input: &Yaml, env: &Json, home: &Path, isi: &str) -> Result<Json> {
         }
         Yaml::Sequence(items) => items
             .iter()
-            .map(|item| value(item, env, home, isi))
+            .enumerate()
+            .map(|(index, item)| {
+                value(item, env, home, isi).with_context(|| format!("in item {index}"))
+            })
             .collect(),
         Yaml::Mapping(items) => {
             let mut result = serde_json::Map::new();
             for (key, item) in items {
                 let key = key
                     .as_str()
-                    .ok_or_else(|| anyhow!("JSON object keys must be strings"))?;
+                    .ok_or_else(|| anyhow!("JSON object keys must be strings, got {key:?}"))?;
                 let key = evaluate(key, env, home, isi)?;
-                if result
-                    .insert(key.clone(), value(item, env, home, isi)?)
-                    .is_some()
-                {
+                let item = value(item, env, home, isi).with_context(|| format!("in `{key}`"))?;
+                if result.insert(key.clone(), item).is_some() {
                     bail!("duplicate evaluated object key: {key}");
                 }
             }
@@ -565,15 +807,20 @@ pub fn value(input: &Yaml, env: &Json, home: &Path, isi: &str) -> Result<Json> {
         Yaml::Tagged(tag) => value(
             &Yaml::String(format!(
                 "! {}",
-                tag.value
-                    .as_str()
-                    .ok_or_else(|| anyhow!("Bash tag must contain a string"))?
+                tag.value.as_str().ok_or_else(|| {
+                    anyhow!(
+                        "Bash tag {} must contain a string, got {:?}",
+                        tag.tag,
+                        tag.value
+                    )
+                })?
             )),
             env,
             home,
             isi,
         ),
-        other => Ok(serde_json::to_value(other)?),
+        other => serde_json::to_value(other)
+            .with_context(|| format!("could not convert YAML {other:?} to JSON")),
     }
 }
 
@@ -594,16 +841,17 @@ pub fn validate_app_command(source: &str) -> Result<()> {
     validate_template_mode(source, Mode::AppCommand)
 }
 
+/// Like [`validate`], naming each source `[credential expression]` in its errors.
 pub fn validate_secret(value: &Yaml) -> Result<()> {
-    validate(value).map_err(|_| anyhow!("invalid credential expression syntax"))
+    validate_value(value, Mode::Secret)
 }
 
 fn validate_template_mode(source: &str, mode: Mode) -> Result<()> {
     for source in fallbacks(source, mode)? {
         let source = candidate_source(source, mode)?.0;
-        for part in template(&source)? {
+        for part in parts(&source, mode.secret())? {
             if let Part::Cel(source) = part {
-                compile(&source)?;
+                compile(&source, mode.secret())?;
             }
         }
     }
@@ -612,17 +860,26 @@ fn validate_template_mode(source: &str, mode: Mode) -> Result<()> {
 
 /// Syntax validation never executes shell commands or requires runtime request data.
 pub fn validate(value: &Yaml) -> Result<()> {
+    validate_value(value, Mode::Text)
+}
+
+fn validate_value(value: &Yaml, mode: Mode) -> Result<()> {
     match value {
         Yaml::String(source) => match json_container(source) {
-            Some(container) => validate(&container),
-            None => validate_template(source),
+            Some(container) => validate_value(&container, mode),
+            None => validate_template_mode(source, mode),
         },
-        Yaml::Sequence(items) => items.iter().try_for_each(validate),
-        Yaml::Mapping(items) => items.iter().try_for_each(|(key, value)| {
-            validate(key)?;
-            validate(value)
+        Yaml::Sequence(items) => items.iter().enumerate().try_for_each(|(index, item)| {
+            validate_value(item, mode).with_context(|| format!("in item {index}"))
         }),
-        Yaml::Tagged(tag) => validate(&tag.value),
+        Yaml::Mapping(items) => items.iter().try_for_each(|(key, value)| {
+            validate_value(key, mode)?;
+            validate_value(value, mode).with_context(|| match key.as_str() {
+                Some(key) => format!("in `{key}`"),
+                None => format!("in {key:?}"),
+            })
+        }),
+        Yaml::Tagged(tag) => validate_value(&tag.value, mode),
         _ => Ok(()),
     }
 }
@@ -633,13 +890,62 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn group_by_preserves_order_json_keys_and_binding_scope() {
+        let env = serde_json::json!({"item": "outer", "values": [
+            {"owner": "b", "message": 1}, {"owner": "a", "message": 2},
+            {"owner": "b", "message": 3}
+        ]});
+        assert_eq!(
+            cel("values.groupBy(item, item.owner)", &env, false).unwrap(),
+            json!([
+                {"key": "b", "items": [{"owner": "b", "message": 1}, {"owner": "b", "message": 3}]},
+                {"key": "a", "items": [{"owner": "a", "message": 2}]}
+            ])
+        );
+        assert_eq!(
+            cel(
+                "values.groupBy(item, item.owner).size() == 2 && item == 'outer'",
+                &env,
+                false
+            )
+            .unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            cel(
+                "[1, true, null, {'n': 1}, [2], 1, {'n': 1}, [2]].groupBy(item, item)",
+                &env,
+                false
+            )
+            .unwrap(),
+            json!([
+                {"key": 1, "items": [1, 1]}, {"key": true, "items": [true]},
+                {"key": null, "items": [null]}, {"key": {"n": 1}, "items": [{"n": 1}, {"n": 1}]},
+                {"key": [2], "items": [[2], [2]]}
+            ])
+        );
+        assert_eq!(
+            cel("[].groupBy(item, item.missing)", &env, false).unwrap(),
+            json!([])
+        );
+        for expression in [
+            "[1].groupBy(item, item, 2)",
+            "[1].groupBy('item', item)",
+            "[1].groupBy(item, item.missing)",
+            "'text'.groupBy(item, item)",
+        ] {
+            assert!(cel(expression, &env, false).is_err(), "{expression}");
+        }
+    }
+
+    #[test]
     fn ting_list_extensions_compose_and_validate_arguments() {
         let env = json!({"request": {"tings": [
             {"at": 2, "text": "later"}, {"at": 1, "text": "first"},
             {"at": 2, "text": "last"}, {"at": 1, "text": "first"}
         ]}, "t": "outer"});
         assert_eq!(
-            cel("request.tings.sortBy(t, t.at).map(t, t.text).distinct().slice(0, 3).reverse().join(' | ')", &env).unwrap(),
+            cel("request.tings.sortBy(t, t.at).map(t, t.text).distinct().slice(0, 3).reverse().join(' | ')", &env, false).unwrap(),
             json!("last | later | first")
         );
         for (source, expected) in [
@@ -658,7 +964,7 @@ mod tests {
             ("[1, [2]].flatten(0)", json!([1, [2]])),
             ("[1].slice(1, 1)", json!([])),
         ] {
-            assert_eq!(cel(source, &env).unwrap(), expected, "{source}");
+            assert_eq!(cel(source, &env, false).unwrap(), expected, "{source}");
         }
         for source in [
             "[1].join()",
@@ -679,7 +985,7 @@ mod tests {
             "[1].sortBy(t, t, 2)",
             "[1].sortBy(t, t.missing)",
         ] {
-            assert!(cel(source, &env).is_err(), "accepted {source}");
+            assert!(cel(source, &env, false).is_err(), "accepted {source}");
         }
     }
 
@@ -829,12 +1135,15 @@ mod tests {
         );
         assert_eq!(
             app_command("{missing.command} !>> {error} !>> ! dm", &env, dir.path()).unwrap(),
-            "dm"
+            "! dm"
         );
-        assert_eq!(app_command("'' !>> ! dm", &env, dir.path()).unwrap(), "dm");
+        assert_eq!(
+            app_command("'' !>> ! dm", &env, dir.path()).unwrap(),
+            "! dm"
+        );
         assert_eq!(
             app_command("! false !>> dm", &env, dir.path()).unwrap(),
-            "false"
+            "! false"
         );
         assert!(app_command("! touch should-not-run", &env, dir.path()).is_ok());
         assert!(!dir.path().join("should-not-run").exists());
@@ -859,15 +1168,78 @@ mod tests {
             .unwrap(),
             "new-private-credential"
         );
-        for source in [
-            "! printf new-private-credential >&2; exit 1",
-            "{missing['new-private-credential']}",
-            "{new-private-credential + }",
-            "new-private-credential !>>",
+        // The reason survives; the source and stdout (the credential itself) never do.
+        for (source, reasons) in [
+            (
+                "! printf new-private-credential; printf 'vault: permission denied' >&2; exit 7",
+                &[
+                    "`[credential expression]` failed: exit status: 7",
+                    "\nstderr:\nvault: permission denied\n",
+                    "stdout: (withheld; it is the credential)",
+                ][..],
+            ),
+            (
+                "{missing['new-private-credential']}",
+                &["CEL `[credential expression]`: Undeclared reference to 'missing'"][..],
+            ),
+            (
+                "{new-private-credential +* 2}",
+                &["invalid CEL `[credential expression]`: ERROR: <input>:1:25: Syntax error: extraneous input '*'"][..],
+            ),
+            (
+                "{new-private-credential + }",
+                &["invalid CEL `[credential expression]`: the CEL parser panicked instead of reporting the syntax error: internal error: entered unreachable code"][..],
+            ),
+            (
+                "new-private-credential !>>",
+                &["empty fallback candidate in `[credential expression]`"][..],
+            ),
+            (
+                "! printf 'new-private-credential\\377'; printf 'vault: bad encoding' >&2",
+                &[
+                    "`[credential expression]` printed a credential that is not UTF-8: invalid utf-8 sequence",
+                    "\nexit status: 0\nstderr:\nvault: bad encoding\nstdout: (withheld; it is the credential)",
+                ][..],
+            ),
+            // Parser and CEL text quote source tokens; a literal credential among them is masked.
+            (
+                "{silicon.token ?? 'sk_live_privatevalue'}",
+                &["\nERROR: <input>:1:16: Syntax error: extraneous input '?' expecting"][..],
+            ),
+            (
+                "{'sk' 'sk_live_privatevalue'}",
+                &["Syntax error: extraneous input ''[redacted]'' expecting <EOF>"][..],
+            ),
+            (
+                "{'sk_live_privatevalue' + 1}",
+                &["CEL `[credential expression]`: Unsupported binary operator 'add': String(\"[redacted]\"), Int(1)"][..],
+            ),
+            (
+                "{sk_live_privatevalue}",
+                &["CEL `[credential expression]`: Undeclared reference to '[redacted]'"][..],
+            ),
         ] {
-            let error = evaluate_secret(source, &env, dir.path(), "interpreter").unwrap_err();
-            assert_eq!(error.to_string(), "credential expression evaluation failed");
+            let error = format!(
+                "{:#}",
+                evaluate_secret(source, &env, dir.path(), "interpreter").unwrap_err()
+            );
+            for reason in reasons {
+                assert!(error.contains(reason), "{source}: missing {reason:?} in {error}");
+            }
+            assert!(!error.contains("new-private-credential"), "{error}");
+            assert!(!error.contains("sk_live_privatevalue"), "{error}");
         }
+        let error = format!(
+            "{:#}",
+            validate_secret(&Yaml::String("{'new-private-credential' +* 2}".into())).unwrap_err()
+        );
+        assert!(
+            error.starts_with(
+                "invalid CEL `[credential expression]`: ERROR: <input>:1:27: Syntax error: extraneous input '*'"
+            ),
+            "{error}"
+        );
+        assert!(!error.contains("new-private-credential"), "{error}");
         assert_eq!(
             evaluate_secret(
                 "! false !>> ! printf fallback-private-credential",
@@ -878,16 +1250,35 @@ mod tests {
             .unwrap(),
             "fallback-private-credential"
         );
-        for source in [
-            "! printf '{silicon.token}' >&2; exit 1",
-            "! printf '{silicon.space_station.table_key}' >&2; exit 1",
-            "! printf '{silicon.app_configs['app'].credentials[0]}' >&2; exit 1",
-            "{missing['private-application-value']}",
-            "{to_json(silicon.token)}",
+        for (source, reason) in [
+            (
+                "! printf '{silicon.token}' >&2; exit 1",
+                "failed: exit status: 1\nstderr:\n[redacted]\nstdout: (empty)",
+            ),
+            (
+                "! printf '{silicon.space_station.table_key}' >&2; exit 1",
+                "failed: exit status: 1\nstderr:\n[redacted]\nstdout: (empty)",
+            ),
+            (
+                "! printf '{silicon.app_configs['app'].credentials[0]}' >&2; exit 1",
+                "failed: exit status: 1\nstderr:\n[redacted]\nstdout: (empty)",
+            ),
+            (
+                "{missing['private-application-value']}",
+                "Undeclared reference to 'missing'",
+            ),
+            (
+                "{to_json(silicon.token)}",
+                "Error executing function 'to_json'",
+            ),
         ] {
             let error = format!(
                 "{:#}",
                 evaluate(source, &env, dir.path(), "interpreter").unwrap_err()
+            );
+            assert!(
+                error.contains(reason),
+                "{source}: missing {reason:?} in {error}"
             );
             assert!(!error.contains("private-token-value"), "{error}");
             assert!(!error.contains("private-table-value"), "{error}");
@@ -900,6 +1291,7 @@ mod tests {
             "private-application-value",
             "new-private-credential",
             "fallback-private-credential",
+            "sk_live_privatevalue",
         ] {
             assert!(!logs.contains(secret), "{logs}");
         }
@@ -916,5 +1308,226 @@ mod tests {
         assert!(fs::read_to_string(dir.path().join(".silicon/silicon.log"))
             .unwrap()
             .contains("running: printf runtime-visible"));
+    }
+
+    /// Run `action` with this thread's expressions stopped after `limit`, as the daemon's are.
+    fn within<T>(limit: std::time::Duration, action: impl FnOnce() -> T) -> T {
+        TEST_LIMIT.with(|cell| cell.set(Some(limit)));
+        let result = action();
+        TEST_LIMIT.with(|cell| cell.set(None));
+        result
+    }
+
+    #[test]
+    fn a_stopped_credential_command_still_withholds_what_it_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = json!({"silicon": {}});
+        let started = std::time::Instant::now();
+        let error = within(std::time::Duration::from_millis(300), || {
+            evaluate_secret(
+                "! printf stopped-private-credential; echo 'vault: waiting for unlock' >&2; sleep 30",
+                &env,
+                dir.path(),
+                "interpreter",
+            )
+        })
+        .unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        let error = format!("{error:#}");
+        for reason in [
+            "`[credential expression]` failed: signal: 15",
+            "stderr:\nvault: waiting for unlock\nsilicon: stopped after 0s without finishing (its time limit)",
+            "\nstdout: (withheld; it is the credential)",
+        ] {
+            assert!(error.contains(reason), "missing {reason:?} in {error}");
+        }
+        assert!(!error.contains("stopped-private-credential"), "{error}");
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(!logs.contains("stopped-private-credential"), "{logs}");
+    }
+
+    #[test]
+    fn a_stopped_setup_script_logs_everything_it_printed() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = json!({"silicon": {}});
+        let error = within(std::time::Duration::from_millis(300), || {
+            setup(
+                "! echo 'downloading python'; echo 'mirror slow' >&2; sleep 30",
+                &env,
+                dir.path(),
+            )
+        })
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("failed: signal: 15")
+                && error.contains("stdout:\ndownloading python")
+                && error.contains("silicon: stopped after 0s"),
+            "{error}"
+        );
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        // Another test may mark this process as the daemon, so the role is not checked.
+        for line in [
+            "[setup] [stdout/",
+            "] [downloading python]",
+            "[setup] [stderr/",
+            "] [mirror slow]",
+            "] [silicon: stopped after 0s without finishing (its time limit): SIGTERM to its process group, then SIGKILL 5s later]",
+            "] [finished: signal: 15",
+        ] {
+            assert!(logs.contains(line), "missing {line:?} in {logs}");
+        }
+    }
+
+    fn fake_app(home: &Path, name: &str, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join(".silicon/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn failing_tools_report_status_stderr_stdout_and_every_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = json!({"silicon": {}});
+        fake_app(
+            dir.path(),
+            "ledger",
+            "echo '{\"ok\":false,\"code\":\"quota\"}'\necho 'ledger: quota exceeded' >&2\necho '  at line 2' >&2\nexit 4",
+        );
+        let streams = "failed: exit status: 4\nstderr:\nledger: quota exceeded\n  at line 2\nstdout:\n{\"ok\":false,\"code\":\"quota\"}";
+        let error = format!(
+            "{:#}",
+            evaluate("! ledger --json", &env, dir.path(), "worker").unwrap_err()
+        );
+        assert_eq!(error, format!("`bash -c 'ledger --json'` {streams}"));
+        // Structured values say which key or item failed, then the tool's own words.
+        let error = format!(
+            "{:#}",
+            value(
+                &serde_yaml::from_str("{total: [ok, '! ledger --json']}").unwrap(),
+                &env,
+                dir.path(),
+                "worker"
+            )
+            .unwrap_err()
+        );
+        assert_eq!(
+            error,
+            format!("in `total`: in item 1: `bash -c 'ledger --json'` {streams}")
+        );
+        for (source, reason) in [
+            (
+                "{tz_time('2026-01-01T00:00:00Z', 'Mars/Base')}",
+                "\"Mars/Base\" is not an IANA time zone name: failed to parse timezone",
+            ),
+            (
+                "{'abc'.reverse()}",
+                "expected a list receiver, got String(\"abc\")",
+            ),
+            (
+                "{[1].flatten(-1)}",
+                "flatten depth must not be negative, got -1",
+            ),
+            (
+                "{[1].sortBy(t, t, 2)}",
+                "expected sortBy(binding, key), got 3 arguments",
+            ),
+        ] {
+            let error = format!(
+                "{:#}",
+                evaluate(source, &env, dir.path(), "worker").unwrap_err()
+            );
+            assert!(
+                error.contains(reason),
+                "{source}: missing {reason:?} in {error}"
+            );
+        }
+        // Every fallback candidate keeps its own complete reason.
+        let error = format!(
+            "{:#}",
+            evaluate(
+                "! ledger --json !>> {missing.value}",
+                &env,
+                dir.path(),
+                "worker"
+            )
+            .unwrap_err()
+        );
+        assert_eq!(
+            error,
+            format!(
+                "all 2 fallback candidates failed:\n1. `bash -c 'ledger --json'` {streams}\n2. CEL `missing.value`: Undeclared reference to 'missing'"
+            )
+        );
+        let logs = fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
+        assert!(
+            logs.contains(&format!(
+                "evaluation failed: `bash -c 'ledger --json'` {}",
+                streams.replace('\n', "\\n")
+            )),
+            "{logs}"
+        );
+        let error = format!(
+            "{:#}",
+            evaluate("! printf '\\377'", &env, dir.path(), "worker").unwrap_err()
+        );
+        assert!(
+            error.contains("printed output that is not UTF-8: invalid utf-8 sequence"),
+            "{error}"
+        );
+        let error = format!(
+            "{:#}",
+            dna("absent.md", &env, dir.path(), "worker").unwrap_err()
+        );
+        assert!(
+            error.contains(&format!(
+                "could not read DNA file {}: No such file or directory",
+                dir.path().join("absent.md").display()
+            )),
+            "{error}"
+        );
+        let error = format!(
+            "{:#}",
+            evaluate("{1 +* 2}", &env, dir.path(), "worker").unwrap_err()
+        );
+        assert!(
+            error.starts_with(
+                "invalid CEL `1 +* 2`: ERROR: <input>:1:4: Syntax error: extraneous input '*'"
+            ) && error.ends_with("\n| 1 +* 2\n| ...^"),
+            "{error}"
+        );
+        // cel-parser panics on some malformed input; its own message still reaches the reader.
+        let error = format!(
+            "{:#}",
+            evaluate("{1 + }", &env, dir.path(), "worker").unwrap_err()
+        );
+        assert_eq!(
+            error,
+            "invalid CEL `1 + `: the CEL parser panicked instead of reporting the syntax error: \
+             internal error: entered unreachable code: \
+             should have been properly implemented by generated context when reachable"
+        );
+        let error = format!(
+            "{:#}",
+            app_command("dm 'unclosed", &env, dir.path()).unwrap_err()
+        );
+        assert!(
+            error.starts_with("invalid app command quoting in `dm 'unclosed`: "),
+            "{error}"
+        );
+        assert_eq!(
+            panic_message(&*std::panic::catch_unwind(|| panic!("parser bug")).unwrap_err()),
+            "parser bug"
+        );
+        let detail = "index 3";
+        assert_eq!(
+            panic_message(
+                &*std::panic::catch_unwind(|| panic!("out of range: {detail}")).unwrap_err()
+            ),
+            "out of range: index 3"
+        );
     }
 }

@@ -14,12 +14,12 @@ any new silicon wanting to join silicon interpreter needs to pass the silicon.ya
 silicon interpreter offers a way for silicons to connect & disconnect.
 silicon interpreter is a command line first interface. i will be showing all thigns on the command line, but same should be possible to do on the web as well.
 
-silicon_id is `si:{silicon_id}`, for example `si:cos`. The handle is globally unique and the owning organisation is stored separately as `org_id`.
+silicon_id is like this `si:{handle}`. `silicon.org_id` carries the owning org separately; never infer it from the id. Carbon ids use `c:{handle}`, and app ids are bare handles like `dm`. Bundle ids retain `org>bundle`.
 
 connect:
 `silicon connect {path to yaml}`
 compiles the silicon.yaml and throws errors if any, or connect if all is good.
-create a local listening url ({handle}.{org_id}.localhost) for this silicon and maps that url to silicon interpreter's web server link. Use the handle after `si:` and the separately stored owning `org_id`; do not derive the organisation from the Silicon ID. This hostname is a local routing address, not a public Silicon ID.
+create a local listening url ({handle}.{org_id}.localhost when both are DNS labels) for this silicon and maps that url to silicon interpreter's web server link. Use the connection's returned host for handles or organizations that need DNS encoding.
 
 Once the local route is ready, register its URL with Ting using the Honeycomb-installed `ting` CLI. Ting is implicit, like IAM, even when absent from apps.
 
@@ -32,7 +32,7 @@ disconnect:
 
 list:
 `silicon ls` lists all connected silicons
-`silicon ls 'si:abc*'` list all matching Silicon IDs
+`silicon ls 'si:abc*'` list all matching
 
 logs:
 `silicon logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
@@ -45,9 +45,13 @@ uninstall
 
 
 Events:
-Ting delivers {tings: [{id: str, type: str, data: obj, metadata: obj}, ...]} to each Silicon URL. Persist the whole batch, return empty HTTP 204, then execute its flow. Individual flow sends wait for provider delivery receipts, without waiting for inference turns. The previous single-event HTTP envelope is replaced by Ting batches.
+The local webhook accepts any valid JSON value, not just Ting batches. Preserve that value as request, save it durably, return empty HTTP 204, then execute the current flow. Keep the 1 MiB limit, Content-Type/origin protections, and bounded durable inbox (10,000 requests or 256 MiB); temporary inability to accept returns 503 with Retry-After.
 
-send always sends a msg mid turn. no msg is ever queued, its passed as soon as it comes in.
+Ting sends {tings: [{id: str, type: str, data: obj, metadata: obj}, ...]}. Deduplicate IDs only for an exact tings envelope with 1–100 fully valid records (id is 1–256 bytes, type is nonempty). All other JSON—including malformed tings and extra envelope fields—is generic input, preserved whole and never deduplicated by Ting ID.
+
+Flow send queues messages by default and aggregates them per (isi, session_id), in order, at the end of the flow. aggregate: false flushes earlier queued messages to that same destination and attempts the current message immediately. Flushed messages can enter an active provider turn; no inference completion is required. Function return/failure does not roll back queued messages.
+
+Persist outgoing messages before dispatch in .silicon/outbox/<silicon-id>/<org>/<request-id>.json. silicon.max_retries defaults to 10 retries after the first attempt. Record failures and recovery, retain undelivered groups after exhaustion, and only retry the stash when the next message is sent to that same isi+session. No timer-driven fallback or redirection to another destination after exhaustion. Delivery receipts are persisted so a retried incoming request can reuse its outgoing state. A crash before a receipt is saved may still duplicate delivery; app/shell side effects are not transactional.
 
 Logs:
 Log everything. New msg, what's happening in flow, what each of the isi is doing, everything. Omni has a event that you can subscribe to and use for loggin the active work. when displaying, color code different isi msg, runtime logs, errors. not the complete msg, but just the first section. include metadata with the logs like [type] [origin] [timestamp] [message]
@@ -83,22 +87,27 @@ required top level keys:
 - access: this is like corpus callosum. that tells who can talk with who. this is a part of prompt we feed in from silicon's side. 
 - flow: this is the runtime flow. msg comes in -> do x -> do y
 
+optional top level key:
+- functions: named reusable YAML step bodies, or external definition file paths. It may appear before or after flow; resolve definitions before executing steps.
+
 entire silicon.yaml file is checked for syntax errors.
 silicon, isi and access are compile time accessed.
-flow is runtime.
+flow and functions are runtime-loaded together; edits to either the YAML or imported definition files take effect on the next request.
 
 silicon:
-    id                      silicon id
+    id                      full silicon id, si:handle
+    org_id                  explicit IAM owning organization
     token                   silicon token, used for authentication
     timezone                timezone silicon operates in
+    max_retries             optional nonnegative integer; default 10 retries after first outgoing flow delivery attempt
     SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
-    SILICON_ORG             env variables passed for all ISI
+    SILICON_ORG             env variables passed for all ISI; defaults to org_id
     space_station           optional; for telemetry
         table_name          space station table name
         table_key           space station table key
     inference_providers     omni supported inference providers
     setup                   optional; list of shell command that is run once during connecting silicon
-    apps                    optional; list of iam apps, automatically logged in using silicon token
+    apps                    optional; list of bare iam app ids, automatically logged in using silicon token
     app_configs             optional; sets key value pairs for apps
 
 inference_providers can take in either a list of inference providers that omni supports.
@@ -173,33 +182,87 @@ access:
 this must be defined for all isi
 
 flow:
-this is the runtime config and support CEL for all strings.
-everything here is either a list of steps, or expression.
+The flow is a list of steps. Function bodies, loop bodies, then, and catch all use the same step lists. Strings support CEL; existing expression-generated steps and ! commands (including Python files) still work.
 
 if:
-    condition           evaluates to true/false string
+    condition           boolean expression
     then                list of next steps
-    catch               optional; if condition throws error. list of next steps. access with {error}.
-                        error is string. 
-else:                   list of next steps
+    else                optional list of steps
+    catch               optional error handler; self.error is the complete error string
+else:                   standalone list; runs if no immediately preceding consecutive if matched
 
 var:
-    name                name of the variable. access with {var.name}.
-    value               expression. string or json. converts json as string to json.
-    catch               if the value or name eval fails
+    name                variable name, accessible as var.name
+    value               any JSON-compatible value, recursively evaluated
+
+for:
+    list                expression evaluating to a list
+    var                 name of current item, accessible as var.NAME
+    then                list of steps per item
+                        iteration variables are local; self.for.index is zero-based
+
+switch:
+    value               value to compare
+    cases               list of {case: VALUE, then: [STEPS]}; first matching case runs
+    default             optional list of steps when none match
+
+collect:
+    name                list variable in the enclosing loop's parent scope
+    value               append this JSON-compatible value; create the list if absent
+                        existing target must be a list; result survives the loop
+
+continue:
+    reason              required nonempty message, evaluated and logged; next loop item
+break:
+    reason              required nonempty message, evaluated and logged; leave nearest loop
+exit:
+    reason              required nonempty message, evaluated and logged; finish entire flow
+                        flush already queued messages; does not disconnect the Silicon
 
 send:
-    isi                 isi name to send
-    session_id          send to a specific session. req. for primary_send_mode session.
-                        creates if session doesn't exist already.
-    message             message to send
-    catch               if it couldnt send, or one of the expressions fail.
+    isi                 destination ISI
+    session_id          required for primary_send_mode session; creates a missing session
+    message             message expression
+    aggregate           optional boolean; default true; false requests immediate delivery
+    catch               preflight failures only: undefined ISI, missing required session ID,
+                        invalid message expression, etc. Actual delivery belongs to runtime
+                        recovery and never reaches this catch, even for aggregate: false.
 
 log:
-    message             logs message inside append only silicon.log
+    message             append to silicon.log
 
+call:
+    function            name registered in functions
+    args                optional mapping of arguments
+    then                optional list of steps; returned value is self.result
+    catch               optional list of steps; unhandled function/evaluation error is self.error
 
-flow should never be stored by the interpretter as it can change from run to run by silicon.
+return: VALUE           finish current function with any JSON-compatible value; no return means null
+
+Functions are optional and separate from flow. YAML key order does not affect availability:
+
+```yaml
+flow:
+  - call:
+      function: greeting
+      args: {name: '{request.name}'}
+      then:
+        - var: {name: saved, value: '{self.result}'}
+      catch:
+        - log: {message: '{self.error}'}
+
+functions:
+  greeting:
+    params: [name]
+    do:
+      - return: {message: 'Hello, {args.name}'}
+```
+
+Each function call has local var and args; all functions share the flow's send queue. self.result is scoped to then, self.error to catch. Nested calls/catches restore outer self values afterward. Explicit var steps retain a result for later. Unhandled function errors propagate to call.catch, while ordinary root flow errors log and skip the failed step. No transaction rolls back earlier steps or queued sends.
+
+External definitions use functions: ./functions.yaml, where the file contains the bare function map. A list can combine sources: functions: [./shared.yaml, {local_name: {params: [], do: []}}]. Imports resolve relative to their containing file and can include further paths/lists; duplicate names and import cycles are errors. Load and validate all definitions before running the flow, and reload changed files on the next request.
+
+Migration: replace {error} with {self.error}; send is now aggregated by default, and send.catch no longer reports provider delivery failures. The local webhook no longer rejects JSON solely for lacking a valid Ting envelope.
 
 
 # logging
@@ -220,12 +283,14 @@ inputs the file's content
 #### evals
 evaluation order: CEL -> Bash -> String
 any string with non excaped {...} should be evaluated using CEL. Pass the following to it:
-- request (this is json that was received on http://{handle}.{org_id}.localhost/)
+- request (this is json that was received on the Silicon's local URL, such as http://assistant.my-org.localhost/)
 - silicon, isi and access as json
 - tz_time function which takes in a UTC time, and a timezone in IANA, and outputs time in that timezone. {HH:MM:SS DD:MM:YY IANA}
 - to_yaml takes in json, and prints it with tabs & new lines (yaml).
 - to_json takes in string, and evaluates it so it can become a json and be evaluatable.
-- .sortBy, .join, .distinct, .slice, .reverse, .flatten should all be extended to CEL to work with lists because all request.tings are lists.
+- .sortBy, .join, .distinct, .slice, .reverse, .flatten work with lists.
+- .groupBy(item, expression) returns [{key, items}] for any JSON key; groups preserve first key occurrence and items preserve input order.
+- args contains current function arguments; var contains current-scope variables; self.result, self.error and self.for.index are scoped to their respective branches/loop.
 
 
 
@@ -241,9 +306,7 @@ errors are logged and we move to the next fallback available.
 if all fallbacks fail, skip and move ahead.
 
 #### errors
-inside flow, all eval support catch. catch creates a scoped local variable `error` that can be used. 
-log the error.
-if no catch is defined, just move on to the next step.
+Flow evaluation failures support catch with scoped self.error. Log the full error. Outside functions, an unhandled step failure logs and continues; inside functions, propagate it to the caller. Actual send delivery failures are persisted and handled by the runtime, never send.catch.
 
 
 #### dependencies
@@ -266,7 +329,7 @@ All iam apps' authentication is managed by silicon interpretter.
 `app login status --json` tells if its {authenticated: true}
 
 Events:
-Apps publish notifications through Ting. Ting alone registers the Silicon local webhook and delivers `{"tings": [...]}` batches. Each ting carries id, type, data and metadata. The interpreter durably accepts the whole batch before returning empty HTTP 204, then executes the current flow from disk.
+Apps publish notifications through Ting, which owns its registration and delivers `{"tings": [...]}` batches. Each ting carries id, type, data and metadata. Other callers may POST any JSON to the same local endpoint. The interpreter durably accepts input before empty HTTP 204, then executes the current flow and function definitions from disk.
 
 
 # si cli
@@ -369,9 +432,3 @@ you can create a test iam env and use it to test things.
 this project has 2 constriansts we are optimising: simplicity to create & use a silicon with extendibility.
 
 introduce a way to do ping pong with a silicon locally to know if its online or offline. pass that as part of updates as well.
-
-# Identifier schema
-
-Silicon IDs use `si:{silicon_id}` (for example `si:cos`), Carbon IDs use `c:{carbon_id}` (for example `c:saket`), and application IDs use the bare `{app_id}` (for example `briefcase`). The components after `si:` and `c:` are handles; each prefix appears exactly once. Silicon IDs and application IDs do not contain an organisation component. Organisation membership and application ownership are stored separately under `org_id`.
-
-Outside the schema patterns above, fields and standalone placeholders named `silicon_id`, `sid`, `carbon_id`, or `cid` carry the complete prefixed public ID; `app_id` carries the bare application ID. This applies to authentication, API and CLI inputs and outputs, configuration, permissions, URLs, events and stored identity references. Where a CLI selector uses `@`, it precedes the complete ID, such as `@si:cos` or `@c:saket`.
