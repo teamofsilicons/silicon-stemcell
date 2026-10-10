@@ -950,7 +950,7 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 | `<SILICON_HOME>/.silicon/silicon.log` | Silicon event, flow, send, runtime, error, and provider log; rotated at 64 MiB. |
 | `.silicon/heartbeats.json` | Wall-clock due times of this Silicon's heartbeats. |
 | `.silicon/auth-apps.json` | Commands for configured/dynamically managed application authentication. |
-| `.silicon/auth-checked.json`, `.silicon/auth-grants.json` | Account-bound application authentication state and remembered logout choices. |
+| `.silicon/auth-grants.json`, `.silicon/auth-signed-out.json` | Account-bound application authentication state and remembered logout choices. |
 | `.apps/bin/` | Command links managed by Silicon Apps. |
 | `.silicon/bin/` | Interpreter-owned aliases for the connected Silicon's app commands. |
 | `.apps/installed/` | Verified application packages managed by Silicon Apps. |
