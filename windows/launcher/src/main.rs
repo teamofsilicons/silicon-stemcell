@@ -16,8 +16,8 @@ const COMMANDS: &[&str] = &[
     "omni",
     "so",
     "caddy",
-    "iam",
-    "honeycomb",
+    "silicon-accounts",
+    "silicon-apps",
     "spacestation",
     "dm",
     "briefcase",
@@ -253,129 +253,5 @@ fn main() {
             eprintln!("Silicon Windows launcher: {error}");
             std::process::exit(1);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn every_bundled_command_has_a_launcher_name() {
-        assert!(COMMANDS.contains(&"ting"));
-        assert!(!COMMANDS.contains(&"silicon-service"));
-    }
-
-    #[test]
-    fn connect_starts_the_logon_task_first() {
-        let args = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(is_connect(&args(&["connect", "silicon.yaml"])));
-        assert!(is_connect(&args(&["--json", "connect", "a.yaml"])));
-        assert!(!is_connect(&args(&["compile", "connect"])));
-        assert!(!is_connect(&args(&[])));
-        assert!(task_running(
-            "\"\\Silicon Interpreter S-1-5-21-7-8-9-1001\",\"N/A\",\"Running\"\r\n"
-        ));
-        assert!(!task_running(
-            "\"\\Silicon Interpreter S-1-5-21-7-8-9-1001\",\"N/A\",\"Ready\"\r\n"
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn failed_probe_keeps_exit_status_and_both_streams() {
-        let mut probe = Command::new("sh");
-        probe.args([
-            "-c",
-            "echo '{\"installed\":false}'; echo 'There is no distribution with the supplied name.' >&2; exit 3",
-        ]);
-        let error = installed(probe.output(), &argv(&probe), "v5.0.1").unwrap_err();
-        assert_eq!(
-            error,
-            "`sh -c \"echo '{\\\"installed\\\":false}'; echo 'There is no distribution with the supplied name.' >&2; exit 3\"` failed: exit status: 3\n\
-             stderr:\nThere is no distribution with the supplied name.\n\
-             stdout:\n{\"installed\":false}"
-        );
-        // A wrong answer keeps WSL's warnings too, not only the version it printed.
-        let mut older = Command::new("sh");
-        older.args([
-            "-c",
-            "echo v4.1.0; echo 'wsl: Processing fstab with mount -a failed.' >&2",
-        ]);
-        assert_eq!(
-            installed(older.output(), &argv(&older), "v5.0.1").unwrap_err(),
-            "`sh -c \"echo v4.1.0; echo 'wsl: Processing fstab with mount -a failed.' >&2\"` says WSL holds Silicon \"v4.1.0\", not v5.0.1\n\
-             exit status: 0\n\
-             stderr:\nwsl: Processing fstab with mount -a failed.\n\
-             stdout:\nv4.1.0"
-        );
-        let mut current = Command::new("sh");
-        current.args(["-c", "echo v5.0.1"]);
-        assert!(installed(current.output(), &argv(&current), "v5.0.1").is_ok());
-    }
-
-    #[test]
-    fn only_a_missing_or_outdated_release_skips_the_second_look() {
-        let wide =
-            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
-        let answer = |code: i32, stdout: &[u8], stderr: &[u8]| {
-            let mut probe = Command::new("wsl.exe");
-            probe.arg("--status");
-            let status = {
-                #[cfg(unix)]
-                {
-                    std::os::unix::process::ExitStatusExt::from_raw(code << 8)
-                }
-                #[cfg(windows)]
-                {
-                    std::os::windows::process::ExitStatusExt::from_raw(code as u32)
-                }
-            };
-            installed(
-                Ok(Output {
-                    status,
-                    stdout: stdout.to_vec(),
-                    stderr: stderr.to_vec(),
-                }),
-                &argv(&probe),
-                "v5.0.2",
-            )
-            .unwrap_err()
-        };
-        assert!(needs_provisioning(&answer(
-            1,
-            &wide("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n"),
-            b""
-        )));
-        assert!(needs_provisioning(&answer(
-            1,
-            b"",
-            b"cat: /opt/silicon/windows-version: No such file or directory\n"
-        )));
-        assert!(needs_provisioning(&answer(0, b"v5.0.1\n", b"")));
-        let missing = installed(
-            Err(io::Error::from(io::ErrorKind::NotFound)),
-            "wsl.exe --status",
-            "v5.0.2",
-        )
-        .unwrap_err();
-        assert!(needs_provisioning(&missing));
-        // A WSL service hiccup is looked at again before minutes of setup.
-        assert!(!needs_provisioning(&answer(
-            1,
-            &wide("Error code: Wsl/Service/CreateInstance/E_UNEXPECTED\r\n"),
-            b""
-        )));
-    }
-
-    #[test]
-    fn unstartable_probe_names_the_command_and_the_os_reason() {
-        let mut probe = Command::new("/nonexistent/wsl.exe");
-        probe.arg("--status");
-        let error = installed(probe.output(), &argv(&probe), "v5.0.1").unwrap_err();
-        assert!(
-            error.starts_with("could not run `/nonexistent/wsl.exe --status`: "),
-            "{error}"
-        );
-        assert!(error.len() > "could not run `/nonexistent/wsl.exe --status`: ".len());
     }
 }

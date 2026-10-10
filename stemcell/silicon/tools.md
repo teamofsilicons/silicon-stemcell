@@ -16,15 +16,12 @@ bundle many messages into one short msg.
 
 > [briefcase]
 `briefcase --help`
-this is where all the files for the org is stored. there are private folders, public folders and folders with tag based access. use [iam] to view all available tags.
+Files belong to Carbon or Silicon accounts. Check the current Briefcase sharing controls before granting access.
 most services like [dm], [commit], [waveform] require a file but only as a briefcase link.
 
-> [iam]
-`iam --help`
-iam handles all auth, identity and authority for the org.
-you can update your or other silicons & carbons roles, raise a tag change request, view details about your team here. this is used to reach out to the right carbon/silicon for the job.
-update your role with all the capabilities you have.
-if you dont update your role, then other silicons will not know what you can and can not do.
+> [silicon-accounts]
+`silicon-accounts --help`
+Silicon Accounts handles Carbon and Silicon identity, profiles, and authentication. Use the account ID returned by Accounts when addressing a Carbon or Silicon.
 
 > [waveform]
 `waveform --help`

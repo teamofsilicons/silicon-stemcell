@@ -1,5 +1,0 @@
-Copyright (c) 2026 Team of Silicons. All rights reserved.
-
-This software and its source code are proprietary and confidential. No right
-to use, copy, modify, distribute, sublicense, or disclose this software is
-granted except under a separate written agreement with Team of Silicons.

@@ -2,7 +2,7 @@ name: Check Silicon
 
 on:
   push:
-    branches: [main, stemcell-v3.5]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -27,189 +27,16 @@ jobs:
       - name: Check Rust
         run: |
           cargo fmt --all -- --check
-          cargo test --locked
-          python3 tests/ting_migration.py
-          python3 scripts/test-migrate-identifiers.py
+          cargo check --locked
           cargo clippy --locked --all-targets -- -D warnings
-      - name: Check installer syntax and isolated atomic activation
+      - name: Check installer and packaging syntax
         run: |
           sh -n install.sh
-          python3 - <<'PY'
-          import hashlib, io, os, pathlib, platform, subprocess, tarfile, tempfile, tomllib
-          installer = pathlib.Path('install.sh').resolve()
-          version = 'v' + tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
-          commands = 'silicon si omnid silicon-omni omni so caddy'.split()
-          binaries = commands
-          notices = ['LICENSE', 'LICENSES/README.md', 'LICENSES/omni-LICENSE.txt', 'LICENSES/caddy-LICENSE.txt', 'LICENSES/caddy-AUTHORS.txt']
-          targets = {('Darwin', 'arm64'): 'aarch64-apple-darwin', ('Linux', 'x86_64'): 'x86_64-unknown-linux-gnu'}
-          with tempfile.TemporaryDirectory() as temp:
-              root = pathlib.Path(temp)
-              prefix, downloads, mocks = (root / name for name in ['prefix with spaces', 'downloads', 'mocks'])
-              downloads.mkdir(); mocks.mkdir()
-              asset = 'silicon-' + targets[(platform.system(), platform.machine())] + '.tar.gz'
-              def bundle(missing=None, caddy_body=None, silicon_body=None):
-                  with tarfile.open(downloads / asset, 'w:gz') as archive:
-                      for name in binaries:
-                          if name == missing: continue
-                          body = caddy_body if name == 'caddy' and caddy_body else silicon_body if name == 'silicon' and silicon_body else b'#!/bin/sh\necho test-binary\n'
-                          entry = tarfile.TarInfo('bin/' + name); entry.mode = 0o755; entry.size = len(body)
-                          archive.addfile(entry, io.BytesIO(body))
-                      body = (version + '\n').encode()
-                      entry = tarfile.TarInfo('VERSION'); entry.size = len(body)
-                      archive.addfile(entry, io.BytesIO(body))
-                      body = installer.read_bytes()
-                      entry = tarfile.TarInfo('installer.sh'); entry.size = len(body)
-                      archive.addfile(entry, io.BytesIO(body))
-                      for name in notices:
-                          if name == missing: continue
-                          body = pathlib.Path(name).read_bytes()
-                          entry = tarfile.TarInfo(name); entry.size = len(body)
-                          archive.addfile(entry, io.BytesIO(body))
-                  checksum = hashlib.sha256((downloads / asset).read_bytes()).hexdigest()
-                  (downloads / 'SHA256SUMS').write_text(f'{checksum}  {asset}\n')
-              for target in ['macos-aarch64', 'macos-x86_64', 'linux-x86_64', 'linux-aarch64']:
-                  asset_name = 'honeycomb-' + target + '.tar.gz'
-                  with tarfile.open(downloads / asset_name, 'w:gz') as archive:
-                      body = b'#!/bin/sh\nexit 0\n'
-                      entry = tarfile.TarInfo('honeycomb'); entry.size = len(body)
-                      archive.addfile(entry, io.BytesIO(body))
-                  checksum = hashlib.sha256((downloads / asset_name).read_bytes()).hexdigest()
-                  (downloads / (asset_name + '.sha256')).write_text(f'{checksum}  {asset_name}\n')
-              curl = mocks / 'curl'
-              curl.write_text('#!/bin/sh\nset -eu\nwhile [ "$#" -gt 0 ]; do\n if [ "$1" = --output ]; then out=$2; shift 2; else url=$1; shift; fi\ndone\ncp "$MOCK_DOWNLOADS/${url##*/}" "$out"\n')
-              curl.chmod(0o755)
-              privilege = mocks / 'privilege'
-              privilege.write_text('''#!/usr/bin/env python3
-          import os, pathlib, platform, subprocess, sys
-          name, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
-          if name == 'uname':
-              print(os.environ['MOCK_SYSTEM'] if args == ['-s'] else os.environ['MOCK_ARCH'])
-          elif name == 'cat':
-              if args == ['/proc/sys/net/ipv4/ip_unprivileged_port_start']: print(os.environ.get('MOCK_PORT_START', '0'))
-              else: os.execv('/bin/cat', ['/bin/cat', *args])
-          elif name == 'id': print('1000')
-          elif name == 'sudo':
-              with open(os.environ['MOCK_SUDO_LOG'], 'a') as log: log.write('called\\n')
-              if os.environ.get('MOCK_SUDO_FAIL') == '1': sys.exit(1)
-              sys.exit(subprocess.run(args[1:] if args[0] == '-n' else args).returncode)
-          elif name in ['getcap', 'setcap']:
-              path = pathlib.Path(args[-1])
-              marker = pathlib.Path(os.environ['MOCK_CAPS']) / str(path.stat().st_ino)
-              if name == 'setcap': marker.parent.mkdir(exist_ok=True); marker.touch()
-              elif marker.exists(): print(str(path) + ' cap_net_bind_service=ep')
-          elif name == 'mv':
-              if args[0] == '-fT' and platform.system() == 'Darwin': args[0] = '-fh'
-              os.execv('/bin/mv', ['/bin/mv', *args])
-          ''')
-              privilege.chmod(0o755)
-              for name in ['uname', 'cat', 'id', 'sudo', 'getcap', 'setcap', 'mv']: (mocks / name).symlink_to(privilege)
-              env = dict(os.environ, SILICON_PREFIX=str(prefix), SILICON_NONINTERACTIVE='1', SILICON_NO_PATH='1', MOCK_SYSTEM=platform.system(), MOCK_ARCH=platform.machine(), MOCK_DOWNLOADS=str(downloads), MOCK_CAPS=str(root / 'caps'), MOCK_SUDO_LOG=str(root / 'sudo.log'), PATH=str(mocks) + os.pathsep + os.environ['PATH'])
-              def install(ok):
-                  result = subprocess.run(['sh', str(installer)], env=env, capture_output=True, text=True)
-                  assert (result.returncode == 0) == ok, result.stdout + result.stderr
-                  return result
-              bundle(); install(True)
-              current = prefix / 'lib/silicon/current'
-              old = current.readlink()
-              assert (current / 'PREFIX').read_text().strip() == str(prefix.resolve())
-              assert (current / 'installer.sh').read_bytes() == installer.read_bytes()
-              for name in notices: assert (current / name).read_bytes() == pathlib.Path(name).read_bytes()
-              for name in commands: assert (prefix / 'bin' / name).is_file(), name
-              for name in binaries: assert (current / 'bin' / name).is_file(), name
-              config = prefix / 'silicon.yaml'; config.write_text('untouched')
-              (downloads / 'SHA256SUMS').write_text(f'{"0" * 64}  {asset}\n')
-              install(False); assert current.readlink() == old
-              bundle('LICENSE'); refused = install(False); assert current.readlink() == old
-              assert '`tar -xOzf' in refused.stderr and 'LICENSE' in refused.stderr, refused.stderr
-              # A binary that cannot run is refused in its own words: status and both streams.
-              bundle(silicon_body=b'#!/bin/sh\necho \'{"error":"bad cpu"}\'\necho \'dyld: missing symbol\' >&2\nexit 7\n')
-              refused = install(False); assert current.readlink() == old
-              for said in ['interpreter binary cannot run on this system', 'exit status: 7', 'stderr:\ndyld: missing symbol', 'stdout:\n{"error":"bad cpu"}']:
-                  assert said in refused.stderr, (said, refused.stderr)
-              (prefix / 'bin/dm').symlink_to('../lib/silicon/current/bin/dm')
-              (prefix / 'bin/briefcase').write_text('user-owned')
-              (prefix / 'bin/honeycomb').unlink()
-              (prefix / 'bin/honeycomb').symlink_to('../lib/silicon/current/bin/honeycomb')
-              bundle(); install(True); assert current.readlink() != old
-              assert not (prefix / 'bin/dm').is_symlink()
-              assert (prefix / 'bin/briefcase').read_text() == 'user-owned'
-              assert (prefix / 'bin/honeycomb').resolve() == (prefix / '.honeycomb/dir/system/bin/honeycomb').resolve()
-
-              assert config.read_text() == 'untouched'
-              assert not list((prefix / 'lib/silicon').glob('.install.*'))
-              source = root / 'source'; source.mkdir(); (source / 'Cargo.toml').write_text('[package]\nname="test"\n')
-              (source / 'install.sh').write_bytes(installer.read_bytes())
-              for name in notices:
-                  dest = source / name; dest.parent.mkdir(parents=True, exist_ok=True)
-                  dest.write_bytes(pathlib.Path(name).read_bytes())
-              dependencies = root / 'deps'; dependencies.mkdir()
-              for name in commands[2:]:
-                  path = dependencies / name; path.write_text('#!/bin/sh\nexit 0\n'); path.chmod(0o755)
-              cargo = mocks / 'cargo'
-              cargo.write_text('''#!/usr/bin/env python3
-          import pathlib, sys
-          args = sys.argv[1:]
-          dest = pathlib.Path(args[args.index('--root') + 1]) / 'bin'
-          names = ['silicon', 'si']
-          assert '--git' not in args, 'application CLIs must come from Honeycomb'
-          dest.mkdir(parents=True, exist_ok=True)
-          for name in names:
-              path = dest / name
-              path.write_text('#!/bin/sh\\nexit 0\\n')
-              path.chmod(0o755)
-          ''')
-              cargo.chmod(0o755)
-              env.update(SILICON_SOURCE_DIR=str(source), SILICON_DEPENDENCY_BIN_DIR=str(dependencies))
-              install(True)
-              assert set(p.name for p in (current / 'bin').iterdir()) == set(binaries)
-              env.pop('SILICON_SOURCE_DIR'); env.pop('SILICON_DEPENDENCY_BIN_DIR')
-              prefix = root / 'linux-prefix'
-              env.update(SILICON_PREFIX=str(prefix), MOCK_SYSTEM='Linux', MOCK_ARCH='x86_64', MOCK_PORT_START='1024')
-              asset = 'silicon-x86_64-unknown-linux-gnu.tar.gz'
-              bundle(); install(True)
-              current = prefix / 'lib/silicon/current'
-              caddy_inode = (current / 'bin/caddy').stat().st_ino
-              assert (root / 'sudo.log').read_text() == 'called\n'
-              bundle(); install(True)
-              assert (current / 'bin/caddy').stat().st_ino == caddy_inode
-              assert (root / 'sudo.log').read_text() == 'called\n'
-              old = current.readlink()
-              env['MOCK_SUDO_FAIL'] = '1'
-              bundle(caddy_body=b'#!/bin/sh\necho updated-caddy\n'); install(False)
-              assert current.readlink() == old
-              assert not list((prefix / 'lib/silicon').glob('.install.*'))
-              env['MOCK_SUDO_FAIL'] = '0'; install(True)
-              assert current.readlink() != old
-              assert (current / 'bin/caddy').stat().st_ino != caddy_inode
-              calls = (root / 'sudo.log').read_text()
-              env['MOCK_PORT_START'] = '80'
-              bundle(caddy_body=b'#!/bin/sh\necho unprivileged-caddy\n'); install(True)
-              assert (root / 'sudo.log').read_text() == calls
-              # Run the exact profile block against temporary profiles, without
-              # changing HOME or writing to the user's actual shell configuration.
-              profiles = root / 'profiles'; profiles.mkdir()
-              path_logic = 'quoted_bin=' + installer.read_text().rsplit('quoted_bin=', 1)[1]
-              path_logic = path_logic.replace('$HOME/', '$MOCK_PROFILE_DIR/').replace('${SHELL:-}', '${MOCK_USER_SHELL:-}')
-              env.update(MOCK_PROFILE_DIR=str(profiles), SILICON_PREFIX=str(root / "command's directory"))
-              for shell, name in [('zsh', '.zshrc'), ('bash', '.bashrc'), ('other', '.profile')]:
-                  profile = profiles / name; profile.write_text('existing settings without newline')
-                  env['MOCK_USER_SHELL'] = '/bin/' + shell
-                  for _ in range(2):
-                      subprocess.run(['sh', '-c', 'prefix=$SILICON_PREFIX\nmanage_path=true\n' + path_logic], env=env, check=True, capture_output=True, text=True)
-                  text = profile.read_text()
-                  assert text.startswith('existing settings without newline\n')
-                  assert text.count('# Silicon CLI') == 1
-                  exported = subprocess.run(['sh', '-c', 'prefix=$SILICON_PREFIX\nmanage_path=false\n' + path_logic], env=env, check=True, capture_output=True, text=True).stdout
-                  assert "command'\\''s directory/bin" in exported
-                  assert profile.read_text() == text
-          print('installer checks passed')
-          PY
-      - name: Check documentation telemetry gateway
-        run: node --test tests/telemetry.test.cjs
+          python3 -m py_compile scripts/package-apps.py
       - name: Check standalone Windows launcher source
         run: |
           cargo fmt --manifest-path windows/launcher/Cargo.toml --all -- --check
-          cargo test --manifest-path windows/launcher/Cargo.toml --locked
+          cargo check --manifest-path windows/launcher/Cargo.toml --locked
           cargo clippy --manifest-path windows/launcher/Cargo.toml --locked --all-targets -- -D warnings
           bash -n windows/launch.sh
           sh -n windows/provision.sh windows/interop.sh

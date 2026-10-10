@@ -3,7 +3,6 @@
 target/
 stemcell/
 src/
-tests/
 LICENSES/
 .github/
 Cargo.*
@@ -14,7 +13,7 @@ docs/*.md
 docs/*.py
 docs/shell.html
 
-IAM.md
+ACCOUNTS.md
 .DS_Store
 
 windows/

@@ -11,7 +11,7 @@ cargo build --manifest-path "$PSScriptRoot/launcher/Cargo.toml" --locked --relea
 if ($LASTEXITCODE -ne 0) { throw "Native Windows launcher build failed: cargo build exited $($LASTEXITCODE) (its output is above)" }
 $stage = Join-Path $env:RUNNER_TEMP "silicon-$target"
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-foreach ($command in 'silicon si omnid silicon-omni omni so caddy iam honeycomb spacestation dm briefcase waveform commit remind hook ting'.Split(' ')) {
+foreach ($command in 'silicon si omnid silicon-omni omni so caddy silicon-accounts silicon-apps spacestation dm briefcase waveform commit remind hook ting'.Split(' ')) {
     Copy-Item "$PSScriptRoot/launcher/target/$target/release/silicon-windows-launcher.exe" "$stage/$command.exe"
 }
 # The logon task's supervisor (install.ps1 registers it); built by the same cargo build.

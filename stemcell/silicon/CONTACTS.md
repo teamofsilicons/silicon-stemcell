@@ -1,4 +1,4 @@
-Thi is not a fill list of all team members in this organization.
+This is a working list of Carbon and Silicon contacts.
 For full list of team members, read silicon/TEAM.md
 
 Direct Contacts:

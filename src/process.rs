@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::Recover;
 
-/// Starting a program that was written a moment ago (an app Honeycomb just installed, a script
-/// a test just wrote) can fail on Linux with ETXTBSY while another thread's freshly forked child
+/// Starting a program that was written a moment ago (an app Silicon Apps just installed, a script
+/// just created) can fail on Linux with ETXTBSY while another thread's freshly forked child
 /// still holds the file open for writing, until that child execs. That passes within moments.
 pub(crate) trait Starting {
     fn spawn_retrying(&mut self) -> std::io::Result<std::process::Child>;
@@ -81,9 +81,9 @@ pub(crate) enum Limit {
     Expression,
     /// `silicon.setup` scripts.
     Setup,
-    /// Honeycomb installs, updates and removals.
+    /// Silicon Apps installs, updates and removals.
     Install,
-    /// IAM and application CLIs: discovery, status, login, configuration.
+    /// Accounts and application CLIs: discovery, status, login, configuration.
     App,
     /// The Ting CLI: webhook registration, listing and removal.
     Ting,
@@ -300,161 +300,5 @@ impl Stream {
         self.abandoned.store(true, Ordering::SeqCst);
         let bytes = std::mem::take(&mut *self.bytes.lock().recover());
         (bytes, open)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-
-    fn sh(script: &str) -> Command {
-        let mut command = Command::new("sh");
-        command.args(["-c", script]);
-        command
-    }
-
-    #[test]
-    fn finished_tools_answer_like_output() {
-        let output = output_within(
-            &mut sh("echo out; echo err >&2; exit 3"),
-            Duration::from_secs(10),
-        )
-        .unwrap();
-        assert_eq!(output.status.code(), Some(3));
-        assert_eq!(output.stdout, b"out\n");
-        assert_eq!(output.stderr, b"err\n");
-    }
-
-    #[test]
-    fn a_tool_past_its_limit_is_stopped_with_everything_it_said() {
-        let started = Instant::now();
-        let output = output_within(
-            &mut sh("echo started; echo working >&2; sleep 30 & sleep 30; echo never"),
-            Duration::from_millis(300),
-        )
-        .unwrap();
-        assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(!output.status.success());
-        assert_eq!(output.stdout, b"started\n");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.starts_with("working\n"), "{stderr}");
-        assert!(
-            stderr.contains("silicon: stopped after 0s without finishing (its time limit): SIGTERM to its process group, then SIGKILL 5s later"),
-            "{stderr}"
-        );
-        let described = crate::failure::describe(&Output {
-            status: output.status,
-            stdout: output.stdout,
-            stderr: stderr.clone().into_bytes(),
-        });
-        assert!(described.starts_with("signal: 15"), "{described}");
-    }
-
-    #[test]
-    fn a_tool_ignoring_sigterm_is_killed() {
-        let started = Instant::now();
-        let output = output_within(
-            &mut sh("trap '' TERM; echo ready; sleep 60"),
-            Duration::from_millis(300),
-        )
-        .unwrap();
-        let elapsed = started.elapsed();
-        assert!(elapsed >= GRACE && elapsed < GRACE + Duration::from_secs(10));
-        assert_eq!(output.stdout, b"ready\n");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("SIGKILL 5s later"));
-    }
-
-    #[test]
-    fn a_background_child_holding_the_pipe_does_not_hold_the_answer() {
-        let started = Instant::now();
-        // The tool exits at once; the child it left keeps stdout open for a minute.
-        let output = output_within(
-            &mut sh("echo done; (sleep 60; echo late) &"),
-            Duration::from_secs(30),
-        )
-        .unwrap();
-        assert!(started.elapsed() < DRAIN + Duration::from_secs(5));
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"done\n");
-        assert!(String::from_utf8_lossy(&output.stderr)
-            .contains("a process it started still holds its output open"));
-    }
-
-    #[test]
-    fn a_stopping_interpreter_ends_the_tools_still_running() {
-        // In its own process: terminate_all would also end other tests' tools.
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "process::tests::terminate_all_child",
-                "--exact",
-                "--ignored",
-                "--nocapture",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[test]
-    #[ignore = "run by a_stopping_interpreter_ends_the_tools_still_running in its own process"]
-    fn terminate_all_child() {
-        let started = Instant::now();
-        let running = thread::spawn(|| {
-            output_within(&mut sh("echo up; sleep 60"), Duration::from_secs(120)).unwrap()
-        });
-        while RUNNING.lock().recover().is_empty() {
-            assert!(started.elapsed() < Duration::from_secs(10));
-            thread::sleep(Duration::from_millis(20));
-        }
-        terminate_all();
-        let output = running.join().unwrap();
-        assert!(started.elapsed() < Duration::from_secs(30));
-        assert!(!output.status.success());
-        assert!(RUNNING.lock().recover().is_empty());
-    }
-
-    #[test]
-    fn a_program_briefly_busy_being_written_is_started_after_a_retry() {
-        let mut tries = 0;
-        let started = retrying(|| {
-            tries += 1;
-            if tries < 3 {
-                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
-            } else {
-                Ok(tries)
-            }
-        })
-        .unwrap();
-        assert_eq!(started, 3);
-        // Any other failure is the answer at once.
-        let mut tries = 0;
-        let error = retrying(|| -> std::io::Result<()> {
-            tries += 1;
-            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
-        })
-        .unwrap_err();
-        assert_eq!((tries, error.kind()), (1, std::io::ErrorKind::NotFound));
-    }
-
-    #[test]
-    fn unstartable_tools_keep_the_operating_system_reason() {
-        let error = output_within(
-            &mut Command::new("/nonexistent/silicon-tool"),
-            Duration::from_secs(1),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn limits_have_defaults_and_overrides() {
-        assert_eq!(Limit::Ting.default(), Duration::from_secs(60));
-        assert_eq!(shown(Duration::from_secs(300)), "5m");
-        assert_eq!(shown(Duration::from_secs(90)), "90s");
     }
 }

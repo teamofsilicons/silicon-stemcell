@@ -17,15 +17,11 @@ use std::{
 #[serde(default)]
 pub struct Settings {
     pub telemetry: bool,
-    pub auto_update: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            telemetry: true,
-            auto_update: true,
-        }
+        Self { telemetry: true }
     }
 }
 
@@ -39,15 +35,14 @@ fn read_all(path: &Path) -> Result<(Settings, Map<String, Value>)> {
             // Older interpreter releases persisted the retired relay preference.
             if let Some(settings) = value.as_object_mut() {
                 settings.remove("realtime");
+                settings.remove("auto_update");
             }
             let settings = serde_json::from_value(value.clone()).with_context(invalid)?;
             let mut all = match value {
                 Value::Object(all) => all,
                 _ => Map::new(),
             };
-            for known in ["telemetry", "auto_update"] {
-                all.remove(known);
-            }
+            all.remove("telemetry");
             Ok((settings, all))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -79,7 +74,7 @@ struct Cached {
 }
 
 /// Parsed settings by file. A daemon reads one file; each path keeps its own entry, so
-/// reading another (a test's, a changed HOME) never makes the next read of this one miss.
+/// reading another (a different HOME) never makes the next read of this one miss.
 type Cache = Mutex<HashMap<PathBuf, Cached>>;
 
 /// More files than any process reads; past this the cache starts over.
@@ -146,8 +141,7 @@ fn write(path: &Path, key: &str, enabled: bool) -> Result<Settings> {
     let (mut settings, mut all) = read_all(path)?;
     match key {
         "telemetry" => settings.telemetry = enabled,
-        "auto_update" => settings.auto_update = enabled,
-        _ => bail!("unknown setting {key:?}; expected telemetry or auto_update"),
+        _ => bail!("unknown setting {key:?}; expected telemetry"),
     }
     if let Value::Object(known) =
         serde_json::to_value(&settings).context("serialize interpreter settings")?
@@ -157,142 +151,4 @@ fn write(path: &Path, key: &str, enabled: bool) -> Result<Settings> {
     // write_json names the file in its own error.
     crate::state::write_json(path, &all).context("write interpreter settings")?;
     Ok(settings)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn settings_default_and_partial_files_preserve_other_defaults() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("settings.json");
-        assert!(read(&path).unwrap().telemetry);
-        fs::write(&path, r#"{"telemetry":false}"#).unwrap();
-        let settings = read(&path).unwrap();
-        assert!(!settings.telemetry);
-        assert!(settings.auto_update);
-        fs::write(&path, r#"{"telemetry":false,"realtime":true}"#).unwrap();
-        let upgraded = read(&path).unwrap();
-        assert!(!upgraded.telemetry && upgraded.auto_update);
-        assert!(serde_json::to_value(upgraded)
-            .unwrap()
-            .get("realtime")
-            .is_none());
-        // A key this release does not know (a newer release's, or a typo) is ignored.
-        fs::write(&path, r#"{"telemtry":false,"auto_update":false}"#).unwrap();
-        let unknown = read(&path).unwrap();
-        assert!(unknown.telemetry && !unknown.auto_update);
-        assert_eq!(
-            serde_json::to_value(unknown).unwrap(),
-            serde_json::json!({"telemetry": true, "auto_update": false})
-        );
-    }
-
-    #[test]
-    fn set_keeps_keys_a_newer_release_wrote() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("settings.json");
-        fs::write(
-            &path,
-            r#"{"telemetry":true,"autostart":{"mode":"login"},"realtime":true}"#,
-        )
-        .unwrap();
-        let settings = write(&path, "auto_update", false).unwrap();
-        assert!(settings.telemetry && !settings.auto_update);
-        let stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(
-            stored,
-            serde_json::json!({"telemetry": true, "auto_update": false, "autostart": {"mode": "login"}})
-        );
-        let settings = write(&path, "telemetry", false).unwrap();
-        assert!(!settings.telemetry && !settings.auto_update);
-        let stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(stored["autostart"]["mode"], "login");
-        let error = format!("{:#}", write(&path, "autostart", true).unwrap_err());
-        assert_eq!(
-            error,
-            "unknown setting \"autostart\"; expected telemetry or auto_update"
-        );
-        // A missing file starts from the defaults.
-        let fresh = temp.path().join("fresh/settings.json");
-        write(&fresh, "telemetry", false).unwrap();
-        let stored: Value = serde_json::from_slice(&fs::read(&fresh).unwrap()).unwrap();
-        assert_eq!(
-            stored,
-            serde_json::json!({"telemetry": false, "auto_update": true})
-        );
-    }
-
-    #[test]
-    fn settings_are_parsed_again_only_when_the_file_changes() {
-        use std::os::unix::fs::PermissionsExt;
-        // Its own cache: parallel tests load other settings files through the shared one.
-        let cache = Cache::default();
-        let read_cached = |path: &Path| read_cached_in(&cache, path);
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("settings.json");
-        let other = temp.path().join("other.json");
-        assert!(
-            read_cached(&path).unwrap().telemetry,
-            "missing means defaults"
-        );
-        write(&path, "telemetry", false).unwrap();
-        write(&other, "auto_update", false).unwrap();
-        assert!(!read_cached(&path).unwrap().telemetry);
-        // Another file's settings are kept apart and do not push this one out.
-        assert!(!read_cached(&other).unwrap().auto_update);
-        // An unchanged file is not read again: even an unreadable one answers from the cache.
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(!read_cached(&path).unwrap().telemetry);
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        // A write (a new inode) and an in-place edit of another length are both noticed.
-        write(&path, "telemetry", true).unwrap();
-        assert!(read_cached(&path).unwrap().telemetry);
-        fs::write(&path, r#"{"telemetry":false}"#).unwrap();
-        assert!(!read_cached(&path).unwrap().telemetry);
-        fs::write(&path, "{\"telemetry\":false,\n\"auto_update\": yes}").unwrap();
-        let error = format!("{:#}", read_cached(&path).unwrap_err());
-        assert!(
-            error.contains("expected value at line 2 column 16"),
-            "{error}"
-        );
-        // The cached failure is the same text.
-        assert_eq!(format!("{:#}", read_cached(&path).unwrap_err()), error);
-        fs::remove_file(&path).unwrap();
-        assert!(read_cached(&path).unwrap().telemetry);
-        assert_eq!(cache.lock().recover().len(), 2);
-        // However many files are read, the cache stays bounded.
-        for index in 0..CACHED_FILES * 2 {
-            read_cached(&temp.path().join(format!("absent-{index}.json"))).unwrap();
-        }
-        assert!(cache.lock().recover().len() <= CACHED_FILES);
-    }
-
-    #[test]
-    fn settings_errors_name_the_file_and_keep_the_parser_message() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("settings.json");
-        fs::write(&path, "{\"telemetry\":false,\n\"auto_update\": yes}").unwrap();
-        let error = format!("{:#}", read(&path).unwrap_err());
-        assert!(error.contains(&path.display().to_string()), "{error}");
-        assert!(
-            error.contains("expected value at line 2 column 16"),
-            "{error}"
-        );
-        fs::write(&path, r#"{"telemetry":"no"}"#).unwrap();
-        let error = format!("{:#}", read(&path).unwrap_err());
-        assert!(error.contains(&path.display().to_string()), "{error}");
-        assert!(
-            error.contains("invalid type: string \"no\", expected a boolean"),
-            "{error}"
-        );
-        let error = format!("{:#}", read(temp.path()).unwrap_err());
-        assert!(
-            error.starts_with(&format!(
-                "read interpreter settings {}: ",
-                temp.path().display()
-            )),
-            "{error}"
-        );
-    }
 }

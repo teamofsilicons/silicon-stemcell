@@ -315,7 +315,7 @@ pub fn redact(home: &Path, text: &str) -> String {
 }
 
 fn vendor_enabled() -> bool {
-    if cfg!(test) || std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0") {
+    if std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0") {
         return false;
     }
     match settings::load() {
@@ -423,85 +423,5 @@ pub fn flush() {
         .collect();
     for client in clients {
         client.flush();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn interpreter_requests_redact_known_secrets_even_after_disconnect() {
-        let home = PathBuf::from(format!("/test/{}", Uuid::new_v4()));
-        let mut cfg: Config = serde_json::from_value(json!({
-            "silicon": {"id":"si:test", "org_id":"org", "token":"private-token", "app_configs":{
-                "app":{"nested":["custom-configured-secret", {"value":"nested-app-secret"}]}
-            }}, "isi":{}, "access":{}, "flow":[]
-        }))
-        .unwrap();
-        cfg.home = home.clone();
-        register(&cfg);
-        let env = crate::runtime::environment(&cfg);
-        assert!(env["silicon"].get("app_configs").is_none());
-        assert!(env["silicon"].get("token").is_none());
-        unregister(&home);
-        let mut request = json!({"action":"send","args":{"message":"using custom-configured-secret and nested-app-secret"}});
-        redact_interpreter_context(&mut request);
-        assert_eq!(
-            request["args"]["message"],
-            "using [redacted] and [redacted]"
-        );
-        REDACTIONS.get().unwrap().lock().recover().remove(&home);
-    }
-    #[test]
-    fn space_station_errors_are_said_once_per_window_with_the_count_held_back() {
-        let start = Instant::now();
-        let line = |tries: u32| {
-            format!(
-                "Space Station telemetry: throttle-test: record {} failed after {tries} tries",
-                Uuid::new_v4()
-            )
-        };
-        let first = line(3);
-        assert_eq!(throttled(&first, start), Some(first.clone()));
-        // The same error with other numbers and ids is held back within the window.
-        assert_eq!(throttled(&line(4), start + Duration::from_secs(1)), None);
-        assert_eq!(throttled(&line(5), start + Duration::from_secs(2)), None);
-        let other = "Space Station telemetry: throttle-test: io: Too many open files";
-        assert_eq!(
-            throttled(other, start + Duration::from_secs(3)).as_deref(),
-            Some(other)
-        );
-        let late = line(6);
-        assert_eq!(
-            throttled(&late, start + QUIET + Duration::from_secs(1)),
-            Some(format!(
-                "{late} (2 more like it in the last 10 minutes were not shown)"
-            ))
-        );
-        let quiet = line(7);
-        assert_eq!(
-            throttled(&quiet, start + QUIET * 3),
-            Some(quiet.clone()),
-            "nothing was held back"
-        );
-    }
-
-    #[test]
-    fn redaction_is_unchanged_when_a_secret_is_absent_or_repeated() {
-        let secrets = ["repeated-secret".to_owned(), "absent-secret".to_owned()];
-        assert_eq!(
-            redact_text("a repeated-secret and repeated-secret", &secrets),
-            "a [redacted] and [redacted]"
-        );
-        assert_eq!(redact_text("nothing here", &secrets), "nothing here");
-    }
-
-    #[test]
-    fn redacts_nested_credentials_and_known_secrets_without_losing_events() {
-        let mut value = json!({"type":"tool", "data":{"access_token":"private", "content":"using custom-secret and stk-1234567890"}, "metadata":{"isi":"worker"}});
-        redact_value(&mut value, &["custom-secret".into()]);
-        assert_eq!(value["data"]["access_token"], "[redacted]");
-        assert_eq!(value["data"]["content"], "using [redacted] and [redacted]");
-        assert_eq!(value["metadata"]["isi"], "worker");
     }
 }

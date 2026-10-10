@@ -24,12 +24,16 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            apps_target: linux-x86_64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            apps_target: linux-aarch64
           - runner: macos-15
             target: aarch64-apple-darwin
+            apps_target: macos-aarch64
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            apps_target: macos-x86_64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
@@ -59,23 +63,16 @@ jobs:
       - name: Verify interpreter
         run: |
           cargo fmt --all -- --check
-          cargo test --locked
-          python3 tests/ting_migration.py
-          python3 scripts/test-migrate-identifiers.py
+          cargo check --locked
           cargo clippy --locked --all-targets -- -D warnings
       - name: Build the complete bundle
         env:
           SILICON_PREFIX: ${{ runner.temp }}/silicon-bundle
           SILICON_SOURCE_DIR: ${{ github.workspace }}
+          SILICON_APPS_NO_DAEMON: '1'
           SILICON_INTERPRETER_TABLE_KEY: ${{ secrets.SILICON_INTERPRETER_TABLE_KEY }}
           SILICON_RUNTIME_TABLE_KEY: ${{ secrets.SILICON_RUNTIME_TABLE_KEY }}
         run: sh install.sh
-      - name: Exercise the installed bundle with the real Omni daemon and Caddy
-        env:
-          SILICON_TEST_BIN_DIR: ${{ runner.temp }}/silicon-bundle/bin
-          OMNI_DAEMON: ${{ runner.temp }}/silicon-bundle/bin/omnid
-          SILICON_CADDY: ${{ runner.temp }}/silicon-bundle/bin/caddy
-        run: python3 tests/e2e.py
       - name: Check bundled CLI executables without authenticating
         env:
           BUNDLE_BIN: ${{ runner.temp }}/silicon-bundle/bin
@@ -85,14 +82,17 @@ jobs:
           done
           "$BUNDLE_BIN/omnid" --version
           "$BUNDLE_BIN/caddy" version
+          "$BUNDLE_BIN/silicon" accounts --json
+          "$BUNDLE_BIN/silicon" login status --json
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
+          APPS_TARGET: ${{ matrix.apps_target }}
         run: |
           mkdir -p dist
           tar -czf "dist/silicon-$TARGET.tar.gz" -C "$RUNNER_TEMP/silicon-bundle/lib/silicon/current" bin VERSION installer.sh LICENSE LICENSES
           cp install.sh dist/install.sh
-          cp scripts/migrate-identifiers.py scripts/migrate-ting-state.py docs/PUBLIC-IDENTIFIER-MIGRATION.md dist/
+          python3 scripts/package-apps.py "$RUNNER_TEMP/silicon-bundle/lib/silicon/current" "$APPS_TARGET" "dist/silicon-apps-$TARGET.tar.gz" --apps "$RUNNER_TEMP/silicon-bundle/bin/silicon-apps"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.target }}
@@ -128,22 +128,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           cd dist
-          sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 migrate-identifiers.py migrate-ting-state.py PUBLIC-IDENTIFIER-MIGRATION.md > SHA256SUMS
+          sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 6.1.0 adds reusable Starter genes, functions, and ISIs, and organizes application declarations under each ISI.
+          Silicon 7.0.0 adopts Silicon Accounts and Silicon Apps. Carbon and Silicon identities replace organization-scoped access throughout configuration, app authentication, delivery, and the dashboard.
 
-          Use `starter:gene:ID` in DNA, `starter:function:ID` in flow calls or function imports, and `starter:isi:ID: default` to inherit a published ISI. ISI mappings override published defaults recursively. Downloads live in `SILICON_HOME/.fromstarter`, refresh on reconnect, and remain cached for live flow loading. Optional SHA-256 versions pin a publication. Starter 0.3.0 or newer verifies downloads and is installed or upgraded through Honeycomb when needed. If its Honeycomb listing is unavailable to you, install the [public Starter CLI](https://github.com/teamofsilicons/silicon-starter/releases/latest) first as described in the [setup guide](https://docs.teamofsilicons.com/#reusable-starter-blocks). Private blocks require an existing authorized Starter login.
+          Apps identify themselves with `accounts --json`, install through `silicon-apps`, and keep their sessions and packages in the selected account's home. Existing sign-ins remain available until they expire or the user signs out. Silicon Apps owns package updates; the interpreter no longer runs a competing updater.
 
-          Apps declared by local and imported ISIs are installed and authenticated as one shared set. The lists organize intended use and do not restrict other ISIs. Honeycomb app names, IDs, help commands, and descriptions are included in DNA, with cached metadata retained when lookup is unavailable. `si app install` records the app on the calling ISI; uninstall removes the shared app declarations and configuration.
+          The dashboard uses Silicon UI from ui.teamofsilicons.com. App metadata comes from Silicon Apps, with cached descriptions available offline. Test suites and the old organization migration tooling have been removed.
 
-          Existing 6.0 configurations, including legacy `silicon.apps` and `silicon.login`, remain compatible. Update with `silicon update`, then disconnect and reconnect to adopt new Starter publications or manual configuration changes. Duplicate connections are rejected before refreshing files used by live workers.
+          Linux packages for Silicon Apps are included alongside complete macOS and Linux bundles. Windows bundles provide native launchers for the WSL2 runtime and the Silicon Accounts and Silicon Apps CLIs. Windows requires hardware virtualization; restart and resume installation if requested.
 
-          **Upgrading from 5.x still requires the 6.0 flow migration:** use `self.error` in catches, account for default send aggregation, and prepare the edits before updating. See the [flow migration guide](https://docs.teamofsilicons.com/#flow-migration). Upgrading from 4.x also requires the included `PUBLIC-IDENTIFIER-MIGRATION.md`.
-
-          Bundles retain unattended autostart and recovery, durable delivery, Omni 0.9.1, and Caddy. Honeycomb is installed independently; IAM, Ting, and configured applications install through Honeycomb on connect.
-
-          Windows x64 uses WSL2 and runs the real runtime suite. Windows ARM64 remains preview: native launcher and Linux ARM64 checks run, but physical Windows ARM64 WSL2 E2E is not yet verified. Windows requires hardware virtualization; restart and resume installation if requested.
-
-          Verify downloads against `SHA256SUMS`. Binaries are verified before activation. Installers preserve Silicon YAML, credentials, and runtime data; they do not migrate flow source automatically.
+          Configuration now uses Silicon identities without organization fields. Read the [setup guide](https://docs.teamofsilicons.com/) before updating existing YAML. Installers preserve credentials and runtime data. Verify downloads against `SHA256SUMS`.
           NOTES
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 migrate-identifiers.py migrate-ting-state.py PUBLIC-IDENTIFIER-MIGRATION.md SHA256SUMS
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

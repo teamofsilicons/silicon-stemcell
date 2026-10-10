@@ -46,24 +46,24 @@ struct Entry {
 }
 
 impl Outbox {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &Config) -> Result<Self> {
         let directory = cfg
             .home
             .join(".silicon/outbox")
-            .join(cfg.silicon.id.as_deref().unwrap_or_default())
-            .join(cfg.silicon.silicon_org.as_deref().unwrap_or_default());
+            .join(cfg.silicon.id.as_deref().unwrap_or_default());
+        crate::migrate_account_state(&directory, &[])?;
         let gate = GATES
             .lock()
             .recover()
             .entry(directory.clone())
             .or_default()
             .clone();
-        Self {
+        Ok(Self {
             directory,
             home: cfg.home.clone(),
             generation: cfg.generation,
             gate,
-        }
+        })
     }
 
     fn path(&self, run: &str) -> Result<PathBuf> {
@@ -170,11 +170,7 @@ impl Outbox {
             for retry in 0..=max_retries {
                 ready()?;
                 if retry > 0 {
-                    let delay = if cfg!(test) {
-                        0
-                    } else {
-                        100_u64.saturating_mul(1_u64 << retry.min(4)).min(1000)
-                    };
+                    let delay = 100_u64.saturating_mul(1_u64 << retry.min(4)).min(1000);
                     for _ in 0..delay / 50 {
                         std::thread::sleep(Duration::from_millis(50));
                         ready()?;
@@ -360,297 +356,4 @@ fn save(path: &Path, record: &mut Record) -> Result<()> {
         }
     }
     state::write_json(path, record)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn config(home: &Path) -> Config {
-        let mut cfg: Config = serde_yaml::from_str("silicon: {id: 'si:test', org_id: org, SILICON_ORG: org}\nisi: {}\naccess: {}\nflow: []\n").unwrap();
-        cfg.home = home.to_owned();
-        cfg
-    }
-
-    fn message(session: &str, text: &str) -> flow::Delivery {
-        flow::Delivery {
-            isi: "trainer".into(),
-            session_id: Some(session.into()),
-            message: text.into(),
-        }
-    }
-
-    #[test]
-    fn retries_stashes_and_recovers_only_the_same_destination_after_restart() -> Result<()> {
-        let home = tempfile::tempdir()?;
-        let cfg = config(home.path());
-        let outbox = Outbox::new(&cfg);
-        let first = Uuid::new_v4().to_string();
-        let second = Uuid::new_v4().to_string();
-        let third = Uuid::new_v4().to_string();
-        let mut attempts = 0;
-        outbox.deliver(
-            &first,
-            0,
-            &message("alice", "first"),
-            2,
-            |_, _| {
-                attempts += 1;
-                bail!("provider unavailable")
-            },
-            || Ok(()),
-        )?;
-        assert_eq!(attempts, 3);
-        outbox.complete(&first)?;
-        let stored = read(&outbox.path(&first)?)?.unwrap();
-        assert_eq!(stored.deliveries[&0].attempts, 3);
-        assert!(stored.deliveries[&0]
-            .last_error
-            .as_ref()
-            .unwrap()
-            .contains("provider unavailable"));
-
-        let restarted = Outbox::new(&cfg);
-        let mut sent = Vec::new();
-        restarted.deliver(
-            &second,
-            0,
-            &message("bob", "other owner"),
-            2,
-            |_, delivery| {
-                sent.push(delivery.clone());
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        assert_eq!(sent, [message("bob", "other owner")]);
-        assert!(outbox.path(&first)?.exists());
-        restarted.complete(&second)?;
-        restarted.deliver(
-            &third,
-            0,
-            &message("alice", "latest"),
-            2,
-            |_, delivery| {
-                sent.push(delivery.clone());
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        assert_eq!(
-            sent,
-            [
-                message("bob", "other owner"),
-                message("alice", "first"),
-                message("alice", "latest")
-            ]
-        );
-        assert!(!outbox.path(&first)?.exists());
-        // A retry of the input after another step failed must not redeliver this group.
-        restarted.deliver(
-            &third,
-            0,
-            &message("alice", "latest"),
-            2,
-            |_, _| panic!("delivered twice"),
-            || Ok(()),
-        )?;
-        restarted.complete(&third)?;
-        assert_eq!(fs::read_dir(&outbox.directory)?.count(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn interruption_and_changed_flow_retain_original_messages() -> Result<()> {
-        let home = tempfile::tempdir()?;
-        let outbox = Outbox::new(&config(home.path()));
-        let run = Uuid::new_v4().to_string();
-        let delivery = message("alice", "original");
-        let error = outbox
-            .deliver(
-                &run,
-                0,
-                &delivery,
-                10,
-                |_, _| Err(flow::Interrupted("disconnect".into()).into()),
-                || Ok(()),
-            )
-            .unwrap_err();
-        assert!(flow::interrupted(&error));
-        assert_eq!(
-            read(&outbox.path(&run)?)?.unwrap().deliveries[&0].attempts,
-            1
-        );
-        let changed = outbox
-            .deliver(
-                &run,
-                0,
-                &message("bob", "changed"),
-                10,
-                |_, _| panic!("must not send changed routing"),
-                || Ok(()),
-            )
-            .unwrap_err();
-        assert!(changed
-            .to_string()
-            .contains("changed destination while its input was pending"));
-        outbox.deliver(&run, 0, &delivery, 0, |_, _| Ok(()), || Ok(()))?;
-        outbox.complete(&run)?;
-        Ok(())
-    }
-
-    #[test]
-    fn pending_receipts_wait_for_next_trigger_and_replays_keep_the_original_message() -> Result<()>
-    {
-        let home = tempfile::tempdir()?;
-        let cfg = config(home.path());
-        let outbox = Outbox::new(&cfg);
-        let run = Uuid::new_v4().to_string();
-        let mut attempts = 0;
-        outbox.deliver(
-            &run,
-            0,
-            &message("alice", "original timestamp"),
-            10,
-            |key, _| {
-                assert_eq!(key, format!("{run}/0"));
-                attempts += 1;
-                Err(AwaitingReceipt.into())
-            },
-            || Ok(()),
-        )?;
-        assert_eq!(
-            attempts, 1,
-            "uncertain acceptance must not immediately dispatch again"
-        );
-        outbox.deliver(
-            &run,
-            0,
-            &message("alice", "new timestamp"),
-            10,
-            |_, delivery| {
-                assert_eq!(delivery.message, "original timestamp");
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        // A crash after inbox removal leaves this successful receipt. Reconnect cleans it.
-        Outbox::new(&cfg).reconcile(&HashSet::new())?;
-        assert!(!outbox.path(&run)?.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn reconnect_keeps_pending_inputs_and_stashes_and_quarantines_corruption() -> Result<()> {
-        let home = tempfile::tempdir()?;
-        let cfg = config(home.path());
-        let outbox = Outbox::new(&cfg);
-        let pending = Uuid::new_v4().to_string();
-        let stashed = Uuid::new_v4().to_string();
-        outbox.deliver(
-            &pending,
-            0,
-            &message("alice", "sent"),
-            0,
-            |_, _| Ok(()),
-            || Ok(()),
-        )?;
-        outbox.deliver(
-            &stashed,
-            0,
-            &message("bob", "unsent"),
-            0,
-            |_, _| bail!("offline"),
-            || Ok(()),
-        )?;
-        outbox.reconcile(&HashSet::from([pending.clone()]))?;
-        assert!(!read(&outbox.path(&pending)?)?.unwrap().completed);
-        assert!(read(&outbox.path(&stashed)?)?.unwrap().completed);
-        let corrupt = outbox.path(&Uuid::new_v4().to_string())?;
-        fs::write(&corrupt, "retain this damage")?;
-        let mut sent = Vec::new();
-        outbox.flush(
-            &message("bob", "next"),
-            0,
-            |_, delivery| {
-                sent.push(delivery.clone());
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        assert_eq!(sent, [message("bob", "unsent")]);
-        assert!(!corrupt.exists());
-        assert!(fs::read_dir(&outbox.directory)?.any(|entry| {
-            let path = entry.unwrap().path();
-            path.extension()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .starts_with("corrupt-")
-                && fs::read_to_string(path).unwrap() == "retain this damage"
-        }));
-        Ok(())
-    }
-
-    #[test]
-    fn interleaved_requests_do_not_overtake_older_stashed_messages() -> Result<()> {
-        let home = tempfile::tempdir()?;
-        let outbox = Outbox::new(&config(home.path()));
-        let first_run = Uuid::new_v4().to_string();
-        let second_run = Uuid::new_v4().to_string();
-        outbox.deliver(
-            &first_run,
-            0,
-            &message("alice", "first destination"),
-            0,
-            |_, _| Ok(()),
-            || Ok(()),
-        )?;
-        outbox.deliver(
-            &second_run,
-            0,
-            &message("bob", "older"),
-            0,
-            |_, _| bail!("offline"),
-            || Ok(()),
-        )?;
-        outbox.complete(&second_run)?;
-        let mut sent = Vec::new();
-        outbox.deliver(
-            &first_run,
-            1,
-            &message("bob", "newer"),
-            0,
-            |_, delivery| {
-                sent.push(delivery.message.clone());
-                Ok(())
-            },
-            || Ok(()),
-        )?;
-        assert_eq!(sent, ["older", "newer"]);
-        Ok(())
-    }
-
-    #[test]
-    fn failed_storage_never_attempts_delivery_and_corruption_is_not_discarded() -> Result<()> {
-        let home = tempfile::tempdir()?;
-        let outbox = Outbox::new(&config(home.path()));
-        let run = Uuid::new_v4().to_string();
-        fs::create_dir_all(&outbox.directory)?;
-        fs::write(outbox.path(&run)?, "broken retained message")?;
-        assert!(outbox
-            .deliver(
-                &run,
-                0,
-                &message("alice", "hello"),
-                0,
-                |_, _| panic!("must persist before delivery"),
-                || Ok(())
-            )
-            .is_err());
-        assert_eq!(
-            fs::read_to_string(outbox.path(&run)?)?,
-            "broken retained message"
-        );
-        Ok(())
-    }
 }

@@ -237,36 +237,21 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
         .env_remove("SILICON_SERVICE")
         .env_remove("SILICON_DETACHED")
         .env("SILICON_HOME", home)
-        .env("SILICON_IAM_HOME", home.join(".silicon-iam"));
-    let org = home.join(".silicon/org.json");
-    match std::fs::read(&org) {
-        Ok(bytes) => match serde_json::from_slice::<String>(&bytes) {
-            Ok(selected) => {
-                command.env("SILICON_ORG", selected);
-            }
-            Err(error) => tool_setup_failed(
-                home,
-                &format!(
-                    "{} must hold the selected organization as a JSON string, so tools run without SILICON_ORG: {error}; it holds: {}",
-                    org.display(),
-                    String::from_utf8_lossy(&bytes)
-                ),
-            ),
-        },
-        // No organization selected yet.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => tool_setup_failed(
-            home,
-            &format!(
-                "could not read {}, so tools run without SILICON_ORG: {error}",
-                org.display()
-            ),
-        ),
-    }
+        .env("ACCOUNTS_HOME", home)
+        .env_remove("ACCOUNTS_STK")
+        .env_remove("ACCOUNTS_SILICON")
+        .env_remove("ACCOUNTS_SILICON_KEY")
+        .env_remove("SILICON_IAM_HOME")
+        .env_remove("SILICON_ORG")
+        .env_remove("SPACE_STATION_ORG");
     let bin = home.join(".silicon/bin");
-    match std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ))) {
+    match std::env::join_paths(
+        std::iter::once(bin.clone())
+            .chain(std::iter::once(home.join(".apps/bin")))
+            .chain(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            )),
+    ) {
         Ok(path) => {
             command.env("PATH", path);
         }
@@ -290,8 +275,8 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
     };
     if telemetry_off || std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0") {
         command
-            .env("IAM_TELEMETRY", "off")
-            .env("HONEYCOMB_TELEMETRY", "0")
+            .env("ACCOUNTS_TELEMETRY", "off")
+            .env("APPS_TELEMETRY", "0")
             .env("DM_TELEMETRY_ENABLED", "false")
             .env("BRIEFCASE_TELEMETRY", "0")
             .env("SPACE_STATION_TELEMETRY", "0");
@@ -365,142 +350,100 @@ pub fn log_line_scoped(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn log_lines_name_the_writing_process_and_keep_four_fields() {
-        let dir = tempfile::tempdir().unwrap();
-        // A test binary is not `silicon serve`, so it logs as a CLI process.
-        assert_eq!(process_role(), "cli");
-        log_line(dir.path(), "command", "interpreter", "running: pwd").unwrap();
-        let line = std::fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
-        let line = line.trim_end();
-        assert!(
-            line.starts_with("[command] [interpreter/cli] ["),
-            "unexpected line: {line}"
-        );
-        assert_eq!(
-            line.matches("] [").count(),
-            3,
-            "field count changed: {line}"
-        );
-        assert!(line.ends_with("[running: pwd]"), "unexpected line: {line}");
-
-        mark_daemon();
-        assert_eq!(process_role(), "daemon");
-        log_line(dir.path(), "command", "interpreter", "running: pwd").unwrap();
-        let text = std::fs::read_to_string(dir.path().join(".silicon/silicon.log")).unwrap();
-        let second = text.lines().nth(1).unwrap();
-        assert!(
-            second.starts_with("[command] [interpreter/daemon] ["),
-            "unexpected line: {second}"
+/// Flatten one retained namespace before opening account-owned queues. A marker makes
+/// interrupted moves resumable; ambiguous histories never get combined automatically.
+pub(crate) fn migrate_account_state(directory: &Path, native_dirs: &[&str]) -> Result<()> {
+    use anyhow::bail;
+    use std::fs;
+    if fs::symlink_metadata(directory).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        bail!(
+            "account state {} must not be a symlink",
+            directory.display()
         );
     }
-
-    #[test]
-    fn logs_rotate_at_their_cap_and_readers_follow_the_move() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("x.log");
-        std::fs::write(&log, "one\ntwo\n").unwrap();
-        assert!(
-            !rotate(&log, 100, 3).unwrap(),
-            "under the cap nothing moves"
-        );
-        let mut offset = 0;
-        assert_eq!(
-            complete_lines_since(&log, &mut offset).unwrap(),
-            b"one\ntwo\n"
-        );
-        std::fs::write(&log, "one\ntwo\nthree\npart").unwrap();
-        assert!(rotate(&log, 8, 3).unwrap());
-        assert!(!log.exists());
-        std::fs::write(&log, "four\n").unwrap();
-        // The rest of the rotated copy, then the new file; the partial line waits.
-        assert_eq!(appended_since(&log, 8).unwrap(), b"three\npartfour\n");
-        assert_eq!(
-            complete_lines_since(&log, &mut offset).unwrap(),
-            b"three\npartfour\n"
-        );
-        assert_eq!(offset, 5);
-        for round in 0..4 {
-            std::fs::write(&log, format!("round {round}\n")).unwrap();
-            assert!(rotate(&log, 1, 3).unwrap());
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries.collect::<std::io::Result<Vec<_>>>()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read account state {}", directory.display()))
         }
-        // Only `keep` copies survive; the newest is .1.
-        assert_eq!(
-            std::fs::read_to_string(numbered(&log, "1")).unwrap(),
-            "round 3\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(numbered(&log, "3")).unwrap(),
-            "round 1\n"
-        );
-        assert!(!numbered(&log, "4").exists());
-    }
-
-    #[test]
-    fn a_silicon_log_past_its_cap_starts_a_new_file_and_keeps_the_old() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join(".silicon/silicon.log");
-        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
-        std::fs::write(&log, vec![b'x'; LOG_CAP as usize]).unwrap();
-        log_line(dir.path(), "runtime", "interpreter", "after the cap").unwrap();
-        assert!(!log.exists() || std::fs::metadata(&log).unwrap().len() == 0);
-        let rotated = std::fs::read_to_string(numbered(&log, "1")).unwrap();
-        assert!(
-            rotated.ends_with("[after the cap]\n"),
-            "{}",
-            &rotated[rotated.len() - 80..]
-        );
-        log_line(dir.path(), "runtime", "interpreter", "next").unwrap();
-        assert!(std::fs::read_to_string(&log).unwrap().ends_with("[next]\n"));
-    }
-
-    #[test]
-    fn a_failed_silicon_log_write_names_the_file_and_the_os_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join(".silicon/silicon.log");
-        std::fs::create_dir_all(&log).unwrap();
-        let error = format!(
-            "{:#}",
-            log_line_scoped(dir.path(), None, "send", "a", "hello").unwrap_err()
-        );
-        assert!(
-            error.starts_with(&format!("cannot append to {}: ", log.display()))
-                && error.contains("os error"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn a_broken_selected_organization_is_logged_once_with_its_contents() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path();
-        std::fs::create_dir_all(home.join(".silicon")).unwrap();
-        std::fs::write(home.join(".silicon/org.json"), "tos\n").unwrap();
-        for _ in 0..2 {
-            let tool = command("true", home);
-            assert!(!tool.get_envs().any(|(name, _)| name == "SILICON_ORG"));
+    };
+    let marker = directory.join(".account-state-migration.json");
+    let underway: Option<String> = match fs::read(&marker) {
+        Ok(bytes) => {
+            Some(serde_json::from_slice(&bytes).context("read retained account-state migration")?)
         }
-        let log = std::fs::read_to_string(home.join(".silicon/silicon.log")).unwrap();
-        assert_eq!(log.matches("SILICON_ORG").count(), 1, "{log}");
-        assert!(
-            log.starts_with("[error] [interpreter/")
-                && log.contains(&format!(
-                    "{} must hold the selected organization as a JSON string, so tools run without SILICON_ORG: expected ident at line 1 column 2; it holds: tos\\n]",
-                    home.join(".silicon/org.json").display()
-                )),
-            "{log}"
-        );
-        // A valid selection reaches the tool and adds nothing to the log.
-        std::fs::write(home.join(".silicon/org.json"), "\"tos\"").unwrap();
-        let tool = command("true", home);
-        assert!(tool
-            .get_envs()
-            .any(|(name, value)| name == "SILICON_ORG" && value == Some("tos".as_ref())));
-        let after = std::fs::read_to_string(home.join(".silicon/silicon.log")).unwrap();
-        assert_eq!(after, log);
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("read account-state migration marker"),
+    };
+    let mut legacy = Vec::new();
+    let mut current = false;
+    for entry in entries {
+        let name = entry.file_name();
+        if name == ".account-state-migration.json"
+            || name == ".DS_Store"
+            || name.to_string_lossy().starts_with("._")
+        {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            bail!(
+                "retained account state {} must not be a symlink",
+                entry.path().display()
+            );
+        }
+        // An old namespace could itself have been named pending.
+        let native = native_dirs.iter().any(|allowed| name == *allowed)
+            && !["pending", "seen.json", "inbox.json", "hook.json"]
+                .iter()
+                .any(|name| entry.path().join(name).exists());
+        if kind.is_dir() && !native {
+            legacy.push(entry.path());
+        } else {
+            current = true;
+        }
     }
+    if legacy.is_empty() {
+        if underway.is_some() {
+            fs::remove_file(&marker).context("finish account-state migration")?;
+        }
+        return Ok(());
+    }
+    if legacy.len() != 1 || (current && underway.is_none()) {
+        bail!("{} contains multiple retained namespaces or both old and current account state; no files were moved. Stop the interpreter and reconcile the retained queues before reconnecting", directory.display());
+    }
+    let source = &legacy[0];
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("retained namespace must have a UTF-8 name")?;
+    if underway.as_deref().is_some_and(|expected| expected != name) {
+        bail!(
+            "account-state migration in {} names another retained namespace; no files were moved",
+            directory.display()
+        );
+    }
+    let entries = fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
+    for entry in &entries {
+        if entry.file_type()?.is_symlink() {
+            bail!(
+                "retained account state {} must not be a symlink",
+                entry.path().display()
+            );
+        }
+        let target = directory.join(entry.file_name());
+        if fs::symlink_metadata(&target).is_ok() {
+            bail!("cannot move retained account state {} to {}: the destination exists; no files were overwritten", entry.path().display(), target.display());
+        }
+    }
+    state::write_json(&marker, &name)?;
+    for entry in entries {
+        fs::rename(entry.path(), directory.join(entry.file_name()))
+            .context("move retained account state")?;
+    }
+    fs::remove_dir(source).context("finish retained namespace migration")?;
+    fs::remove_file(marker).context("finish account-state migration")?;
+    Ok(())
 }

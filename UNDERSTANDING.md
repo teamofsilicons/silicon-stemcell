@@ -1,4 +1,4 @@
-[silicon interpreter 3.5]
+[silicon interpreter 7.0]
     |
 ---------
 |   |   |
@@ -14,14 +14,14 @@ any new silicon wanting to join silicon interpreter needs to pass the silicon.ya
 silicon interpreter offers a way for silicons to connect & disconnect.
 silicon interpreter is a command line first interface. i will be showing all thigns on the command line, but same should be possible to do on the web as well.
 
-silicon_id is like this `si:{handle}`. `silicon.org_id` carries the owning org separately; never infer it from the id. Carbon ids use `c:{handle}`, and app ids are bare handles like `dm`. Bundle ids retain `org>bundle`.
+Silicon identity is `si:{handle}` and Carbon identity is `c:{handle}`. Every action belongs to one of these accounts. App IDs are bare handles such as `dm`.
 
 connect:
 `silicon connect {path to yaml}`
 compiles the silicon.yaml and throws errors if any, or connect if all is good.
-create a local listening url ({handle}.{org_id}.localhost when both are DNS labels) for this silicon and maps that url to silicon interpreter's web server link. Use the connection's returned host for handles or organizations that need DNS encoding.
+create a local listening url ({handle}.si.localhost when the handle is a DNS label) for this silicon and maps that url to silicon interpreter's web server link. Use the connection's returned host for handles that need DNS encoding.
 
-Once the local route is ready, register its URL with Ting using the Honeycomb-installed `ting` CLI. Ting is implicit, like IAM, even when absent from apps.
+Once the local route is ready, register its URL with Ting using the Silicon Apps-installed `ting` CLI. Ting is implicit, like Silicon Accounts, even when absent from apps.
 
 show the output of all scripts inside setup, tell when each app is installed and logged in, and when webhooks are setup.
 
@@ -37,8 +37,8 @@ list:
 logs:
 `silicon logs show {sid}` shows the last 100 lines and starts following the logs. displays log location & silicon id at the bottom persistently.
 
-install honeycomb apps
-`silicon install appid` installs the app from honeycomb for this distribution
+install apps apps
+`silicon install appid` installs the app from apps for this distribution
 
 uninstall
 `silicon uninstall appid`
@@ -51,7 +51,7 @@ Ting sends {tings: [{id: str, type: str, data: obj, metadata: obj}, ...]}. Dedup
 
 Flow send queues messages by default and aggregates them per (isi, session_id), in order, at the end of the flow. aggregate: false flushes earlier queued messages to that same destination and attempts the current message immediately. Flushed messages can enter an active provider turn; no inference completion is required. Function return/failure does not roll back queued messages.
 
-Persist outgoing messages before dispatch in .silicon/outbox/<silicon-id>/<org>/<request-id>.json. silicon.max_retries defaults to 10 retries after the first attempt. Record failures and recovery, retain undelivered groups after exhaustion, and only retry the stash when the next message is sent to that same isi+session. No timer-driven fallback or redirection to another destination after exhaustion. Delivery receipts are persisted so a retried incoming request can reuse its outgoing state. A crash before a receipt is saved may still duplicate delivery; app/shell side effects are not transactional.
+Persist outgoing messages before dispatch in .silicon/outbox/<silicon-id>/<request-id>.json. silicon.max_retries defaults to 10 retries after the first attempt. Record failures and recovery, retain undelivered groups after exhaustion, and only retry the stash when the next message is sent to that same isi+session. No timer-driven fallback or redirection to another destination after exhaustion. Delivery receipts are persisted so a retried incoming request can reuse its outgoing state. A crash before a receipt is saved may still duplicate delivery; app/shell side effects are not transactional.
 
 Logs:
 Log everything. New msg, what's happening in flow, what each of the isi is doing, everything. Omni has a event that you can subscribe to and use for loggin the active work. when displaying, color code different isi msg, runtime logs, errors. not the complete msg, but just the first section. include metadata with the logs like [type] [origin] [timestamp] [message]
@@ -59,24 +59,24 @@ Log everything. New msg, what's happening in flow, what each of the isi is doing
 
 
 Updates:
-this is an open source project, make the versions live on github, and keep checking for updates every 1hr, and then update as and when a new update is pushed.
+this is an open source project, make the versions live on github, and let Silicon Apps own package updates. `silicon update` delegates to `silicon-apps update silicon`; restart idle interpreters when the installed executable changes.
 
 what we update is just the interpretter, cli, tos deamon, etc. and that's it. never make any changes to a silicon.yaml
 
 
 Default:
-the silicon, memories, & workspace folders are templates. this is not sent to anyone. this is here just for testing.
+the silicon, memories, & workspace folders are templates. this is not sent to anyone. this is reference material for creating a Silicon.
 
 
 Shipment:
-everything needed to run silicon should be bundled here. Then a single curl + sh command should intall all things required on the local system to get things up and running. Write a docs for how to use silicon, the config docs, expectations from IAM apps. etc etc.
+everything needed to run silicon should be bundled here. Then a single curl + sh command should intall all things required on the local system to get things up and running. Write a docs for how to use silicon, the config docs, expectations from Silicon Accounts apps. etc etc.
 
 everything should be on docs.teamofsilicons.com on vercel (i have cli installed and logged in)
 
 
 Installation:
 Anyone should be able to run one bash command to install all of silicon & dependencies of it.
-This includes the interpretter, caddy, iam, omni, dm, briefcase, waveform, commit, remind & hook.
+This includes the interpretter, caddy, silicon-accounts, omni, dm, briefcase, waveform, commit, remind & hook.
 
 
 
@@ -96,12 +96,10 @@ flow and functions are runtime-loaded together; edits to either the YAML or impo
 
 silicon:
     id                      full silicon id, si:handle
-    org_id                  explicit IAM owning organization
     token                   silicon token, used for authentication
     timezone                timezone silicon operates in
     max_retries             optional nonnegative integer; default 10 retries after first outgoing flow delivery attempt
     SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
-    SILICON_ORG             env variables passed for all ISI; defaults to org_id
     space_station           optional; for telemetry
         table_name          space station table name
         table_key           space station table key
@@ -130,14 +128,14 @@ every app with configs supports running `app config set "{key: value, ...}"`
 
 once a silicon is ready to receive messages, register it on ting.
 
-apps themselves manage access & refresh tokens.
+apps themselves manage access & refresh tokens. Keep CLI and browser sessions until the session expires or the user logs out; explicit logout must not be undone by automatic checks.
 any isi can login to an app assisted by `si setup auth app_id` cli
 before heartbeats & new sessions, all auths are checked and authenticated if needed.
 
 when disconnecting a silicon, run `ting unhook {webhook_id}`. Retain the ID and reuse it when reconnecting.
 
 isi:
-each isi is run on its own terminal with SILICON_HOME, SILICON_ORG & ISI
+each isi is run on its own terminal with SILICON_HOME & ISI
 if isi has primary send mode global, its just the isi name, if it is session, then its name:id
 
     isi_name:                       name that other allowed isi can call this isi by. min 1 req.
@@ -147,7 +145,7 @@ if isi has primary send mode global, its just the isi name, if it is session, th
         dna:                        prompt sent
             assemble                list of file-loc relative SILICON_HOME, bash scripts echoing text
             next_refresh            refresh this dna after X min. can be bash. eval on each refresh
-        apps                        optional; list of bare iam app ids, automatically logged in using silicon token
+        apps                        optional; list of bare application ids, automatically logged in using silicon token
         heartbeat:                  optional; a regular heartbeat for isi
             next                    next heartbeat in X min. can be bash.
             message                 message to send during heartbeat.
@@ -280,7 +278,7 @@ inputs the file's content
 #### evals
 evaluation order: CEL -> Bash -> String
 any string with non excaped {...} should be evaluated using CEL. Pass the following to it:
-- request (this is json that was received on the Silicon's local URL, such as http://assistant.my-org.localhost/)
+- request (this is json that was received on the Silicon's local URL, such as http://assistant.si.localhost/)
 - silicon, isi and access as json
 - tz_time function which takes in a UTC time, and a timezone in IANA, and outputs time in that timezone. {HH:MM:SS DD:MM:YY IANA}
 - to_yaml takes in json, and prints it with tabs & new lines (yaml).
@@ -310,7 +308,7 @@ Flow evaluation failures support catch with scoped self.error. Log the full erro
 Silicon Omni – Inference Provider. Use their rust package.
 https://omni.teamofsilicons.com/
 
-Silicon IAM – Identify & Access Management which allows authentication.
+Silicon Accounts authenticates Carbon and Silicon identities.
 Install and Use their CLI. Use with SILICON_HOME
 
 
@@ -333,24 +331,24 @@ Some remote ISIs from starters can have their own apps, so be sure to download t
 
 Where we add a details for the `si` cli, add another file into the dna for that silicon in the style:
 """
-App Name: {app name from honeycomb}
+App Name: {app name from apps}
 App Id: {app id}
 CLI: run `{app id} --help` to know about it
 
-About: {app description from honeycomb}
+About: {app description from apps}
 
 
 ...another app...
 """
 
-# External Expectation (from iam apps)
+# External Expectation (from Silicon Apps)
 CLIs respect SILICON_HOME and store each their local states inside that folder itself. Its home, so they should use that as base, and make their own hidden folders to keep their information.
 
 Specific apps that could benefit from using ISI should do that. eg: dm.
 
-All iam apps' authentication is managed by silicon interpretter.
-`app iam --json` gives {app_id: "..."} along with other info
-`app login "..."` takes in a short lived auth token generated by silicon interpretter.
+All Silicon Apps' authentication is managed by silicon interpretter.
+`app accounts --json` gives {app_id: "..."} along with other info
+`app login --slt "..."` takes in a short lived auth token generated by silicon interpretter.
 `app login status --json` tells if its {authenticated: true}
 
 Events:
@@ -411,8 +409,8 @@ session & emphemeral:
 never starts a new session. --id is always passed when creating a new isi of this kind.
 
 > install & uninstall apps
-`si app install {honeycomb_app_id}` to install an app and append its app_id inside silicon.yaml apps list
-`si app uninstall {honeycomb_app_id}` to remove that app from the list along with its config.
+`si app install {apps_app_id}` to install an app and append its app_id inside silicon.yaml apps list
+`si app uninstall {apps_app_id}` to remove that app from the list along with its config.
 
 if a config needs to be added for a newly installed app, then it should be added directly into the silicon.yaml file by silicon.
 
@@ -442,7 +440,7 @@ treat --help as the primary docs and disclosure of how to use different commands
 this prompt is very minimal & only intended for the isi to do internal stuff.
 
 # codebase
-this is a rust project with as much in rust as possible. for all iam apps use their cli.
+this is a rust project with as much in rust as possible. for all Silicon Apps use their cli.
 for omni, use its rust package.
 
 make the code modular.
@@ -451,8 +449,7 @@ this is a mono repo, so keep both the interpretter code as well as docs inside i
 i have almost everything installed locally. include aws, vercel and namecheap cli.
 keep the releases on github.
 
-i am also logged into iam cli using my personal account.
-you can create a test iam env and use it to test things.
+Publish through the Developer portal CLI as the owning Carbon or Silicon account.
 
 this project has 2 constriansts we are optimising: simplicity to create & use a silicon with extendibility.
 

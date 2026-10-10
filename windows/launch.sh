@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 export HOME=/home/silicon SILICON_WSL=1
-export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.apps/bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 command=$1
 windows_cwd=$2
 shift 2
-case "$command" in silicon|si|omnid|silicon-omni|omni|so|caddy|iam|honeycomb|spacestation|dm|briefcase|waveform|commit|remind|hook|ting) ;; *) echo "Unknown Silicon command '$command'" >&2; exit 2 ;; esac
+case "$command" in silicon|si|omnid|silicon-omni|omni|so|caddy|silicon-accounts|silicon-apps|spacestation|dm|briefcase|waveform|commit|remind|hook|ting) ;; *) echo "Unknown Silicon command '$command'" >&2; exit 2 ;; esac
 if [ -n "${SILICON_HOME:-}" ]; then
     case "$SILICON_HOME" in /*) ;; *) echo "Windows SILICON_HOME must name an absolute path inside the Silicon WSL2 distribution, not '$SILICON_HOME'." >&2; exit 2 ;; esac
     cd -- "$SILICON_HOME" || { status=$?; echo "Could not enter SILICON_HOME '$SILICON_HOME' inside the Silicon WSL2 distribution (cd's error is above)." >&2; exit "$status"; }
@@ -17,7 +17,7 @@ else
 fi
 homes=("$HOME" "${SILICON_HOME:-$HOME}" "${SILICON_INTERPRETER_HOME:-$HOME/.silicon-interpreter}")
 while IFS= read -r name; do
-    case "$name" in SILICON_*|OMNI_*|SPACE_STATION_*|HONEYCOMB_*|BRIEFCASE_*|DM_*|WAVEFORM_*|COMMIT_*|REMIND_*|HOOK_*|TING_*|IAM_*)
+    case "$name" in SILICON_*|OMNI_*|SPACE_STATION_*|APPS_*|BRIEFCASE_*|DM_*|WAVEFORM_*|COMMIT_*|REMIND_*|HOOK_*|TING_*|ACCOUNTS_*)
         case "$name" in *_HOME|*_DIR) [ -z "${!name}" ] || homes+=("${!name}") ;; esac
     esac
 done < <(compgen -e)
@@ -47,7 +47,7 @@ for arg do
     fi
     args+=("$arg")
 done
-export PATH="${SILICON_HOME:-$HOME}/.silicon/bin:$PATH"
+export PATH="${SILICON_HOME:-$HOME}/.silicon/bin:${SILICON_HOME:-$HOME}/.apps/bin:$PATH"
 # ponytail: execfail keeps this shell alive after a failed exec, so the reason gets context.
 shopt -s execfail
 status=0

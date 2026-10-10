@@ -15,7 +15,7 @@ case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="$PATH:/usr/sbin" ;; esac
 case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
 export PATH
 
-version=${SILICON_VERSION:-v6.1.0}
+version=${SILICON_VERSION:-v7.0.0}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -38,12 +38,43 @@ fi
 
 system=$(uname -s)
 case "$system/$(uname -m)" in
-    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64; honeycomb_target=macos-aarch64 ;;
-    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64; honeycomb_target=macos-x86_64 ;;
-    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64; honeycomb_target=linux-x86_64 ;;
-    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64; honeycomb_target=linux-aarch64 ;;
+    Darwin/arm64) target=aarch64-apple-darwin; caddy_platform=mac_arm64 ;;
+    Darwin/x86_64) target=x86_64-apple-darwin; caddy_platform=mac_amd64 ;;
+    Linux/x86_64) target=x86_64-unknown-linux-gnu; caddy_platform=linux_amd64 ;;
+    Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu; caddy_platform=linux_arm64 ;;
     *) fail "supported systems are macOS and Linux on x86-64 or ARM64, not $system/$(uname -m)" ;;
 esac
+
+# Linux store releases receive their updates from Silicon Apps. Source builds and
+# custom prefixes retain the standalone bundle path below.
+if [ "$system" = Linux ] && [ -z "$source_dir" ] && [ -z "$git_rev" ] && [ -z "${SILICON_PREFIX+x}" ]; then
+    apps_home=${SILICON_HOME:-$HOME}
+    [ -d "$apps_home" ] || fail "Silicon Apps home does not exist: $apps_home"
+    apps=${SILICON_APPS:-}
+    if [ -z "$apps" ]; then
+        if [ -x "$apps_home/.apps/bin/silicon-apps" ]; then
+            apps="$apps_home/.apps/bin/silicon-apps"
+        else
+            apps=$(command -v silicon-apps || true)
+        fi
+    fi
+    if [ -z "$apps" ]; then
+        bootstrap=$(mktemp -d "${TMPDIR:-/tmp}/silicon-apps.XXXXXXXX") || fail 'could not create bootstrap directory'
+        trap 'rm -rf "$bootstrap"' 0 HUP INT TERM
+        curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+            --connect-timeout 30 --max-time 120 https://apps.teamofsilicons.com/install.sh \
+            -o "$bootstrap/install-apps.sh" || fail 'could not download Silicon Apps installer'
+        sh "$bootstrap/install-apps.sh" --home "$apps_home" --server https://apps.teamofsilicons.com || fail 'could not install Silicon Apps'
+        apps="$apps_home/.apps/bin/silicon-apps"
+        rm -rf "$bootstrap"
+        trap - 0 HUP INT TERM
+    fi
+    reference=silicon
+    if [ -n "${SILICON_VERSION:-}" ]; then reference="silicon@${version#v}"; fi
+    "$apps" --home "$apps_home" --server https://apps.teamofsilicons.com install "$reference" --yes || fail 'could not install Silicon through Silicon Apps'
+    say "Installed. Add $apps_home/.apps/bin to PATH, then run silicon --help."
+    exit 0
+fi
 
 # Shell-quoted argv, so an error names exactly what ran.
 command_line() {
@@ -438,28 +469,18 @@ run 'Omni daemon binary cannot run on this system' "$stage/payload/bin/omnid" --
 printf '%s\n' "$prefix" > "$stage/payload/PREFIX"
 configure_caddy_port
 
-# Install the latest standalone Honeycomb without changing its settings or services.
-# Its ordinary CLI update checks remain enabled; app binaries stay outside the bundle.
-honeycomb_asset="honeycomb-$honeycomb_target.tar.gz"
-honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/latest/download
-download "$honeycomb_url/$honeycomb_asset" "$stage/honeycomb.tar.gz" 'could not download the latest Honeycomb'
-download "$honeycomb_url/$honeycomb_asset.sha256" "$stage/honeycomb.sha256" 'could not download the latest Honeycomb checksum'
-verify 256 "$stage/honeycomb.sha256" "$honeycomb_asset" "$stage/honeycomb.tar.gz"
-extract "could not extract honeycomb from $honeycomb_asset" "$stage/honeycomb.tar.gz" honeycomb "$stage/honeycomb"
-[ -s "$stage/honeycomb" ] || fail 'Honeycomb archive holds an empty honeycomb executable'
-chmod 755 "$stage/honeycomb"
-run 'Honeycomb binary cannot run on this system' "$stage/honeycomb" --version >/dev/null
-honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
-run "could not install Honeycomb at $honeycomb" mkdir -p "$(dirname "$honeycomb")"
-run "could not install Honeycomb at $honeycomb" cp "$stage/honeycomb" "$honeycomb.new.$$"
-run "could not install Honeycomb at $honeycomb" mv -f "$honeycomb.new.$$" "$honeycomb"
-link="$prefix/bin/honeycomb"
+# The store verifies its own package and owns future CLI updates.
+download https://apps.teamofsilicons.com/install.sh "$stage/install-apps.sh" 'could not download the Silicon Apps installer'
+run 'could not install Silicon Apps' sh "$stage/install-apps.sh" --home "$prefix" --server https://apps.teamofsilicons.com --no-path --no-startup
+apps="$prefix/.apps/bin/silicon-apps"
+run 'Silicon Apps binary cannot run on this system' "$apps" --version >/dev/null
+link="$prefix/bin/silicon-apps"
 if [ -e "$link" ] || [ -L "$link" ]; then
-    [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || fail "unmanaged executable at $link
+    [ -L "$link" ] && [ "$(readlink "$link")" = "$apps" ] || fail "unmanaged executable at $link
 $(ls -ld "$link" 2>&1)"
-    run "could not replace the Honeycomb link $link" rm "$link"
+    run "could not replace the Silicon Apps link $link" rm "$link"
 fi
-run "could not link $link to Honeycomb" ln -s "$honeycomb" "$link"
+run "could not link $link to Silicon Apps" ln -s "$apps" "$link"
 
 release_name="$version-${stage##*.}"
 run "could not store release $release_name; the active release was not changed" mv "$stage/payload" "$runtime/releases/$release_name"
@@ -476,8 +497,8 @@ case "$system" in
     Linux) run "could not activate $release_name; the active release was not changed" mv -fT "$stage/current" "$runtime/current" ;;
 esac
 activated=true
-# Remove only links owned by older bundles. Honeycomb/app installations are untouched.
-for app in iam spacestation dm briefcase waveform commit remind hook; do
+# Remove only app links owned by older bundles.
+for app in iam honeycomb spacestation dm briefcase waveform commit remind hook; do
     link="$prefix/bin/$app"
     if [ -L "$link" ] && [ "$(readlink "$link")" = "../lib/silicon/current/bin/$app" ]; then
         rm "$link"

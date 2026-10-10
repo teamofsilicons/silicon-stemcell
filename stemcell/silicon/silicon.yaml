@@ -1,10 +1,8 @@
 silicon:
   id: ...
-  org_id: ...
   token: ...
   timezone: America/Los_Angeles
   SILICON_HOME: ! pwd
-  SILICON_ORG: ...
 
   space_station:
     table_name: ...
@@ -33,7 +31,7 @@ isi:
         - ! cat intuit.md
         - ! ./contacts.sh !>> "You have no contacts"
         - learn.sh
-        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ! ./tools.sh --include [dm, briefcase, silicon-accounts, waveform, commit, remind, hook]
         - ../memories/learnings/workers/advertising.md
       next_refresh: 30min # time in min or shell evaluating to Xmin or a new session started, whichever is sooner. evaluated at each refresh.
 
@@ -64,7 +62,7 @@ isi:
         - ! cat deliberate.md
         - ! ./contacts.sh
         - learn.sh
-        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook, worker]
+        - ! ./tools.sh --include [dm, briefcase, silicon-accounts, waveform, commit, remind, hook, worker]
         - ../memories/learnings/workers/advertising.md
       next_refresh: 30min
     
@@ -95,7 +93,7 @@ isi:
         - ! cat advisor.md
         - ! ./team.sh
         - learn.sh
-        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ! ./tools.sh --include [dm, briefcase, silicon-accounts, waveform, commit, remind, hook]
         - ../memories/learnings/workers/advertising.md
       next_refresh: 30min
 
@@ -124,7 +122,7 @@ isi:
       assemble:
         - silicon.md
         - ! cat workers/terminal.md
-        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ! ./tools.sh --include [dm, briefcase, silicon-accounts, waveform, commit, remind, hook]
       next_refresh: 30min
 
   worker.browser:
@@ -137,7 +135,7 @@ isi:
         - silicon.md
         - ! cat workers/browser.md
         - ../memories/learnings/workers/browser/silicon-browser.md
-        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ! ./tools.sh --include [dm, briefcase, silicon-accounts, waveform, commit, remind, hook]
       next_refresh: 30min
     
   worker.creative:
@@ -150,7 +148,7 @@ isi:
         - silicon.md
         - ! cat workers/creative.md
         - ../memories/learnings/workers/creative/algorithm-for-creativity.md
-        - ! ./tools.sh --include [dm, briefcase, iam, waveform, commit, remind, hook]
+        - ! ./tools.sh --include [dm, briefcase, silicon-accounts, waveform, commit, remind, hook]
       next_refresh: 30min
 
 access:
@@ -161,7 +159,7 @@ access:
   worker.browser: [deliberate]
   worker.creative: [deliberate]
 
-# run everytime silicon is pinged at its connection URL ({handle}.{org_id}.localhost when both are DNS labels)
+# run everytime silicon is pinged at its connection URL ({handle}.si.localhost when the handle is a DNS label)
 # Ting delivers these objects inside request.tings; each also includes an id.
 # {
 #   type: "new_message", # message_sent, event, or anything else.

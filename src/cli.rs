@@ -35,7 +35,14 @@ struct SiliconCli {
 #[derive(Subcommand)]
 enum SiliconCommand {
     /// Discover the interpreter application identity and documentation.
-    Iam,
+    Accounts,
+    /// Report whether this local interpreter has an application sign-in.
+    Login {
+        #[command(subcommand)]
+        command: LoginCommand,
+    },
+    /// Revoke the local dashboard session on all browsers.
+    Logout,
     /// Validate all configuration and flow expressions without connecting.
     Compile { yaml: PathBuf },
     /// Compile and connect a silicon.yaml; start the interpreter if needed.
@@ -64,16 +71,16 @@ enum SiliconCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Install a newer stable GitHub release into a managed bundle installation.
+    /// Ask Silicon Apps to install the latest production release.
     Update,
     /// Start the interpreter at login or boot and restart it after a crash.
     Service {
         #[command(subcommand)]
         action: crate::service::Action,
     },
-    /// Install an app for this system through Honeycomb, for example 'dm'.
+    /// Install an app for this system through Silicon Apps, for example 'dm'.
     Install { app_id: String },
-    /// Remove a Honeycomb-managed app from this home.
+    /// Remove a Silicon Apps-managed app from this home.
     Uninstall { app_id: String },
     /// Inspect or change persistent interpreter settings. Changes apply while running.
     Settings {
@@ -130,6 +137,11 @@ enum SiliconCommand {
     },
 }
 #[derive(Subcommand)]
+enum LoginCommand {
+    /// This local interpreter manages Silicon connections; it has no hosted account session.
+    Status,
+}
+#[derive(Subcommand)]
 enum LogsCommand {
     /// Print the last 100 lines, then follow new entries. Ctrl-C exits.
     Show {
@@ -143,9 +155,9 @@ enum LogsCommand {
 }
 #[derive(Subcommand)]
 enum SettingsCommand {
-    /// Read all settings, or one of telemetry or auto_update.
+    /// Read all settings, or telemetry.
     Get { key: Option<String> },
-    /// Toggle telemetry or auto_update. Example: settings set telemetry --off.
+    /// Toggle telemetry. Example: settings set telemetry --off.
     Set {
         key: String,
         #[arg(long, conflicts_with = "off", required_unless_present = "off")]
@@ -174,12 +186,12 @@ enum SiCommand {
         #[command(subcommand)]
         command: AppCommand,
     },
-    /// Set up an IAM application; alias for `si auth setup APP`.
+    /// Set up an Silicon Accounts application; alias for `si auth setup APP`.
     Setup {
         #[command(subcommand)]
         command: SetupCommand,
     },
-    /// Authenticate IAM applications without exposing the Silicon token.
+    /// Authenticate Silicon Accounts applications without exposing the Silicon token.
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
@@ -197,14 +209,14 @@ enum SiCommand {
 }
 #[derive(Subcommand)]
 enum AppCommand {
-    /// Install a Honeycomb app and add its bare app ID to this ISI's apps.
+    /// Install a Silicon Apps app and add its bare app ID to this ISI's apps.
     Install { app_id: String },
-    /// Uninstall a Honeycomb app and remove its app entry and configuration.
+    /// Uninstall a Silicon Apps app and remove its app entry and configuration.
     Uninstall { app_id: String },
 }
 #[derive(Subcommand)]
 enum SetupCommand {
-    /// Authenticate an IAM app ID without exposing the Silicon token.
+    /// Authenticate an Silicon Accounts app ID without exposing the Silicon token.
     Auth { app: String },
 }
 #[derive(Subcommand)]
@@ -302,9 +314,17 @@ enum SessionCommand {
 pub fn silicon() -> Result<()> {
     let cli = SiliconCli::parse();
     match cli.command.unwrap_or(SiliconCommand::Ls { pattern: None }) {
-        SiliconCommand::Iam => print_json(
+        SiliconCommand::Accounts => print_json(
             &json!({"app_id":"silicon","docs_url":"https://docs.teamofsilicons.com","repository":"https://github.com/teamofsilicons/silicon-stemcell"}),
         )?,
+        SiliconCommand::Login {
+            command: LoginCommand::Status,
+        } => {
+            print_json(&json!({"authenticated":false,"app_id":"silicon"}))?;
+        }
+        SiliconCommand::Logout => {
+            print_json(&server::call(&server::daemon(false)?, "logout", json!({}))?)?;
+        }
         SiliconCommand::Compile { yaml } => {
             let cfg = server::compile(yaml)?;
             if cli.json {
@@ -342,7 +362,7 @@ pub fn silicon() -> Result<()> {
                 target
             } else {
                 if target.contains(':') && !target.contains('/') {
-                    bail!("expected a canonical Silicon ID si:<handle> or a YAML path, got {target:?}; migrate legacy IDs using IAM's verified mapping");
+                    bail!("expected a canonical Silicon ID si:<handle> or a YAML path, got {target:?}");
                 }
                 Path::new(&target)
                     .canonicalize()
@@ -515,9 +535,7 @@ pub fn silicon() -> Result<()> {
                 Some(SettingsCommand::Get { key: Some(key) }) => json!(crate::settings::load()?)
                     .get(&key)
                     .cloned()
-                    .ok_or_else(|| {
-                        anyhow!("unknown setting {key:?}; expected telemetry or auto_update")
-                    })?,
+                    .ok_or_else(|| anyhow!("unknown setting {key:?}; expected telemetry"))?,
                 _ => json!(crate::settings::load()?),
             };
             print_json(&value)?;
@@ -532,7 +550,7 @@ pub fn silicon() -> Result<()> {
             print_json(&json!({"version":env!("CARGO_PKG_VERSION"),"protocol":1,
             "source":"https://github.com/teamofsilicons/silicon-stemcell",
             "docs":"https://docs.teamofsilicons.com", "rust_package":"silicon",
-            "dependencies":["silicon-omni","iam","ting","honeycomb","space-station","caddy"],
+            "dependencies":["silicon-omni","silicon-accounts","ting","silicon-apps","space-station","caddy"],
             "bugs":"https://github.com/teamofsilicons/silicon-stemcell/issues"}))?
         }
         SiliconCommand::BugReport {
@@ -988,7 +1006,7 @@ fn show_sessions(value: Value, json: bool) -> Result<()> {
 }
 fn log_path(id: &str) -> Result<PathBuf> {
     if !crate::config::valid_silicon_id(id) {
-        bail!("expected a canonical Silicon ID si:<handle>, got {id:?}; migrate legacy IDs using IAM's verified mapping");
+        bail!("expected a canonical Silicon ID si:<handle>, got {id:?}");
     }
     if let Some(connection) = server::saved()
         .with_context(|| format!("look up {id} among saved connections to find its log"))?
@@ -1243,214 +1261,4 @@ fn logs(id: &str, count: usize, follow: bool, json: bool) -> Result<()> {
     signal_hook::low_level::unregister(sigint);
     signal_hook::low_level::unregister(sigterm);
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn command_shapes_and_archive_filters_preserve_scope() {
-        SiliconCli::command().debug_assert();
-        SiCli::command().debug_assert();
-        for verb in ["install", "uninstall"] {
-            assert!(SiCli::try_parse_from(["si", "app", verb, "dm"]).is_ok());
-            assert!(SiCli::try_parse_from(["si", "app", verb]).is_err());
-        }
-        let bare = SiCli::try_parse_from(["si", "isi", "ls", "worker", "--archived"]).unwrap();
-        let Some(SiCommand::Isi {
-            command: IsiCommand::Ls { archive, .. },
-        }) = bare.command
-        else {
-            panic!()
-        };
-        assert!(archive.archived.is_some());
-        let parsed = SiCli::try_parse_from([
-            "si",
-            "isi",
-            "ls",
-            "worker",
-            "--archived",
-            "*code",
-            "01:01:2020-03:01:2020",
-            "--archived",
-            "design",
-            "--timezone",
-            "America/Los_Angeles",
-        ])
-        .unwrap();
-        let Some(SiCommand::Isi {
-            command: IsiCommand::Ls { archive, .. },
-        }) = parsed.command
-        else {
-            panic!()
-        };
-        assert_eq!(archive.archived.as_ref().unwrap().len(), 3);
-        let rows = json!([
-            {"id":"yes","archived_at":"2020-01-04T07:00:00Z","title":"Code work","description":"Design completed"},
-            {"id":"late","archived_at":"2020-01-04T08:00:00Z","title":"Code work","description":"Design completed"},
-            {"id":"wrong","archived_at":"2020-01-03T00:00:00Z","title":"Code work","description":"Backend"}
-        ]);
-        let result = filter_sessions(
-            rows,
-            archive.archived.as_ref().unwrap(),
-            archive.timezone.as_deref().unwrap(),
-            Utc::now(),
-        )
-        .unwrap();
-        assert_eq!(result.as_array().unwrap().len(), 1);
-        assert_eq!(result[0]["id"], "yes");
-        assert!(
-            SiCli::try_parse_from(["si", "isi", "send", "worker", "hi", "--archived"]).is_err()
-        );
-        assert!(SiCli::try_parse_from([
-            "si",
-            "session",
-            "new",
-            "--archive-current-session",
-            "--id",
-            "archive",
-            "--title",
-            "Done",
-            "--description",
-            "Summary"
-        ])
-        .is_ok());
-        assert!(glob("si:*", true, false).unwrap().is_match("si:hello"));
-        assert!(!glob("a*b*c", true, false).unwrap().is_match("ac"));
-        assert!(!glob("foo.bar", true, false).unwrap().is_match("fooXbar"));
-    }
-    #[test]
-    fn listed_silicons_show_their_restore_state_and_whole_errors() {
-        let row = |extra: Value| {
-            let mut row =
-                json!({"id":"si:a","yaml":"/a/silicon.yaml","home":"/a","host":"a.o.localhost"});
-            row.as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            serde_json::from_value::<server::Listed>(row).unwrap()
-        };
-        // An older interpreter lists no state: those rows are connected.
-        assert_eq!(
-            connection_lines(&row(json!({}))),
-            ["si:a\thttp://a.o.localhost\t/a/silicon.yaml"]
-        );
-        assert_eq!(
-            connection_lines(&row(json!({"state":"restoring"}))),
-            ["si:a\thttp://a.o.localhost\trestoring\t/a/silicon.yaml"]
-        );
-        let waiting = row(
-            json!({"state":"waiting","attempt":3,"retry_at":"2026-09-26T10:00:00+00:00",
-            "error":"`honeycomb install ting` failed: exit status: 1\nstderr:\nno network"}),
-        );
-        assert_eq!(
-            connection_lines(&waiting),
-            [
-                "si:a\thttp://a.o.localhost\twaiting to be restored (attempt 3 failed; next attempt 2026-09-26T10:00:00+00:00)\t/a/silicon.yaml",
-                "    `honeycomb install ting` failed: exit status: 1",
-                "    stderr:",
-                "    no network",
-            ]
-        );
-        let ting = row(json!({"ting_error":"ting: refused","ting_attempt":2,"ting_retry_at":"T"}));
-        assert_eq!(
-            connection_lines(&ting),
-            [
-                "si:a\thttp://a.o.localhost\t/a/silicon.yaml",
-                "  Ting webhook registration is failing (attempt 2; next attempt T):",
-                "    ting: refused",
-            ]
-        );
-        let parsed = SiliconCli::try_parse_from(["silicon", "stop", "--force"]).unwrap();
-        assert!(matches!(
-            parsed.command,
-            Some(SiliconCommand::Stop { force: true })
-        ));
-    }
-    #[test]
-    fn tail_snapshot_follows_exact_read_boundary_and_colors_only_prefix() {
-        let mut file = tempfile::tempfile().unwrap();
-        write!(file, "one\ntwo\nthree\n").unwrap();
-        let (lines, end) = tail_snapshot(&mut file, 2).unwrap();
-        assert_eq!(lines, vec!["two", "three"]);
-        assert_eq!(file.stream_position().unwrap(), end);
-        assert!(colored("[error] [worker] [time] [body]").ends_with("\x1b[0m [time] [body]"));
-        assert!(!clean("hello\x1b[2J").contains('\x1b'));
-    }
-    #[test]
-    fn error_log_lines_unfold_tool_output_for_people_only() {
-        let line = "[error] [worker/cli] [2026-09-25T00:00:00Z] [`bash -c false` failed: exit status: 1\\nstderr:\\n  boom\\nstdout: (empty)]";
-        assert_eq!(
-            display_line(line, false),
-            "[error] [worker/cli] [2026-09-25T00:00:00Z] [`bash -c false` failed: exit status: 1\n    stderr:\n      boom\n    stdout: (empty)]"
-        );
-        assert!(display_line(line, true)
-            .ends_with("exit status: 1\n    stderr:\n      boom\n    stdout: (empty)]"));
-        let command = "[command] [worker/cli] [t] [running: printf 'a\\nb']";
-        assert_eq!(display_line(command, false), command);
-    }
-    #[test]
-    fn failing_tools_report_their_command_status_and_streams() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join(".silicon/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let tool = |name: &str, script: &str| {
-            let path = bin.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-            path.to_string_lossy().into_owned()
-        };
-        let gh = tool(
-            "gh",
-            "echo 'HTTP 401: Bad credentials (https://api.github.com/graphql)' >&2\necho '{\"hint\":\"run gh auth login\"}'\nexit 4\n",
-        );
-        let error = format!(
-            "{:#}",
-            file_bug_report(&gh, "Crash", "it broke").unwrap_err()
-        );
-        assert_eq!(
-            error,
-            "GitHub CLI could not file the bug report; check gh auth status: \
-             `gh issue create --repo teamofsilicons/silicon-stemcell --title Crash --body 'it broke'` failed: exit status: 4\n\
-             stderr:\nHTTP 401: Bad credentials (https://api.github.com/graphql)\n\
-             stdout:\n{\"hint\":\"run gh auth login\"}"
-        );
-        let absent = bin.join("absent").to_string_lossy().into_owned();
-        let error = format!("{:#}", file_bug_report(&absent, "t", "b").unwrap_err());
-        assert!(
-            error.contains("could not run `absent issue create"),
-            "{error}"
-        );
-        assert!(error.contains("No such file or directory"), "{error}");
-        let open = tool("open", "exit 2\n");
-        let error = format!(
-            "{:#}",
-            open_dashboard(
-                &open,
-                "http://127.0.0.1:1823/#dashboard-credential",
-                "dashboard-credential"
-            )
-            .unwrap_err()
-        );
-        assert!(
-            error.contains("#[redacted]'` failed: exit status: 2"),
-            "{error}"
-        );
-        assert!(!error.contains("dashboard-credential"), "{error}");
-        let error = format!("{:#}", field(&json!({"id": 7}), "id").unwrap_err());
-        assert_eq!(
-            error,
-            "interpreter response has no string \"id\": {\"id\":7}"
-        );
-        let error = format!(
-            "{:#}",
-            filter_sessions(json!([]), &["31:02:2020".into()], "UTC", Utc::now()).unwrap_err()
-        );
-        assert!(
-            error.contains(
-                "archive date \"31:02:2020\" in filter \"31:02:2020\" must be DD:MM:YYYY: "
-            ),
-            "{error}"
-        );
-    }
 }

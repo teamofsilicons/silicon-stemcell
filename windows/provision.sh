@@ -226,42 +226,18 @@ run "could not activate Silicon $version; the active release was not changed" mv
 next=
 release_lock
 trap - EXIT HUP INT TERM
-# Install latest Honeycomb independently; leave its app-update settings and services alone.
+# The store verifies its own package and owns future CLI updates.
 bootstrap=$(mktemp -d)
 trap 'rm -rf "$bootstrap"' EXIT HUP INT TERM
-machine=$(uname -m)
-case "$machine" in x86_64) honeycomb_arch=x86_64 ;; aarch64|arm64) honeycomb_arch=aarch64 ;; *) fail "Honeycomb has no Linux build for architecture $machine" ;; esac
-honeycomb_asset="honeycomb-linux-$honeycomb_arch.tar.gz"
-honeycomb_url=https://github.com/teamofsilicons/silicon-honeycomb/releases/latest/download
-# A stalled transfer fails instead of holding provisioning forever.
 curl_limits='--connect-timeout 30 --speed-limit 1024 --speed-time 120 --max-time 3600 --retry 3 --retry-delay 5'
 # shellcheck disable=SC2086
-run 'could not download the latest Honeycomb' curl --proto '=https' --tlsv1.2 -fsSL $curl_limits "$honeycomb_url/$honeycomb_asset" -o "$bootstrap/$honeycomb_asset"
-# shellcheck disable=SC2086
-run 'could not download the latest Honeycomb checksum' curl --proto '=https' --tlsv1.2 -fsSL $curl_limits "$honeycomb_url/$honeycomb_asset.sha256" -o "$bootstrap/checksum"
-expected_honeycomb=$(awk -v name="$honeycomb_asset" '$2 == name {print $1}' "$bootstrap/checksum")
-actual_honeycomb=$(run 'could not hash the Honeycomb download' sha256sum "$bootstrap/$honeycomb_asset")
-actual_honeycomb=${actual_honeycomb%% *}
-[ "$actual_honeycomb" = "$expected_honeycomb" ] || fail "Honeycomb checksum mismatch: $honeycomb_asset.sha256 lists '$expected_honeycomb', the download has $actual_honeycomb. The checksum file says:
-$(cat "$bootstrap/checksum")"
-run 'Honeycomb archive has no executable' tar -xOzf "$bootstrap/$honeycomb_asset" honeycomb > "$bootstrap/honeycomb"
-[ -s "$bootstrap/honeycomb" ] || fail 'Honeycomb archive holds an empty honeycomb executable'
-honeycomb="$prefix/.honeycomb/dir/system/bin/honeycomb"
-mkdir -p "$(dirname "$honeycomb")"
-chown silicon:silicon "$prefix/.honeycomb" "$prefix/.honeycomb/dir" "$prefix/.honeycomb/dir/system" "$prefix/.honeycomb/dir/system/bin"
-install -o silicon -g silicon -m 755 "$bootstrap/honeycomb" "$honeycomb.new.$$"
-run 'the latest Honeycomb cannot run in WSL' runuser -u silicon -- "$honeycomb.new.$$" --version
-mv -f "$honeycomb.new.$$" "$honeycomb"
+run 'could not download the Silicon Apps installer' curl --proto '=https' --tlsv1.2 -fsSL $curl_limits https://apps.teamofsilicons.com/install.sh -o "$bootstrap/install-apps.sh"
+chmod 755 "$bootstrap"
+chmod 644 "$bootstrap/install-apps.sh"
+run 'could not install Silicon Apps in WSL' runuser -u silicon -- env HOME=/home/silicon sh "$bootstrap/install-apps.sh" --home /home/silicon --server https://apps.teamofsilicons.com --no-path --no-startup
 rm -rf "$bootstrap"
 trap - EXIT HUP INT TERM
-link="$prefix/bin/honeycomb"
-if [ -e "$link" ] || [ -L "$link" ]; then
-    [ -L "$link" ] && { [ "$(readlink "$link")" = '../lib/silicon/current/bin/honeycomb' ] || [ "$(readlink "$link")" = "$honeycomb" ]; } || fail "unmanaged executable at $link
-$(ls -ld "$link" 2>&1)"
-    rm "$link"
-fi
-ln -s "$honeycomb" "$link"
-for app in iam spacestation dm briefcase waveform commit remind hook; do
+for app in iam honeycomb spacestation dm briefcase waveform commit remind hook; do
     path="$prefix/bin/$app"
     if [ -L "$path" ] && [ "$(readlink "$path")" = "../lib/silicon/current/bin/$app" ]; then rm "$path"; fi
 done
@@ -282,7 +258,7 @@ if [ ! -e /etc/binfmt.d/WSLInterop.conf ]; then
     printf ':WSLInterop:M::MZ::/init:FP\n' > /etc/binfmt.d/WSLInterop.conf
 fi
 printf '[user]\ndefault=silicon\n[interop]\nenabled=true\nappendWindowsPath=false\n' > /etc/wsl.conf
-printf 'export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.local/bin:$PATH"\nexport SILICON_WSL=1\n' > /etc/profile.d/silicon.sh
+printf 'export PATH="$HOME/.local/share/silicon/bin:$HOME/.silicon/bin:$HOME/.apps/bin:$HOME/.local/bin:$PATH"\nexport SILICON_WSL=1\n' > /etc/profile.d/silicon.sh
 # Tell `silicon` inside the distribution that the Windows logon task supervises the
 # interpreter, so connect waits for it and never installs a second supervisor here.
 # `none` records that autostart was declined (install.ps1 -NoService).
