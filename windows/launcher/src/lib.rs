@@ -31,7 +31,6 @@ pub fn forwarded(name: &str) -> bool {
         "SI_",
         "OMNI_",
         "APPS_",
-        "SPACE_STATION_",
         "BRIEFCASE_",
         "DM_",
         "WAVEFORM_",

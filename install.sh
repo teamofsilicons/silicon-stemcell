@@ -4,6 +4,11 @@
 # Offline source-build dependencies: SILICON_DEPENDENCY_BIN_DIR=/trusted/bin.
 set -eu
 
+# Installers and the app updater they start must not report usage.
+export DO_NOT_TRACK=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1
+export SILICON_TELEMETRY=0 ACCOUNTS_TELEMETRY=off APPS_TELEMETRY=0
+export DM_TELEMETRY_ENABLED=false BRIEFCASE_TELEMETRY=0 SPACE_STATION_TELEMETRY=0
+
 fail() { printf 'silicon install: %s\n' "$*" >&2; exit 1; }
 say() { printf 'silicon install: %s\n' "$*"; }
 # Exit status 77: only a person can finish this installation (sudo for Caddy's port 80).
@@ -15,7 +20,7 @@ case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="$PATH:/usr/sbin" ;; esac
 case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
 export PATH
 
-version=${SILICON_VERSION:-v7.0.0}
+version=${SILICON_VERSION:-v7.0.1}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi

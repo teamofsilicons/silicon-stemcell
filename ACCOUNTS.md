@@ -33,4 +33,4 @@ Document commands in a navigable `--help` tree with their purpose, examples, fla
 
 Use `silicon-apps --help` to inspect the current publishing commands, verify the signed-in Carbon or Silicon, and publish under that account. Consumer discovery and installation use `silicon-apps`. The current [developer documentation](https://developers.teamofsilicons.com/docs/accounts) is the authoritative service contract.
 
-Ship configurable telemetry with an opt-out. Keep ingestion credentials on the backend, describe what is recorded, and avoid including secret values in events. Use a major version and clear migration instructions for incompatible application contracts.
+Silicon sends no telemetry, including to Space Station. Keep diagnostic logs local and preserve credential redaction. Use a major version and clear migration instructions for incompatible application contracts.

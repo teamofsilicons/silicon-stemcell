@@ -457,7 +457,7 @@ impl Runtime {
         }
         state::private_dir(&cfg.home.join(".silicon"))?;
         cfg.generation = Uuid::new_v4();
-        crate::telemetry::register(&cfg);
+        crate::redaction::register(&cfg);
         let preparation = (|| -> Result<()> {
             for (index, script) in cfg.silicon.setup.iter().enumerate() {
                 crate::progress::step(
@@ -492,7 +492,6 @@ impl Runtime {
         if let Err(error) = preparation {
             // The whole chain, with the token and app config values registered above masked.
             let message = failure::mask(&cfg.home, &format!("{error:#}"), &[]);
-            crate::telemetry::unregister(&cfg.home);
             bail!("{message}");
         }
         self.connect_prepared(cfg)
@@ -594,7 +593,6 @@ impl Runtime {
         ) {
             errors.push(format!("recording the disconnect: {error:#}"));
         }
-        crate::telemetry::unregister(&connected.cfg.home);
         if !errors.is_empty() {
             bail!("{id} was disconnected with errors:\n{}", errors.join("\n"));
         }
@@ -3074,12 +3072,6 @@ pub fn environment(cfg: &Config) -> Value {
     let mut silicon = serde_json::to_value(&cfg.silicon).unwrap();
     silicon.as_object_mut().unwrap().remove("token");
     silicon.as_object_mut().unwrap().remove("app_configs");
-    if let Some(station) = silicon
-        .get_mut("space_station")
-        .and_then(Value::as_object_mut)
-    {
-        station.remove("table_key");
-    }
     json!({"_connection":cfg.generation,"silicon":silicon,"isi":cfg.isi,"access":cfg.access,"request":{},"var":{}})
 }
 

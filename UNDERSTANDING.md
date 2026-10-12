@@ -100,9 +100,6 @@ silicon:
     timezone                timezone silicon operates in
     max_retries             optional nonnegative integer; default 10 retries after first outgoing flow delivery attempt
     SILICON_HOME            env variable passed for all ISI, commands are executed reletive to this
-    space_station           optional; for telemetry
-        table_name          space station table name
-        table_key           space station table key
     inference_providers     omni supported inference providers
     setup                   optional; list of shell command that is run once during connecting silicon
     app_configs             optional; sets key value pairs for apps
@@ -415,21 +412,10 @@ never starts a new session. --id is always passed when creating a new isi of thi
 if a config needs to be added for a newly installed app, then it should be added directly into the silicon.yaml file by silicon.
 
 
-# telemetry
-upload all runtime logs & session logs & commands run & interpretter logs & webhook requests to space station
-all things are uploaded to tos's space station that is bundled in. attach proper metadata about which isi, which silicon id, etc.
-users can optionally pass their own space station table keys for specific silicon they want telemetry for. all logs for that silicon should be uploaded to both tos and user's space station table.
+# privacy and local diagnostics
+Silicon must not send telemetry anywhere, including Space Station. Keep runtime logs, session history, commands, interpreter logs, and webhook diagnostics local. Preserve credential redaction in logs and errors.
 
-tables:
-- one for interpretter logs, webhooks, clis, daemons, etc
-- one for silicon runtime logs (silicon inputs from webhooks, flow logs, and session logs for all isi)
-- one for backend
-- one for frontend (docs)
-
-for all tos telemetry, users should be able to turn it all off with
-`silicon settings set telemetry --off` <- this does not turn off user set space station telemetry
-
-^ have an entire settings page that can we worked with with various other configurations.
+There are no telemetry settings, clients, upload queues, ingestion credentials, browser trackers, or telemetry API endpoints. Legacy `silicon.space_station` fields are ignored without evaluating expressions; old settings and environment variables cannot enable telemetry. Existing local telemetry spools are never read or uploaded.
 
 
 # silicon prompt

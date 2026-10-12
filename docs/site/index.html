@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Silicon 7.0 — Documentation</title>
+<title>Silicon 7.0.1 — Documentation</title>
 <meta name="description" content="Install and build your own Silicon. The complete guide to configuration, ISIs, event flows, sessions, Silicon Apps, and the Rust interpreter.">
 <meta name="theme-color" content="#f7f7f2">
 <!-- Silicon UI foundation: https://ui.teamofsilicons.com/r/silicon-foundation.json -->
@@ -17,9 +17,9 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}}
 </style></head>
 <body><a class="skip" href="#content">Skip to documentation</a>
-<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v7.0.0</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="https://apps.teamofsilicons.com/">Apps ↗</a></div></header>
-<div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#silicon-accounts-application-contract">Silicon Accounts application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#build-and-release">Build and release</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#silicon-accounts-application-contract">Silicon Accounts application contract</a><a href="#settings-and-telemetry">Settings and telemetry</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#build-and-release">Build and release</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a></nav></details></aside>
-<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter and runtime. Silicon Apps installs Accounts, Ting, and configured apps independently.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#upgrading-to-70">Upgrade to 7.0 →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
+<header><a class="brand" href="#"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>silicon <span style="font-weight:400;color:var(--muted);font-size:14px">/ docs</span></a><div class="header-right"><span class="version">v7.0.1</span><a class="repo-link" href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">GitHub ↗</a><a href="https://apps.teamofsilicons.com/">Apps ↗</a></div></header>
+<div class="layout"><aside><div class="desktop-nav"><p class="nav-label">The field guide</p><nav aria-label="Documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#silicon-accounts-application-contract">Silicon Accounts application contract</a><a href="#privacy-and-local-diagnostics">Privacy and local diagnostics</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#build-and-release">Build and release</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a></nav></div><details class="mobile-nav"><summary>Explore the documentation</summary><nav aria-label="Mobile documentation"><a href="#start-here">Start here</a><a href="#what-runs-on-your-machine">What runs on your machine</a><a href="#installation">Installation</a><a href="#first-silicon">First Silicon</a><a href="#configuration-reference">Configuration reference</a><a href="#expressions-json-bash-and-fallbacks">Expressions, JSON, Bash, and fallbacks</a><a href="#event-flow">Event flow</a><a href="#cli-reference">CLI reference</a><a href="#session-behavior">Session behavior</a><a href="#silicon-accounts-application-contract">Silicon Accounts application contract</a><a href="#privacy-and-local-diagnostics">Privacy and local diagnostics</a><a href="#files-storage-and-logs">Files, storage, and logs</a><a href="#local-dashboard-and-http-interface">Local dashboard and HTTP interface</a><a href="#security-and-lifecycle-boundaries">Security and lifecycle boundaries</a><a href="#running-unattended">Running unattended</a><a href="#updates">Updates</a><a href="#troubleshooting">Troubleshooting</a><a href="#the-repositorys-reference-template">The repository&#x27;s reference template</a><a href="#development-and-compatibility">Development and compatibility</a><a href="#build-and-release">Build and release</a><a href="#external-dependency-issues">External dependency issues</a><a href="#implementation-diary">Implementation diary</a></nav></details></aside>
+<main id="content"><div class="hero"><div class="eyebrow">The Silicon interpreter · Edition 2026</div><h1>One home for<br>your silicons.</h1><p class="intro">Connect a Silicon. Give its internal silicons a purpose, tools, and a way to talk. Let the interpreter handle the rest.</p><div class="install"><code id="install-command">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.sh | sh</code><button data-copy="install-command" aria-label="Copy Unix installation command">Copy</button></div><p class="install-note">macOS &amp; Linux · ARM64 &amp; x86-64</p><div class="install"><code id="install-windows">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.ps1 | iex</code><button data-copy="install-windows" aria-label="Copy Windows installation command">Copy</button></div><p class="install-note">Windows PowerShell · x86-64 &amp; ARM64 preview · Requires WSL2; first setup may need elevation and a restart. Includes the interpreter and runtime. Silicon Apps installs Accounts, Ting, and configured apps independently.</p><p><a href="#first-silicon">Create your first Silicon →</a> · <a href="#upgrading-to-70">Upgrade to 7.0 →</a> · <a href="#configuration-reference">Configuration reference</a> · <a href="#development-and-compatibility">Build on Silicon</a></p><div class="steps"><div><span class="number">01 / DESCRIBE</span><strong>A single YAML file</strong><p>Identity, DNA, access, and the flow of incoming events.</p></div><div><span class="number">02 / CONNECT</span><strong>Your own local runtime</strong><p>Real inference through Omni. Separate homes and sessions.</p></div><div><span class="number">03 / WORK</span><strong>Terminal first. Web too.</strong><p>Send mid-turn, inspect progress, and keep useful history.</p></div></div></div>
 <section class="chapter"><h2 id="start-here">Start here</h2>
 <p>Silicon 7 uses <a href="https://accounts.teamofsilicons.com/">Silicon Accounts</a> for identity, <a href="https://apps.teamofsilicons.com/">Silicon Apps</a> for application installation, and the <a href="https://developers.teamofsilicons.com/">Developer portal</a> for publishing. Every action belongs to a Carbon (<code>c:handle</code>) or Silicon (<code>si:handle</code>).</p>
 <ol>
@@ -41,16 +41,16 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <pre><code class="language-sh">silicon-apps install silicon --yes
 </code></pre>
 <p>For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. Native catalog installation for macOS and Windows is not available yet. No Rust compiler is required:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.sh | sh
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.sh | sh
 </code></pre>
-<p>Find platform bundles and checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.0">v7.0.0 release page</a>. The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.</p>
+<p>Find platform bundles and checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.1">v7.0.1 release page</a>. The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.</p>
 <p>Silicon keeps reusable Starter genes, functions, and ISIs, per-ISI app declarations, native YAML flows, persistent sessions, and durable notification delivery. See the <a href="#upgrading-to-70">7.0 migration</a> for the identity and configuration changes.</p>
 <p>The default installation prefix is <code>~/.local/share/silicon</code>. Add its <code>bin</code> directory to your shell's <code>PATH</code>:</p>
 <pre><code class="language-sh">export PATH=&quot;$HOME/.local/share/silicon/bin:$PATH&quot;
 </code></pre>
 <p>For the default prefix, the installer adds this path once to the startup file for your detected shell. Open a new terminal, or run the printed export command in your current terminal. Set <code>SILICON_NO_PATH=1</code> to leave shell startup files alone. Custom prefixes print the path without changing startup files.</p>
 <p>To choose another dedicated prefix, set the variable on the <code>sh</code> side of the pipeline:</p>
-<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.sh \
+<pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.sh \
   | SILICON_PREFIX=&quot;$HOME/tools/silicon&quot; sh
 </code></pre>
 <p>The target matrix covers macOS, Linux, and Windows on ARM64 and x86-64. Windows runs the Linux bundle through WSL2. Native Unix bundles target macOS 15 and Ubuntu 24.04; the Linux binaries require glibc 2.39 or newer. Each platform requires its own build and runtime verification.</p>
@@ -65,7 +65,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <tbody>
 <tr>
 <td><code>silicon</code>, <code>si</code></td>
-<td>Interpreter and internal CLI, 7.0.0</td>
+<td>Interpreter and internal CLI, 7.0.1</td>
 </tr>
 <tr>
 <td><code>omnid</code>, <code>silicon-omni</code>, <code>omni</code>, <code>so</code></td>
@@ -80,7 +80,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>Silicon Apps is installed separately through its official installer; existing update preferences and services are preserved. Each Silicon connection runs <code>silicon-apps install 'app' --yes --json</code> for configured and registered canonical app IDs, the Silicon Accounts issuer (<code>silicon-accounts</code>), and Ting (<code>ting</code>). Omitting <code>--version</code> selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain interpreter runtime dependencies.</p>
 <p>Accounts, permissions, remote service availability, and authenticated inference providers must still be available. Installing a CLI does not create a Silicon Accounts identity or grant provider access.</p>
 <h3 id="upgrading-from-5x">Upgrading from 5.x</h3>
-<p>Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support <code>aggregate</code>, native loops/functions, or <code>self.error</code>. Stop the old interpreter before installing 7.0.0 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.</p>
+<p>Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support <code>aggregate</code>, native loops/functions, or <code>self.error</code>. Stop the old interpreter before installing 7.0.1 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.</p>
 <ol>
 <li>Replace bare <code>{error}</code> in every catch with <code>{self.error}</code>. Result and error values are scoped to their <code>then</code> or <code>catch</code> branch; save a value with <code>var</code> when it is needed later.</li>
 <li>Review each send that must happen immediately or remain a separate message. Add <code>aggregate: false</code> to it; otherwise messages to the same <code>(isi, session_id)</code> are joined in order and sent when the flow finishes. An immediate send also flushes earlier queued messages for that destination.</li>
@@ -94,7 +94,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>Keep the same YAML path and <code>SILICON_HOME</code> so session history remains in place. Install 7.0, run <code>silicon compile /path/to/silicon.yaml</code>, and reconnect. Existing application logins are checked against the complete Carbon or Silicon account. If an application is signed out or its session has expired, explicitly run <code>si auth setup APP</code> inside an ISI to sign in again.</p>
 <p>The local event hostname now follows the account, such as <code>assistant.si.localhost</code>. Use the URL returned by <code>silicon connect</code> and update local callers. See the <a href="https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md">migration procedure</a> for the steps.</p>
 <h3 id="ting-migration">Ting migration</h3>
-<p>For configurations from 4.0.x or earlier, before reconnecting on 7.0.0:</p>
+<p>For configurations from 4.0.x or earlier, before reconnecting on 7.0.1:</p>
 <ol>
 <li>Remove <code>silicon.webhooks</code> and <code>silicon.webhook</code>. Keep application IDs under <code>isi.&lt;name&gt;.apps</code>; legacy <code>silicon.apps</code> remains supported. Applications publish notifications through Ting and no longer register separate interpreter webhooks.</li>
 <li>Change the flow to read <code>request.tings</code>, a list of notification objects with <code>id</code>, <code>type</code>, <code>data</code>, and <code>metadata</code>. Other JSON shapes are also accepted, but Ting publishers use the batch envelope. Use native <code>for</code> steps or CEL list helpers to process a whole batch; the <a href="#first-silicon">first Silicon example</a> shows a minimal flow.</li>
@@ -105,7 +105,7 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <h3 id="windows-installation-and-project-files">Windows installation and project files</h3>
 <p>Existing Windows installations should rerun this release's PowerShell installer to add the native <code>ting.exe</code> entry point. <code>silicon update</code> updates the WSL2 runtime but does not add Windows launcher files.</p>
 <p>In PowerShell:</p>
-<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.ps1 | iex
+<pre><code class="language-powershell">irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.ps1 | iex
 </code></pre>
 <p>Windows uses a native launcher and a dedicated WSL2 distribution named <code>Silicon</code>, with the same Linux runtime bundle and independent Silicon Apps installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user <code>silicon</code>.</p>
 <p>Keep each project, its YAML, and its <code>SILICON_HOME</code> inside the distribution's Linux filesystem. Open <code>\\wsl.localhost\Silicon\home\silicon</code> in File Explorer and copy or create your project folder there. For example:</p>
@@ -174,7 +174,7 @@ flow:
             isi: assistant
             message: '{make_readable(var.ting)}'
 </code></pre>
-<p>Setup creates a workspace directory on each connection; <code>mkdir -p</code> is safe to repeat. Silicon Accounts and Ting are implicit dependencies, even with empty ISI <code>apps</code> lists. Add other application IDs under <code>isi.assistant.apps</code> when the corresponding Silicon identity and application permissions are ready. Add the optional <code>space_station</code> fields shown below only after creating your table and obtaining its key. <code>token</code> remains required so the interpreter can authenticate the Silicon with Accounts.</p>
+<p>Setup creates a workspace directory on each connection; <code>mkdir -p</code> is safe to repeat. Silicon Accounts and Ting are implicit dependencies, even with empty ISI <code>apps</code> lists. Add other application IDs under <code>isi.assistant.apps</code> when the corresponding Silicon identity and application permissions are ready. <code>token</code> remains required so the interpreter can authenticate the Silicon with Accounts.</p>
 <pre><code class="language-sh">silicon compile /absolute/path/to/silicon.yaml
 silicon connect /absolute/path/to/silicon.yaml
 silicon ls
@@ -238,7 +238,7 @@ silicon web
 </tr>
 <tr>
 <td><code>space_station</code></td>
-<td>Optional object with nonempty <code>table_name</code> and <code>table_key</code> for a user-owned telemetry destination. This destination remains enabled when TOS telemetry is turned off.</td>
+<td>Retired. Accepted only for compatibility and ignored, including its expressions. Remove it from existing files.</td>
 </tr>
 <tr>
 <td><code>max_retries</code></td>
@@ -258,7 +258,7 @@ silicon web
   - [claude-code-cli]
 </code></pre>
 <p>Every session opens with an explicit provider list. A lone <code>all-available-providers</code> sends the providers Omni reports as installed and authenticated when that session starts, so a provider dropped after an authentication error, or logged in later, rejoins at the next session start; an empty result is an error naming what Omni reported. Explicit names are checked against Omni's installed/authenticated providers when a session initializes. An empty final selection is an error. Extra named groups such as <code>open-weight-models</code> are not expanded unless Omni exposes that exact name as a provider.</p>
-<p>Use canonical application IDs under each ISI in new files. Setup, app configuration, and telemetry settings stay under <code>silicon</code>:</p>
+<p>Use canonical application IDs under each ISI in new files. Setup and app configuration stay under <code>silicon</code>:</p>
 <pre><code class="language-yaml">silicon:
   # ... identity, home, timezone, and inference providers ...
   setup:
@@ -266,9 +266,6 @@ silicon web
   app_configs:
     waveform:
       default_tts_provider: google
-  space_station:
-    table_name: my-silicon-events
-    table_key: REPLACE_WITH_YOUR_TABLE_KEY
 isi:
   assistant:
     # ... model, modes, and DNA ...
@@ -459,7 +456,7 @@ starter --version
 </tr>
 <tr>
 <td><code>silicon</code></td>
-<td>Compiled Silicon settings, with the Silicon token, app configuration, and Space Station table key removed at runtime.</td>
+<td>Compiled Silicon settings, with the Silicon token, app configuration, and retired <code>space_station</code> field removed at runtime.</td>
 </tr>
 <tr>
 <td><code>isi</code></td>
@@ -781,7 +778,6 @@ silicon install 'dm'
 silicon uninstall 'dm'
 silicon ping si:assistant
 silicon config si:assistant
-silicon settings get
 silicon info
 </code></pre>
 <p>Without a command, <code>silicon</code> lists connections. <code>silicon list</code> is an alias for <code>silicon ls</code>. Quote globs so your shell does not expand them. <code>disconnect</code> without a target lists choices and prints the command to use; it does not disconnect everything.</p>
@@ -837,7 +833,7 @@ stdout:
 <li><code>silicon.log</code> records it as an <code>[error]</code> entry. The file escapes newlines; <code>silicon logs show</code>, connection progress, and the dashboard unfold error entries so multi-line output reads as the tool wrote it, and <code>--json</code> returns the stored line. Errors logged during <code>connect</code> appear as they happen, even when the connection then succeeds.</li>
 <li>Failures with no caller, such as DNA refreshes, heartbeats, restoration, rejected Ting deliveries, and automatic updates, go to <code>silicon.log</code>. The last three also go to the interpreter's <code>daemon.log</code>.</li>
 </ul>
-<p>Only literal credential values are replaced with <code>[redacted]</code>: the Silicon token, Silicon Accounts SLTs, ISI capabilities, Space Station table keys, the JSON argument of <code>APP config set</code>, <code>app_configs</code> values of eight or more characters, recognized token prefixes such as <code>stk-</code>, and the values of credential-named JSON fields such as <code>access_token</code>, <code>password</code>, or <code>api_key</code>. The surrounding message always survives. Configured values shorter than eight characters, such as <code>en</code> or <code>true</code>, are settings and stay readable; masking every occurrence of them garbles the errors people must read. A credential expression (<code>silicon.token</code>, <code>space_station.table_key</code>, or an <code>app_configs</code> string) reports its exit status, stderr, and parser or CEL text, but its source reads <code>[credential expression]</code> and its stdout reads <code>(withheld; it is the credential)</code>.</p>
+<p>Only literal credential values are replaced with <code>[redacted]</code>: the Silicon token, Silicon Accounts SLTs, ISI capabilities, the JSON argument of <code>APP config set</code>, <code>app_configs</code> values of eight or more characters, recognized token prefixes such as <code>stk-</code>, and the values of credential-named JSON fields such as <code>access_token</code>, <code>password</code>, or <code>api_key</code>. The surrounding message always survives. Configured values shorter than eight characters, such as <code>en</code> or <code>true</code>, are settings and stay readable; masking every occurrence of them garbles the errors people must read. A credential expression (<code>silicon.token</code> or an <code>app_configs</code> string) reports its exit status, stderr, and parser or CEL text, but its source reads <code>[credential expression]</code> and its stdout reads <code>(withheld; it is the credential)</code>.</p>
 <p>Silicons read these errors through <code>si</code>, flow catches, and logs. Read the tool's own words and fix that cause: stderr usually explains the failure, and JSON-speaking tools often answer on stdout. When reporting a failure to a Carbon or another Silicon, pass the complete error text rather than a summary.</p>
 </section><section class="chapter"><h2 id="session-behavior">Session behavior</h2>
 <p>Addressing and retention are separate choices:</p>
@@ -913,39 +909,12 @@ APP logout
 <p>The interpreter installs <code>ting</code> through Silicon Apps and authenticates its CLI just like other Silicon Accounts apps. After the Silicon route is ready, it inspects <code>ting webhook list --limit 100 --json</code> and registers with <code>ting webhook http://HANDLE.si.localhost/events --json</code>. A saved hook is reused with <code>--id WEBHOOK_ID</code>; the stable ID is retained across reconnects and restarts. Ting delivers <code>tings</code> batches to that endpoint with an empty HTTP 204 acknowledgment after durable acceptance.</p>
 <p>Disconnect runs <code>ting unhook WEBHOOK_ID --json</code>. It still removes the local connection and ISI capabilities if unhooking fails, reporting the cleanup error. A failed registration rolls back the local connection and routing. Ting owns remote delivery, retries, and its local bridge; app-specific transport daemons are not registered with Silicon.</p>
 <p>Apps that accept configuration expose <code>APP config set JSON</code>. The interpreter sends each configured object after authentication. If the app rejects it, the error names <code>silicon.app_configs.APP</code>, shows the command with its JSON argument as <code>'[redacted]'</code>, and includes the app's exit status and complete stderr and stdout, with configured values masked as described in <a href="#reading-errors">Reading errors</a>. Apps store credentials and configuration in their own state beneath <code>SILICON_HOME</code> (or their chosen remote configuration service), work when <code>ISI</code> is absent.</p>
-</section><section class="chapter"><h2 id="settings-and-telemetry">Settings and telemetry</h2>
-<p>Settings apply to the interpreter and are stored in <code>settings.json</code> beneath its state directory. Telemetry defaults to enabled:</p>
-<pre><code class="language-sh">silicon settings get
-silicon settings get telemetry
-silicon settings set telemetry --off
-silicon settings set telemetry --on
-</code></pre>
-<table>
-<thead>
-<tr>
-<th>Setting</th>
-<th>Controls</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>telemetry</code></td>
-<td>TOS-owned Space Station telemetry from this installation.</td>
-</tr>
-</tbody>
-</table>
-<p><code>SILICON_TELEMETRY=0</code> also disables TOS telemetry. App CLIs may have their own telemetry settings. Silicon Apps owns application updates; inspect its current controls through <code>silicon-apps --help</code>.</p>
-<p>TOS telemetry uses separate destinations for interpreter/CLI/daemon activity, Silicon runtime and session activity, and the documentation frontend. Events include the source, operation, timestamp, version, Silicon identity, ISI context where applicable, and diagnostic context. Silicon inputs, flow logs, provider/session events, tool or command information, and <code>silicon.log</code> error entries with their complete tool output can be included, masked as described in <a href="#reading-errors">Reading errors</a>. Telemetry records diagnostic activity; it does not replace durable session history or local logs. Space Station queues records durably. A short-lived CLI command waits at most 100 ms during flush and may exit with records still queued; the running interpreter's client drains that queue, so delivery need not be immediate.</p>
-<p>To also send one Silicon's activity to your own Space Station table, add:</p>
-<pre><code class="language-yaml">silicon:
-  # ...the other required fields...
-  space_station:
-    table_name: assistant-events
-    table_key: REPLACE_WITH_YOUR_TABLE_KEY
-</code></pre>
-<p><code>table_key</code> authorizes ingestion; <code>table_name</code> identifies the configured destination. <code>silicon settings set telemetry --off</code> disables TOS telemetry and keeps this explicitly configured destination active. Remove <code>space_station</code> and reconnect to stop the user destination. The Space Station Rust client handles buffering, its local spool, delivery, and retries. When Space Station is a managed app, its login uses the same Silicon Accounts identity as the interpreter connection.</p>
-<p>The interpreter removes Silicon tokens, app configuration, and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events, logs, and errors. Redaction is the only reduction: errors retain their complete text in the relevant CLI, <code>si</code>, dashboard, flow catch, or <code>silicon.log</code>, as described in <a href="#reading-errors">Reading errors</a>. Configured values shorter than eight characters are treated as settings and are not redacted. Compile-time Bash logs <code>running: [compile-time expression]</code> and its exit status, because runtime redaction is not yet registered; if it fails, the error shows the command with known credentials masked, its status, and both streams. A credential expression logs <code>running: [credential expression]</code>; its error shows its exit status, stderr, and parser or CEL text, but names the source <code>[credential expression]</code>, masks the source's words of eight or more characters wherever the parser quotes them, and never shows its stdout, which is the credential. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.</p>
-<p>The documentation website has its own <strong>Share documentation usage with TOS</strong> checkbox in the footer. Its preference is saved in that browser's local storage and is independent of local interpreter settings. The page submits telemetry to its same-origin <code>/api/telemetry</code> endpoint; the destination credential stays on the server.</p>
+</section><section class="chapter"><h2 id="privacy-and-local-diagnostics">Privacy and local diagnostics</h2>
+<p>Silicon 7.0.1 sends no telemetry. The interpreter, <code>silicon</code> and <code>si</code> CLIs, runtime, local dashboard, and documentation website do not upload usage, commands, events, logs, or session history to TOS, Space Station, or another telemetry destination. There is no telemetry client, browser tracker, ingestion endpoint, or setting that enables telemetry.</p>
+<p>Existing <code>silicon.space_station</code> configuration is ignored, and its expressions are never evaluated. Remove that field from old configurations. Old telemetry preferences, table keys, and environment variables cannot enable delivery. Old local telemetry spools are not read or uploaded. Logs and session history remain on your machine. Configured inference providers, Accounts, Apps, and Ting still receive the requests needed to perform their normal work.</p>
+<p>For older dependencies, Silicon forces reporting off in managed child processes: <code>DO_NOT_TRACK=1</code>, <code>DISABLE_TELEMETRY=1</code>, <code>DISABLE_ERROR_REPORTING=1</code>, <code>SILICON_TELEMETRY=0</code>, <code>ACCOUNTS_TELEMETRY=off</code>, <code>APPS_TELEMETRY=0</code>, <code>DM_TELEMETRY_ENABLED=false</code>, <code>BRIEFCASE_TELEMETRY=0</code>, and <code>SPACE_STATION_TELEMETRY=0</code>. Installers also set reporting suppression flags while running dependencies. These retained flags suppress legacy reporting; they cannot enable Silicon telemetry.</p>
+<p>Before running managed Ting commands, Silicon sets <code>telemetry</code> to <code>false</code> in <code>&lt;SILICON_HOME&gt;/.ting/settings.json</code>, preserving other settings. Older Ting versions read this file for CLI and daemon reporting. This compatibility file remains only to keep that reporting off; Silicon has no telemetry settings of its own.</p>
+<p>The interpreter removes Silicon tokens, app configuration, and the retired <code>space_station</code> field from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from local logs and errors. Errors retain their complete text in the relevant CLI, <code>si</code>, dashboard, flow catch, or <code>silicon.log</code>, as described in <a href="#reading-errors">Reading errors</a>. Configured values shorter than eight characters are treated as settings and are not redacted. Compile-time Bash logs <code>running: [compile-time expression]</code> and its exit status, because runtime redaction is not yet registered; if it fails, the error shows the command with known credentials masked, its status, and both streams. A credential expression logs <code>running: [credential expression]</code>; its error shows its exit status, stderr, and parser or CEL text, but names the source <code>[credential expression]</code>, masks the source's words of eight or more characters wherever the parser quotes them, and never shows its stdout, which is the credential. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Do not put credentials into ordinary message fields or command arguments intended for logs.</p>
 </section><section class="chapter"><h2 id="files-storage-and-logs">Files, storage, and logs</h2>
 <p>The default interpreter state directory is <code>~/.silicon-interpreter</code>. <code>SILICON_INTERPRETER_HOME</code> selects another directory, useful for an independent installation.</p>
 <table>
@@ -977,16 +946,8 @@ silicon settings set telemetry --on
 <td>Background interpreter stdout/stderr, including restoration, update, and rejected webhook delivery failures. Those failures also go to the affected Silicon's <code>silicon.log</code>; automatic-update failures go to every connected Silicon's log.</td>
 </tr>
 <tr>
-<td>Interpreter <code>settings.json</code></td>
-<td>Telemetry preferences.</td>
-</tr>
-<tr>
 <td>Interpreter <code>control-session.json</code></td>
 <td>Private management token, retained across interpreter restarts until logout rotates it.</td>
-</tr>
-<tr>
-<td>Interpreter <code>space-station/</code></td>
-<td>Space Station client state and durable telemetry spool.</td>
 </tr>
 <tr>
 <td>Interpreter <code>caddy/</code></td>
@@ -1176,7 +1137,7 @@ silicon service uninstall
 </code></pre>
 <p><code>status</code> shows the mechanism, its state, the last exit, and the logs to read. <code>uninstall</code> turns autostart off for good: <code>silicon connect</code> does not set it up again until <code>silicon service install</code>. <code>SILICON_NO_SERVICE=1</code> skips the automatic setup. Source and <code>cargo</code> builds, and a non-default <code>SILICON_INTERPRETER_HOME</code>, never get a service from <code>connect</code>; <code>silicon service install</code> still installs one for a non-default directory on request. On Windows, <code>install.ps1 -NoService</code> removes the logon task and remembers that choice; <code>install.ps1 -Service</code> turns it back on.</p>
 <p><code>silicon stop</code> stops the interpreter now; the service starts it at the next login or boot, or at the next <code>silicon connect</code>. An interpreter that an earlier <code>connect</code> started in the background hands over to launchd, systemd, or the logon task once no work is running: the service is started first and waits, then the old interpreter exits and the supervised one restores every saved Silicon. If the service cannot start (for example a Mac reached over SSH with nobody logged in), the running interpreter keeps running and says why.</p>
-<p>Supervisors start programs with a minimal environment. <code>~/.silicon-interpreter/service.env</code> (mode 0600) holds <code>PATH</code>, <code>LANG</code>, <code>LC_*</code>, <code>SHELL</code>, and the <code>SILICON_</code>, <code>OMNI_</code>, <code>APPS_</code>, <code>ACCOUNTS_</code>, <code>TING_</code>, <code>SPACE_STATION_</code>, <code>ANTHROPIC_</code>, <code>OPENAI_</code>, <code>CLAUDE_</code>, <code>CODEX_</code>, and <code>GEMINI_</code> variables of the terminal that installed the service, refreshed whenever <code>silicon connect</code> starts the interpreter; the login shell's <code>PATH</code> is added when it starts. Edit it and run <code>silicon service restart</code> to change what the interpreter sees. The supervisor writes to <code>service.log</code>; the interpreter writes to <code>daemon.log</code>.</p>
+<p>Supervisors start programs with a minimal environment. <code>~/.silicon-interpreter/service.env</code> (mode 0600) holds <code>PATH</code>, <code>LANG</code>, <code>LC_*</code>, <code>SHELL</code>, and the <code>SILICON_</code>, <code>OMNI_</code>, <code>APPS_</code>, <code>ACCOUNTS_</code>, <code>TING_</code>, <code>ANTHROPIC_</code>, <code>OPENAI_</code>, <code>CLAUDE_</code>, <code>CODEX_</code>, and <code>GEMINI_</code> variables of the terminal that installed the service, refreshed whenever <code>silicon connect</code> starts the interpreter; the login shell's <code>PATH</code> is added when it starts. Edit it and run <code>silicon service restart</code> to change what the interpreter sees. The supervisor writes to <code>service.log</code>; the interpreter writes to <code>daemon.log</code>.</p>
 <p>On macOS, a LaunchAgent runs only after someone logs in to the Mac's desktop: over SSH the agent loads at the next login, and a headless Mac needs automatic login, which FileVault prevents. macOS shows a "Background Items Added" notice, and the agent appears under System Settings › General › Login Items, where turning it off stops autostart. Programs launchd starts cannot read <code>~/Desktop</code>, <code>~/Documents</code>, <code>~/Downloads</code>, iCloud Drive, or <code>/Volumes</code> without Full Disk Access; keep YAML files and homes elsewhere, such as <code>~/silicon</code>. <code>connect</code> warns when one is there. On Linux without systemd, starting at boot needs a running cron daemon; on WSL without systemd, add <code>[boot] command=service cron start</code> to <code>/etc/wsl.conf</code>. Encrypted disks that must be unlocked at boot, and laptops that sleep, pause a Silicon until the machine is unlocked or awake.</p>
 <h3 id="what-recovers-by-itself">What recovers by itself</h3>
 <ul>
@@ -1384,7 +1345,7 @@ silicon service uninstall
 <p><code>stemcell/silicon</code>, <code>stemcell/memories</code>, and <code>stemcell/workspace</code> are reference material. The installer does not distribute them into user homes, and they still require your own credentials and supporting scripts.</p>
 <p><code>stemcell/silicon/silicon.yaml</code> is the supplied source of intent, with its CEL expressions corrected and its helper functions supported. It is not a ready-to-connect configuration. Its current issues include:</p>
 <ul>
-<li><code>silicon.id</code>, <code>silicon.token</code>, and the optional Space Station fields are <code>...</code> placeholders.</li>
+<li><code>silicon.id</code> and <code>silicon.token</code> are <code>...</code> placeholders.</li>
 <li>It refers to missing scripts/files including <code>install_python.sh</code>, <code>contacts.sh</code>, <code>tools.sh</code>, <code>team.sh</code>, <code>time_delay.sh</code>, and <code>learn.sh</code>. The repository has <code>CONTACTS.md</code>, <code>tools.md</code>, and <code>learn.md</code>; those names do not make the scripts exist automatically.</li>
 <li>Some suggestion messages still show old command forms. Current rollover uses <code>si session new --archive-current-session --id ... --title ... --description ...</code>.</li>
 <li>Its flow uses native <code>for</code> steps for ordered per-ting routing, keeps each item in <code>var.ting</code>, and aggregates messages by destination.</li>
@@ -1395,12 +1356,13 @@ silicon service uninstall
 <h3 id="application-integration">Application integration</h3>
 <p>Use the <a href="https://developers.teamofsilicons.com/">Silicon Developer portal</a> and its <code>silicon-apps</code> CLI for application ownership, configuration, release upload, and publication. Authenticate as the Carbon or Silicon that owns the application; confirm that identity before publishing. The public <a href="https://apps.teamofsilicons.com/">Silicon Apps catalog</a> supplies consumer installation and discovery.</p>
 <p>Apps expose <code>accounts --json</code>, <code>login --slt</code>, <code>login status --json</code>, and <code>logout</code>, keep account sessions until expiry or logout, and store state beneath <code>SILICON_HOME</code>. <code>ISI</code> is optional context. Proactive apps publish notifications through Ting. Apps with configuration expose <code>config set JSON</code>. Every command should describe its purpose, supported flags, and concrete failure causes through <code>--help</code>.</p>
+<p>Use <code>SILICON_APPS</code> to select a particular Apps executable. Use a dedicated Silicon home when validating an integration so existing connections and personal sessions remain independent.</p>
 <h3 id="contract-versions">Contract versions</h3>
 <table>
 <thead>
 <tr>
 <th>Consumer or dependency</th>
-<th>Silicon 7.0.0 contract</th>
+<th>Silicon 7.0.1 contract</th>
 </tr>
 </thead>
 <tbody>
@@ -1439,9 +1401,6 @@ silicon service uninstall
   --dry-run
 </code></pre>
 <p>The dry run prints the report. Remove <code>--dry-run</code> to submit it to this repository using an authenticated <code>gh</code> CLI. <code>--pr</code> may be omitted. The command adds the Silicon version to the body. Do not include tokens, table keys, or credential files. Confirmed upstream defects are tracked in the <a href="#external-dependency-issues">external dependency issue ledger</a> with their reproduction and impact.</p>
-<h3 id="telemetry-development">Telemetry development</h3>
-<p>Release builds provide the TOS interpreter and runtime table keys using <code>SILICON_INTERPRETER_TABLE_KEY</code> and <code>SILICON_RUNTIME_TABLE_KEY</code> at build time. Environment values with the same names override those defaults for a controlled deployment. Documentation ingestion has a separate destination. Table credentials are supplied through deployment secrets and are never placed in website JavaScript. The documentation sends to <code>/api/telemetry</code>; its server forwards permitted events to Space Station.</p>
-<p>Use <code>SILICON_APPS</code> to select a particular Apps executable. Use a dedicated Silicon home when validating an integration so existing connections and personal sessions remain independent.</p>
 </section><section class="chapter"><h2 id="build-and-release">Build and release</h2>
 <pre><code class="language-sh">cargo build --locked --release
 cargo clippy --locked --all-targets -- -D warnings
@@ -1449,21 +1408,24 @@ cargo clippy --locked --all-targets -- -D warnings
 <p>Release archives include Silicon, Omni, Caddy, their notices, and version metadata. The release workflow builds the supported platforms and uploads checksum-verified assets. Publish the app catalog release through the signed-in owner's <code>silicon-apps</code> CLI. Deployment credentials and local account state must never be committed or included in release archives.</p>
 <p>The Windows ARM64 runtime remains a preview pending verification on physical ARM64 Windows hardware.</p>
 <h3 id="maintaining-the-documentation">Maintaining the documentation</h3>
-<p>The source is <code>docs/GUIDE.md</code>, <code>docs/DIARY.md</code>, <code>docs/EXTERNAL-BUGS.md</code>, and <code>docs/shell.html</code>. With Python Markdown installed, run <code>python3 docs/render.py</code> and commit the updated <code>docs/site/index.html</code>. An isolated alternative is <code>uv run --with markdown==3.8.2 python docs/render.py</code>. Vercel serves the committed static output and the telemetry API; it does not build or upload the interpreter, template homes, or local state.</p>
+<p>The source is <code>docs/GUIDE.md</code>, <code>docs/DIARY.md</code>, <code>docs/EXTERNAL-BUGS.md</code>, and <code>docs/shell.html</code>. With Python Markdown installed, run <code>python3 docs/render.py</code> and commit the updated <code>docs/site/index.html</code>. An isolated alternative is <code>uv run --with markdown==3.8.2 python docs/render.py</code>. Vercel serves the committed static output; it does not build or upload the interpreter, template homes, or local state.</p>
 </section><section class="chapter"><h2 id="external-dependency-issues">External dependency issues</h2>
-<p>The current integration uses Silicon Accounts, Silicon Apps, Ting, Omni, Caddy, and Space Station. Diagnose service failures from the complete CLI response and current <a href="https://developers.teamofsilicons.com/">developer documentation</a>.</p>
+<p>The current integration uses Silicon Accounts, Silicon Apps, Ting, Omni, and Caddy. Diagnose service failures from the complete CLI response and current <a href="https://developers.teamofsilicons.com/">developer documentation</a>.</p>
 <p>Earlier service and publication limitations are recorded in Git history. They describe retired contracts and are not instructions for the current account model.</p>
 <p>Windows ARM64 remains a preview pending a complete run on physical ARM64 Windows hardware. The Windows installer verifies WSL interoperability before activation; an existing disabled interoperability configuration must be repaired through the supported WSL setup path.</p>
 </section><section class="chapter"><h2 id="implementation-diary">Implementation diary</h2>
+<h3 id="701-telemetry-removed">7.0.1 — Telemetry removed</h3>
+<p>Silicon no longer sends telemetry from the interpreter, CLI, runtime, dashboard, or documentation website. Space Station clients, delivery queues, ingestion credentials, and telemetry controls have been removed. Existing <code>silicon.space_station</code> configuration is ignored without evaluating its expressions. Local logs, error redaction, and session history remain available.</p>
+<p>The former TOS telemetry tables (<code>siliconinterpreter</code>, <code>siliconruntime</code>, and <code>silicondocs</code>) are retired, and their old ingestion keys are rejected. Historical records are preserved. Older binaries can still attempt telemetry requests until updated, but those tables no longer accept them.</p>
 <h3 id="70-carbon-and-silicon-accounts">7.0 — Carbon and Silicon accounts</h3>
 <p>The interpreter now integrates with Silicon Accounts and Silicon Apps. Application identity and ownership use Carbon or Silicon accounts, with bare catalog app IDs. The Developer portal and CLI are the publishing interface.</p>
 <p>Configuration removes organization fields and retired authentication environments. CLI app sessions are reused until expiry or explicit logout; logged-out apps stay logged out until explicit authentication. The local dashboard stores access across browser and interpreter restarts and offers a logout action that revokes its token.</p>
 <p>The dashboard and documentation use the Silicon UI foundation distributed by <a href="https://ui.teamofsilicons.com/r/silicon-foundation.json">ui.teamofsilicons.com</a>. The vendored CSS keeps local controls usable offline. Documentation and examples describe the current account and app contract. Detailed records of earlier releases remain available in Git history and <a href="https://github.com/teamofsilicons/silicon-stemcell/releases">GitHub Releases</a>.</p></section>
-<footer><span>Silicon 7.0 · Built in Rust · <a href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">Open source, MIT</a> · <a href="https://ui.teamofsilicons.com/">Silicon UI</a></span><label><input type="checkbox" id="docs-telemetry" checked> Share documentation usage with TOS</label><a class="page-top" href="#">Back to top ↑</a></footer>
+<footer><span>Silicon 7.0.1 · Built in Rust · <a href="https://github.com/teamofsilicons/silicon-stemcell/tree/main">Open source, MIT</a> · <a href="https://ui.teamofsilicons.com/">Silicon UI</a></span><a class="page-top" href="#">Back to top ↑</a></footer>
 </main></div>
 <script>
 document.querySelectorAll('[data-copy]').forEach(button=>button.onclick=async function(){try{await navigator.clipboard.writeText(document.getElementById(this.dataset.copy).textContent);this.textContent='Copied';setTimeout(()=>this.textContent='Copy',2000)}catch{this.textContent='Select & copy'}});
 const headings=[...document.querySelectorAll('.chapter h2')],links=[...document.querySelectorAll('nav a')];
 const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){for(const link of links){if(link.hash==='#'+entry.target.id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')}}},{rootMargin:'-90px 0px -65% 0px'});headings.forEach(h=>observer.observe(h));
 document.querySelectorAll('.mobile-nav a').forEach(a=>a.onclick=()=>{document.querySelector('.mobile-nav').open=false});
-</script><script type="module" src="/telemetry.js"></script></body></html>
+</script></body></html>

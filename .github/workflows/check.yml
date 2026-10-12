@@ -28,6 +28,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo check --locked
+          cargo test --locked --lib
           cargo clippy --locked --all-targets -- -D warnings
       - name: Check installer and packaging syntax
         run: |

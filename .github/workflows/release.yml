@@ -39,6 +39,9 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       BUILD_ONLY: ${{ inputs.build_only }}
+      APPS_TELEMETRY: '0'
+      ACCOUNTS_TELEMETRY: 'off'
+      DO_NOT_TRACK: '1'
       CARGO_TARGET_DIR: ${{ github.workspace }}/build-target
       RUSTUP_TOOLCHAIN: 1.98.1
     steps:
@@ -64,14 +67,13 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo check --locked
+          cargo test --locked --lib
           cargo clippy --locked --all-targets -- -D warnings
       - name: Build the complete bundle
         env:
           SILICON_PREFIX: ${{ runner.temp }}/silicon-bundle
           SILICON_SOURCE_DIR: ${{ github.workspace }}
           SILICON_APPS_NO_DAEMON: '1'
-          SILICON_INTERPRETER_TABLE_KEY: ${{ secrets.SILICON_INTERPRETER_TABLE_KEY }}
-          SILICON_RUNTIME_TABLE_KEY: ${{ secrets.SILICON_RUNTIME_TABLE_KEY }}
         run: sh install.sh
       - name: Check bundled CLI executables without authenticating
         env:
@@ -130,14 +132,10 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 7.0.0 adopts Silicon Accounts and Silicon Apps. Carbon and Silicon identities replace organization-scoped access throughout configuration, app authentication, delivery, and the dashboard.
+          Silicon 7.0.1 removes telemetry from the interpreter, CLI, daemon, runtime, dashboard, and documentation website. No activity is sent to Space Station, including previously configured user-owned tables. The Space Station client and website ingestion endpoint have been removed.
 
-          Apps identify themselves with `accounts --json`, install through `silicon-apps`, and keep their sessions and packages in the selected account's home. Existing sign-ins remain available until they expire or the user signs out. Silicon Apps owns package updates; the interpreter no longer runs a competing updater.
+          Diagnostic logs, session history, and credential redaction remain local. Legacy `silicon.space_station` configuration is ignored without evaluating its expressions. Telemetry settings and dashboard controls have been removed; old preferences and environment values cannot re-enable reporting. Managed child processes receive reporting opt-outs, and older Ting reporting is forced off. The former TOS telemetry tables are retired and reject their old ingestion keys.
 
-          The dashboard uses Silicon UI from ui.teamofsilicons.com. App metadata comes from Silicon Apps, with cached descriptions available offline. Test suites and the old organization migration tooling have been removed.
-
-          Linux packages for Silicon Apps are included alongside complete macOS and Linux bundles. Windows bundles provide native launchers for the WSL2 runtime and the Silicon Accounts and Silicon Apps CLIs. Windows requires hardware virtualization; restart and resume installation if requested.
-
-          Configuration now uses Silicon identities without organization fields. Read the [setup guide](https://docs.teamofsilicons.com/) before updating existing YAML. Installers preserve credentials and runtime data. Verify downloads against `SHA256SUMS`.
+          Complete macOS and Linux bundles, Linux catalog packages, and Windows WSL2 bundles are included. Installers preserve credentials and runtime data. Update existing installations and restart running interpreters to stop reporting from older binaries. Verify downloads against `SHA256SUMS`.
           NOTES
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

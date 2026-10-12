@@ -1,4 +1,4 @@
-# Silicon 7.0.0
+# Silicon 7.0.1
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -38,10 +38,10 @@ silicon-apps install silicon --yes
 For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. Native catalog installation for macOS and Windows is not available yet. No Rust compiler is required:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.sh | sh
 ```
 
-Find platform bundles and checksums on the [v7.0.0 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.0). The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.
+Find platform bundles and checksums on the [v7.0.1 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.1). The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.
 
 Silicon keeps reusable Starter genes, functions, and ISIs, per-ISI app declarations, native YAML flows, persistent sessions, and durable notification delivery. See the [7.0 migration](#upgrading-to-70) for the identity and configuration changes.
 
@@ -56,7 +56,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -66,7 +66,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 7.0.0 |
+| `silicon`, `si` | Interpreter and internal CLI, 7.0.1 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.9.1 pinned to commit `62c2adc57983be37c1de2064d169073bddf71291` |
 | `caddy` | Caddy 2.11.4 |
 
@@ -76,7 +76,7 @@ Accounts, permissions, remote service availability, and authenticated inference 
 
 ### Upgrading from 5.x
 
-Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 7.0.0 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.
+Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 7.0.1 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.
 
 1. Replace bare `{error}` in every catch with `{self.error}`. Result and error values are scoped to their `then` or `catch` branch; save a value with `var` when it is needed later.
 2. Review each send that must happen immediately or remain a separate message. Add `aggregate: false` to it; otherwise messages to the same `(isi, session_id)` are joined in order and sent when the flow finishes. An immediate send also flushes earlier queued messages for that destination.
@@ -96,7 +96,7 @@ The local event hostname now follows the account, such as `assistant.si.localhos
 
 ### Ting migration
 
-For configurations from 4.0.x or earlier, before reconnecting on 7.0.0:
+For configurations from 4.0.x or earlier, before reconnecting on 7.0.1:
 
 1. Remove `silicon.webhooks` and `silicon.webhook`. Keep application IDs under `isi.<name>.apps`; legacy `silicon.apps` remains supported. Applications publish notifications through Ting and no longer register separate interpreter webhooks.
 2. Change the flow to read `request.tings`, a list of notification objects with `id`, `type`, `data`, and `metadata`. Other JSON shapes are also accepted, but Ting publishers use the batch envelope. Use native `for` steps or CEL list helpers to process a whole batch; the [first Silicon example](#first-silicon) shows a minimal flow.
@@ -112,7 +112,7 @@ Existing Windows installations should rerun this release's PowerShell installer 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Silicon Apps installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -216,7 +216,7 @@ flow:
             message: '{make_readable(var.ting)}'
 ```
 
-Setup creates a workspace directory on each connection; `mkdir -p` is safe to repeat. Silicon Accounts and Ting are implicit dependencies, even with empty ISI `apps` lists. Add other application IDs under `isi.assistant.apps` when the corresponding Silicon identity and application permissions are ready. Add the optional `space_station` fields shown below only after creating your table and obtaining its key. `token` remains required so the interpreter can authenticate the Silicon with Accounts.
+Setup creates a workspace directory on each connection; `mkdir -p` is safe to repeat. Silicon Accounts and Ting are implicit dependencies, even with empty ISI `apps` lists. Add other application IDs under `isi.assistant.apps` when the corresponding Silicon identity and application permissions are ready. `token` remains required so the interpreter can authenticate the Silicon with Accounts.
 
 ```sh
 silicon compile /absolute/path/to/silicon.yaml
@@ -262,7 +262,7 @@ The four required top-level keys are `silicon`, `isi`, `access`, and `flow`. `fu
 | `setup` | Optional ordered list of shell commands. Runs once during each connection attempt; compilation validates expressions without running these commands. |
 | `apps` | Legacy list of Silicon Apps application IDs, retained for existing configurations. New files declare apps under `isi.<name>.apps`; both contribute to the Silicon's managed apps. |
 | `app_configs` | Optional mapping from managed app IDs to configuration objects. Native YAML numbers, booleans, lists, maps, and null retain their types; string values support private compile-time expressions. Applied with `APP config set JSON` after authentication. |
-| `space_station` | Optional object with nonempty `table_name` and `table_key` for a user-owned telemetry destination. This destination remains enabled when TOS telemetry is turned off. |
+| `space_station` | Retired. Accepted only for compatibility and ignored, including its expressions. Remove it from existing files. |
 | `max_retries` | Optional nonnegative integer, default `10`; retries after the first outgoing flow delivery attempt before stashing for the next send to that destination. |
 | `login` | Legacy list of deferred Silicon Accounts application commands; retained for existing configurations. |
 
@@ -279,7 +279,7 @@ inference_providers:
 
 Every session opens with an explicit provider list. A lone `all-available-providers` sends the providers Omni reports as installed and authenticated when that session starts, so a provider dropped after an authentication error, or logged in later, rejoins at the next session start; an empty result is an error naming what Omni reported. Explicit names are checked against Omni's installed/authenticated providers when a session initializes. An empty final selection is an error. Extra named groups such as `open-weight-models` are not expanded unless Omni exposes that exact name as a provider.
 
-Use canonical application IDs under each ISI in new files. Setup, app configuration, and telemetry settings stay under `silicon`:
+Use canonical application IDs under each ISI in new files. Setup and app configuration stay under `silicon`:
 
 ```yaml
 silicon:
@@ -289,9 +289,6 @@ silicon:
   app_configs:
     waveform:
       default_tts_provider: google
-  space_station:
-    table_name: my-silicon-events
-    table_key: REPLACE_WITH_YOUR_TABLE_KEY
 isi:
   assistant:
     # ... model, modes, and DNA ...
@@ -475,7 +472,7 @@ The runtime CEL environment contains:
 | Name | Value |
 | --- | --- |
 | `request` | The event JSON for this flow invocation. |
-| `silicon` | Compiled Silicon settings, with the Silicon token, app configuration, and Space Station table key removed at runtime. |
+| `silicon` | Compiled Silicon settings, with the Silicon token, app configuration, and retired `space_station` field removed at runtime. |
 | `isi` | The configured ISI map. |
 | `access` | The configured access map. |
 | `var` | Variables created during this flow; starts empty for each event. |
@@ -730,7 +727,6 @@ silicon install 'dm'
 silicon uninstall 'dm'
 silicon ping si:assistant
 silicon config si:assistant
-silicon settings get
 silicon info
 ```
 
@@ -807,7 +803,7 @@ The same text reaches every reader:
 - `silicon.log` records it as an `[error]` entry. The file escapes newlines; `silicon logs show`, connection progress, and the dashboard unfold error entries so multi-line output reads as the tool wrote it, and `--json` returns the stored line. Errors logged during `connect` appear as they happen, even when the connection then succeeds.
 - Failures with no caller, such as DNA refreshes, heartbeats, restoration, rejected Ting deliveries, and automatic updates, go to `silicon.log`. The last three also go to the interpreter's `daemon.log`.
 
-Only literal credential values are replaced with `[redacted]`: the Silicon token, Silicon Accounts SLTs, ISI capabilities, Space Station table keys, the JSON argument of `APP config set`, `app_configs` values of eight or more characters, recognized token prefixes such as `stk-`, and the values of credential-named JSON fields such as `access_token`, `password`, or `api_key`. The surrounding message always survives. Configured values shorter than eight characters, such as `en` or `true`, are settings and stay readable; masking every occurrence of them garbles the errors people must read. A credential expression (`silicon.token`, `space_station.table_key`, or an `app_configs` string) reports its exit status, stderr, and parser or CEL text, but its source reads `[credential expression]` and its stdout reads `(withheld; it is the credential)`.
+Only literal credential values are replaced with `[redacted]`: the Silicon token, Silicon Accounts SLTs, ISI capabilities, the JSON argument of `APP config set`, `app_configs` values of eight or more characters, recognized token prefixes such as `stk-`, and the values of credential-named JSON fields such as `access_token`, `password`, or `api_key`. The surrounding message always survives. Configured values shorter than eight characters, such as `en` or `true`, are settings and stay readable; masking every occurrence of them garbles the errors people must read. A credential expression (`silicon.token` or an `app_configs` string) reports its exit status, stderr, and parser or CEL text, but its source reads `[credential expression]` and its stdout reads `(withheld; it is the credential)`.
 
 Silicons read these errors through `si`, flow catches, and logs. Read the tool's own words and fix that cause: stderr usually explains the failure, and JSON-speaking tools often answer on stdout. When reporting a failure to a Carbon or another Silicon, pass the complete error text rather than a summary.
 
@@ -897,40 +893,17 @@ Disconnect runs `ting unhook WEBHOOK_ID --json`. It still removes the local conn
 
 Apps that accept configuration expose `APP config set JSON`. The interpreter sends each configured object after authentication. If the app rejects it, the error names `silicon.app_configs.APP`, shows the command with its JSON argument as `'[redacted]'`, and includes the app's exit status and complete stderr and stdout, with configured values masked as described in [Reading errors](#reading-errors). Apps store credentials and configuration in their own state beneath `SILICON_HOME` (or their chosen remote configuration service), work when `ISI` is absent.
 
-## Settings and telemetry
+## Privacy and local diagnostics
 
-Settings apply to the interpreter and are stored in `settings.json` beneath its state directory. Telemetry defaults to enabled:
+Silicon 7.0.1 sends no telemetry. The interpreter, `silicon` and `si` CLIs, runtime, local dashboard, and documentation website do not upload usage, commands, events, logs, or session history to TOS, Space Station, or another telemetry destination. There is no telemetry client, browser tracker, ingestion endpoint, or setting that enables telemetry.
 
-```sh
-silicon settings get
-silicon settings get telemetry
-silicon settings set telemetry --off
-silicon settings set telemetry --on
-```
+Existing `silicon.space_station` configuration is ignored, and its expressions are never evaluated. Remove that field from old configurations. Old telemetry preferences, table keys, and environment variables cannot enable delivery. Old local telemetry spools are not read or uploaded. Logs and session history remain on your machine. Configured inference providers, Accounts, Apps, and Ting still receive the requests needed to perform their normal work.
 
-| Setting | Controls |
-| --- | --- |
-| `telemetry` | TOS-owned Space Station telemetry from this installation. |
+For older dependencies, Silicon forces reporting off in managed child processes: `DO_NOT_TRACK=1`, `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`, `SILICON_TELEMETRY=0`, `ACCOUNTS_TELEMETRY=off`, `APPS_TELEMETRY=0`, `DM_TELEMETRY_ENABLED=false`, `BRIEFCASE_TELEMETRY=0`, and `SPACE_STATION_TELEMETRY=0`. Installers also set reporting suppression flags while running dependencies. These retained flags suppress legacy reporting; they cannot enable Silicon telemetry.
 
-`SILICON_TELEMETRY=0` also disables TOS telemetry. App CLIs may have their own telemetry settings. Silicon Apps owns application updates; inspect its current controls through `silicon-apps --help`.
+Before running managed Ting commands, Silicon sets `telemetry` to `false` in `<SILICON_HOME>/.ting/settings.json`, preserving other settings. Older Ting versions read this file for CLI and daemon reporting. This compatibility file remains only to keep that reporting off; Silicon has no telemetry settings of its own.
 
-TOS telemetry uses separate destinations for interpreter/CLI/daemon activity, Silicon runtime and session activity, and the documentation frontend. Events include the source, operation, timestamp, version, Silicon identity, ISI context where applicable, and diagnostic context. Silicon inputs, flow logs, provider/session events, tool or command information, and `silicon.log` error entries with their complete tool output can be included, masked as described in [Reading errors](#reading-errors). Telemetry records diagnostic activity; it does not replace durable session history or local logs. Space Station queues records durably. A short-lived CLI command waits at most 100 ms during flush and may exit with records still queued; the running interpreter's client drains that queue, so delivery need not be immediate.
-
-To also send one Silicon's activity to your own Space Station table, add:
-
-```yaml
-silicon:
-  # ...the other required fields...
-  space_station:
-    table_name: assistant-events
-    table_key: REPLACE_WITH_YOUR_TABLE_KEY
-```
-
-`table_key` authorizes ingestion; `table_name` identifies the configured destination. `silicon settings set telemetry --off` disables TOS telemetry and keeps this explicitly configured destination active. Remove `space_station` and reconnect to stop the user destination. The Space Station Rust client handles buffering, its local spool, delivery, and retries. When Space Station is a managed app, its login uses the same Silicon Accounts identity as the interpreter connection.
-
-The interpreter removes Silicon tokens, app configuration, and Space Station table keys from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from diagnostic events, logs, and errors. Redaction is the only reduction: errors retain their complete text in the relevant CLI, `si`, dashboard, flow catch, or `silicon.log`, as described in [Reading errors](#reading-errors). Configured values shorter than eight characters are treated as settings and are not redacted. Compile-time Bash logs `running: [compile-time expression]` and its exit status, because runtime redaction is not yet registered; if it fails, the error shows the command with known credentials masked, its status, and both streams. A credential expression logs `running: [credential expression]`; its error shows its exit status, stderr, and parser or CEL text, but names the source `[credential expression]`, masks the source's words of eight or more characters wherever the parser quotes them, and never shows its stdout, which is the credential. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Ordinary prompt and event content remains useful for diagnosis and can be included. Do not put credentials into ordinary message fields or command arguments intended for logs.
-
-The documentation website has its own **Share documentation usage with TOS** checkbox in the footer. Its preference is saved in that browser's local storage and is independent of local interpreter settings. The page submits telemetry to its same-origin `/api/telemetry` endpoint; the destination credential stays on the server.
+The interpreter removes Silicon tokens, app configuration, and the retired `space_station` field from runtime CEL and public configuration responses. Known credential values, credential-shaped fields, and recognized token prefixes are redacted from local logs and errors. Errors retain their complete text in the relevant CLI, `si`, dashboard, flow catch, or `silicon.log`, as described in [Reading errors](#reading-errors). Configured values shorter than eight characters are treated as settings and are not redacted. Compile-time Bash logs `running: [compile-time expression]` and its exit status, because runtime redaction is not yet registered; if it fails, the error shows the command with known credentials masked, its status, and both streams. A credential expression logs `running: [credential expression]`; its error shows its exit status, stderr, and parser or CEL text, but names the source `[credential expression]`, masks the source's words of eight or more characters wherever the parser quotes them, and never shows its stdout, which is the credential. Runtime Bash records its redacted command; setup additionally records stdout and stderr after each command finishes. Do not put credentials into ordinary message fields or command arguments intended for logs.
 
 ## Files, storage, and logs
 
@@ -943,9 +916,7 @@ The default interpreter state directory is `~/.silicon-interpreter`. `SILICON_IN
 | Interpreter `connections.json` | Every saved Silicon, whether connected or still waiting to be restored, until an explicit disconnect. One that does not parse is moved to `connections.json.corrupt-<UTC>`. |
 | Interpreter `service.json`, `service.env`, `service.log`, `stopped` | The installed autostart service, the environment it gives the interpreter (0600), its supervisor's log, and a `silicon stop` marker for this boot. |
 | Interpreter `daemon.log` | Background interpreter stdout/stderr, including restoration, update, and rejected webhook delivery failures. Those failures also go to the affected Silicon's `silicon.log`; automatic-update failures go to every connected Silicon's log. |
-| Interpreter `settings.json` | Telemetry preferences. |
 | Interpreter `control-session.json` | Private management token, retained across interpreter restarts until logout rotates it. |
-| Interpreter `space-station/` | Space Station client state and durable telemetry spool. |
 | Interpreter `caddy/` | Owned Caddy configuration, logs, data, storage, and `owner.json`/`caddy.pid` recording the running Caddy so a later start can stop one left behind. |
 | `<SILICON_HOME>/.silicon/silicon.log` | Silicon event, flow, send, runtime, error, and provider log; rotated at 64 MiB. |
 | `.silicon/heartbeats.json` | Wall-clock due times of this Silicon's heartbeats. |
@@ -1045,7 +1016,7 @@ silicon service uninstall
 
 `silicon stop` stops the interpreter now; the service starts it at the next login or boot, or at the next `silicon connect`. An interpreter that an earlier `connect` started in the background hands over to launchd, systemd, or the logon task once no work is running: the service is started first and waits, then the old interpreter exits and the supervised one restores every saved Silicon. If the service cannot start (for example a Mac reached over SSH with nobody logged in), the running interpreter keeps running and says why.
 
-Supervisors start programs with a minimal environment. `~/.silicon-interpreter/service.env` (mode 0600) holds `PATH`, `LANG`, `LC_*`, `SHELL`, and the `SILICON_`, `OMNI_`, `APPS_`, `ACCOUNTS_`, `TING_`, `SPACE_STATION_`, `ANTHROPIC_`, `OPENAI_`, `CLAUDE_`, `CODEX_`, and `GEMINI_` variables of the terminal that installed the service, refreshed whenever `silicon connect` starts the interpreter; the login shell's `PATH` is added when it starts. Edit it and run `silicon service restart` to change what the interpreter sees. The supervisor writes to `service.log`; the interpreter writes to `daemon.log`.
+Supervisors start programs with a minimal environment. `~/.silicon-interpreter/service.env` (mode 0600) holds `PATH`, `LANG`, `LC_*`, `SHELL`, and the `SILICON_`, `OMNI_`, `APPS_`, `ACCOUNTS_`, `TING_`, `ANTHROPIC_`, `OPENAI_`, `CLAUDE_`, `CODEX_`, and `GEMINI_` variables of the terminal that installed the service, refreshed whenever `silicon connect` starts the interpreter; the login shell's `PATH` is added when it starts. Edit it and run `silicon service restart` to change what the interpreter sees. The supervisor writes to `service.log`; the interpreter writes to `daemon.log`.
 
 On macOS, a LaunchAgent runs only after someone logs in to the Mac's desktop: over SSH the agent loads at the next login, and a headless Mac needs automatic login, which FileVault prevents. macOS shows a "Background Items Added" notice, and the agent appears under System Settings › General › Login Items, where turning it off stops autostart. Programs launchd starts cannot read `~/Desktop`, `~/Documents`, `~/Downloads`, iCloud Drive, or `/Volumes` without Full Disk Access; keep YAML files and homes elsewhere, such as `~/silicon`. `connect` warns when one is there. On Linux without systemd, starting at boot needs a running cron daemon; on WSL without systemd, add `[boot] command=service cron start` to `/etc/wsl.conf`. Encrypted disks that must be unlocked at boot, and laptops that sleep, pause a Silicon until the machine is unlocked or awake.
 
@@ -1130,7 +1101,7 @@ Useful environment switches are `SILICON_INTERPRETER_HOME` for interpreter state
 
 `stemcell/silicon/silicon.yaml` is the supplied source of intent, with its CEL expressions corrected and its helper functions supported. It is not a ready-to-connect configuration. Its current issues include:
 
-- `silicon.id`, `silicon.token`, and the optional Space Station fields are `...` placeholders.
+- `silicon.id` and `silicon.token` are `...` placeholders.
 - It refers to missing scripts/files including `install_python.sh`, `contacts.sh`, `tools.sh`, `team.sh`, `time_delay.sh`, and `learn.sh`. The repository has `CONTACTS.md`, `tools.md`, and `learn.md`; those names do not make the scripts exist automatically.
 - Some suggestion messages still show old command forms. Current rollover uses `si session new --archive-current-session --id ... --title ... --description ...`.
 - Its flow uses native `for` steps for ordered per-ting routing, keeps each item in `var.ting`, and aggregates messages by destination.
@@ -1147,9 +1118,11 @@ Use the [Silicon Developer portal](https://developers.teamofsilicons.com/) and i
 
 Apps expose `accounts --json`, `login --slt`, `login status --json`, and `logout`, keep account sessions until expiry or logout, and store state beneath `SILICON_HOME`. `ISI` is optional context. Proactive apps publish notifications through Ting. Apps with configuration expose `config set JSON`. Every command should describe its purpose, supported flags, and concrete failure causes through `--help`.
 
+Use `SILICON_APPS` to select a particular Apps executable. Use a dedicated Silicon home when validating an integration so existing connections and personal sessions remain independent.
+
 ### Contract versions
 
-| Consumer or dependency | Silicon 7.0.0 contract |
+| Consumer or dependency | Silicon 7.0.1 contract |
 | --- | --- |
 | Configuration | Complete `si:handle` identity and bare app IDs; see [7.0 migration](#upgrading-to-70). |
 | Application discovery | `APP accounts --json` with matching bare `app_id`. |
@@ -1173,12 +1146,6 @@ silicon bug-report --title 'Short description' \
 
 The dry run prints the report. Remove `--dry-run` to submit it to this repository using an authenticated `gh` CLI. `--pr` may be omitted. The command adds the Silicon version to the body. Do not include tokens, table keys, or credential files. Confirmed upstream defects are tracked in the [external dependency issue ledger](#external-dependency-issues) with their reproduction and impact.
 
-### Telemetry development
-
-Release builds provide the TOS interpreter and runtime table keys using `SILICON_INTERPRETER_TABLE_KEY` and `SILICON_RUNTIME_TABLE_KEY` at build time. Environment values with the same names override those defaults for a controlled deployment. Documentation ingestion has a separate destination. Table credentials are supplied through deployment secrets and are never placed in website JavaScript. The documentation sends to `/api/telemetry`; its server forwards permitted events to Space Station.
-
-Use `SILICON_APPS` to select a particular Apps executable. Use a dedicated Silicon home when validating an integration so existing connections and personal sessions remain independent.
-
 ## Build and release
 
 ```sh
@@ -1192,4 +1159,4 @@ The Windows ARM64 runtime remains a preview pending verification on physical ARM
 
 ### Maintaining the documentation
 
-The source is `docs/GUIDE.md`, `docs/DIARY.md`, `docs/EXTERNAL-BUGS.md`, and `docs/shell.html`. With Python Markdown installed, run `python3 docs/render.py` and commit the updated `docs/site/index.html`. An isolated alternative is `uv run --with markdown==3.8.2 python docs/render.py`. Vercel serves the committed static output and the telemetry API; it does not build or upload the interpreter, template homes, or local state.
+The source is `docs/GUIDE.md`, `docs/DIARY.md`, `docs/EXTERNAL-BUGS.md`, and `docs/shell.html`. With Python Markdown installed, run `python3 docs/render.py` and commit the updated `docs/site/index.html`. An isolated alternative is `uv run --with markdown==3.8.2 python docs/render.py`. Vercel serves the committed static output; it does not build or upload the interpreter, template homes, or local state.

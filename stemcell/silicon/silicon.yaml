@@ -4,10 +4,6 @@ silicon:
   timezone: America/Los_Angeles
   SILICON_HOME: ! pwd
 
-  space_station:
-    table_name: ...
-    table_key: ...
-
   inference_providers:
     - all-available-providers
 

@@ -55,7 +55,6 @@ const CAPTURED_PREFIXES: &[&str] = &[
     "APPS_",
     "ACCOUNTS_",
     "TING_",
-    "SPACE_STATION_",
     "ANTHROPIC_",
     "OPENAI_",
     "CLAUDE_",
@@ -3248,7 +3247,9 @@ fn write_environment(dir: &Path, vars: &[(String, String)]) -> Result<Vec<String
     // The last line wins, as when it is loaded.
     let earlier: BTreeMap<String, String> = parse_environment(dir, &before, &mut Vec::new())
         .into_iter()
-        .filter(|(name, _)| !NEVER_LOADED.contains(&name.as_str()))
+        .filter(|(name, _)| {
+            !NEVER_LOADED.contains(&name.as_str()) && !name.starts_with("SPACE_STATION_")
+        })
         .collect();
     let mut merged = fresh.clone();
     let (mut kept, mut replaced) = (Vec::new(), Vec::new());
@@ -3375,7 +3376,11 @@ fn plan_environment(
 ) -> Vec<(String, String)> {
     let mut plan: Vec<(String, String)> = loaded
         .iter()
-        .filter(|(name, _)| name != "PATH" && !NEVER_LOADED.contains(&name.as_str()))
+        .filter(|(name, _)| {
+            name != "PATH"
+                && !NEVER_LOADED.contains(&name.as_str())
+                && !name.starts_with("SPACE_STATION_")
+        })
         .cloned()
         .collect();
     let recorded = loaded

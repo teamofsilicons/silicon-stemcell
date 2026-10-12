@@ -1,6 +1,8 @@
-# Silicon 7.0.0
+# Silicon 7.0.1
 
 A local Rust interpreter for `silicon.yaml`: connect Silicons, route JSON events through YAML flows, run internal Silicons with Omni, and manage sessions and applications.
+
+Silicon sends no telemetry, including to Space Station. Diagnostic logs and session history stay local.
 
 Silicon uses [Silicon Accounts](https://accounts.teamofsilicons.com/) for Carbon and Silicon identities, [Silicon Apps](https://apps.teamofsilicons.com/) for installation, and the [Developer portal](https://developers.teamofsilicons.com/) for publication. Every action belongs to an account: `c:handle` or `si:handle`.
 
@@ -13,16 +15,16 @@ silicon-apps install silicon --yes
 For complete setup on macOS and Linux (including Silicon Apps):
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.0/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.1/install.ps1 | iex
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.0). Native catalog installation currently targets Linux; macOS and Windows use the complete bundle installers. Windows uses WSL2; first setup may require administrator access and a restart. Windows ARM64 remains a preview.
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.1). Native catalog installation currently targets Linux; macOS and Windows use the complete bundle installers. Windows uses WSL2; first setup may require administrator access and a restart. Windows ARM64 remains a preview.
 
 **Upgrading to 7.0:** stop the interpreter, back up your Silicon home, remove the retired ownership fields from YAML, and use your Silicon Accounts identity and token. Keep the same YAML path and home to retain sessions. Follow the [migration procedure](docs/PUBLIC-IDENTIFIER-MIGRATION.md), then compile and reconnect. The installer does not rewrite your configuration.
 

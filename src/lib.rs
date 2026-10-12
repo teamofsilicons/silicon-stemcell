@@ -9,13 +9,12 @@ mod outbox;
 pub(crate) mod process;
 mod progress;
 pub mod proxy;
+pub mod redaction;
 pub mod runtime;
 pub mod server;
 pub mod service;
-pub mod settings;
 pub(crate) mod starters;
 pub mod state;
-pub mod telemetry;
 pub mod ting;
 pub mod update;
 
@@ -263,24 +262,16 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
             ),
         ),
     }
-    let telemetry_off = match settings::load() {
-        Ok(settings) => !settings.telemetry,
-        Err(error) => {
-            tool_setup_failed(
-                home,
-                &format!("tools keep their own telemetry defaults because the interpreter settings could not be read: {error:#}"),
-            );
-            false
-        }
-    };
-    if telemetry_off || std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0") {
-        command
-            .env("ACCOUNTS_TELEMETRY", "off")
-            .env("APPS_TELEMETRY", "0")
-            .env("DM_TELEMETRY_ENABLED", "false")
-            .env("BRIEFCASE_TELEMETRY", "0")
-            .env("SPACE_STATION_TELEMETRY", "0");
-    }
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("DISABLE_TELEMETRY", "1")
+        .env("DISABLE_ERROR_REPORTING", "1")
+        .env("SILICON_TELEMETRY", "0")
+        .env("ACCOUNTS_TELEMETRY", "off")
+        .env("APPS_TELEMETRY", "0")
+        .env("DM_TELEMETRY_ENABLED", "false")
+        .env("BRIEFCASE_TELEMETRY", "0")
+        .env("SPACE_STATION_TELEMETRY", "0");
     command
 }
 
@@ -299,7 +290,7 @@ fn tool_setup_failed(home: &Path, message: &str) {
     if let Err(error) = log_line(home, "error", "interpreter", message) {
         stderr_line(&format!(
             "{error:#}; the error it was recording: {}",
-            telemetry::redact(home, message)
+            redaction::redact(home, message)
         ));
     }
 }
@@ -310,18 +301,17 @@ pub fn log_line(home: &Path, kind: &str, origin: &str, message: &str) -> Result<
 
 pub fn log_line_scoped(
     home: &Path,
-    generation: Option<uuid::Uuid>,
+    _generation: Option<uuid::Uuid>,
     kind: &str,
     origin: &str,
     message: &str,
 ) -> Result<()> {
-    let message = telemetry::redact(home, message);
-    let origin = telemetry::redact(home, origin);
+    let message = redaction::redact(home, message);
+    let origin = redaction::redact(home, origin);
     let _guard = LOG_LOCK.lock().recover();
     state::private_dir(&home.join(".silicon"))?;
     // The role rides in the origin field so the entry keeps its four-part shape
-    // and existing log readers keep parsing. Telemetry below still gets the bare
-    // origin, whose exact value routes events.
+    // and existing log readers keep parsing.
     let line = format!(
         "[{kind}] [{origin}/{}] [{}] [{}]\n",
         process_role(),
@@ -346,7 +336,6 @@ pub fn log_line_scoped(
         }
     }
     drop(_guard);
-    telemetry::record_scoped(home, generation, kind, &origin, &message);
     Ok(())
 }
 
@@ -446,4 +435,33 @@ pub(crate) fn migrate_account_state(directory: &Path, native_dirs: &[&str]) -> R
     fs::remove_dir(source).context("finish retained namespace migration")?;
     fs::remove_file(marker).context("finish account-state migration")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_commands_disable_telemetry() {
+        let command = command("tool", Path::new("."));
+        let env = command
+            .get_envs()
+            .collect::<std::collections::HashMap<_, _>>();
+        for (name, value) in [
+            ("DO_NOT_TRACK", "1"),
+            ("DISABLE_TELEMETRY", "1"),
+            ("DISABLE_ERROR_REPORTING", "1"),
+            ("SILICON_TELEMETRY", "0"),
+            ("ACCOUNTS_TELEMETRY", "off"),
+            ("APPS_TELEMETRY", "0"),
+            ("DM_TELEMETRY_ENABLED", "false"),
+            ("BRIEFCASE_TELEMETRY", "0"),
+            ("SPACE_STATION_TELEMETRY", "0"),
+        ] {
+            assert_eq!(
+                env[std::ffi::OsStr::new(name)],
+                Some(std::ffi::OsStr::new(value))
+            );
+        }
+    }
 }

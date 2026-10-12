@@ -82,11 +82,6 @@ enum SiliconCommand {
     Install { app_id: String },
     /// Remove a Silicon Apps-managed app from this home.
     Uninstall { app_id: String },
-    /// Inspect or change persistent interpreter settings. Changes apply while running.
-    Settings {
-        #[command(subcommand)]
-        command: Option<SettingsCommand>,
-    },
     /// Check whether a Silicon is connected without sending it a message.
     Ping { silicon: String },
     /// Read a connected Silicon's configuration with credentials redacted.
@@ -151,19 +146,6 @@ enum LogsCommand {
         /// Print the tail and exit; suitable for scripts.
         #[arg(long)]
         no_follow: bool,
-    },
-}
-#[derive(Subcommand)]
-enum SettingsCommand {
-    /// Read all settings, or telemetry.
-    Get { key: Option<String> },
-    /// Toggle telemetry. Example: settings set telemetry --off.
-    Set {
-        key: String,
-        #[arg(long, conflicts_with = "off", required_unless_present = "off")]
-        on: bool,
-        #[arg(long, conflicts_with = "on", required_unless_present = "on")]
-        off: bool,
     },
 }
 #[derive(Parser)]
@@ -516,30 +498,6 @@ pub fn silicon() -> Result<()> {
         }
         SiliconCommand::Install { app_id } => print_json(&crate::apps::install(&app_id)?)?,
         SiliconCommand::Uninstall { app_id } => print_json(&crate::apps::uninstall(&app_id)?)?,
-        SiliconCommand::Settings { command } => {
-            let value = match command {
-                Some(SettingsCommand::Set { key, on, .. }) => {
-                    // The daemon only serializes this same file write; without one, write it here.
-                    match server::daemon(false) {
-                        Ok(daemon) => {
-                            server::call(&daemon, "settings-set", json!({"key":key,"enabled":on}))?
-                        }
-                        Err(error) => {
-                            if !never_started(&error) {
-                                eprintln!("warning: writing the settings file directly; the interpreter did not answer: {error:#}");
-                            }
-                            json!(crate::settings::set(&key, on)?)
-                        }
-                    }
-                }
-                Some(SettingsCommand::Get { key: Some(key) }) => json!(crate::settings::load()?)
-                    .get(&key)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("unknown setting {key:?}; expected telemetry"))?,
-                _ => json!(crate::settings::load()?),
-            };
-            print_json(&value)?;
-        }
         SiliconCommand::Ping { silicon } => {
             public_action("silicon-ping", &silicon, json!({}), true)?
         }
@@ -550,7 +508,7 @@ pub fn silicon() -> Result<()> {
             print_json(&json!({"version":env!("CARGO_PKG_VERSION"),"protocol":1,
             "source":"https://github.com/teamofsilicons/silicon-stemcell",
             "docs":"https://docs.teamofsilicons.com", "rust_package":"silicon",
-            "dependencies":["silicon-omni","silicon-accounts","ting","silicon-apps","space-station","caddy"],
+            "dependencies":["silicon-omni","silicon-accounts","ting","silicon-apps","caddy"],
             "bugs":"https://github.com/teamofsilicons/silicon-stemcell/issues"}))?
         }
         SiliconCommand::BugReport {

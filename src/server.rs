@@ -110,8 +110,6 @@ const QUICK_ACTIONS: &[&str] = &[
     "shutdown",
     "logout",
     "restart",
-    "settings",
-    "settings-set",
     "silicon-ping",
     "configuration",
     "sessions",
@@ -948,7 +946,7 @@ struct App {
     control_token: Mutex<String>,
     /// The interpreter directory: connections.json, daemon.json, daemon.log.
     dir: PathBuf,
-    /// Serializes connect, disconnect, settings and app changes, and one restore attempt.
+    /// Serializes connect, disconnect and app changes, and one restore attempt.
     mutation: Mutex<()>,
     proxy: Mutex<Option<Box<dyn Router>>>,
     /// Held while a Caddy is started, or stopped after it was taken out of `proxy` (each takes
@@ -980,9 +978,6 @@ fn interactive(app: &App) -> std::sync::MutexGuard<'_, ()> {
     app.waiting.fetch_sub(1, Ordering::SeqCst);
     guard
 }
-
-/// settings.json is read, changed and written whole; two changes at once must not lose one.
-static SETTINGS: Mutex<()> = Mutex::new(());
 
 impl App {
     fn new(
@@ -1886,7 +1881,6 @@ fn close(app: &App) {
 /// neither starts does the error end the process (a supervisor then restarts it).
 fn exec_restart(app: &App, target: Option<PathBuf>) -> anyhow::Error {
     use std::os::unix::process::CommandExt;
-    crate::telemetry::flush();
     let candidates = exec_candidates(target, app.restart.current.clone());
     let args = &app.restart.args;
     let shown = args
@@ -3111,7 +3105,7 @@ fn waiting_reason(app: &App) -> String {
 
 fn configuration(cfg: &Config) -> Result<Value> {
     let mut value = serde_json::to_value(cfg).context("serialize the configuration")?;
-    let secrets = crate::telemetry::silicon_secrets(&value["silicon"]);
+    let secrets = crate::redaction::silicon_secrets(&value["silicon"]);
     if let Some(configs) = value
         .pointer_mut("/silicon/app_configs")
         .and_then(Value::as_object_mut)
@@ -3120,7 +3114,7 @@ fn configuration(cfg: &Config) -> Result<Value> {
             *config = json!("[redacted]");
         }
     }
-    crate::telemetry::redact_value(&mut value, &secrets);
+    crate::redaction::redact_value(&mut value, &secrets);
     Ok(value)
 }
 
@@ -3130,16 +3124,6 @@ fn header<'a>(req: &'a Request, key: &str) -> &'a str {
         .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(key))
         .map(|h| h.value.as_str())
         .unwrap_or("")
-}
-
-/// Whether request bodies go to interpreter telemetry, checked before a body is copied for it.
-// ORCHESTRATOR: replace with a cached `crate::telemetry` predicate when it offers one; this
-// mirrors its policy (SILICON_TELEMETRY=0 and the telemetry setting).
-fn telemetry_wanted() -> bool {
-    if std::env::var("SILICON_TELEMETRY").as_deref() == Ok("0") {
-        return false;
-    }
-    crate::settings::load().is_ok_and(|settings| settings.telemetry)
 }
 
 fn handle(app: Arc<App>, mut request: Request) {
@@ -3274,9 +3258,6 @@ fn handle(app: Arc<App>, mut request: Request) {
             return;
         }
     };
-    if (path == "/control" || path == "/si") && telemetry_wanted() {
-        crate::telemetry::interpreter("daemon", "request", json!({"path":path,"body":body}));
-    }
     let result = if path == "/control" {
         guarded(|| control(&app, &body))
     } else if let Some(caller) = caller {
@@ -3629,17 +3610,6 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             *active = token;
             state::write_json(&app.dir.join("daemon.json"), &daemon)?;
             Ok(json!({"logged_out":true}))
-        }
-        "settings" => Ok(json!(crate::settings::load()?)),
-        "settings-set" => {
-            // Not `mutation`: a settings change must not wait behind a restore or a connect.
-            let _guard = SETTINGS.lock().recover();
-            Ok(json!(crate::settings::set(
-                text(args, "key")?,
-                args["enabled"]
-                    .as_bool()
-                    .ok_or_else(|| anyhow!("enabled must be boolean, got {}", args["enabled"]))?
-            )?))
         }
         "silicon-ping" => {
             let id = text(args, "silicon")?;
@@ -4021,7 +3991,7 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             updated.generation = cfg.generation;
             let mut redactions = cfg.clone();
             redactions.silicon.app_configs = updated.silicon.app_configs.clone();
-            crate::telemetry::register(&redactions);
+            crate::redaction::register(&redactions);
             *connected.app_settings.write().recover() = updated.clone();
             crate::apps::refresh_dna(&updated)?;
             if install {

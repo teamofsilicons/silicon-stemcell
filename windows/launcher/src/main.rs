@@ -18,7 +18,6 @@ const COMMANDS: &[&str] = &[
     "caddy",
     "silicon-accounts",
     "silicon-apps",
-    "spacestation",
     "dm",
     "briefcase",
     "waveform",

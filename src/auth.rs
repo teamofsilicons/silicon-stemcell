@@ -5,6 +5,7 @@ use crate::Recover;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
@@ -451,6 +452,7 @@ struct App {
     argv: Vec<String>,
     reference: String,
     expected_id: Option<String>,
+    ting: Cell<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -527,6 +529,7 @@ impl App {
             argv,
             reference,
             expected_id: None,
+            ting: Cell::new(false),
         })
     }
 
@@ -535,6 +538,7 @@ impl App {
         let mut app = Self::new(home, &shell_words::quote(&path.to_string_lossy()))?;
         app.reference = id.to_owned();
         app.expected_id = Some(id.to_owned());
+        app.ting.set(id == "ting");
         Ok(app)
     }
 
@@ -590,6 +594,9 @@ impl App {
     }
 
     fn execute(&self, args: &[&str], secrets: &[&str], limit: Limit) -> Result<Output> {
+        if self.ting.get() {
+            disable_ting_reporting(&self.home)?;
+        }
         // Configured commands are argv, never shell programs.
         let mut command = crate::command(&self.argv[0], &self.home);
         command.args(&self.argv[1..]).args(args);
@@ -640,6 +647,7 @@ impl App {
                 &[],
             ));
         }
+        self.ting.set(app_id == "ting");
         Ok(app_id.to_owned())
     }
 
@@ -712,6 +720,49 @@ impl App {
         };
         Err(self.answered(args, &problem, &output, secrets))
     }
+}
+
+/// Older Ting releases read this preference for CLI events and every daemon delivery.
+pub(crate) fn disable_ting_reporting(home: &Path) -> Result<()> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let directory = home.join(".ting");
+    let path = directory.join("settings.json");
+    let read_settings = || -> Result<serde_json::Map<String, Value>> {
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| {
+                format!(
+                    "read Ting settings {} before disabling reporting",
+                    path.display()
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(error) => {
+                Err(error).with_context(|| format!("read Ting settings {}", path.display()))
+            }
+        }
+    };
+    if read_settings()?.get("telemetry") == Some(&Value::Bool(false)) {
+        return Ok(());
+    }
+    crate::state::private_dir(&directory)?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(directory.join("profile.lock"))
+        .context("open Ting profile lock before disabling reporting")?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("Ting profile is busy; could not disable reporting before running Ting");
+    }
+    let mut settings = read_settings()?;
+    if settings.get("telemetry") == Some(&Value::Bool(false)) {
+        return Ok(());
+    }
+    settings.insert("telemetry".into(), Value::Bool(false));
+    crate::state::write_json(&path, &settings).context("disable Ting reporting before running Ting")
 }
 
 /// `program` and `args` as failures name them. Arguments are masked before quoting,
@@ -1356,7 +1407,18 @@ pub fn configure_all(home: &Path, configs: &BTreeMap<String, Value>, generation:
 /// Config values are app secrets: a failure shows the app's full answer with the config
 /// JSON masked; its individual strings are masked as this home's registered secrets.
 fn configure_app(home: &Path, id: &str, config: &Value) -> Result<()> {
-    let value = serde_json::to_string(config)?;
+    let mut config = config.clone();
+    if id == "ting" {
+        disable_ting_reporting(home)?;
+        if let Some(fields) = config.as_object_mut() {
+            fields.remove("telemetry");
+            fields.remove("telemetry.enabled");
+            if fields.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+    let value = serde_json::to_string(&config)?;
     let app = App::resolve(home, id)?;
     let args = ["config", "set", value.as_str()];
     let output = app.run_secret(&args, &[&value])?;
@@ -1364,4 +1426,59 @@ fn configure_app(home: &Path, id: &str, config: &Value) -> Result<()> {
         return Err(app.failed(&args, &output, &[&value]));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod reporting_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_ting_reporting_is_forced_off_and_other_settings_survive() {
+        let home =
+            std::env::temp_dir().join(format!("silicon-ting-reporting-{}", uuid::Uuid::new_v4()));
+        let path = home.join(".ting/settings.json");
+        disable_ting_reporting(&home).unwrap();
+        let initial: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(initial["telemetry"], false);
+        crate::state::write_json(
+            &path,
+            &serde_json::json!({"telemetry":true,"future":{"value":42}}),
+        )
+        .unwrap();
+        disable_ting_reporting(&home).unwrap();
+        let settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            settings,
+            serde_json::json!({"telemetry":false,"future":{"value":42}})
+        );
+        use std::os::fd::AsRawFd;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(home.join(".ting/profile.lock"))
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        disable_ting_reporting(&home).unwrap();
+        crate::state::write_json(&path, &serde_json::json!({"telemetry":true})).unwrap();
+        assert!(disable_ting_reporting(&home).is_err());
+        let settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(settings["telemetry"], true);
+        drop(lock);
+        crate::state::write_json(&path, &serde_json::json!({"telemetry":false})).unwrap();
+        configure_app(
+            &home,
+            "ting",
+            &serde_json::json!({"telemetry.enabled": true, "telemetry": {"enabled":true}}),
+        )
+        .unwrap();
+        let settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(settings["telemetry"], false);
+        fs::write(&path, "invalid JSON").unwrap();
+        assert!(disable_ting_reporting(&home).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "invalid JSON");
+        fs::remove_dir_all(&home).unwrap();
+    }
 }

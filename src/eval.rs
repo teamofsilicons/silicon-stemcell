@@ -26,7 +26,7 @@ fn shown(source: &str, secret: bool) -> &str {
 
 /// CEL and parser text quotes source tokens (`extraneous input ''sk-live-…''`). In a
 /// credential expression those may be the credential, so its words of 8+ characters
-/// (the same floor telemetry uses for secrets) are masked; the message itself stays.
+/// (the same floor local logs use for secrets) are masked; the message itself stays.
 fn scrub(text: &str, source: &str, secret: bool) -> String {
     if !secret {
         return text.to_owned();
@@ -511,8 +511,8 @@ impl Mode {
 }
 
 fn redact(message: &str, env: &Json) -> String {
-    let secrets = crate::telemetry::silicon_secrets(&env["silicon"]);
-    crate::telemetry::redact_text(message, &secrets)
+    let secrets = crate::redaction::silicon_secrets(&env["silicon"]);
+    crate::redaction::redact_text(message, &secrets)
 }
 
 /// A failed write still carries the entry, so an evaluation error is never swapped for an I/O one.
@@ -626,6 +626,7 @@ fn candidate(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Re
                 &["-c", &failure::mask(home, &redact(command, env), &[])],
             )
         };
+        crate::auth::disable_ting_reporting(home)?;
         let mut bash = crate::command("bash", home);
         bash.arg("-c").arg(command).env("ISI", isi);
         let output =
@@ -872,5 +873,26 @@ fn validate_value(value: &Yaml, mode: Mode) -> Result<()> {
         }),
         Yaml::Tagged(tag) => validate_value(&tag.value, mode),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod reporting_tests {
+    use super::*;
+
+    #[test]
+    fn bash_disables_legacy_ting_reporting_before_running() {
+        let home = std::env::temp_dir().join(format!("silicon-bash-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&home).unwrap();
+        let output = evaluate(
+            "! cat .ting/settings.json",
+            &serde_json::json!({}),
+            &home,
+            "test",
+        )
+        .unwrap();
+        let settings: Json = serde_json::from_str(&output).unwrap();
+        assert_eq!(settings["telemetry"], false);
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

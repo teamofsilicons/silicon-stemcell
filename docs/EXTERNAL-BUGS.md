@@ -1,6 +1,6 @@
 # External dependency issues
 
-The current integration uses Silicon Accounts, Silicon Apps, Ting, Omni, Caddy, and Space Station. Diagnose service failures from the complete CLI response and current [developer documentation](https://developers.teamofsilicons.com/).
+The current integration uses Silicon Accounts, Silicon Apps, Ting, Omni, and Caddy. Diagnose service failures from the complete CLI response and current [developer documentation](https://developers.teamofsilicons.com/).
 
 Earlier service and publication limitations are recorded in Git history. They describe retired contracts and are not instructions for the current account model.
 

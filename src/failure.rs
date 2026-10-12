@@ -80,23 +80,23 @@ pub(crate) fn spawn(home: &Path, command: &str, error: &std::io::Error) -> anyho
 /// Mask literal credential values, recognized token prefixes, and the values of
 /// credential-named JSON fields. Everything else in `text` is kept exactly.
 pub(crate) fn mask(home: &Path, text: &str, secrets: &[&str]) -> String {
-    mask_with(crate::telemetry::known_secrets(home), text, secrets)
+    mask_with(crate::redaction::known_secrets(home), text, secrets)
 }
 
 /// [`mask`] against every Silicon registered in this process, for text no single home
 /// owns, such as the interpreter's HTTP error answers.
 pub(crate) fn mask_all(text: &str) -> String {
-    mask_with(crate::telemetry::all_secrets(), text, &[])
+    mask_with(crate::redaction::all_secrets(), text, &[])
 }
 
 fn mask_with(known: Vec<String>, text: &str, secrets: &[&str]) -> String {
     static FIELDS: OnceLock<Regex> = OnceLock::new();
-    // Registered values under telemetry's floor are settings ("en", "true"), and masking
+    // Registered values under the redaction floor are settings ("en", "true"), and masking
     // every occurrence would garble the errors people must read. `secrets` handed to
     // this call are credentials by definition, so they are masked whatever their length.
     let mut values: Vec<String> = known
         .into_iter()
-        .filter(|secret| secret.len() >= crate::telemetry::MIN_SECRET_LEN)
+        .filter(|secret| secret.len() >= crate::redaction::MIN_SECRET_LEN)
         .chain(
             secrets
                 .iter()
@@ -125,7 +125,7 @@ fn mask_with(known: Vec<String>, text: &str, secrets: &[&str]) -> String {
     for secret in values.iter().filter(|secret| !secret.is_empty()) {
         text = text.replace(secret.as_str(), "[redacted]");
     }
-    let text = crate::telemetry::redact_text(&text, &[]);
+    let text = crate::redaction::redact_text(&text, &[]);
     FIELDS
         .get_or_init(|| {
             Regex::new(

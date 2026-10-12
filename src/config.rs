@@ -27,7 +27,6 @@ pub struct Silicon {
     pub apps: Vec<String>,
     #[serde(default)]
     pub app_configs: BTreeMap<String, Json>,
-    pub space_station: Option<SpaceStation>,
     #[serde(default)]
     pub login: Vec<String>,
     #[serde(default = "default_max_retries")]
@@ -36,13 +35,6 @@ pub struct Silicon {
 
 fn default_max_retries() -> usize {
     10
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SpaceStation {
-    pub table_name: String,
-    pub table_key: String,
 }
 
 impl Silicon {
@@ -232,22 +224,6 @@ impl Config {
             &document["silicon"]["inference_providers"],
             "silicon.inference_providers",
         )?;
-        if document["silicon"]["space_station"].is_mapping() {
-            for key in ["table_name", "table_key"] {
-                evaluate_field(
-                    &mut document["silicon"]["space_station"],
-                    "silicon.space_station",
-                    key,
-                    &env,
-                    &home,
-                    "interpreter",
-                )?;
-            }
-            env["silicon"]["space_station"] = to_json(
-                &document["silicon"]["space_station"],
-                "silicon.space_station",
-            )?;
-        }
         for key in ["apps", "login"] {
             if let Some(commands) = document["silicon"][key].as_sequence_mut() {
                 for (index, command) in commands.iter_mut().enumerate() {
@@ -334,7 +310,7 @@ impl Config {
             Ok(config)
         })();
         // Evaluated credentials can surface in schema or validation text: mask only those values.
-        result.map_err(|error| masked(error, &crate::telemetry::silicon_secrets(&env["silicon"])))
+        result.map_err(|error| masked(error, &crate::redaction::silicon_secrets(&env["silicon"])))
     }
 
     fn validate(&mut self) -> Result<()> {
@@ -367,17 +343,6 @@ impl Config {
         for (index, source) in self.silicon.setup.iter().enumerate() {
             if source.trim().trim_start_matches('!').trim().is_empty() || source.contains('\0') {
                 bail!("silicon.setup[{index}] must be a nonempty shell command without NUL bytes, found {source:?}");
-            }
-        }
-        if let Some(station) = &self.silicon.space_station {
-            for (name, value) in [
-                ("table_name", &station.table_name),
-                ("table_key", &station.table_key),
-            ] {
-                required(
-                    &Some(value.clone()),
-                    &format!("silicon.space_station.{name}"),
-                )?;
             }
         }
         for (index, command) in self.silicon.login.iter().enumerate() {
@@ -628,7 +593,7 @@ fn resolve_functions(
 fn masked(error: anyhow::Error, secrets: &[String]) -> anyhow::Error {
     let mut causes: Vec<_> = error
         .chain()
-        .map(|cause| crate::telemetry::redact_text(&cause.to_string(), secrets))
+        .map(|cause| crate::redaction::redact_text(&cause.to_string(), secrets))
         .collect();
     let mut rebuilt = anyhow!(causes.pop().unwrap_or_default());
     while let Some(outer) = causes.pop() {
@@ -667,35 +632,13 @@ fn validate_expressions(document: &Yaml) -> Result<()> {
                     "setup",
                     "apps",
                     "app_configs",
-                    "space_station",
                     "login",
                     "max_retries",
                 ],
             )?;
-            if !value["space_station"].is_null() {
-                // A bare value here is most likely the table key itself: name its type only.
-                if !value["space_station"].is_mapping() {
-                    bail!(
-                        "silicon.space_station must be a mapping, found {}; expected table_name and table_key",
-                        kind(&value["space_station"])
-                    );
-                }
-                fields(
-                    &value["space_station"],
-                    "silicon.space_station",
-                    &["table_name", "table_key"],
-                )?;
-            }
             let mut silicon = value.clone();
             if let Some(token) = silicon.as_mapping_mut().and_then(|map| map.remove("token")) {
                 crate::eval::validate_secret(&token).context("silicon.token")?;
-            }
-            if let Some(table_key) = silicon["space_station"]
-                .as_mapping_mut()
-                .and_then(|map| map.remove("table_key"))
-            {
-                crate::eval::validate_secret(&table_key)
-                    .context("silicon.space_station.table_key")?;
             }
             if let Some(configs) = silicon
                 .as_mapping_mut()
@@ -1398,13 +1341,19 @@ fn parse_document(source: &str, warnings: &mut Vec<String>) -> Result<Yaml> {
         if result.contains_key(Yaml::String(key.clone())) {
             bail!("duplicate top-level key {key}");
         }
-        let value = if key == "flow" {
+        let mut value = if key == "flow" {
             steps(node, "flow", warnings)?
         } else if key == "functions" {
             function_definitions(node, "functions", warnings)?
         } else {
             ordinary(node, &key)?
         };
+        if key == "silicon" {
+            if let Some(silicon) = value.as_mapping_mut() {
+                // Ignore legacy telemetry credentials before validating or evaluating expressions.
+                silicon.remove("space_station");
+            }
+        }
         result.insert(Yaml::String(key), value);
     }
     for key in ["silicon", "isi", "access", "flow"] {
@@ -1862,4 +1811,47 @@ fn strip_comment(source: &str) -> &str {
         }
     }
     source
+}
+
+#[cfg(test)]
+mod retired_reporting_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_space_station_expressions_are_ignored() {
+        let home = std::env::temp_dir().join(format!("silicon-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&home).unwrap();
+        let path = home.join("silicon.yaml");
+        fs::write(
+            &path,
+            r#"silicon:
+  id: si:example
+  token: test-token
+  timezone: UTC
+  SILICON_HOME: .
+  inference_providers: [all-available-providers]
+  space_station:
+    table_name: '{invalid expression'
+    table_key: '! touch reporting-was-run'
+isi:
+  main:
+    model: fast
+    primary_send_mode: global
+    session_type: persistent
+    dna:
+      assemble: []
+      next_refresh: 30min
+access:
+  main: []
+flow: []
+"#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(serde_json::to_value(config).unwrap()["silicon"]
+            .get("space_station")
+            .is_none());
+        assert!(!home.join("reporting-was-run").exists());
+        fs::remove_dir_all(home).unwrap();
+    }
 }

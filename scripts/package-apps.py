@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package a complete Silicon bundle for the Silicon Apps registry."""
 import argparse
+import os
 import shutil
 import subprocess
 import tempfile
@@ -83,5 +84,6 @@ ln -s "$root/bin/si" "$link.new.$$"
 mv -f "$link.new.$$" "$link"
 ''')
     (package / 'install-app.sh').chmod(0o755)
-    subprocess.run([args.apps, 'validate', str(package)], check=True)
-    subprocess.run([args.apps, 'pack', str(package), '--output', str(args.output.resolve())], check=True)
+    env = dict(os.environ, APPS_TELEMETRY='0', ACCOUNTS_TELEMETRY='off', DO_NOT_TRACK='1')
+    subprocess.run([args.apps, 'validate', str(package)], check=True, env=env)
+    subprocess.run([args.apps, 'pack', str(package), '--output', str(args.output.resolve())], check=True, env=env)
