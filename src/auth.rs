@@ -1457,10 +1457,7 @@ mod reporting_tests {
             .write(true)
             .open(home.join(".ting/profile.lock"))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
         disable_ting_reporting(&home).unwrap();
         crate::state::write_json(&path, &serde_json::json!({"telemetry":true})).unwrap();
         assert!(disable_ting_reporting(&home).is_err());
