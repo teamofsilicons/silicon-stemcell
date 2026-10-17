@@ -227,11 +227,12 @@ pub fn prepare_environment() -> Vec<String> {
         .map(|(_, value)| value.clone())
         .or_else(|| std::env::var("SHELL").ok());
     let login = match shell.as_deref() {
-        Some(shell) if Path::new(shell).is_absolute() => match login_path(Path::new(shell)) {
+        Some(shell) if Path::new(shell).is_absolute() => match login_path(&dir, Path::new(shell)) {
             Ok(path) => Some(path),
             Err(error) => {
                 warnings.push(format!(
-                    "the login shell's PATH is not added to the interpreter's: {error:#}"
+                    "{}\nThe login shell's PATH is not added to the interpreter's",
+                    failure::report(&error)
                 ));
                 None
             }
@@ -244,7 +245,7 @@ pub fn prepare_environment() -> Vec<String> {
     }
     // The bundle's own tools go first again, as at every start.
     if let Err(error) = crate::init_bundle_path() {
-        warnings.push(format!("{error:#}"));
+        warnings.push(failure::report(&error));
     }
     warnings
 }
@@ -504,7 +505,7 @@ impl<'a> Host<'a> {
             hash: hash(&dir),
             dir,
             home,
-            prefix: crate::update::managed_prefix().map_err(|error| format!("{error:#}")),
+            prefix: crate::update::managed_prefix().map_err(|error| failure::report(&error)),
             uid,
             user,
             xdg_config_home,
@@ -637,11 +638,21 @@ impl<'a> Host<'a> {
                     Ok(output) => (
                         "run",
                         Some(format!(
-                            "no systemd user manager answers: {:#}",
-                            self.failed("systemctl", &["--user", "show-environment"], &output)
+                            "{}\nNo systemd user manager answers",
+                            failure::report(&self.failed(
+                                "systemctl",
+                                &["--user", "show-environment"],
+                                &output
+                            ))
                         )),
                     ),
-                    Err(error) => ("run", Some(format!("no systemd user manager: {error:#}"))),
+                    Err(error) => (
+                        "run",
+                        Some(format!(
+                            "{}\nNo systemd user manager is available",
+                            failure::report(&error)
+                        )),
+                    ),
                 }
             }
         })
@@ -868,10 +879,8 @@ fn changing(dir: &Path) -> Result<File> {
     Ok(file)
 }
 
-fn unmanaged(why: &str) -> String {
-    format!(
-        "autostart needs a managed installation (install.sh puts one in ~/.local/share/silicon), so a development build never becomes a service: {why}. To supervise this build yourself, run `silicon serve` under your own process manager with SILICON_SERVICE=external set; a clean stop exits 0 and anything else exits non-zero"
-    )
+fn unmanaged() -> &'static str {
+    "autostart needs a managed installation (install.sh puts one in ~/.local/share/silicon), so a development build never becomes a service. To supervise this build yourself, run `silicon serve` under your own process manager with SILICON_SERVICE=external set; a clean stop exits 0 and anything else exits non-zero"
 }
 
 fn install(host: &Host) -> Result<Report> {
@@ -899,14 +908,12 @@ fn install_serialized(host: &Host) -> Result<Report> {
     let prefix = host
         .prefix
         .clone()
-        .map_err(|why| anyhow!(unmanaged(&why)))?;
+        .map_err(|why| failure::received(why).context(unmanaged()))?;
     let previous = load(&host.dir)?;
     let (mechanism, why) = host.choose()?;
     let mut notes = Vec::new();
     if let Some(why) = why {
-        notes.push(format!(
-            "using cron and the Silicon supervisor because there is {why}"
-        ));
+        notes.push(format!("{why}\nUsing cron and the Silicon supervisor"));
     }
     if let Some(previous) = previous
         .as_ref()
@@ -918,7 +925,7 @@ fn install_serialized(host: &Host) -> Result<Report> {
             record_path(&host.dir).display()
         ));
         if let Err(error) = remove(host, previous, &mut notes) {
-            notes.push(format!("{error:#}"));
+            notes.push(failure::report(&error));
         }
     }
     clear_stopped_in(&host.dir)?;
@@ -995,7 +1002,7 @@ fn install_launchd(host: &Host, prefix: &Path, notes: &mut Vec<String>) -> Resul
         let on = ["enable", target.as_str()];
         let enable = host.launchctl(&on, TOOL_LIMIT)?;
         if !enable.status.success() {
-            notes.push(format!("{:#}", host.failed("launchctl", &on, &enable)));
+            notes.push(failure::report(&host.failed("launchctl", &on, &enable)));
         }
         notes.push(unsupervised_note(
             host,
@@ -1110,7 +1117,8 @@ fn bootstrap(
     }
     if launchd_no_gui(&output) {
         notes.push(format!(
-            "there is no GUI login for {} right now (for example over SSH), so launchd loads {} at the next login; until then `silicon connect` starts the interpreter without a supervisor. A Mac that must run with nobody logged in needs automatic login. {error:#}",
+            "{}\nThere is no GUI login for {} right now (for example over SSH), so launchd loads {} at the next login; until then `silicon connect` starts the interpreter without a supervisor. A Mac that must run with nobody logged in needs automatic login.",
+            failure::report(&error),
             host.user,
             plist.display()
         ));
@@ -1169,7 +1177,7 @@ fn install_systemd(
                 unit.display()
             ),
             Err(error) => format!(
-                "the unit an earlier release wrote under XDG_CONFIG_HOME stays behind: {error:#}"
+                "{}\nThe unit an earlier release wrote under XDG_CONFIG_HOME stays behind", failure::report(&error)
             ),
         });
     }
@@ -1250,7 +1258,8 @@ fn ensure_linger(host: &Host, notes: &mut Vec<String>) -> (bool, bool) {
         Ok(_) => refusal,
     };
     notes.push(format!(
-        "without linger the interpreter runs only while {user} is logged in; to start it at boot, run `sudo loginctl enable-linger {user}`. {refusal:#}",
+        "{}\nWithout linger the interpreter runs only while {user} is logged in; to start it at boot, run `sudo loginctl enable-linger {user}`.",
+        failure::report(&refusal),
         user = host.user
     ));
     (false, false)
@@ -1590,7 +1599,7 @@ fn windows_report(host: &Host, summary: String, record: Option<&Record>) -> Repo
     let note = match &label {
         Some(label) => match host.task_state(label) {
             Ok(state) => format!("the logon task {label} is {state}"),
-            Err(error) => format!("could not read the state of the logon task {label}: {error:#}"),
+            Err(error) => format!("{}\nCould not read the state of the logon task {label}", failure::report(&error)),
         },
         None => format!(
             "{} has no record from the Windows installer, so this distribution does not know its logon task; rerun install.ps1 on Windows",
@@ -1646,7 +1655,7 @@ fn start(host: &Host, record: &Record) -> Result<()> {
 fn start_launchd(host: &Host, record: &Record) -> Result<()> {
     let plist = record.definition.clone().unwrap_or_else(|| host.plist());
     if let Err(error) = refresh(host, record) {
-        crate::stderr_line(&format!("{error:#}"));
+        crate::stderr_line(&failure::report(&error));
     }
     let target = format!("gui/{}/{}", host.uid, record.label);
     let args = ["kickstart", target.as_str()];
@@ -1729,7 +1738,8 @@ fn refresh(host: &Host, record: &Record) -> Result<Refreshed> {
     if other_file && written_by_silicon(&old) {
         if let Err(error) = remove_unit(&old) {
             crate::stderr_line(&format!(
-                "warning: the unit an earlier release wrote stays behind: {error:#}"
+                "{}\nWarning: the unit an earlier release wrote stays behind",
+                failure::report(&error)
             ));
         }
     }
@@ -1828,7 +1838,7 @@ fn restart(host: &Host, stop: &dyn Fn(&Path) -> Result<bool>) -> Result<Report> 
                     .into_iter()
                     .fold(error, |error, earlier| failure::also(error, Err(earlier))));
             }
-            notes.extend(problems.iter().map(|error| format!("{error:#}")));
+            notes.extend(problems.iter().map(failure::report));
             if stopped {
                 format!("stopped the interpreter and started the logon task {label} again")
             } else {
@@ -1892,7 +1902,7 @@ fn status(host: &Host) -> Result<Status> {
         interpreter: match held(&host.dir.join("daemon.lock")) {
             Ok(true) => "running".into(),
             Ok(false) => "not running".into(),
-            Err(error) => format!("unknown: {error:#}"),
+            Err(error) => format!("{}\nInterpreter state is unknown", failure::report(&error)),
         },
         stopped: stop_marker(host),
         logs: vec![host.log(), host.dir.join("daemon.log")],
@@ -1938,12 +1948,12 @@ fn status(host: &Host) -> Result<Status> {
                     status.details.insert("loaded".into(), "no".into());
                     let error = host.failed("launchctl", &args, &output);
                     status.notes.push(if launchd_no_gui(&output) {
-                        format!("no GUI login right now, so launchd loads the agent at the next login: {error:#}")
+                        format!("{}\nNo GUI login right now, so launchd loads the agent at the next login", failure::report(&error))
                     } else {
-                        format!("launchd has not loaded the agent; `silicon connect` or `silicon service restart` loads it: {error:#}")
+                        format!("{}\nLaunchd has not loaded the agent; `silicon connect` or `silicon service restart` loads it", failure::report(&error))
                     });
                 }
-                Err(error) => status.notes.push(format!("{error:#}")),
+                Err(error) => status.notes.push(failure::report(&error)),
             }
             status.notes.extend(privacy_warnings(&host.home, &host.dir));
             status.notes.push("launchd starts the agent when you log in: a Mac restarted with nobody logging in (or with FileVault still locked) runs no Silicon until then".into());
@@ -1959,7 +1969,7 @@ fn status(host: &Host) -> Result<Status> {
                 Ok(output) => status
                     .details
                     .extend(key_values(&String::from_utf8_lossy(&output.stdout))),
-                Err(error) => status.notes.push(format!("{error:#}")),
+                Err(error) => status.notes.push(failure::report(&error)),
             }
             match linger(host) {
                 Ok(Some(true)) => {
@@ -1975,7 +1985,7 @@ fn status(host: &Host) -> Result<Status> {
                         user = host.user
                     ));
                 }
-                Err(error) => status.notes.push(format!("{error:#}")),
+                Err(error) => status.notes.push(failure::report(&error)),
             }
         }
         "run" => {
@@ -1990,7 +2000,7 @@ fn status(host: &Host) -> Result<Status> {
                         .details
                         .insert("supervisor".into(), "not running".into());
                 }
-                Err(error) => status.notes.push(format!("{error:#}")),
+                Err(error) => status.notes.push(failure::report(&error)),
             }
             match crontab_read(host) {
                 Ok(text) => {
@@ -2005,14 +2015,14 @@ fn status(host: &Host) -> Result<Status> {
                         status.notes.push(format!("the crontab has no line tagged `{}`, so nothing starts the interpreter at boot; `silicon service install` adds them", host.tag()));
                     }
                 }
-                Err(error) => status.notes.push(format!("{error:#}")),
+                Err(error) => status.notes.push(failure::report(&error)),
             }
         }
         "windows-task" => match host.task_state(&record.label) {
             Ok(state) => {
                 status.details.insert("task state".into(), state);
             }
-            Err(error) => status.notes.push(format!("{error:#}")),
+            Err(error) => status.notes.push(failure::report(&error)),
         },
         _ => {}
     }
@@ -2782,7 +2792,7 @@ fn note(log: &Path, text: &str) {
 
 fn rotate_log(log: &Path) {
     if let Err(error) = crate::rotate(log, SERVICE_LOG_CAP, SERVICE_LOG_KEEP) {
-        crate::stderr_line(&format!("{error:#}"));
+        crate::stderr_line(&failure::report(&error));
     }
 }
 
@@ -3408,7 +3418,7 @@ fn plan_environment(
 
 /// The PATH `shell -l` builds (Homebrew, nvm, ~/.local/bin, ...). Profiles may print
 /// banners, so the answer is the last line carrying the marker.
-fn login_path(shell: &Path) -> Result<String> {
+fn login_path(dir: &Path, shell: &Path) -> Result<String> {
     const MARKER: &str = "SILICON_LOGIN_PATH=";
     let script = format!("printf '\\n{MARKER}%s\\n' \"$PATH\"");
     let args = ["-l", "-c", script.as_str()];
@@ -3416,7 +3426,7 @@ fn login_path(shell: &Path) -> Result<String> {
     let mut command = Command::new(shell);
     command.args(args);
     let output = crate::process::output_within(&mut command, LOGIN_SHELL_LIMIT)
-        .map_err(|error| anyhow!("could not run `{shown}`: {error}"))?;
+        .map_err(|error| failure::spawn(dir, &shown, &error))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     match stdout
         .lines()
@@ -3424,6 +3434,6 @@ fn login_path(shell: &Path) -> Result<String> {
         .find_map(|line| line.strip_prefix(MARKER))
     {
         Some(path) if output.status.success() => Ok(path.to_owned()),
-        _ => Err(anyhow!("`{shown}` failed: {}", failure::describe(&output))),
+        _ => Err(failure::command(dir, &shown, &output, &[])),
     }
 }

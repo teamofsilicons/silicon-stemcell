@@ -311,7 +311,7 @@ pub fn daemon(start: bool) -> Result<Daemon> {
     if start {
         // Starting it is asking for it: a `silicon stop` earlier this boot no longer holds.
         if let Err(error) = crate::service::clear_stopped() {
-            crate::stderr_line(&format!("warning: {error:#}"));
+            crate::stderr_line(&failure::report(&error));
         }
     }
     daemon_in(&dir, start, LOCK_PATIENCE, start_serve)
@@ -342,7 +342,8 @@ fn start_serve(dir: &Path) -> Result<Started> {
                     }
                 }
                 Err(error) => crate::stderr_line(&format!(
-                    "warning: service.env was not refreshed from this terminal: {error:#}"
+                    "{}\nVia: warning: service.env was not refreshed from this terminal",
+                    failure::report(&error)
                 )),
             }
             match service.start() {
@@ -353,14 +354,16 @@ fn start_serve(dir: &Path) -> Result<Started> {
                     })
                 }
                 Err(error) => crate::stderr_line(&format!(
-                    "warning: the {} service could not start the interpreter, so it starts without a supervisor: {error:#}",
+                    "{}\nVia: warning: the {} service could not start the interpreter, so it starts without a supervisor",
+                    failure::report(&error),
                     service.mechanism()
                 )),
             }
         }
         Ok(None) => {}
         Err(error) => crate::stderr_line(&format!(
-            "warning: could not read the service record, so the interpreter starts without a supervisor: {error:#}"
+            "{}\nVia: warning: could not read the service record, so the interpreter starts without a supervisor",
+            failure::report(&error)
         )),
     }
     let (child, start) = spawn_serve(dir)?;
@@ -418,11 +421,11 @@ fn await_supervised(dir: &Path, by: &str, from: u64, patience: Duration) -> Resu
             Err(error) => error,
         };
         if Instant::now() >= deadline {
-            bail!(
-                "the {by} service was asked to start the interpreter, but it did not answer within {}s (see `silicon service status`)\n{}\nlast ping: {last:#}",
+            return Err(last.context(format!(
+                "the {by} service was asked to start the interpreter, but it did not answer within {}s (see `silicon service status`)\n{}",
                 patience.as_secs(),
                 startup_output(dir, from)
-            );
+            )));
         }
         thread::sleep(Duration::from_millis(250));
     }
@@ -508,18 +511,18 @@ fn await_start(
             .try_wait()
             .context("check on the starting interpreter")?
         {
-            bail!(
-                "interpreter exited before answering: {status}\n{}\nlast ping: {last:#}",
+            return Err(last.context(format!(
+                "interpreter exited before answering: {status}\n{}",
                 startup_output(dir, start)
-            );
+            )));
         }
         if Instant::now() >= deadline {
-            bail!(
-                "interpreter (pid {}) did not answer within {}s\n{}\nlast ping: {last:#}",
+            return Err(last.context(format!(
+                "interpreter (pid {}) did not answer within {}s\n{}",
                 child.id(),
                 patience.as_secs(),
                 startup_output(dir, start)
-            );
+            )));
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -538,13 +541,13 @@ fn await_holder(dir: &Path, patience: Duration, mut last: anyhow::Error) -> Resu
             return Ok(None);
         }
         if Instant::now() >= deadline {
-            bail!(
-                "the interpreter{} holds {} but did not answer within {}s\n{}\nlast ping: {last:#}",
+            return Err(last.context(format!(
+                "the interpreter{} holds {} but did not answer within {}s\n{}",
                 pid_suffix(holder(dir)),
                 lock.display(),
                 patience.as_secs(),
                 startup_output(dir, from)
-            );
+            )));
         }
         thread::sleep(Duration::from_millis(250));
         match running(dir) {
@@ -564,7 +567,7 @@ fn startup_output(dir: &Path, start: u64) -> String {
             &format!("{}:\n{}", path.display(), text.trim_end()),
             &[],
         ),
-        Err(error) => format!("could not read {}: {error:#}", path.display()),
+        Err(error) => failure::report(&error.context(format!("could not read {}", path.display()))),
     }
 }
 
@@ -695,8 +698,9 @@ fn record_holder(file: &File) {
         .write_all_at(line.as_bytes(), 0)
         .and_then(|()| file.set_len(line.len() as u64));
     if let Err(error) = written {
-        crate::stderr_line(&format!(
-            "could not record this interpreter's pid in daemon.lock: {error}"
+        crate::stderr_line(&failure::report(
+            &anyhow::Error::new(error)
+                .context("could not record this interpreter's pid in daemon.lock"),
         ));
     }
 }
@@ -746,16 +750,17 @@ fn stop_in(
     let mut asked = Instant::now();
     while held(&lock)? {
         if Instant::now() >= deadline {
-            bail!(
-                "the interpreter{} still holds {} {}s after it was asked to stop{}\n{}\nrun `silicon stop --force` to terminate it",
+            let message = format!(
+                "the interpreter{} still holds {} {}s after it was asked to stop\n{}\nrun `silicon stop --force` to terminate it",
                 pid_suffix(pid),
                 lock.display(),
                 patience.as_secs(),
-                refused
-                    .map(|error| format!(" (the request failed: {error:#})"))
-                    .unwrap_or_default(),
                 startup_output(dir, from)
             );
+            return Err(match refused {
+                Some(error) => error.context(message),
+                None => anyhow!(message),
+            });
         }
         // One that was still starting may answer now.
         if refused.is_some() && asked.elapsed() >= Duration::from_secs(2) {
@@ -919,9 +924,9 @@ fn request(url: &str, token: &str, action: &str, args: Value) -> Result<Value> {
         )
     })?;
     if status.as_u16() >= 400 {
-        // The daemon's `error` is already its full cause chain; anything else is shown whole.
+        // Keep the daemon's complete report intact when the CLI renders this received error.
         match value.get("error").and_then(Value::as_str) {
-            Some(error) => bail!("{error}"),
+            Some(error) => return Err(failure::received(error.to_owned())),
             None => bail!(
                 "interpreter answered `{action}` at {url} with HTTP {status} and no error message:\n{body}"
             ),
@@ -1525,14 +1530,17 @@ fn serve_locked(
             crate::stderr_line(&format!("raised the open-file limit from {from} to {to}"))
         }
         Ok(None) => {}
-        Err(error) => crate::stderr_line(&format!("{error:#}; continuing with the current limit")),
+        Err(error) => crate::stderr_line(&format!(
+            "{}\nVia: continuing with the current limit",
+            failure::report(&error)
+        )),
     }
     let log = dir.join("daemon.log");
     // A serve in a terminal writes there; only a daemon.log it writes to is its to rotate.
     let owns_log = supervised || same_file(2, &log);
     if owns_log {
         if let Err(error) = keep_log(&log, crate::LOG_CAP) {
-            crate::stderr_line(&format!("{error:#}"));
+            crate::stderr_line(&failure::report(&error));
         }
     }
     let (server, selected) = bind(port)?;
@@ -1632,7 +1640,7 @@ fn handover_tick(app: &App, start: impl FnOnce() -> Result<String>) {
             report_all(
                 app,
                 "interpreter",
-                &format!("could not hand over to the installed service, so this interpreter keeps running without a supervisor: {error:#}"),
+                &format!("{}\nVia: could not hand over to the installed service, so this interpreter keeps running without a supervisor", failure::report(&error)),
             );
         }
     }
@@ -1805,7 +1813,7 @@ fn dispatch(app: &Arc<App>, request: Request) {
         respond(
             request,
             503,
-            json!({"error":format!("interpreter busy: {running} requests in flight; retry")}),
+            json!({"error":failure::report(&anyhow!("interpreter busy: {running} requests in flight; retry"))}),
         );
         return;
     }
@@ -1825,7 +1833,7 @@ fn dispatch(app: &Arc<App>, request: Request) {
             respond(
                 request,
                 503,
-                json!({"error":format!("could not start a request thread: {error}; retry")}),
+                json!({"error":failure::report(&anyhow::Error::new(error).context("could not start a request thread; retry"))}),
             );
         }
     }
@@ -1872,7 +1880,9 @@ fn close(app: &App) {
     match fs::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => crate::stderr_line(&format!("could not remove {}: {error}", path.display())),
+        Err(error) => crate::stderr_line(&failure::report(
+            &anyhow::Error::new(error).context(format!("could not remove {}", path.display())),
+        )),
     }
 }
 
@@ -1888,24 +1898,29 @@ fn exec_restart(app: &App, target: Option<PathBuf>) -> anyhow::Error {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(" ");
-    let mut failures = Vec::new();
+    let mut failure = None;
     for executable in candidates {
         crate::stderr_line(&format!(
             "restarting the interpreter as {} {shown}",
             executable.display()
         ));
         let error = Command::new(&executable).args(args).exec();
-        let message = format!(
-            "could not restart the interpreter as {} {shown}: {error}",
-            executable.display()
+        let command = failure::argv(
+            &executable,
+            &args
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>(),
         );
-        report_all(app, "interpreter", &message);
-        failures.push(message);
+        let error =
+            failure::spawn(&app.dir, &command, &error).context("could not restart the interpreter");
+        report_all(app, "interpreter", &failure::report(&error));
+        failure = Some(match failure {
+            Some(first) => failure::also(first, Err(error)),
+            None => error,
+        });
     }
-    if failures.is_empty() {
-        return anyhow!("could not restart the interpreter: no executable to run");
-    }
-    anyhow!("{}", failures.join("\n"))
+    failure.unwrap_or_else(|| anyhow!("could not restart the interpreter: no executable to run"))
 }
 
 /// Start the background loops: restore, Ting re-registration, and the supervisor (Caddy,
@@ -1927,7 +1942,7 @@ fn start_threads(app: &Arc<App>, owns_log: bool) -> Result<()> {
         if owns_log && checked.elapsed() >= Duration::from_secs(60) {
             checked = Instant::now();
             if let Err(error) = keep_log(&log, crate::LOG_CAP) {
-                crate::stderr_line(&format!("{error:#}"));
+                crate::stderr_line(&failure::report(&error));
             }
         }
         restart_tick(
@@ -2333,7 +2348,7 @@ impl Registry {
     fn unavailable(&self, id: &str) -> String {
         match self.entry(id).map(|entry| (&entry.state, entry.failures)) {
             Some((Restore::Waiting { next_at, error }, failures)) => format!(
-                "silicon {id} is not restored yet (attempt {failures} failed; the next runs at {}): {error}",
+                "{error}\nVia: silicon {id} is not restored yet (attempt {failures} failed; the next runs at {})",
                 next_at.to_rfc3339()
             ),
             Some((Restore::Restoring, _)) => {
@@ -2430,7 +2445,10 @@ fn save_pending(app: &App) -> bool {
             if unsaved.as_deref() == Some(cause.as_str()) {
                 return false;
             }
-            crate::stderr_line(&format!("{error:#}; retrying every 5 seconds"));
+            crate::stderr_line(&format!(
+                "{}\nVia: retrying every 5 seconds",
+                failure::report(&error)
+            ));
             *unsaved = Some(cause);
             true
         }
@@ -2498,12 +2516,12 @@ fn restore_next(
                     "interpreter",
                     &message,
                 ) {
-                    crate::stderr_line(&format!("{error:#}"));
+                    crate::stderr_line(&failure::report(&error));
                 }
             }
             // The supervisor retries a write that fails.
             if let Err(error) = persist(app) {
-                crate::stderr_line(&format!("{error:#}"));
+                crate::stderr_line(&failure::report(&error));
             }
             if let Err(error) = restored.ting {
                 ting_failure(
@@ -2554,7 +2572,7 @@ fn attempt_restore(app: &App, saved: &Connection) -> Result<Restored> {
                     "interpreter",
                     &format!("configuration warning: {warning}"),
                 ) {
-                    crate::stderr_line(&format!("{error:#}"));
+                    crate::stderr_line(&failure::report(&error));
                 }
             }
             live
@@ -2583,7 +2601,7 @@ fn restore_failure(
     error: anyhow::Error,
     now: DateTime<Utc>,
 ) {
-    let error = failure::mask(&saved.home, &format!("{error:#}"), &[]);
+    let error = failure::mask(&saved.home, &failure::report(&error), &[]);
     let Some(failed) = app.registry.lock().recover().failed(id, error.clone(), now) else {
         return;
     };
@@ -2594,7 +2612,7 @@ fn restore_failure(
             None,
             "interpreter",
             &format!(
-                "restore {id} from {} failed (attempt {tries}); the next attempt runs at {when}: {error}",
+                "{error}\nVia: restore {id} from {} failed (attempt {tries}); the next attempt runs at {when}",
                 saved.yaml.display()
             ),
         );
@@ -2658,7 +2676,7 @@ fn reassert_next(
                     "ting",
                     &message,
                 ) {
-                    crate::stderr_line(&format!("{error:#}"));
+                    crate::stderr_line(&failure::report(&error));
                 }
             }
         }
@@ -2682,7 +2700,7 @@ fn ting_failure(
     error: anyhow::Error,
     now: DateTime<Utc>,
 ) {
-    let error = failure::mask(home, &format!("{error:#}"), &[]);
+    let error = failure::mask(home, &failure::report(&error), &[]);
     let Some(failed) = app
         .registry
         .lock()
@@ -2698,7 +2716,7 @@ fn ting_failure(
             generation,
             "ting",
             &format!(
-                "Ting webhook registration for {id} failed (attempt {}); {id} stays connected and registration is retried at {when}: {error}",
+                "{error}\nVia: Ting webhook registration for {id} failed (attempt {}); {id} stays connected and registration is retried at {when}",
                 failed.attempt
             ),
         );
@@ -2789,7 +2807,8 @@ fn supervise_proxy(
                 routing_failed(
                     app,
                     &format!(
-                        "the local routing proxy failed its health check and was stopped; it is started again: {error:#}"
+                        "{}\nVia: the local routing proxy failed its health check and was stopped; it is started again",
+                        failure::report(&error)
                     ),
                     now,
                 );
@@ -2819,7 +2838,8 @@ fn supervise_proxy(
         Err(error) => routing_failed(
             app,
             &format!(
-                "could not start the local routing proxy, so Silicon hosts do not answer on port 80; it is retried (`silicon serve --no-proxy` runs without it): {error:#}"
+                "{}\nVia: could not start the local routing proxy, so Silicon hosts do not answer on port 80; it is retried (`silicon serve --no-proxy` runs without it)",
+                failure::report(&error)
             ),
             now,
         ),
@@ -2931,24 +2951,26 @@ fn update_proxy(app: &App) -> Option<String> {
         drop(slot);
         let routing = app.routing.lock().recover();
         return Some(format!(
-            "local routing is down and is restored automatically; last error: {}",
+            "{}\nVia: local routing is down and is restored automatically",
             routing.error.as_deref().unwrap_or("it has not started yet")
         ));
     };
     let error = match proxy.update(&hosts) {
         Ok(()) => return None,
-        Err(error) => format!("{error:#}"),
+        Err(error) => failure::report(&error),
     };
     let failed = slot.take();
     drop(slot);
     retire(app, failed);
     routing_failed(
         app,
-        &format!("the local routing proxy failed and was stopped; it is started again: {error}"),
+        &format!(
+            "{error}\nVia: the local routing proxy failed and was stopped; it is started again"
+        ),
         Utc::now(),
     );
     Some(format!(
-        "local routing is down and is restored automatically; last error: {error}"
+        "{error}\nVia: local routing is down and is restored automatically"
     ))
 }
 
@@ -3036,7 +3058,7 @@ fn restart_tick(
             }
             Err(error) => {
                 app.restart.requested.store(false, Ordering::SeqCst);
-                let error = format!("{error:#}");
+                let error = failure::report(&error);
                 let changed = {
                     let mut state = app.restart.check.lock().recover();
                     state.passed = None;
@@ -3051,7 +3073,7 @@ fn restart_tick(
                         app,
                         "interpreter",
                         &format!(
-                            "an installed update was not applied: the new release failed its check, so the interpreter keeps running {} and checks again every hour: {error}",
+                            "{error}\nVia: an installed update was not applied: the new release failed its check, so the interpreter keeps running {} and checks again every hour",
                             env!("CARGO_PKG_VERSION")
                         ),
                     );
@@ -3131,7 +3153,7 @@ fn handle(app: Arc<App>, mut request: Request) {
         respond(
             request,
             503,
-            json!({"error":"interpreter is stopping; retry after it restarts"}),
+            json!({"error":failure::report(&anyhow!("interpreter is stopping; retry after it restarts"))}),
         );
         return;
     }
@@ -3160,7 +3182,11 @@ fn handle(app: Arc<App>, mut request: Request) {
     }
     if request.method() != &Method::Post {
         let error = format!("{} {path} is not supported; use POST", request.method());
-        respond(request, 405, json!({"error":error}));
+        respond(
+            request,
+            405,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     }
     let content_type = header(&request, "Content-Type");
@@ -3170,7 +3196,11 @@ fn handle(app: Arc<App>, mut request: Request) {
         .is_some_and(|v| v.trim() == "application/json")
     {
         let error = format!("Content-Type must be application/json, got {content_type:?}");
-        respond(request, 415, json!({"error":error}));
+        respond(
+            request,
+            415,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     }
     let origin = header(&request, "Origin");
@@ -3179,7 +3209,11 @@ fn handle(app: Arc<App>, mut request: Request) {
             "cross-origin requests are not permitted: Origin {origin} is neither http://{host} nor {}",
             app.runtime.url
         );
-        respond(request, 403, json!({"error":error}));
+        respond(
+            request,
+            403,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     }
     let auth = header(&request, "Authorization")
@@ -3195,7 +3229,11 @@ fn handle(app: Arc<App>, mut request: Request) {
                 } else {
                     "invalid ISI capability: this interpreter did not issue that SI_TOKEN, or its session has ended"
                 };
-                respond(request, 401, json!({"error":error}));
+                respond(
+                    request,
+                    401,
+                    json!({"error":failure::report(&anyhow!(error))}),
+                );
                 return;
             }
         }
@@ -3215,7 +3253,11 @@ fn handle(app: Arc<App>, mut request: Request) {
                 file.display()
             )
         };
-        respond(request, 401, json!({"error":error}));
+        respond(
+            request,
+            401,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     }
     let event_request = path == "/" || path == "/events";
@@ -3226,13 +3268,22 @@ fn handle(app: Arc<App>, mut request: Request) {
     };
     let mut body = Vec::new();
     if let Err(error) = request.as_reader().take(limit + 1).read_to_end(&mut body) {
-        let error = format!("could not read the request body for {path}: {error}");
-        respond(request, 400, json!({"error":error}));
+        let error = anyhow::Error::new(error)
+            .context(format!("could not read the request body for {path}"));
+        respond(
+            request,
+            400,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     }
     if body.len() as u64 > limit {
         let error = format!("request body for {path} exceeds its {limit}-byte limit");
-        respond(request, 413, json!({"error":error}));
+        respond(
+            request,
+            413,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     }
     let body: Value = match serde_json::from_slice(&body) {
@@ -3241,7 +3292,7 @@ fn handle(app: Arc<App>, mut request: Request) {
             respond(
                 request,
                 400,
-                json!({"error":format!("invalid JSON request body for {path}: {error}")}),
+                json!({"error":failure::report(&anyhow::Error::new(error).context(format!("invalid JSON request body for {path}")))}),
             );
             return;
         }
@@ -3253,7 +3304,7 @@ fn handle(app: Arc<App>, mut request: Request) {
             respond(
                 request,
                 503,
-                json!({"error":format!("{error:#}; retry after it restarts")}),
+                json!({"error":failure::report(&error.context("retry after it restarts"))}),
             );
             return;
         }
@@ -3275,13 +3326,21 @@ fn handle(app: Arc<App>, mut request: Request) {
             }
             Addressed::Unknown => {
                 let error = format!("no connected silicon serves host {host:?}");
-                respond(request, 404, json!({"error":error}));
+                respond(
+                    request,
+                    404,
+                    json!({"error":failure::report(&anyhow!(error))}),
+                );
                 return;
             }
         }
     } else {
         let error = format!("unknown endpoint {path}; use /control, /si or /events");
-        respond(request, 404, json!({"error":error}));
+        respond(
+            request,
+            404,
+            json!({"error":failure::report(&anyhow!(error))}),
+        );
         return;
     };
     match result {
@@ -3298,11 +3357,7 @@ fn handle(app: Arc<App>, mut request: Request) {
             } else {
                 400
             };
-            respond(
-                request,
-                status,
-                json!({"error":failure::mask_all(&format!("{error:#}"))}),
-            );
+            respond(request, status, json!({"error":failure::report(&error)}));
         }
     }
 }
@@ -3378,7 +3433,10 @@ fn ping(app: &App, host: &str) -> (u16, Value) {
         return (200, value);
     }
     if let Some(c) = found {
-        value["error"] = json!(format!("silicon {} is disconnected", descriptor(&c.cfg).id));
+        value["error"] = json!(failure::report(&anyhow!(
+            "silicon {} is disconnected",
+            descriptor(&c.cfg).id
+        )));
         return (404, value);
     }
     drop(silicons);
@@ -3386,7 +3444,9 @@ fn ping(app: &App, host: &str) -> (u16, Value) {
         value["error"] = json!(why);
         return (503, value);
     }
-    value["error"] = json!(format!("no connected silicon serves host {host:?}"));
+    value["error"] = json!(failure::report(&anyhow!(
+        "no connected silicon serves host {host:?}"
+    )));
     (404, value)
 }
 
@@ -3394,13 +3454,12 @@ fn ping(app: &App, host: &str) -> (u16, Value) {
 /// or a problem with the batch itself (400).
 #[derive(Debug)]
 struct Rejected {
-    reason: String,
     retry: bool,
 }
 
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.reason)
+        f.write_str("rejected a webhook delivery")
     }
 }
 
@@ -3408,10 +3467,10 @@ impl std::error::Error for Rejected {}
 
 /// Errors that mean "try again later" rather than "this request is wrong".
 fn retryable(error: &anyhow::Error) -> bool {
+    if error.is::<crate::ting::Unavailable>() {
+        return true;
+    }
     error.chain().any(|cause| {
-        if cause.is::<crate::ting::Unavailable>() {
-            return true;
-        }
         let text = cause.to_string();
         text.starts_with("interpreter is stopping")
             || text.starts_with("silicon is not connected:")
@@ -3422,9 +3481,9 @@ fn retryable(error: &anyhow::Error) -> bool {
 /// Queue a JSON webhook request. The sender alone hears the reply, so a rejection also goes to the Silicon's log
 /// (and, through `respond`, to daemon.log).
 fn deliver(app: &App, id: &str, body: Value) -> Result<Value> {
-    let connected = app.runtime.get(id).map_err(|error| Rejected {
-        retry: retryable(&error),
-        reason: format!("{error:#}"),
+    let connected = app.runtime.get(id).map_err(|error| {
+        let retry = retryable(&error);
+        error.context(Rejected { retry })
     })?;
     let home = &connected.cfg.home;
     // Ting retries a full inbox; the same refusal is written once, not on every retry.
@@ -3439,8 +3498,8 @@ fn deliver(app: &App, id: &str, body: Value) -> Result<Value> {
         })
         .map_err(|error| {
             let retry = retryable(&error);
-            let reason = failure::mask(home, &format!("{error:#}"), &[]);
-            let message = format!("rejected a webhook delivery: {reason}");
+            let error = error.context(Rejected { retry });
+            let reason = failure::mask(home, &failure::report(&error), &[]);
             let repeated = retry
                 && REFUSED
                     .lock()
@@ -3449,9 +3508,9 @@ fn deliver(app: &App, id: &str, body: Value) -> Result<Value> {
                     .as_ref()
                     == Some(&reason);
             if !repeated {
-                log_error(home, Some(connected.cfg.generation), "webhook", &message);
+                log_error(home, Some(connected.cfg.generation), "webhook", &reason);
             }
-            anyhow::Error::new(Rejected { reason, retry })
+            error
         })
 }
 
@@ -3502,7 +3561,8 @@ fn log_error(home: &Path, generation: Option<Uuid>, origin: &str, message: &str)
     }
     if let Err(error) = crate::log_line_scoped(home, generation, "error", origin, message) {
         crate::stderr_line(&format!(
-            "{error:#}; the {origin} error it was recording:\n{message}"
+            "{}\nVia: the {origin} error it was recording:\n{message}",
+            failure::report(&error)
         ));
     }
 }
@@ -3517,7 +3577,7 @@ fn rollback(app: &App, id: &str, error: anyhow::Error) -> anyhow::Error {
     );
     match update_proxy(app) {
         None => error,
-        Some(warning) => anyhow!("{error:#}\nalso: {warning}"),
+        Some(warning) => error.context(format!("also: {warning}")),
     }
 }
 
@@ -3539,7 +3599,7 @@ fn respond(request: Request, status: u16, value: Value) {
         };
         if !repeated {
             crate::stderr_line(&format!(
-                "answered {} {host}{path} with HTTP {status}: {said}",
+                "{said}\nVia: answered {} {host}{path} with HTTP {status}",
                 request.method(),
             ));
         }
@@ -3563,9 +3623,9 @@ fn send<R: Read>(request: Request, response: Response<R>) {
     let path = request.url().split('?').next().unwrap_or("").to_owned();
     let status = response.status_code().0;
     if let Err(error) = request.respond(response) {
-        crate::stderr_line(&format!(
-            "could not send the HTTP {status} answer for {path}: {error}"
-        ));
+        crate::stderr_line(&failure::report(&anyhow::Error::new(error).context(
+            format!("could not send the HTTP {status} answer for {path}"),
+        )));
     }
 }
 
@@ -3619,7 +3679,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
                 let registry = app.registry.lock().recover();
                 value["error"] = json!(match registry.entry(id) {
                     Some(_) => registry.unavailable(id),
-                    None => format!("{error:#}"),
+                    None => failure::report(&error),
                 });
             }
             Ok(value)
@@ -3648,7 +3708,7 @@ fn control(app: &Arc<App>, body: &Value) -> Result<Value> {
             Ok(json!({"valid":true,"connection":descriptor(&cfg),"warnings":cfg.warnings}))
         }
         "list" => Ok(json!(app.registry.lock().recover().listed())),
-        "connect" => connect(app, text(args, "yaml")?),
+        "connect" => connect(app, text(args, "yaml")?, flag(args, "progress_streamed")?),
         "disconnect" => disconnect(app, text(args, "target")?),
         "event" => app
             .runtime
@@ -3759,7 +3819,7 @@ fn compile_connection(app: &App, yaml: impl AsRef<Path>) -> Result<Config> {
 
 /// Connect a YAML while its caller waits. A saved Silicon still waiting for its restore is
 /// connected here instead; when this fails too it goes back to waiting, with this error.
-fn connect(app: &App, yaml: &str) -> Result<Value> {
+fn connect(app: &App, yaml: &str, progress_streamed: bool) -> Result<Value> {
     let _guard = interactive(app);
     let cfg = compile_connection(app, yaml)?;
     let connection = descriptor(&cfg);
@@ -3767,7 +3827,7 @@ fn connect(app: &App, yaml: &str) -> Result<Value> {
     let log = cfg.home.join(".silicon/silicon.log");
     let start = fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
     if let Err(error) = app.runtime.connect(cfg) {
-        let error = with_progress(error, &log, start);
+        let error = with_progress(error, &log, start, progress_streamed);
         requeue(app, &connection, &error);
         return Err(error);
     }
@@ -3792,7 +3852,7 @@ fn connect(app: &App, yaml: &str) -> Result<Value> {
     match result {
         Ok(routing) => warnings.extend(routing),
         Err(error) => {
-            let error = with_progress(error, &log, start);
+            let error = with_progress(error, &log, start, progress_streamed);
             let error = rollback(app, &connection.id, error);
             requeue(app, &connection, &error);
             return Err(error);
@@ -3804,7 +3864,8 @@ fn connect(app: &App, yaml: &str) -> Result<Value> {
         .connected(None, connection.clone(), Utc::now());
     if let Err(error) = persist(app) {
         warnings.push(format!(
-            "{error:#}; {} is connected, and saving it (so it is restored after a restart) is retried every few seconds",
+            "{}\nVia: {} is connected, and saving it (so it is restored after a restart) is retried every few seconds",
+            failure::report(&error),
             connection.id
         ));
     }
@@ -3825,7 +3886,7 @@ fn requeue(app: &App, connection: &Connection, error: &anyhow::Error) {
     else {
         return;
     };
-    let error = failure::mask(&connection.home, &format!("{error:#}"), &[]);
+    let error = failure::mask(&connection.home, &failure::report(error), &[]);
     registry.failed(&id, error, Utc::now());
 }
 
@@ -3833,25 +3894,25 @@ fn requeue(app: &App, connection: &Connection, error: &anyhow::Error) {
 fn disconnect(app: &App, target: &str) -> Result<Value> {
     let _guard = interactive(app);
     let id = resolve(app, target)?;
-    let mut errors = Vec::new();
+    let mut failure = None;
     if app.runtime.silicons.read().recover().contains_key(&id) {
         let lock = ting_lock(app, &id);
         let _held = lock.lock().recover();
         if let Err(error) = app.runtime.disconnect(&id) {
-            errors.push(format!("disconnect: {error:#}"));
+            failure = Some(error.context("disconnect"));
         }
     }
     app.registry.lock().recover().remove(&id);
     let warnings: Vec<String> = update_proxy(app).into_iter().collect();
     if let Err(error) = persist(app) {
         // write_json names the file it could not save; the supervisor retries it.
-        errors.push(format!("{error:#}"));
+        failure = Some(match failure {
+            Some(first) => failure::also(first, Err(error)),
+            None => error,
+        });
     }
-    if !errors.is_empty() {
-        bail!(
-            "disconnected {id} with cleanup errors:\n{}",
-            errors.join("\n")
-        );
+    if let Some(error) = failure {
+        return Err(error.context(format!("disconnected {id} with cleanup errors")));
     }
     Ok(json!({"disconnected":id,"warnings":warnings}))
 }
@@ -3860,17 +3921,20 @@ fn disconnect(app: &App, target: &str) -> Result<Value> {
 fn connection_progress(path: &Path, start: u64) -> Vec<String> {
     match since(path, start) {
         Ok(text) => text.lines().map(str::to_owned).collect(),
-        Err(error) => vec![format!("could not read progress: {error:#}")],
+        Err(error) => vec![failure::report(&error.context("could not read progress"))],
     }
 }
 
-/// The failure first, then what the Silicon's log recorded while it happened.
-fn with_progress(error: anyhow::Error, log: &Path, start: u64) -> anyhow::Error {
+/// Keep the failure in full; link to progress already streamed by the CLI instead of repeating it.
+fn with_progress(error: anyhow::Error, log: &Path, start: u64, streamed: bool) -> anyhow::Error {
+    if streamed {
+        return error.context(format!("Connection log: {}", log.display()));
+    }
     let lines = connection_progress(log, start);
     if lines.is_empty() {
         return error;
     }
-    anyhow!("{error:#}\n{}", lines.join("\n"))
+    error.context(format!("Connection progress:\n{}", lines.join("\n")))
 }
 
 /// A saved or connected Silicon by ID or YAML path; a miss says what was tried and what is known.
@@ -4102,4 +4166,83 @@ pub fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
         .into_iter()
         .rev()
         .collect())
+}
+
+#[cfg(test)]
+mod connection_error_tests {
+    use super::*;
+
+    #[test]
+    fn streamed_errors_link_the_log_while_json_retains_progress() {
+        let log = std::env::temp_dir().join(format!("silicon-progress-{}.log", Uuid::new_v4()));
+        fs::write(&log, "previous operation\ncurrent progress\n").unwrap();
+        for streamed in [true, false] {
+            let original =
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "full tool diagnostic");
+            let error = with_progress(original.into(), &log, 19, streamed);
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            let text = failure::report(&error);
+            assert!(text.starts_with("full tool diagnostic"));
+            assert!(!text.contains("previous operation"));
+            assert_eq!(text.contains("current progress"), !streamed);
+            assert_eq!(text.contains("Connection log:"), streamed);
+            if streamed {
+                assert!(text.contains(log.to_str().unwrap()));
+            }
+        }
+        fs::remove_file(log).unwrap();
+    }
+
+    #[test]
+    fn http_error_report_survives_the_client_without_reformatting() {
+        let error = anyhow!("provider denied access\nprovider detail")
+            .context("authenticating the application")
+            .context("connecting the Silicon");
+        let expected = failure::report(&error);
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let url = format!("http://{}/control", server.server_addr());
+        let sent = expected.clone();
+        let worker = thread::spawn(move || {
+            let incoming = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .expect("client request arrived");
+            reply(incoming, 400, json!({"error":sent}));
+        });
+        let received = request(&url, "test-token", "ping", json!({})).unwrap_err();
+        worker.join().unwrap();
+        assert_eq!(failure::report(&received), expected);
+    }
+
+    #[test]
+    fn webhook_rejection_keeps_its_retry_classification_and_original_error() {
+        let original = anyhow::Error::new(crate::ting::Unavailable("inbox full".into()))
+            .context("accepting the webhook");
+        let retry = retryable(&original);
+        let error = original.context(Rejected { retry });
+        assert!(error.downcast_ref::<Rejected>().unwrap().retry);
+        assert!(retryable(&error));
+        assert!(error.downcast_ref::<crate::ting::Unavailable>().is_some());
+        let text = failure::report(&error);
+        assert!(text.starts_with("inbox full"));
+        assert!(text.contains("accepting the webhook"));
+        assert!(text.contains("rejected a webhook delivery"));
+
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOSPC))
+            .context(crate::ting::Unavailable("inbox storage unavailable".into()));
+        assert!(retryable(&original));
+        let error = original.context(Rejected { retry: true });
+        assert!(retryable(&error));
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::ENOSPC)
+        );
+        assert!(failure::report(&error).contains("inbox storage unavailable"));
+    }
 }

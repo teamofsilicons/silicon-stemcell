@@ -229,7 +229,7 @@ silicon web
 
 `compile` validates configuration and expressions without connecting to the interpreter. It does execute compile-time Bash expressions, including `SILICON_HOME`, and downloads missing [Starter blocks](#reusable-starter-blocks), so it is not a side-effect-free shell dry run. Local configuration, flow, and imported function syntax are checked before Bash runs. Starter files require the resolved home first; their syntax is checked after downloading and before evaluating the remaining compile-time fields. `setup`, application commands, DNA scripts, and runtime flow actions remain deferred. Provider startup, application authentication, and runtime request values have their own checks later.
 
-`connect` starts the interpreter if necessary, refreshes referenced Starter blocks while compiling the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, `… Authenticating dm` changes to `✓ Authenticated dm`; failures use `✗`. Redirected output uses separate lines without terminal control codes. `--json` returns the normal complete JSON response with its progress records. Setup, installation, authentication, and Ting commands run with the [time limits](#time-limits) the interpreter enforces. A failed automatic app authentication no longer fails the connection: it shows as `✗` with the app's complete answer, and the app is checked again later (see the [Silicon Accounts application contract](#silicon-accounts-application-contract)). Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
+`connect` starts the interpreter if necessary, refreshes referenced Starter blocks while compiling the file, runs setup, installs and authenticates managed applications, adds routing, applies app configuration, registers the local route with Ting, and records the connection. Its text output streams local setup, application installation, authentication, and webhook progress while the operation runs. In a terminal, `… Authenticating dm` changes to `✓ Authenticated dm`; failures use `✗`. Redirected output uses separate lines without terminal control codes. When an app update fails but an installed copy is usable, `⚠` shows the complete error trace, followed by the installed copy that stays in use. The same trace is retained in `.silicon/silicon.log`. Fatal text errors link to that log instead of repeating progress already printed. `--json` returns the normal complete JSON response with its progress records. Setup, installation, authentication, and Ting commands run with the [time limits](#time-limits) the interpreter enforces. A failed automatic app authentication no longer fails the connection: it shows as `✗` with the app's complete answer, and the app is checked again later (see the [Silicon Accounts application contract](#silicon-accounts-application-contract)). Duplicate Silicon IDs, duplicate canonical YAML paths, or two connected Silicons sharing the same canonical `SILICON_HOME` are rejected.
 
 The local identity is the canonical YAML path. The global identity is `silicon.id`, the complete Silicon Accounts identifier. Moving a file changes its local identity. The interpreter reads `flow` and optional `functions` definitions from disk for each incoming request, without rerunning compile-time shell expressions. Disconnect and reconnect to apply other manual configuration changes. `si app install` and `si app uninstall` update the file’s app entries and the connected app settings immediately; ordinary connection and interpreter updates do not rewrite it.
 
@@ -782,22 +782,32 @@ si session new --archive-current-session \
 
 ### Reading errors
 
-A failure carries the words of whatever failed: an app CLI, Silicon Apps, Silicon Accounts, Ting, a Bash expression, Omni and its provider, Caddy, GitHub, or the installer. Nothing is summarized or truncated, and there is no need to rerun a command to see its diagnostic. A command that ran and failed reads as the command, its exit status, then its complete stderr and stdout:
+A failure starts with the actual diagnostic from the component that reported it. Command failures retain complete stderr and stdout, followed by the command that produced them and its exit status. Available context follows from the source outward to the caller:
 
 ```text
-`bash -c 'ledger --json'` failed: exit status: 4
 stderr:
 ledger: quota exceeded
   at line 2
 stdout:
 {"ok":false,"code":"quota"}
+
+Source: `bash -c 'ledger --json'`
+Status: exit status: 4
+Via: running setup step 1
+Via: connect silicon.yaml
 ```
 
-An empty stream reads `stderr: (empty)`. A command that exited successfully but answered wrongly states the problem first, as in `` `dm accounts --json` returned invalid JSON: expected value at line 1 column 1 ``, followed by the same status and streams. A command that could not start reads ``could not run `COMMAND`: `` and the operating system's reason. JSON an app prints is shown raw, exactly as printed. Parse errors keep the serde, YAML, or CEL text with its line and column, and configuration errors name the field and the value found. An HTTP failure carries the status and the response body. Each layer adds context before a colon, so the outermost words say what the interpreter was doing and the innermost are the tool's own. An exhausted fallback chain lists every candidate (`all 2 fallback candidates failed:` then `1.`, `2.`), and a second failure during reporting or cleanup follows on an `also:` line instead of replacing the first.
+`Project:` appears when the reporting tool has a known project URL. Required tools have known links; an app can supply `repository_url` or `repository` in its validated `accounts --json` response. Unknown command names do not become guessed repository links. A project link identifies the reporting tool, not proof that it caused an upstream service's failure.
+
+Omni client and daemon errors identify the Omni interface and project. Errors reported directly by the interpreter identify it as the reporting component; caller context still names the operation and affected file or connection.
+
+`Meaning:` appears only when Silicon can explain the specific diagnostic, such as an explicit rejection of the `--slt` flag or an `invalid_credentials` response. An unfamiliar error keeps its original text and source without a speculative explanation. Known meanings never replace the original output. The command retains its executable path when available, and the `Via:` lines retain each layer of context. Reports returned by the interpreter keep their order when the CLI adds its own context.
+
+An empty stream reads `stderr: (empty)`. A command that exited successfully but answered wrongly keeps the raw answer and explains the validation failure in `Meaning:`, including the parser's line and column. A command that could not start shows the operating system's error, the attempted command, and `Status: process did not start`. JSON an app prints stays raw. Configuration errors name the field and value found; HTTP failures keep their status and response body. Fallback failures retain each attempt, and failures during reporting or cleanup follow as `Additional failure:` context without replacing the original cause. Neither output nor causes are truncated; credential values are redacted as described below.
 
 The same text reaches every reader:
 
-- `silicon` and `si` exit with status 1 and print `Error:` and the complete text on stderr, including any `Caused by:` lines. `--json` changes successful output only.
+- `silicon` and `si` exit with status 1 and print the complete report on stderr. `--json` changes successful output only.
 - The control and internal APIs answer with `{"error": "..."}`. The dashboard shows that text whole, or the HTTP status and raw body when an answer is not JSON.
 - A flow catch receives expression and validation failures as `{self.error}`; outgoing delivery failures appear in runtime logs and durable delivery state.
 - `silicon.log` records it as an `[error]` entry. The file escapes newlines; `silicon logs show`, connection progress, and the dashboard unfold error entries so multi-line output reads as the tool wrote it, and `--json` returns the stored line. Errors logged during `connect` appear as they happen, even when the connection then succeeds.
@@ -1079,10 +1089,12 @@ Start with the complete error. It already contains the failing command's exit st
 | `si` lacks context or capability | Run it inside an interpreter-created ISI. Setting only the `ISI` variable is insufficient. |
 | An ISI cannot reach another ISI | Check its `access` list and the target spelling. Cross-Silicon sends are not supported by `si`. |
 | App discovery/status fails | The error shows the app command, its exit status, and its stderr and stdout, including any JSON it returned. Fix what the app reports; update an app that lacks `APP accounts --json` or a supported status form. |
-| Silicon Accounts cannot mint the SLT | Check the Silicon ID/token, app ID, permissions, and Silicon Accounts session. A personal Carbon login is not a substitute. |
-| App rejected the SLT | Fix the app login issue and start authentication again; the old one-use SLT may already be consumed. |
+| Silicon Accounts cannot mint the SLT | Read the original Accounts error. `invalid_credentials` confirms that Accounts rejected the supplied credentials; it does not establish why. Check the Silicon ID/token, app ID, permissions, and Silicon Accounts session. A personal Carbon login is not a substitute. |
+| App login failed after Accounts issued a token | Read the app diagnostic. An unsupported `login --slt` means the installed app CLI is incompatible, not that Accounts rejected the Silicon credentials. Install a compatible app release, then reconnect or run `si auth setup APP` from a connected ISI. Other failures may require a fresh one-use SLT after fixing the app. |
+| Ting reports `Missing org_id` | The response refers to Ting's retired contract. Check the versions of the installed CLI and running daemon; the response alone does not identify which component is outdated. Do not add `org_id` to the Silicon configuration. |
 | Removed app logs in again | Use `si app uninstall` or remove it from every ISI `apps` list (including Starter overrides), legacy `silicon.apps`, and legacy `silicon.login`, then reconnect. Ting remains implicitly managed. |
 | Setup failed | Read the reported `silicon.setup` index, exit status, and stderr/stdout in the error. Each shell fallback needs `!`; completed shell effects remain even when connection fails. |
+| App update warns but the app is ready | A compatible installed copy remains in use. The warning shows the full package failure and its source; the same trace is in `.silicon/silicon.log`. Missing platform packages or network failures do not block connection when that copy is available. |
 | Silicon Apps cannot resolve a configured app | The error shows each candidate command passed over with its reason, and Silicon Apps's exit status and output if Silicon Apps itself failed. Check the bare app ID, CLI discovery, package availability for this platform, and the signed-in Silicon Accounts identity. |
 | Disconnect reports cleanup errors | The Silicon/capabilities are removed; inspect Ting’s hook state and Caddy/interpreter logs. |
 | A saved Silicon shows `waiting` in `silicon ls` | Read its error there: the interpreter retries it by itself. Fix what it names (a moved YAML, a failing setup script, an app that cannot install) and run `silicon connect` to retry at once. |

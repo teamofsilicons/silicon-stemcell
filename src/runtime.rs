@@ -405,7 +405,7 @@ impl Connected {
                 self.report(
                     "heartbeat schedule file",
                     "heartbeat",
-                    &format!("saving the heartbeat schedule: {error:#}"),
+                    &failure::report(&error.context("saving the heartbeat schedule")),
                 );
             }
         }
@@ -489,11 +489,7 @@ impl Runtime {
             crate::apps::refresh_dna(&cfg)?;
             Ok(())
         })();
-        if let Err(error) = preparation {
-            // The whole chain, with the token and app config values registered above masked.
-            let message = failure::mask(&cfg.home, &format!("{error:#}"), &[]);
-            bail!("{message}");
-        }
+        preparation?;
         self.connect_prepared(cfg)
     }
 
@@ -572,7 +568,7 @@ impl Runtime {
         for (what, outcome) in in_parallel(tasks, STOP_BUDGET) {
             match outcome {
                 Some(Ok(())) => {}
-                Some(Err(error)) => errors.push(format!("{what}: {error:#}")),
+                Some(Err(error)) => errors.push(failure::report(&error.context(what))),
                 None => errors.push(format!(
                     "{what}: still running after {}s; it continues in the background",
                     STOP_BUDGET.as_secs()
@@ -591,10 +587,11 @@ impl Runtime {
             "interpreter",
             "disconnected",
         ) {
-            errors.push(format!("recording the disconnect: {error:#}"));
+            errors.push(failure::report(&error.context("recording the disconnect")));
         }
         if !errors.is_empty() {
-            bail!("{id} was disconnected with errors:\n{}", errors.join("\n"));
+            return Err(failure::received(errors.join("\n"))
+                .context(format!("{id} was disconnected with errors")));
         }
         Ok(())
     }
@@ -810,7 +807,7 @@ impl Runtime {
                         connected.recovered("ting inbox");
                         continue;
                     };
-                    let message = format!("pending Ting flow: {error:#}");
+                    let message = format!("{}\nVia: pending Ting flow", failure::report(&error));
                     if flow::interrupted(&error) {
                         // The flow logged the refused send as an error where it happened;
                         // keeping the batch for the next connection is not another failure.
@@ -822,7 +819,8 @@ impl Runtime {
                             &message,
                         ) {
                             crate::stderr_line(&format!(
-                                "{failed:#}; the entry it was recording: {message}"
+                                "{}\nVia: recording this entry: {message}",
+                                failure::report(&failed)
                             ));
                         }
                     } else {
@@ -1538,7 +1536,9 @@ impl Runtime {
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
                     &address,
-                    &format!("retiring idle session {}: {error:#}", record.id),
+                    &failure::report(
+                        &error.context(format!("retiring idle session {}", record.id)),
+                    ),
                 ),
             }
         }
@@ -1585,10 +1585,10 @@ impl Runtime {
             let message = match (outcome, session) {
                 (Some(Ok(())), _) => continue,
                 (Some(Err(error)), Some(session)) => {
-                    format!("stopping session {session}: {error:#}")
+                    failure::report(&error.context(format!("stopping session {session}")))
                 }
                 (Some(Err(error)), None) => {
-                    format!("removing the Ting webhook at shutdown: {error:#}")
+                    failure::report(&error.context("removing the Ting webhook at shutdown"))
                 }
                 (None, _) => {
                     unfinished.push(what.clone());
@@ -1705,7 +1705,7 @@ impl Worker {
                 &cfg.home,
                 Some(cfg.generation),
                 &address,
-                &format!("rotating omnid's log: {error:#}"),
+                &failure::report(&error.context("rotating omnid's log")),
             );
         }
         let lock = omni_home.join("omnid.pid");
@@ -1857,16 +1857,14 @@ impl Worker {
         // Child does not terminate on Drop. A failed setup must not leave an untracked daemon.
         let pid = child.id();
         let stopped = terminate_child(child);
-        let mut said = format!(
-            "{error:#}\n{}",
-            daemon_output(&cfg.home, log, start, &[&self.capability])
-        );
-        if let Err(stop) = stopped {
-            said.push_str(&format!(
-                "\nomnid (pid {pid}) could not be stopped and may still be running: {stop:#}"
-            ));
-        }
-        anyhow!(said).context(format!("starting Omni for {address}"))
+        let error = error.context(daemon_output(&cfg.home, log, start, &[&self.capability]));
+        failure::also(
+            error,
+            stopped.with_context(|| {
+                format!("omnid (pid {pid}) could not be stopped and may still be running")
+            }),
+        )
+        .context(format!("starting Omni for {address}"))
     }
 
     fn send(
@@ -1980,7 +1978,9 @@ impl Worker {
                 &connected.cfg.home,
                 Some(connected.cfg.generation),
                 &self.state.lock().recover().record.isi,
-                &format!("Omni did not confirm acceptance for delivery {id}: {error}; retained its receipt because the message may still run"),
+                &failure::report(&anyhow::Error::new(error).context(format!(
+                    "Omni did not confirm acceptance for delivery {id}; retained its receipt because the message may still run"
+                ))),
             );
         }
         let mut state = self.state.lock().recover();
@@ -1998,7 +1998,7 @@ impl Worker {
                 &connected.cfg.home,
                 Some(connected.cfg.generation),
                 &state.record.isi,
-                &format!("{error:#}"),
+                &failure::report(&error),
             );
         }
         if let Err(error) = log_line_scoped(
@@ -2016,7 +2016,7 @@ impl Worker {
                 &connected.cfg.home,
                 Some(connected.cfg.generation),
                 &state.record.isi,
-                &format!("message accepted, but recording its send failed: {error:#}"),
+                &failure::report(&error.context("message accepted, but recording its send failed")),
             );
         }
         let sent = Sent {
@@ -2033,7 +2033,7 @@ impl Worker {
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
                     &name,
-                    &format!("new session suggestion: {error:#}"),
+                    &failure::report(&error.context("new session suggestion")),
                 );
             }
         }
@@ -2132,7 +2132,10 @@ impl Worker {
                 state.record.messages_at_suggestion = previous.1;
                 // Two independent failures: report both rather than the rollback alone.
                 if let Err(rollback) = state.record.save(&connected.cfg.home) {
-                    bail!("{error:#}\nrestoring the session state afterwards also failed: {rollback:#}");
+                    return Err(failure::also(
+                        error,
+                        Err(rollback.context("restoring the session state afterwards")),
+                    ));
                 }
             }
             return Err(error);
@@ -2173,7 +2176,9 @@ impl Worker {
                     last_event = serde_json::to_string(&event).ok();
                     if let Err(error) = self.on_event(event, chat.idle(), queued) {
                         if !self.winding_down() {
-                            self.fail(&format!("handling Omni {kind} event: {error:#}"));
+                            self.fail(&failure::report(
+                                &error.context(format!("handling Omni {kind} event")),
+                            ));
                         }
                         break;
                     }
@@ -2204,10 +2209,11 @@ impl Worker {
                 Err(error) => {
                     if !self.winding_down() {
                         let trouble = self.state.lock().recover().quote_trouble(None);
-                        self.fail(&self.with_daemon_exit(format!(
-                            "Omni event stream for session {} failed: {error}{trouble}",
-                            self.session_id,
-                        )));
+                        let error = anyhow::Error::new(error).context(format!(
+                            "Omni event stream for session {} failed{trouble}",
+                            self.session_id
+                        ));
+                        self.fail(&self.with_daemon_exit(failure::report(&error)));
                     }
                     break;
                 }
@@ -2452,7 +2458,7 @@ impl Worker {
                                     &reply_connected.cfg.home,
                                     Some(reply_connected.cfg.generation),
                                     &replying_isi,
-                                    &format!("ephemeral reply: {error:#}"),
+                                    &failure::report(&error.context("ephemeral reply")),
                                 );
                             }
                         });
@@ -2471,10 +2477,10 @@ impl Worker {
                         &cfg.home,
                         Some(cfg.generation),
                         &name,
-                        &format!(
-                            "saving session {} after its turn ended: {error:#}",
+                        &failure::report(&error.context(format!(
+                            "saving session {} after its turn ended",
                             self.session_id
-                        ),
+                        ))),
                     );
                 }
                 // This worker has stopped by now even when its cleanup failed, so the listener
@@ -2484,10 +2490,10 @@ impl Worker {
                         &cfg.home,
                         Some(cfg.generation),
                         &name,
-                        &format!(
-                            "session {} finished its work, but stopping it afterwards failed: {error:#}",
+                        &failure::report(&error.context(format!(
+                            "session {} finished its work, but stopping it afterwards failed",
                             self.session_id
-                        ),
+                        ))),
                     );
                 }
                 return Ok(());
@@ -2509,7 +2515,10 @@ impl Worker {
     ) {
         crate::stderr_line(&failure::mask(
             &cfg.home,
-            &format!("{error:#}; the {isi} event it was writing to {place}: {record}"),
+            &format!(
+                "{}\nVia: writing the {isi} event to {place}: {record}",
+                failure::report(error)
+            ),
             &[&self.capability],
         ));
     }
@@ -2629,7 +2638,10 @@ impl Worker {
                     &connected.cfg.home,
                     Some(connected.cfg.generation),
                     "worker cleanup",
-                    &format!("{message}\ncleaning up after it failed too: {error:#}"),
+                    &format!(
+                        "{message}\nAlso: {}",
+                        failure::report(&error.context("cleaning up after the worker failed"))
+                    ),
                 );
             }
         }
@@ -2753,7 +2765,12 @@ impl Worker {
                         &connected.cfg.home,
                         Some(connected.cfg.generation),
                         &isi,
-                        &format!("asking Omni to stop session {}: {error}", self.session_id),
+                        &failure::report(
+                            &anyhow::Error::new(error).context(format!(
+                                "asking Omni to stop session {}",
+                                self.session_id
+                            )),
+                        ),
                     );
                 }
             }
@@ -2762,7 +2779,9 @@ impl Worker {
         if let Some(daemon) = self.daemon.lock().recover().take() {
             let pid = daemon.child.id();
             if let Err(error) = terminate_child(daemon.child) {
-                errors.push(format!("stopping omnid (pid {pid}): {error:#}"));
+                errors.push(failure::report(
+                    &error.context(format!("stopping omnid (pid {pid})")),
+                ));
             }
         }
         if idle {
@@ -2806,7 +2825,7 @@ impl Worker {
                 state.record.save(&connected.cfg.home)
             };
             if let Err(error) = stored {
-                errors.push(format!("saving session state: {error:#}"));
+                errors.push(failure::report(&error.context("saving session state")));
             }
             if let Some(error) = error.as_deref() {
                 if let Err(log) = log_line_scoped(
@@ -2817,7 +2836,7 @@ impl Worker {
                     error,
                 ) {
                     // The failure itself still reaches the receipts above and fail()'s message.
-                    errors.push(format!("recording this failure: {log:#}"));
+                    errors.push(failure::report(&log.context("recording this failure")));
                 }
             }
         }
@@ -2861,7 +2880,7 @@ impl Worker {
             }
         }
         if !errors.is_empty() {
-            bail!("{}", errors.join("\n"));
+            return Err(failure::received(errors.join("\n")));
         }
         Ok(())
     }
@@ -2948,7 +2967,9 @@ impl Worker {
                             connected.recovered(&format!("dna refresh {}", worker.session_id));
                         }
                     }
-                    Err(error) => worker.dna_retry_later(&format!("DNA refresh: {error:#}")),
+                    Err(error) => {
+                        worker.dna_retry_later(&failure::report(&error.context("DNA refresh")))
+                    }
                 }
             });
         if let Err(error) = started {
@@ -3022,7 +3043,8 @@ fn terminate_child(mut child: Child) -> Result<()> {
 fn log_error(home: &Path, generation: Option<Uuid>, origin: &str, message: &str) {
     if let Err(error) = log_line_scoped(home, generation, "error", origin, message) {
         crate::stderr_line(&format!(
-            "{error:#}; the {origin} error it was recording: {}",
+            "{}\nVia: recording the {origin} error: {}",
+            failure::report(&error),
             failure::mask(home, message, &[])
         ));
     }
@@ -3098,9 +3120,9 @@ fn assemble_dna(cfg: &Config, isi: &str, address: &str) -> Result<String> {
                     &cfg.home,
                     Some(cfg.generation),
                     address,
-                    &format!(
-                        "DNA entry skipped: isi.{isi}.dna.assemble[{index}] {source}: {error:#}"
-                    ),
+                    &failure::report(&error.context(format!(
+                        "DNA entry skipped: isi.{isi}.dna.assemble[{index}] {source}"
+                    ))),
                 ),
             }
         }
@@ -3279,7 +3301,8 @@ fn jitter(limit: TimeDelta) -> TimeDelta {
 fn note(home: &Path, generation: Option<Uuid>, kind: &str, origin: &str, message: &str) {
     if let Err(error) = log_line_scoped(home, generation, kind, origin, message) {
         crate::stderr_line(&format!(
-            "{error:#}; the {kind} note it was recording for {origin}: {}",
+            "{}\nVia: recording the {kind} note for {origin}: {}",
+            failure::report(&error),
             failure::mask(home, message, &[])
         ));
     }
@@ -3480,9 +3503,8 @@ fn own_daemon(socket: &Path, child: &mut Child, lock: &Path) -> Result<Answer> {
             }
             Err(error) => {
                 if let Some(status) = child.try_wait().context("checking on omnid")? {
-                    let mut message = format!(
-                        "omnid exited ({status}) before accepting connections; last attempt: {error:#}"
-                    );
+                    let mut message =
+                        format!("omnid exited ({status}) before accepting connections");
                     if let Some(holder) = lock_holder(lock) {
                         message.push_str(&format!(
                             "\n{} is locked by another process ({holder}); an omnid left by an earlier interpreter run may still own this session, but it does not answer on {}, so it was not stopped",
@@ -3490,7 +3512,7 @@ fn own_daemon(socket: &Path, child: &mut Child, lock: &Path) -> Result<Answer> {
                             socket.display()
                         ));
                     }
-                    bail!("{message}");
+                    return Err(error.context(message));
                 }
                 if Instant::now() >= deadline {
                     return Err(error.context("omnid did not accept connections within 20s"));
@@ -3800,7 +3822,11 @@ impl Scheduler {
                     Some(records.into_iter().map(|record| record.id).collect())
                 }
                 Err(error) => {
-                    connected.report(&report, name, &format!("heartbeat sessions: {error:#}"));
+                    connected.report(
+                        &report,
+                        name,
+                        &failure::report(&error.context("heartbeat sessions")),
+                    );
                     previous
                 }
             };
@@ -3912,7 +3938,7 @@ fn spawn_heartbeat(
                 }
                 // Refused because the interpreter is stopping: nothing failed.
                 Ok(Err(_)) if runtime.stopping.load(Ordering::SeqCst) => return,
-                Ok(Err(error)) => format!("{error:#}"),
+                Ok(Err(error)) => failure::report(&error),
                 Err(panic) => format!("heartbeat panicked: {}", failure::panic_message(&*panic)),
             };
             owner.report(&key, &address, &message);

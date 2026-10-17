@@ -18,6 +18,8 @@ pub mod state;
 pub mod ting;
 pub mod update;
 
+pub use failure::report as error_report;
+
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::fs::OpenOptions;
@@ -256,10 +258,10 @@ pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> std:
         }
         Err(error) => tool_setup_failed(
             home,
-            &format!(
-                "tools run without {} on PATH, so this Silicon's apps are not found first: {error}",
+            &failure::report(&anyhow::Error::new(error).context(format!(
+                "tools run without {} on PATH, so this Silicon's apps are not found first",
                 bin.display()
-            ),
+            ))),
         ),
     }
     command
@@ -289,7 +291,8 @@ fn tool_setup_failed(home: &Path, message: &str) {
     }
     if let Err(error) = log_line(home, "error", "interpreter", message) {
         stderr_line(&format!(
-            "{error:#}; the error it was recording: {}",
+            "{}\nVia: the error it was recording: {}",
+            failure::report(&error),
             redaction::redact(home, message)
         ));
     }
@@ -332,7 +335,7 @@ pub fn log_line_scoped(
     if length >= LOG_CAP {
         // The line is written; a failed rotation is reported, not raised over it.
         if let Err(error) = rotate(&path, LOG_CAP, LOG_KEEP) {
-            stderr_line(&format!("{error:#}"));
+            stderr_line(&failure::report(&error));
         }
     }
     drop(_guard);

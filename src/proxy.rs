@@ -1,5 +1,5 @@
 //! An owned, isolated Caddy process. It never contacts the machine's default admin API.
-use crate::process::Starting;
+use crate::{failure, process::Starting};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -100,7 +100,7 @@ impl Proxy {
         let earlier = reap_orphan(&state)?;
         Self::launch(state, interpreter_port, hosts, http_port, binary).map_err(|error| {
             match &earlier {
-                Some(earlier) => anyhow!("{error:#}\nBefore this start: {earlier}"),
+                Some(earlier) => error.context(format!("Before this start: {earlier}")),
                 None => error,
             }
         })
@@ -150,7 +150,8 @@ impl Proxy {
         // opens the file. A failed rotation leaves Caddy appending to the same file.
         if let Err(error) = crate::rotate(&log_path, crate::LOG_CAP, crate::LOG_KEEP) {
             crate::stderr_line(&format!(
-                "{error:#}; Caddy keeps appending to {}",
+                "{}\nVia: Caddy keeps appending to {}",
+                failure::report(&error),
                 log_path.display()
             ));
         }
@@ -244,7 +245,7 @@ impl Proxy {
             // Caddy's words stay first; the facts that explain a refused port follow them.
             if cfg!(target_os = "linux") && format!("{error:#}").contains("bind: permission denied")
             {
-                return Err(anyhow!("{error:#}\n{}", port_facts(binary, http_port)));
+                return Err(error.context(port_facts(binary, http_port)));
             }
             return Err(error);
         }
@@ -276,7 +277,7 @@ impl Proxy {
         self.ensure_running()?;
         let pid = self.child.as_ref().map_or(0, Child::id);
         admin_call(&self.socket, "GET", "/config/", &[], CHECK_TIMEOUT)
-            .map_err(|error| anyhow!("{error}\n{}", self.log_since(self.log_mark)))
+            .map_err(|error| error.context(self.log_since(self.log_mark)))
             .with_context(|| {
                 format!(
                     "Caddy process {pid} is running, but its private admin socket {} did not answer a health check, so its routes can no longer be changed",
@@ -314,7 +315,7 @@ impl Proxy {
             }
         }
         if let Err(error) = self.trim_log(crate::LOG_CAP) {
-            problems.push(format!("{error:#}"));
+            problems.push(failure::report(&error));
         }
         let problem = (!problems.is_empty()).then(|| problems.join("\n"));
         if problem != self.upkeep_failure {
@@ -467,16 +468,30 @@ impl Proxy {
         ) {
             // A timeout can happen after Caddy accepted the new configuration.
             // Restore explicitly before reporting failure to the caller.
-            self.rollback()
-                .with_context(|| format!("Caddy reload failed: {error:#}"))?;
+            if let Err(rollback) = self.rollback() {
+                return Err(failure::also(
+                    error.context("Caddy reload failed"),
+                    Err(rollback),
+                ));
+            }
             return Err(error).context("Caddy reload failed; previous routes are active");
         }
         let saved = self.state.join("config.json");
         if let Err(error) = crate::state::write_json(&saved, &next) {
-            self.rollback()
-                .with_context(|| format!("Caddy config could not be saved: {error:#}"))?;
-            crate::state::write_json(&saved, &self.config)
-                .with_context(|| format!("previous Caddy routes are active, but the saved config could not be restored after {error:#}"))?;
+            if let Err(rollback) = self.rollback() {
+                return Err(failure::also(
+                    error.context("Caddy config could not be saved"),
+                    Err(rollback),
+                ));
+            }
+            if let Err(restoring) = crate::state::write_json(&saved, &self.config) {
+                return Err(failure::also(
+                    error.context("Caddy config could not be saved"),
+                    Err(restoring.context(
+                        "previous Caddy routes are active, but the saved config could not be restored",
+                    )),
+                ));
+            }
             return Err(error).context("Caddy config could not be saved; restored previous routes");
         }
         self.config = next;
@@ -494,12 +509,15 @@ impl Proxy {
             &serde_json::to_vec(&self.config)?,
             Duration::from_secs(10),
         ) {
-            let stopped = match self.stop() {
-                Ok(()) => "stopped the owned Caddy proxy".to_owned(),
-                Err(stop) => format!("stopping the owned Caddy proxy also failed: {stop:#}"),
+            let error = match self.stop() {
+                Ok(()) => error
+                    .context("could not restore previous routes; stopped the owned Caddy proxy"),
+                Err(stop) => failure::also(
+                    error.context("could not restore previous routes"),
+                    Err(stop.context("stopping the owned Caddy proxy also failed")),
+                ),
             };
-            let error = error.context(format!("could not restore previous routes; {stopped}"));
-            self.stopped = Some(format!("{error:#}"));
+            self.stopped = Some(failure::report(&error));
             return Err(error);
         }
         Ok(())
@@ -507,10 +525,11 @@ impl Proxy {
 
     fn ensure_running(&mut self) -> Result<()> {
         let Some(child) = self.child.as_mut() else {
-            bail!(
-                "the owned Caddy proxy is stopped, so Silicon hosts are not routed until the interpreter starts a new one. It stopped because: {}",
-                self.stopped.as_deref().unwrap_or("it was stopped on request")
-            );
+            let error = match &self.stopped {
+                Some(report) => failure::received(report.clone()),
+                None => anyhow!("the owned Caddy proxy was stopped on request"),
+            };
+            return Err(error.context("the owned Caddy proxy is stopped, so Silicon hosts are not routed until the interpreter starts a new one"));
         };
         let pid = child.id();
         if let Some(status) = child
@@ -564,7 +583,7 @@ impl Proxy {
     fn request(&self, method: &str, path: &str, body: &[u8], timeout: Duration) -> Result<()> {
         let mark = self.log_len();
         admin_call(&self.socket, method, path, body, timeout)
-            .map_err(|error| anyhow!("{error}\n{}", self.log_since(mark)))
+            .map_err(|error| error.context(self.log_since(mark)))
     }
 
     /// Recorded right after the spawn, so an interpreter that dies without stopping this
@@ -578,10 +597,10 @@ impl Proxy {
         };
         let path = self.owner_path();
         if let Err(error) = crate::state::write_json(&path, &owner) {
-            crate::stderr_line(&format!(
-                "could not record Caddy process {pid} in {}: {error:#}; if this interpreter ends without stopping it, the next start cannot find and stop it",
+            crate::stderr_line(&failure::report(&error.context(format!(
+                "could not record Caddy process {pid} in {}; if this interpreter ends without stopping it, the next start cannot find and stop it",
                 path.display()
-            ));
+            ))));
         }
     }
 
@@ -667,7 +686,9 @@ impl Drop for Proxy {
     fn drop(&mut self) {
         // Drop cannot return an error; the daemon's stderr is its daemon.log.
         if let Err(error) = self.stop() {
-            crate::stderr_line(&format!("could not stop the owned Caddy proxy: {error:#}"));
+            crate::stderr_line(&failure::report(
+                &error.context("could not stop the owned Caddy proxy"),
+            ));
         }
         // Best effort: an empty private directory left in /tmp changes nothing.
         let _ = fs::remove_dir_all(&self.socket_dir);

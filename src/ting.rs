@@ -373,7 +373,8 @@ impl Inbox {
                 crate::log_line_scoped(home, self.generation, "error", "ting", message)
             {
                 crate::stderr_line(&format!(
-                    "{error:#}; the ting error it was recording: {masked}"
+                    "{}\nThe Ting error it was recording:\n{masked}",
+                    failure::report(&error)
                 ));
             }
         }
@@ -693,12 +694,9 @@ impl Inbox {
     /// The single file makes acceptance and pending deduplication durable together.
     fn enqueue(&self, shared: &mut Shared, mut request: Value) -> Result<()> {
         let unavailable = |error: anyhow::Error| {
-            anyhow::Error::new(Unavailable(format!(
-                "{:#}",
-                error.context(
-                    "the webhook request was not accepted, so the sender must deliver it again"
-                )
-            )))
+            error.context(Unavailable(
+                "the webhook request was not accepted, so the sender must deliver it again".into(),
+            ))
         };
         let Shared {
             queue: slot,
@@ -825,7 +823,7 @@ impl Inbox {
                 self.remove(&mut shared, &head)
             }
             Err(error) => {
-                shared.blocked = Some(format!("{error:#}"));
+                shared.blocked = Some(failure::report(&error));
                 Err(if crate::flow::interrupted(&error) {
                     error.context(format!(
                         "the flow for Ting batch {id} was interrupted; the batch stays in the Ting inbox and runs again on the next connection"
@@ -916,10 +914,10 @@ impl Inbox {
             Err(error) => {
                 // Removing the batch anyway only weakens deduplication of its IDs;
                 // keeping it would run its whole flow again.
-                let error = format!("{error:#}");
+                let error = failure::report(&error);
                 if shared.unrecorded.as_ref() != Some(&error) {
                     self.report(&format!(
-                        "processed Ting batch {} but could not record its ting IDs, so a Ting redelivery of them runs the flow again: {error}",
+                        "{error}\nProcessed Ting batch {} but could not record its ting IDs, so a Ting redelivery of them runs the flow again",
                         head.batch["id"]
                     ));
                     shared.unrecorded = Some(error);
@@ -993,7 +991,10 @@ impl Inbox {
                 "no hook ID is saved, so reconnect will look for it in Ting's registration list"
                     .to_owned()
             }
-            Err(error) => format!("the saved hook ID could not be read back: {error:#}"),
+            Err(error) => format!(
+                "{}\nThe saved hook ID could not be read back",
+                failure::report(&error)
+            ),
         }
     }
 
@@ -1034,7 +1035,7 @@ impl Inbox {
             // Ting names a hook it created but could not confirm in its JSON stderr.
             // Any other stderr is not an ID and is reported verbatim below.
             let answer = serde_json::from_slice::<Value>(&result.stderr).unwrap_or_default();
-            let error = failure::command(home, &command, &result, &[]);
+            let error = command_failure(home, &command, &result);
             let Some(returned) = answer
                 .pointer("/error/details/webhook_id")
                 .and_then(Value::as_str)
@@ -1047,9 +1048,12 @@ impl Inbox {
             // A failed save rides along; Ting's own failure stays the root cause.
             return Err(match self.save_hook(returned) {
                 Ok(()) => error,
-                Err(save) => error.context(format!(
-                    "Ting named webhook {returned:?} in its failure, but this interpreter could not retain that ID: {save:#}"
-                )),
+                Err(save) => failure::also(
+                    error,
+                    Err(save.context(format!(
+                        "Ting named webhook {returned:?} in its failure, but this interpreter could not retain that ID"
+                    ))),
+                ),
             });
         }
         let wrong = |problem: &str| failure::answer(home, &command, problem, &result, &[]);
@@ -1062,8 +1066,9 @@ impl Inbox {
             return Err(wrong(&differs(returned)));
         }
         if let Err(save) = self.save_hook(returned) {
-            return Err(wrong(&format!(
-                "returned webhook ID {returned:?}, but this interpreter could not retain it: {save:#}"
+            return Err(save.context(format!(
+                "Ting returned webhook ID {returned:?}, but this interpreter could not retain it; response from `{command}`:\n{}",
+                failure::mask(home, &failure::describe(&result), &[])
             )));
         }
         if answer["state"] != "connected" {
@@ -1082,7 +1087,7 @@ impl Inbox {
                     if result.status.success() {
                         Ok(())
                     } else {
-                        Err(failure::command(&cfg.home, &command, &result, &[]))
+                        Err(command_failure(&cfg.home, &command, &result))
                     }
                 })
                 .with_context(|| {
@@ -1103,6 +1108,24 @@ fn ting(home: &Path, args: &[&str]) -> Result<(String, Output)> {
     Ok((command, output))
 }
 
+fn command_failure(home: &Path, command: &str, output: &Output) -> anyhow::Error {
+    let failure = failure::command(home, command, output, &[]);
+    let retired_field = [&output.stderr, &output.stdout].iter().any(|stream| {
+        serde_json::from_slice::<Value>(stream).is_ok_and(|answer| {
+            answer["error"]["code"] == "invalid_input"
+                && matches!(
+                    answer["error"]["message"].as_str(),
+                    Some("Missing org_id" | "Missing org_id.")
+                )
+        })
+    });
+    if retired_field {
+        failure::explain(failure, "Ting requested org_id, a field from its retired contract. Do not add org_id to the Silicon configuration.")
+    } else {
+        failure
+    }
+}
+
 /// The hook Ting lists for `url`, reading every page so duplicates are all named.
 fn listed(home: &Path, url: &str, saved: &Path) -> Result<Option<String>> {
     let mut found = Vec::new();
@@ -1115,7 +1138,7 @@ fn listed(home: &Path, url: &str, saved: &Path) -> Result<Option<String>> {
         }
         let (command, result) = ting(home, &args)?;
         if !result.status.success() {
-            return Err(failure::command(home, &command, &result, &[]));
+            return Err(command_failure(home, &command, &result));
         }
         let wrong = |problem: &str| failure::answer(home, &command, problem, &result, &[]);
         let list: Value = serde_json::from_slice(&result.stdout)
@@ -1187,4 +1210,98 @@ fn canonical_tings(request: &Value) -> Option<&[Value]> {
                 && ting["metadata"].is_object()
         })
         .then_some(tings.as_slice())
+}
+
+#[cfg(test)]
+mod command_failure_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn unavailable_inbox_preserves_its_storage_error_and_retry_classification() {
+        let directory =
+            std::env::temp_dir().join(format!("silicon-ting-unavailable-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("pending"), "not a directory").unwrap();
+        let error = Inbox::at(directory.clone())
+            .accept(json!({"event": "ping"}))
+            .unwrap_err();
+        assert!(error.is::<Unavailable>());
+        assert!(error.is::<std::io::Error>());
+        let shown = failure::report(&error);
+        assert!(shown.starts_with(&error.root_cause().to_string()));
+        assert!(shown.contains("the webhook request was not accepted"));
+        assert!(shown.contains("list the Ting queue"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retired_contract_hint_keeps_raw_error_first_without_guessing_the_cause() {
+        let home = Path::new("/silicon-ting-error-test");
+        for message in ["Missing org_id", "Missing org_id."] {
+            for stderr in [true, false] {
+                let error = serde_json::to_vec(&json!({
+                    "error": {
+                        "code": "invalid_input",
+                        "message": message,
+                        "details": {"token": "private-ting-test-token", "webhook_id": "hook-123"}
+                    }
+                }))
+                .unwrap();
+                let diagnostic = b"additional diagnostic\nsecond line\n".to_vec();
+                let (stdout, stderr) = if stderr {
+                    (diagnostic, error)
+                } else {
+                    (error, diagnostic)
+                };
+                let output = Output {
+                    status: std::process::ExitStatus::from_raw(1 << 8),
+                    stdout,
+                    stderr,
+                };
+                let command = "ting webhook http://localhost/ting --json";
+                let failure = command_failure(home, command, &output);
+                let shown = failure::report(&failure);
+                assert!(shown.contains(
+                    "Meaning: Ting requested org_id, a field from its retired contract."
+                ));
+                assert!(!shown.contains("legacy shared Ting daemon"));
+                assert!(!shown.contains("Upgrade and restart"));
+                assert!(shown.contains("Do not add org_id"));
+                assert!(shown.contains("Source: `ting webhook http://localhost/ting --json`"));
+                assert!(shown.contains("Project: https://github.com/teamofsilicons/silicon-ting"));
+                assert!(shown.find(message).unwrap() < shown.find("Source:").unwrap());
+                assert!(shown.find("Source:").unwrap() < shown.find("Meaning:").unwrap());
+                assert!(shown.contains("exit status: 1"));
+                assert!(shown.contains("additional diagnostic\nsecond line"));
+                assert!(shown.contains("hook-123"));
+                assert!(shown.contains("[redacted]"));
+                assert!(!shown.contains("private-ting-test-token"));
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_errors_have_no_speculative_meaning() {
+        let home = Path::new("/silicon-ting-error-test");
+        for error in [
+            r#"{"error":{"code":"invalid_input","message":"Missing account_id."}}"#,
+            r#"{"error":{"code":"unauthorized","message":"Missing org_id."}}"#,
+            r#"{"error":{"code":"invalid_input","message":"Missing org_id in another request."}}"#,
+            r#"{"code":"invalid_input","message":"Missing org_id."}"#,
+            "invalid_input: Missing org_id.",
+            "not JSON",
+        ] {
+            let output = Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: error.as_bytes().to_vec(),
+            };
+            let command = "ting unhook hook-123 --json";
+            let shown = failure::report(&command_failure(home, command, &output));
+            assert!(shown.contains(error));
+            assert!(shown.contains("Source: `ting unhook hook-123 --json`"));
+            assert!(!shown.contains("Meaning:"));
+        }
+    }
 }

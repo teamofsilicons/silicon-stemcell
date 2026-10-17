@@ -11,6 +11,26 @@ use std::{
     time::Duration,
 };
 
+/// A recovered failure remains a complete diagnostic, visible as a warning and kept in the log.
+pub(crate) fn warning(home: &Path, generation: uuid::Uuid, message: &str) {
+    if let Err(error) = crate::log_line_scoped(
+        home,
+        Some(generation),
+        "progress",
+        "interpreter",
+        &json!({"state": "warning", "message": message}).to_string(),
+    ) {
+        crate::stderr_line(&crate::failure::mask(
+            home,
+            &format!(
+                "{}\nVia: recording connection warning: {message}",
+                crate::failure::report(&error)
+            ),
+            &[],
+        ));
+    }
+}
+
 /// Run `action`, recording it as progress. Progress is a view of the work, never a gate on
 /// it: the action runs even when its "running" record cannot be written, and a record that
 /// fails after a successful action goes to the interpreter's stderr (daemon.log) instead of
@@ -46,7 +66,9 @@ pub(crate) fn step<T>(
     match result {
         Ok(value) => {
             if let Err(error) = reported {
-                crate::stderr_line(&format!("{error:#} (for: {working})"));
+                crate::stderr_line(&crate::failure::report(
+                    &error.context(format!("recording progress for: {working}")),
+                ));
             }
             Ok(value)
         }
@@ -78,6 +100,9 @@ struct Display<W> {
 
 impl<W: Write> Display<W> {
     fn show(&mut self, state: &str, message: &str) -> Result<()> {
+        if state == "warning" {
+            return self.raw(&format!("⚠ {message}"));
+        }
         let message: String = message.chars().filter(|c| !c.is_control()).collect();
         let mark = match state {
             "running" => "…",
@@ -182,7 +207,7 @@ pub(crate) fn connect(yaml: std::path::PathBuf) -> Result<Value> {
             crate::server::call(
                 &crate::server::daemon(true)?,
                 "connect",
-                json!({"yaml": cfg.path}),
+                json!({"yaml": cfg.path, "progress_streamed": true}),
             )
         });
         // Showing progress must never abandon the request or hide its answer.
@@ -223,11 +248,47 @@ pub(crate) fn connect(yaml: std::path::PathBuf) -> Result<Value> {
         Ok(value) => {
             // Connected: a display problem is worth a warning, not a failure.
             if let Err(error) = shown.and(finished) {
-                eprintln!("warning: {error:#}");
+                eprintln!(
+                    "{}",
+                    crate::failure::report(
+                        &error.context(
+                            "connection succeeded, but its progress could not be displayed"
+                        )
+                    )
+                );
             }
             Ok(value)
         }
         Err(error) => Err(also(also(error, shown), finished))
             .with_context(|| format!("connect {} failed", cfg.path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovered_install_is_displayed_as_a_warning() {
+        let home = std::env::temp_dir().join(format!("silicon-progress-{}", uuid::Uuid::new_v4()));
+        warning(
+            &home,
+            uuid::Uuid::new_v4(),
+            "stderr:\npackage unavailable\n\nSource: `silicon-apps install ting`\nRecovery: using installed copy",
+        );
+        crate::log_line(&home, "warning", "ting", "full package diagnostic").unwrap();
+        let mut display = Display {
+            output: Vec::new(),
+            terminal: false,
+            pending: None,
+        };
+        display
+            .lines(&home.join(".silicon/silicon.log"), &mut 0)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(display.output).unwrap(),
+            "⚠ stderr:\npackage unavailable\n\nSource: `silicon-apps install ting`\nRecovery: using installed copy\n"
+        );
+        fs::remove_dir_all(home).unwrap();
     }
 }

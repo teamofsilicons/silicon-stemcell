@@ -196,13 +196,17 @@ impl Outbox {
                         break;
                     }
                     Err(error) => {
-                        let message = crate::failure::mask(&self.home, &format!("{error:#}"), &[]);
+                        let message =
+                            crate::failure::mask(&self.home, &crate::failure::report(&error), &[]);
                         record.deliveries.get_mut(&slot).unwrap().last_error =
                             Some(message.clone());
                         save(&path, &mut record)?;
                         self.note(
                             "error",
-                            &format!("{} attempt {attempt}: {message}", destination(&delivery)),
+                            &format!(
+                                "{message}\nVia: {} attempt {attempt}",
+                                destination(&delivery)
+                            ),
                         );
                         if flow::interrupted(&error) {
                             return Err(error);
@@ -300,7 +304,8 @@ impl Outbox {
                 self.note(
                     "error",
                     &format!(
-                        "{error:#}; preserved in {} for recovery; other destinations continue",
+                        "{}\nVia: preserved in {} for recovery; other destinations continue",
+                        crate::failure::report(&error),
                         retained.display()
                     ),
                 );
@@ -314,7 +319,10 @@ impl Outbox {
         if let Err(error) =
             crate::log_line_scoped(&self.home, Some(self.generation), kind, "outbox", message)
         {
-            crate::stderr_line(&format!("{error:#}; outbox {kind}: {message}"));
+            crate::stderr_line(&format!(
+                "{}\nVia: recording outbox {kind}: {message}",
+                crate::failure::report(&error)
+            ));
         }
     }
 }

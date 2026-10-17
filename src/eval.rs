@@ -529,21 +529,15 @@ fn log(env: &Json, home: &Path, kind: &str, isi: &str, message: &str) -> Result<
 
 /// A credential command's error keeps its status and stderr; its stdout would be the credential.
 fn credential_failure(home: &Path, problem: &str, output: &Output) -> anyhow::Error {
-    let streams = failure::describe(&Output {
-        stdout: Vec::new(),
+    let withheld = Output {
+        stdout: b"(withheld; it is the credential)".to_vec(),
         ..output.clone()
-    });
-    let streams = streams
-        .strip_suffix("\nstdout: (empty)")
-        .unwrap_or(&streams);
-    anyhow!(
-        "{}",
-        failure::mask(
-            home,
-            &format!("`{CREDENTIAL}` {problem}{streams}\nstdout: (withheld; it is the credential)"),
-            &[]
-        )
-    )
+    };
+    if problem.trim() == "failed:" {
+        failure::command(home, CREDENTIAL, &withheld, &[])
+    } else {
+        failure::answer(home, CREDENTIAL, problem.trim(), &withheld, &[])
+    }
 }
 
 fn candidate_source(source: &str, mode: Mode) -> Result<(String, bool)> {
@@ -697,9 +691,9 @@ fn bounded(bash: &mut std::process::Command, mode: Mode) -> std::io::Result<Outp
 /// Each error is masked once, before it is logged, so the log and the caller read the same text.
 fn run(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Result<String> {
     let masked =
-        |error: anyhow::Error| failure::mask(home, &redact(&format!("{error:#}"), env), &[]);
+        |error: anyhow::Error| failure::mask(home, &redact(&failure::report(&error), env), &[]);
     let mut errors = Vec::new();
-    for source in fallbacks(source, mode).map_err(|error| anyhow!(masked(error)))? {
+    for source in fallbacks(source, mode).map_err(|error| failure::received(masked(error)))? {
         match candidate(source, env, home, isi, mode) {
             Ok(value) => return Ok(value),
             Err(error) => {
@@ -709,23 +703,18 @@ fn run(source: &str, env: &Json, home: &Path, isi: &str, mode: Mode) -> Result<S
                     home,
                     "error",
                     isi,
-                    &format!("evaluation failed: {error}"),
+                    &format!("{error}\nVia: evaluation failed"),
                 )?;
                 errors.push(error);
             }
         }
     }
     if let [error] = errors.as_slice() {
-        bail!("{error}");
+        return Err(failure::received(error.clone()));
     }
-    bail!(
-        "all {} fallback candidates failed:{}",
-        errors.len(),
-        errors
-            .iter()
-            .enumerate()
-            .map(|(index, error)| format!("\n{}. {error}", index + 1))
-            .collect::<String>()
+    Err(
+        failure::received(errors.join("\n\nNext fallback candidate:\n"))
+            .context(format!("all {} fallback candidates failed", errors.len())),
     )
 }
 
@@ -879,6 +868,29 @@ fn validate_value(value: &Yaml, mode: Mode) -> Result<()> {
 #[cfg(test)]
 mod reporting_tests {
     use super::*;
+
+    #[test]
+    fn credential_failure_keeps_diagnostic_but_withholds_command_and_stdout() {
+        let home = std::env::temp_dir().join(format!("silicon-secret-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&home).unwrap();
+        let error = evaluate_secret(
+            "! printf opaque-secret-to-withhold; printf 'credential lookup failed\\n' >&2; exit 9",
+            &serde_json::json!({}),
+            &home,
+            "test",
+        )
+        .unwrap_err();
+        let report = failure::report(&error);
+        assert!(report.starts_with("stderr:\ncredential lookup failed"));
+        assert!(report.contains("stdout:\n(withheld; it is the credential)"));
+        assert!(report.contains("Source: `[credential expression]`"));
+        assert!(report.contains("Status: exit status: 9"));
+        assert!(!report.contains("Meaning:"));
+        let log = std::fs::read_to_string(home.join(".silicon/silicon.log")).unwrap();
+        assert!(!report.contains("opaque-secret-to-withhold"));
+        assert!(!log.contains("opaque-secret-to-withhold"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     #[test]
     fn bash_disables_legacy_ting_reporting_before_running() {

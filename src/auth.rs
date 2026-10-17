@@ -5,7 +5,7 @@ use crate::Recover;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
@@ -68,7 +68,8 @@ fn forgive(home: &Path, key: &str) {
 fn note(home: &Path, generation: Option<uuid::Uuid>, kind: &str, origin: &str, message: &str) {
     if let Err(error) = crate::log_line_scoped(home, generation, kind, origin, message) {
         crate::stderr_line(&format!(
-            "{error:#}; the [{kind}] {origin} entry it was recording: {}",
+            "{}\nThe [{kind}] {origin} entry it was recording:\n{}",
+            failure::report(&error),
             failure::mask(home, message, &[])
         ));
     }
@@ -93,7 +94,7 @@ fn report(home: &Path, generation: Option<uuid::Uuid>, topic: &str, text: Option
 fn recorded(home: &Path, generation: Option<uuid::Uuid>, consequence: &str, result: Result<()>) {
     let text = result
         .err()
-        .map(|error| format!("{error:#}; {consequence}"));
+        .map(|error| format!("{}\n{consequence}", failure::report(&error)));
     report(home, generation, consequence, text);
 }
 
@@ -399,7 +400,8 @@ fn ensure_all_using(
                     "error",
                     &origin(&command),
                     &format!(
-                        "{what}; sessions start without it, and it is checked again automatically after {} minutes, on the next connect, or by `si auth setup`{unconfigured}: {error:#}",
+                        "{}\n{what}; sessions start without it, and it is checked again automatically after {} minutes, on the next connect, or by `si auth setup`{unconfigured}",
+                        failure::report(&error),
                         RETRY_AFTER_SECONDS / 60
                     ),
                 );
@@ -423,8 +425,8 @@ enum Check {
     Automatic,
 }
 
-/// Why an automatic check signed an app out, and how its log line begins.
-const SIGNED_OUT: &str = "signed out because its session belonged to another identity and a new grant could not be minted";
+/// Why an automatic check signed an app out.
+const SIGNED_OUT: &str = "signed out because its session could not be confirmed for this Silicon and a new grant could not be minted";
 
 /// How an automatic check ended that found an app signed in under a session no grant for
 /// this identity opened, and could not sign it in afresh.
@@ -439,13 +441,21 @@ enum Foreign {
 impl std::fmt::Display for Foreign {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SignedOut(error) => write!(f, "{SIGNED_OUT}: {error:#}"),
-            Self::StillSignedIn(error) => write!(f, "{error:#}"),
+            Self::SignedOut(_) => f.write_str(SIGNED_OUT),
+            Self::StillSignedIn(_) => {
+                f.write_str("the app could not be signed out after its credential check failed")
+            }
         }
     }
 }
 
-impl std::error::Error for Foreign {}
+impl std::error::Error for Foreign {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SignedOut(error) | Self::StillSignedIn(error) => Some(error.as_ref()),
+        }
+    }
+}
 
 struct App {
     home: PathBuf,
@@ -453,6 +463,7 @@ struct App {
     reference: String,
     expected_id: Option<String>,
     ting: Cell<bool>,
+    project: RefCell<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -477,6 +488,37 @@ fn account_id(state: &Value) -> Option<&str> {
         .or_else(|| state.pointer("/account/id").and_then(Value::as_str))
         .or_else(|| state.pointer("/identity/id").and_then(Value::as_str))
         .or_else(|| state.get("identity").and_then(Value::as_str))
+}
+
+fn accounts_login_error(error: anyhow::Error, output: &Output) -> anyhow::Error {
+    let invalid_credentials = [&output.stderr, &output.stdout].into_iter().any(|bytes| {
+        serde_json::from_slice::<Value>(bytes).is_ok_and(|value| {
+            value.pointer("/error/code").and_then(Value::as_str) == Some("invalid_credentials")
+        })
+    });
+    if invalid_credentials {
+        failure::explain(error, "Silicon Accounts rejected the supplied credentials.")
+    } else {
+        error
+    }
+}
+
+fn app_login_error(error: anyhow::Error, contract: Contract, output: &Output) -> anyhow::Error {
+    let unsupported_slt = matches!(contract, Contract::Login)
+        && [&output.stderr, &output.stdout].into_iter().any(|bytes| {
+            String::from_utf8_lossy(bytes)
+                .lines()
+                .any(|line| line.trim() == "error: unexpected argument '--slt' found")
+        });
+    let error = if unsupported_slt {
+        failure::explain(
+            error,
+            "This app does not support `login --slt`; it rejected the login command syntax.",
+        )
+    } else {
+        error
+    };
+    error.context("app login failed after Silicon Accounts issued a token")
 }
 
 impl App {
@@ -530,6 +572,7 @@ impl App {
             reference,
             expected_id: None,
             ting: Cell::new(false),
+            project: RefCell::new(None),
         })
     }
 
@@ -565,7 +608,10 @@ impl App {
     }
 
     fn failed(&self, args: &[&str], output: &Output, secrets: &[&str]) -> anyhow::Error {
-        failure::command(&self.home, &self.show(args, secrets), output, secrets)
+        failure::with_project(
+            failure::command(&self.home, &self.show(args, secrets), output, secrets),
+            self.project.borrow().as_deref(),
+        )
     }
 
     fn answered(
@@ -575,12 +621,15 @@ impl App {
         output: &Output,
         secrets: &[&str],
     ) -> anyhow::Error {
-        failure::answer(
-            &self.home,
-            &self.show(args, secrets),
-            problem,
-            output,
-            secrets,
+        failure::with_project(
+            failure::answer(
+                &self.home,
+                &self.show(args, secrets),
+                problem,
+                output,
+                secrets,
+            ),
+            self.project.borrow().as_deref(),
         )
     }
 
@@ -601,7 +650,12 @@ impl App {
         let mut command = crate::command(&self.argv[0], &self.home);
         command.args(&self.argv[1..]).args(args);
         crate::process::output(&mut command, limit)
-            .map_err(|error| failure::spawn(&self.home, &self.show(args, secrets), &error))
+            .map_err(|error| {
+                failure::with_project(
+                    failure::spawn(&self.home, &self.show(args, secrets), &error),
+                    self.project.borrow().as_deref(),
+                )
+            })
             .with_context(|| {
                 format!(
                     "could not execute Accounts app {}; check the executable and SILICON_HOME {}",
@@ -612,6 +666,7 @@ impl App {
     }
 
     fn discover(&self) -> Result<String> {
+        self.project.replace(None);
         const ASK: &[&str] = &["accounts", "--json"];
         let output = self.run(ASK)?;
         if !output.status.success() {
@@ -648,11 +703,17 @@ impl App {
             ));
         }
         self.ting.set(app_id == "ting");
+        self.project.replace(
+            info.get("repository_url")
+                .and_then(Value::as_str)
+                .or_else(|| info.get("repository").and_then(Value::as_str))
+                .map(str::to_owned),
+        );
         Ok(app_id.to_owned())
     }
 
     fn status(&self) -> Result<(Contract, bool, Option<String>)> {
-        let mut answers = Vec::new();
+        let mut failure = None;
         for contract in [Contract::Login, Contract::Auth] {
             let args = contract.status();
             let output = self.run(args)?;
@@ -688,12 +749,14 @@ impl App {
                     &[],
                 ),
             };
-            answers.push(format!("{error:#}"));
+            failure = Some(match failure {
+                Some(first) => failure::also(first, Err(error)),
+                None => error,
+            });
         }
-        bail!(
-            "Accounts app must support `login status --json` or `auth status --json` with a boolean authenticated field; neither worked:\n{}",
-            answers.join("\n")
-        );
+        Err(failure.expect("both status contracts were checked").context(
+            "Accounts app must support `login status --json` or `auth status --json` with a boolean authenticated field; neither worked",
+        ))
     }
 
     /// `secrets` were handed to the app earlier in this exchange; its status may echo them.
@@ -982,7 +1045,7 @@ fn close_foreign(home: &Path, app: &App, label: &str, error: anyhow::Error) -> a
         )),
         Err(signing_out) => Foreign::StillSignedIn(failure::also(
             error.context(format!(
-                "{label} is signed in with a session that belongs to another identity, a new grant could not be minted, and it could not be signed out, so connect and new sessions fail until it is signed in afresh or signed out"
+                "{label} is signed in with a session that could not be confirmed for this Silicon, a new grant could not be minted, and it could not be signed out, so connect and new sessions fail until it is signed in afresh or signed out"
             )),
             Err(signing_out.context("signing it out failed")),
         )),
@@ -1079,10 +1142,17 @@ fn authenticate_inner(
             .args(&app.argv[1..])
             .args(&args)
             .env("ACCOUNTS_STK", stk);
-        let output = crate::process::output(&mut login, Limit::App)
-            .map_err(|error| failure::spawn(home, &app.show(&args, &[stk]), &error))?;
+        let output = crate::process::output(&mut login, Limit::App).map_err(|error| {
+            failure::with_project(
+                failure::spawn(home, &app.show(&args, &[stk]), &error),
+                app.project.borrow().as_deref(),
+            )
+        })?;
         if !output.status.success() {
-            return Err(app.failed(&args, &output, &[stk]));
+            return Err(accounts_login_error(
+                app.failed(&args, &output, &[stk]),
+                &output,
+            ));
         }
         if let Err(error) = app.check_status(contract, true, &[sid], &[stk]) {
             *foreign = true;
@@ -1167,11 +1237,13 @@ fn authenticate_inner(
     let shown = masked_argv(&home, accounts, &mint, &[stk]);
     let output = invoke(&mint).map_err(|error| failure::spawn(&home, &shown, &error))?;
     if !output.status.success() {
-        return Err(
-            failure::command(&home, &shown, &output, &[stk]).context(format!(
-                "Silicon Accounts could not issue the application token for {app_id}"
-            )),
-        );
+        return Err(accounts_login_error(
+            failure::command(&home, &shown, &output, &[stk]),
+            &output,
+        )
+        .context(format!(
+            "Silicon Accounts could not issue the application token for {app_id}"
+        )));
     }
     let issued: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
         failure::answer(
@@ -1253,8 +1325,10 @@ fn authenticate_inner(
     let secrets = [slt, stk];
     let output = app.run_secret(&args, &secrets)?;
     if !output.status.success() {
-        return Err(app.failed(&args, &output, &secrets).context(
-            "app rejected the Accounts short-lived token; run authentication again after fixing its login failure",
+        return Err(app_login_error(
+            app.failed(&args, &output, &secrets),
+            contract,
+            &output,
         ));
     }
     if let Err(error) = app.check_status(contract, true, &[sid, account_uuid], &secrets) {
@@ -1340,13 +1414,17 @@ impl App {
             Contract::Auth => &[&["auth", "remove"], &["auth", "logout"], &["logout"]],
             Contract::Login => &[&["logout"], &["auth", "remove"], &["auth", "logout"]],
         };
-        let mut unsupported = Vec::new();
+        let mut unsupported = None;
         for args in candidates {
             let mut help = args.to_vec();
             help.push("--help");
             let output = self.run(&help)?;
             if !output.status.success() {
-                unsupported.push(format!("{:#}", self.failed(&help, &output, &[])));
+                let error = self.failed(&help, &output, &[]);
+                unsupported = Some(match unsupported {
+                    Some(first) => failure::also(first, Err(error)),
+                    None => error,
+                });
                 continue;
             }
             let output = self.run(args)?;
@@ -1359,10 +1437,9 @@ impl App {
                 .check_status(contract, false, &[], &[])
                 .context("could not confirm the app signed out after logout");
         }
-        bail!(
-            "Accounts app must expose `auth remove`, `auth logout`, or `logout`; every help check failed:\n{}",
-            unsupported.join("\n")
-        );
+        Err(unsupported.expect("logout candidates were checked").context(
+            "Accounts app must expose `auth remove`, `auth logout`, or `logout`; every help check failed",
+        ))
     }
 }
 
@@ -1397,7 +1474,8 @@ pub fn configure_all(home: &Path, configs: &BTreeMap<String, Value>, generation:
                 "error",
                 &origin(id),
                 &format!(
-                    "could not apply silicon.app_configs.{id} to {id}; the Silicon connects without it, the app keeps the configuration it last accepted, and the next connect applies it again: {error:#}"
+                    "{}\ncould not apply silicon.app_configs.{id} to {id}; the Silicon connects without it, the app keeps the configuration it last accepted, and the next connect applies it again",
+                    failure::report(&error)
                 ),
             );
         }
@@ -1426,6 +1504,203 @@ fn configure_app(home: &Path, id: &str, config: &Value) -> Result<()> {
         return Err(app.failed(&args, &output, &[&value]));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod login_error_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn output(stderr: &str, stdout: &str) -> Output {
+        Output {
+            status: std::process::ExitStatus::from_raw(2 << 8),
+            stderr: stderr.as_bytes().to_vec(),
+            stdout: stdout.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn unsupported_slt_explains_the_cli_mismatch_and_keeps_masked_diagnostics() {
+        let output = output(
+            "error: unexpected argument '--slt' found\nUsage: spotify login [OPTIONS] [SLT]\nopaque-login-secret",
+            "additional login details",
+        );
+        let app = App::new(Path::new("."), "spotify").unwrap();
+        let error = app_login_error(
+            app.failed(
+                &["login", "--slt", "opaque-login-secret"],
+                &output,
+                &["opaque-login-secret"],
+            ),
+            Contract::Login,
+            &output,
+        );
+        let text = failure::report(&error);
+        assert!(text.contains("does not support `login --slt`"));
+        assert!(text.contains("Silicon Accounts issued a token"));
+        assert!(text.contains("error: unexpected argument '--slt' found"));
+        assert!(text.contains("Usage: spotify login [OPTIONS] [SLT]"));
+        assert!(text.contains("additional login details"));
+        assert!(text.contains("exit status: 2"));
+        assert!(text.contains("[redacted]"));
+        assert!(!text.contains("opaque-login-secret"));
+        assert!(text.find("error: unexpected argument").unwrap() < text.find("Source:").unwrap());
+        assert!(text.find("Source:").unwrap() < text.find("Meaning:").unwrap());
+        assert!(text.find("Meaning:").unwrap() < text.find("Via:").unwrap());
+    }
+
+    #[test]
+    fn other_login_failures_do_not_claim_a_syntax_or_credential_rejection() {
+        for (contract, diagnostic) in [
+            (Contract::Login, "network unavailable"),
+            (
+                Contract::Login,
+                "error: unexpected argument '--other' found\nUsage: login --slt TOKEN",
+            ),
+            (Contract::Auth, "error: unexpected argument '--slt' found"),
+        ] {
+            let output = output(diagnostic, "");
+            let error = app_login_error(
+                failure::command(Path::new("."), "test-app login", &output, &[]),
+                contract,
+                &output,
+            );
+            let text = failure::report(&error);
+            assert!(text.contains(diagnostic));
+            assert!(text.contains("Source: `test-app login`"));
+            assert!(text.contains("app login failed after Silicon Accounts issued a token"));
+            assert!(!text.contains("Meaning:"));
+            assert!(!text.contains("does not support"));
+            assert!(!text.contains("rejected"));
+        }
+    }
+
+    #[test]
+    fn invalid_accounts_credentials_explain_only_the_known_rejection() {
+        let diagnostic = r#"{"error":{"code":"invalid_credentials","message":"Account rejected opaque-account-secret"}}"#;
+        for (stderr, stdout) in [(diagnostic, ""), ("", diagnostic)] {
+            let output = output(stderr, stdout);
+            let error = accounts_login_error(
+                failure::command(
+                    Path::new("."),
+                    "silicon-accounts login",
+                    &output,
+                    &["opaque-account-secret"],
+                ),
+                &output,
+            );
+            let text = failure::report(&error);
+            assert!(text.contains("Meaning: Silicon Accounts rejected the supplied credentials."));
+            assert!(!text.contains("belong to the same Silicon"));
+            assert!(!text.contains("silicon.yaml"));
+            assert!(text.contains("invalid_credentials"));
+            assert!(text.contains("Account rejected [redacted]"));
+            assert!(text.contains("Project: https://github.com/teamofsilicons/silicon-accounts"));
+            assert!(text.find("invalid_credentials").unwrap() < text.find("Source:").unwrap());
+            assert!(text.find("Source:").unwrap() < text.find("Meaning:").unwrap());
+            assert!(!text.contains("opaque-account-secret"));
+        }
+        for diagnostic in [
+            r#"{"error":{"code":"service_unavailable","message":"Try again"}}"#,
+            r#"{"error":{"code":"network_error","message":"invalid_credentials"}}"#,
+            "invalid_credentials",
+        ] {
+            let output = output(diagnostic, "");
+            assert_eq!(
+                accounts_login_error(anyhow!("original failure"), &output).to_string(),
+                "original failure"
+            );
+        }
+    }
+
+    #[test]
+    fn discovered_repository_links_follow_command_answer_and_spawn_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for field in ["repository_url", "repository"] {
+            let home =
+                std::env::temp_dir().join(format!("silicon-auth-project-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&home).unwrap();
+            let binary = home.join("renamed-app");
+            let project = "https://github.com/example/custom-app";
+            let info = serde_json::json!({"app_id": "error-test-app", field: project});
+            fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' {}\n",
+                    shell_words::quote(&info.to_string())
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+            let app = App::installed(&home, "error-test-app", &binary).unwrap();
+            assert_eq!(app.discover().unwrap(), "error-test-app");
+
+            let status = app.status().err().unwrap();
+            let text = failure::report(&status);
+            assert!(text.contains("login status --json"));
+            assert!(text.contains("auth status --json"));
+            assert!(text.contains(&format!("Project: {project}")));
+            assert!(text.find("error-test-app").unwrap() < text.find("Source:").unwrap());
+
+            let output = output("raw app failure with opaque-app-secret", "extra details");
+            for error in [
+                app.failed(&["login"], &output, &["opaque-app-secret"]),
+                app.answered(
+                    &["login"],
+                    "returned invalid JSON",
+                    &output,
+                    &["opaque-app-secret"],
+                ),
+            ] {
+                let text = failure::report(&error);
+                assert!(text.contains(&format!("Project: {project}")));
+                assert!(text.contains("raw app failure with [redacted]"));
+                assert!(text.contains("extra details"));
+                assert!(!text.contains("opaque-app-secret"));
+                assert!(text.find("raw app failure").unwrap() < text.find("Project:").unwrap());
+            }
+            fs::remove_file(&binary).unwrap();
+            let error = app.execute(&["login"], &[], Limit::App).unwrap_err();
+            let text = failure::report(&error);
+            assert!(text.contains(&format!("Project: {project}")));
+            assert!(text.contains("could not execute Accounts app"));
+            fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_discovery_identity_cannot_supply_a_project_link() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home =
+            std::env::temp_dir().join(format!("silicon-auth-project-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&home).unwrap();
+        let binary = home.join("renamed-app");
+        fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' '{\"app_id\":\"another-app\",\"repository\":\"https://github.com/example/another-app\"}'\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        let app = App::installed(&home, "error-test-app", &binary).unwrap();
+        let error = app.discover().unwrap_err();
+        assert!(!failure::report(&error).contains("Project:"));
+        assert!(app.project.borrow().is_none());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn foreign_session_wrapper_preserves_the_command_diagnostic() {
+        let output = output("original auth rejection", "");
+        let error = anyhow::Error::new(Foreign::SignedOut(failure::command(
+            Path::new("."),
+            "silicon-accounts login",
+            &output,
+            &[],
+        )));
+        let text = failure::report(&error);
+        assert!(text.find("original auth rejection").unwrap() < text.find("Source:").unwrap());
+        assert!(text.contains("Project: https://github.com/teamofsilicons/silicon-accounts"));
+        assert!(text.contains(SIGNED_OUT));
+        assert!(error.downcast_ref::<Foreign>().is_some());
+    }
 }
 
 #[cfg(test)]

@@ -399,7 +399,7 @@ pub fn silicon() -> Result<()> {
             // Before the shutdown: a cron `service ensure` between the interpreter's exit and
             // a later marker would start it again.
             if let Err(error) = crate::service::note_stopped() {
-                eprintln!("warning: {error:#}");
+                eprintln!("{}", crate::failure::report(&error));
             }
             let result = server::stop(force, |pid| {
                 if terminal {
@@ -423,7 +423,7 @@ pub fn silicon() -> Result<()> {
                     if cli.json {
                         print_json(&json!({"stopped": true, "running": false}))?;
                     } else {
-                        println!("the interpreter was not running ({error:#}); it stays stopped until the next boot or `silicon connect`");
+                        println!("{}\nVia: the interpreter was not running; it stays stopped until the next boot or `silicon connect`", crate::failure::report(&error));
                     }
                     return Ok(());
                 }
@@ -474,7 +474,8 @@ pub fn silicon() -> Result<()> {
                         println!("updated; the interpreter uses the new release when it next starts")
                     }
                     Some(Err(error)) => println!(
-                        "updated; the interpreter uses the new release when it next starts. The running interpreter could not be asked to restart ({error:#}); to restart it now, run `silicon stop`, then `silicon connect` with your silicon.yaml"
+                        "{}\nVia: updated; the interpreter uses the new release when it next starts. The running interpreter could not be asked to restart; to restart it now, run `silicon stop`, then `silicon connect` with your silicon.yaml",
+                        crate::failure::report(&error)
                     ),
                 }
             }
@@ -669,7 +670,8 @@ pub(crate) fn supervise(cfg: &crate::config::Config) {
         Ok(Some(note)) => eprintln!("{note}"),
         Ok(None) => {}
         Err(error) => eprintln!(
-            "warning: autostart was not set up; the interpreter runs without a supervisor: {error:#}"
+            "{}\nVia: warning: autostart was not set up; the interpreter runs without a supervisor",
+            crate::failure::report(&error)
         ),
     }
     for warning in crate::service::connect_warnings(&cfg.path, &cfg.home) {
@@ -693,7 +695,8 @@ pub(crate) fn supervise(cfg: &crate::config::Config) {
                     service.mechanism()
                 ),
                 Err(error) => eprintln!(
-                    "warning: the running interpreter (pid {}) was not started by the {} service and could not be asked to hand over to it: {error:#}",
+                    "{}\nVia: warning: the running interpreter (pid {}) was not started by the {} service and could not be asked to hand over to it",
+                    crate::failure::report(&error),
                     daemon.pid,
                     service.mechanism()
                 ),
@@ -722,7 +725,8 @@ fn connections() -> Result<Vec<Value>> {
         Err(error) => {
             if !never_started(&error) {
                 eprintln!(
-                    "warning: no connections listed; the interpreter did not answer: {error:#}"
+                    "{}\nVia: warning: no connections listed; the interpreter did not answer",
+                    crate::failure::report(&error)
                 );
             }
             return Ok(Vec::new());

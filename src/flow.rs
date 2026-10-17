@@ -444,7 +444,8 @@ impl<F: FnMut(&Delivery) -> Result<()>> Runner<'_, F> {
                                 .as_str()
                                 .map_or_else(|| format!("{other:?}"), str::to_owned),
                         };
-                        self.log("error", &format!("flow expression {source}: {error:#}"))?;
+                        let error = error.context(format!("flow expression {source}"));
+                        self.log("error", &crate::failure::report(&error))?;
                         if self.function_depth > 0 {
                             return Err(error);
                         }
@@ -483,14 +484,13 @@ impl<F: FnMut(&Delivery) -> Result<()>> Runner<'_, F> {
                     if name == "if" {
                         chain = Some(chain.unwrap_or(false));
                     }
-                    self.log(
-                        "error",
-                        &format!("{}: {error:#}", describe(name, body, str::to_owned)),
-                    )?;
+                    let error = error.context(describe(name, body, str::to_owned));
+                    let report = crate::failure::report(&error);
+                    self.log("error", &report)?;
                     if let Some(catch) = catch.filter(|value| !value.is_null()) {
                         let control = self.scoped(
                             "error",
-                            json!(format!("{error:#}")),
+                            json!(report),
                             format!("step {index} catch"),
                             catch,
                         )?;
@@ -526,11 +526,12 @@ impl<F: FnMut(&Delivery) -> Result<()>> Runner<'_, F> {
     fn deliver(&mut self, delivery: &Delivery) -> Result<()> {
         if let Err(error) = (self.send)(delivery) {
             let entry = format!(
-                "send {}: {error:#}; the flow stops here and no catch runs",
+                "{}\nVia: send {}; the flow stops here and no catch runs",
+                crate::failure::report(&error),
                 delivery.isi
             );
             if let Err(log) = self.log("error", &entry) {
-                crate::stderr_line(&format!("{log:#}"));
+                crate::stderr_line(&crate::failure::report(&log));
             }
             return Err(if interrupted(&error) {
                 error
@@ -847,4 +848,46 @@ where
             delivery.session_id.as_deref(),
         )
     })
+}
+
+#[cfg(test)]
+mod error_report_tests {
+    use super::*;
+
+    #[test]
+    fn catch_receives_raw_fallback_diagnostics_and_the_complete_flow_trace() {
+        let home = std::env::temp_dir().join(format!("silicon-flow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&home).unwrap();
+        let flow: Yaml = serde_yaml::from_str(
+            r#"
+- var:
+    name: answer
+    value: "! printf 'first failure' >&2; printf 'first stdout'; exit 7 !>> ! printf 'second failure' >&2; exit 8"
+  catch:
+    - send:
+        isi: observer
+        message: '{self.error}'
+"#,
+        )
+        .unwrap();
+        let mut reports = Vec::new();
+        execute(&flow, json!({}), &home, "test", |_, message, _| {
+            reports.push(message.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        let [report] = reports.as_slice() else {
+            panic!("the catch must send exactly one report");
+        };
+        assert!(report.starts_with("stderr:\nfirst failure"));
+        assert!(report.contains("stdout:\nfirst stdout"));
+        assert!(report.contains("second failure"));
+        assert!(report.contains("Source: `bash -c"));
+        assert!(report.contains("Status: exit status: 7"));
+        assert!(report.contains("Status: exit status: 8"));
+        assert!(report.contains("Via: all 2 fallback candidates failed"));
+        assert!(report.contains("Via: var answer ="));
+        assert!(!report.contains("Source: Silicon interpreter"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }

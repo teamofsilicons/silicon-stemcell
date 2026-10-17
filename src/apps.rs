@@ -177,7 +177,9 @@ pub(crate) fn refresh_dna(cfg: &crate::config::Config) -> Result<()> {
     let packages = package_home(&cfg.home)?;
     let binary = silicon_apps(&cfg.home);
     refresh_dna_using(&cfg.home, &cfg.managed_apps(), cfg.generation, |id| {
-        let binary = binary.as_ref().map_err(|error| anyhow!("{error:#}"))?;
+        let binary = binary
+            .as_ref()
+            .map_err(|error| failure::received(failure::report(error)))?;
         invoke_limited(
             &cfg.home,
             &packages,
@@ -202,7 +204,7 @@ fn refresh_dna_using(
         Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
     };
     let mut cached = cached.unwrap_or_else(|error| {
-        logged(home, generation, "silicon_apps", &format!("{error:#}"));
+        logged(home, generation, "silicon_apps", &failure::report(&error));
         BTreeMap::new()
     });
     let ids: BTreeSet<_> = configured.iter().filter(|id| valid_id(id)).collect();
@@ -222,7 +224,7 @@ fn refresh_dna_using(
         });
         match metadata {
             Ok(app) => { cached.insert(id.clone(), app); }
-            Err(error) => logged(home, generation, id, &format!("could not refresh app DNA from Silicon Apps: {error:#}; keeping cached details when available")),
+            Err(error) => logged(home, generation, id, &failure::report(&error.context("could not refresh app DNA from Silicon Apps; keeping cached details when available"))),
         }
         let (name, description) = cached
             .get(id)
@@ -359,9 +361,8 @@ fn answers(home: &Path, path: &Path, id: &str, rejected: &mut Vec<String>) -> bo
     match advertises(home, path, id) {
         Ok(()) => true,
         Err(error) => {
-            rejected.push(format!(
-                "{} is not Silicon app {id}: {error:#}",
-                path.display()
+            rejected.push(failure::report(
+                &error.context(format!("{} is not Silicon app {id}", path.display())),
             ));
             false
         }
@@ -383,7 +384,9 @@ fn discover(
             let target = fs::read_link(&own)
                 .map(|target| format!(" (it links to {})", target.display()))
                 .unwrap_or_default();
-            rejected.push(format!("{}{target} cannot run: {error:#}", own.display()));
+            rejected.push(failure::report(
+                &error.context(format!("{}{target} cannot run", own.display())),
+            ));
         }
         Err(_) => {}
     }
@@ -578,9 +581,9 @@ fn install_registered_using(
                 home,
                 generation,
                 id,
-                &format!(
-                    "{error:#}; continuing without it, since it is in the managed app registry but not in the YAML; remove it with `si auth remove {id}`"
-                ),
+                &failure::report(&error.context(format!(
+                    "continuing without {id}, since it is in the managed app registry but not in the YAML; remove it with `si auth remove {id}`"
+                ))),
             );
         }
     }
@@ -595,35 +598,43 @@ fn install_or_keep(
     generation: uuid::Uuid,
     silicon_apps: &dyn Fn(&Path) -> Result<PathBuf>,
 ) -> Result<()> {
-    let installed = step(
+    step(
         home,
         Some(generation),
-        &format!("Installing latest {id} through Silicon Apps"),
-        &format!("Installed latest {id}"),
-        || install_using(home, id, &silicon_apps(home)?),
-    );
-    let Err(error) = installed else {
-        return Ok(());
-    };
-    match usable(home, id, silicon_apps) {
-        Ok(Some(path)) => {
-            logged(
+        &format!("Preparing {id} through Silicon Apps"),
+        &format!("Ready {id}"),
+        || {
+            let Err(error) = silicon_apps(home).and_then(|binary| install_using(home, id, &binary))
+            else {
+                return Ok(());
+            };
+            let path = match usable(home, id, silicon_apps) {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    return Err(error.context(format!(
+                    "prepare {id}: installation failed and no compatible installed copy was found"
+                )))
+                }
+                Err(checked) => {
+                    return Err(failure::also(
+                        error,
+                        Err(checked.context(format!("looking for an installed copy of {id}"))),
+                    ))
+                }
+            };
+            crate::progress::warning(
                 home,
                 generation,
-                id,
                 &format!(
-                    "could not install the latest {id} through Silicon Apps, so {} (which answers as {id}) stays in use: {error:#}; continuing with the installed {id}",
-                    path.display()
+                    "{}\nRecovery: could not update {id}; using installed copy at {}.\nConnection log: {}",
+                    failure::report(&error),
+                    path.display(),
+                    home.join(".silicon/silicon.log").display()
                 ),
             );
             Ok(())
-        }
-        Ok(None) => Err(error),
-        Err(checked) => Err(failure::also(
-            error,
-            Err(checked.context(format!("looking for an installed copy of {id}"))),
-        )),
-    }
+        },
+    )
 }
 
 /// An `[error]` line under `id` in silicon.log, or in daemon.log when silicon.log cannot
@@ -631,7 +642,8 @@ fn install_or_keep(
 fn logged(home: &Path, generation: uuid::Uuid, id: &str, message: &str) {
     if let Err(error) = crate::log_line_scoped(home, Some(generation), "error", id, message) {
         crate::stderr_line(&format!(
-            "{error:#}; the {id} error it was recording: {}",
+            "{}\nVia: recording the {id} error: {}",
+            failure::report(&error),
             failure::mask(home, message, &[])
         ));
     }
@@ -666,7 +678,8 @@ pub(crate) fn step<T>(
     });
     let unrecorded = |error: &anyhow::Error| {
         crate::stderr_line(&format!(
-            "progress of \"{working}\" was not recorded: {error:#}"
+            "{}\nVia: recording progress of \"{working}\"",
+            failure::report(error)
         ))
     };
     match (value, recorded) {
@@ -712,4 +725,55 @@ fn uninstall_using(home: &Path, id: &str, binary: &Path) -> Result<Value> {
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod install_progress_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn installed_fallback_is_a_warning_but_missing_app_fails() {
+        let home =
+            std::env::temp_dir().join(format!("silicon-install-error-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(home.join(".silicon/bin")).unwrap();
+        let installer = home.join("silicon-apps");
+        fs::write(
+            &installer,
+            "#!/bin/sh\necho 'package unavailable for macos-aarch64' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&installer, fs::Permissions::from_mode(0o700)).unwrap();
+        let app = home.join(".silicon/bin/error-test-app");
+        fs::write(&app, "#!/bin/sh\necho '{\"app_id\":\"error-test-app\"}'\n").unwrap();
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
+        let generation = uuid::Uuid::new_v4();
+        let apps = |_: &Path| Ok(installer.clone());
+
+        install_or_keep(&home, "error-test-app", generation, &apps).unwrap();
+        let log = home.join(".silicon/silicon.log");
+        let text = fs::read_to_string(&log).unwrap();
+        assert!(text.contains("package unavailable for macos-aarch64"));
+        assert!(text.contains("Source: `"));
+        assert!(text.contains("Project: https://github.com/teamofsilicons/silicon-apps"));
+        assert!(text.contains("Recovery: could not update error-test-app; using installed copy"));
+        assert_eq!(
+            text.matches("package unavailable for macos-aarch64")
+                .count(),
+            1
+        );
+        assert!(text.contains("\"state\":\"warning\""));
+        assert!(text.contains("Ready error-test-app"));
+        assert!(!text.contains("\"state\":\"failed\""));
+
+        fs::remove_file(app).unwrap();
+        let error = install_or_keep(&home, "error-test-app", generation, &apps).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("no compatible installed copy was found"));
+        assert!(text.contains("package unavailable for macos-aarch64"));
+        assert!(fs::read_to_string(log)
+            .unwrap()
+            .contains("\"state\":\"failed\""));
+        fs::remove_dir_all(home).unwrap();
+    }
 }

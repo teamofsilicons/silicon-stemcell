@@ -197,7 +197,7 @@ pub fn append_json(path: &Path, value: &impl Serialize) -> Result<()> {
     drop(file);
     // The record is written; a failed rotation is reported, not raised over it.
     if let Err(error) = crate::rotate(path, crate::LOG_CAP, 2) {
-        crate::stderr_line(&format!("{error:#}"));
+        crate::stderr_line(&crate::failure::report(&error));
     }
     Ok(())
 }
@@ -439,7 +439,8 @@ fn skipped(home: &Path, path: &Path, reason: &str) {
     );
     if let Err(error) = crate::log_line(home, "error", "state", &message) {
         crate::stderr_line(&format!(
-            "{error:#}; the state error it was recording: {}",
+            "{}\nVia: recording the state error: {}",
+            crate::failure::report(&error),
             crate::failure::mask(home, &message, &[])
         ));
     }
