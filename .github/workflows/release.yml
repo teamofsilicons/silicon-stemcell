@@ -132,10 +132,12 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 7.0.1 removes telemetry from the interpreter, CLI, daemon, runtime, dashboard, and documentation website. No activity is sent to Space Station, including previously configured user-owned tables. The Space Station client and website ingestion endpoint have been removed.
+          Silicon 7.0.2 includes complete error traces and Omni 0.10.2.
 
-          Diagnostic logs, session history, and credential redaction remain local. Legacy `silicon.space_station` configuration is ignored without evaluating its expressions. Telemetry settings and dashboard controls have been removed; old preferences and environment values cannot re-enable reporting. Managed child processes receive reporting opt-outs, and older Ting reporting is forced off. The former TOS telemetry tables are retired and reject their old ingestion keys.
+          Errors retain the original diagnostic, source command or component, exit status, known project link, supported meaning, and caller context. CLI, connection progress, HTTP responses, flow catches, delivery records, and background logs preserve that trace. Credentials stay masked, cleanup errors do not replace the primary failure, and retry classifications are preserved. Failed app updates show the full error while continuing with a usable installed copy.
 
-          Complete macOS and Linux bundles, Linux catalog packages, and Windows WSL2 bundles are included. Installers preserve credentials and runtime data. Update existing installations and restart running interpreters to stop reporting from older binaries. Verify downloads against `SHA256SUMS`.
+          Bundled Omni 0.10.2 fixes Claude replay acknowledgements for messages containing surrounding whitespace, including YAML's final newline. Accepted messages receive START or INJECTED instead of leaving later deliveries queued. Existing completed-but-unacknowledged deliveries need reconciliation before replay to avoid duplicate work.
+
+          Complete macOS and Linux bundles, Linux catalog packages, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.1. Installers preserve credentials and runtime data; telemetry remains disabled. Restart the interpreter after updating. Verify downloads against SHA256SUMS.
           NOTES
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

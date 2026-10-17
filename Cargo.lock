@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "silicon"
-version = "7.0.1"
+version = "7.0.2"
 dependencies = [
  "anyhow",
  "cel-interpreter",

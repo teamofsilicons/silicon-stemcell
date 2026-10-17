@@ -1,5 +1,11 @@
 # Implementation diary
 
+### 7.0.2 — Error traces and Omni delivery acknowledgements
+
+Failures show the original diagnostic first, followed by the source command or component, exit status, known project link, a supported explanation when available, and caller context. Both command streams remain visible with credentials masked. CLI, connection progress, HTTP responses, flow catches, retained delivery errors, and background logs preserve the trace. Cleanup failures remain alongside the primary error, and retry classifications survive formatting. Recovered app updates show the full diagnostic while continuing with a usable installed copy.
+
+The complete runtime bundles now include Omni 0.10.2. Claude replay acknowledgements preserve original message whitespace, including the final newline from YAML, so accepted messages no longer leave later deliveries queued. Existing completed-but-unacknowledged deliveries need reconciliation before replay to avoid duplicate work. No configuration migration is required from 7.0.1.
+
 ### 7.0.1 — Telemetry removed
 
 Silicon no longer sends telemetry from the interpreter, CLI, runtime, dashboard, or documentation website. Space Station clients, delivery queues, ingestion credentials, and telemetry controls have been removed. Existing `silicon.space_station` configuration is ignored without evaluating its expressions. Local logs, error redaction, and session history remain available.
