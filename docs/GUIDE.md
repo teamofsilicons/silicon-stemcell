@@ -67,7 +67,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 | Command | Bundled component |
 | --- | --- |
 | `silicon`, `si` | Interpreter and internal CLI, 7.0.1 |
-| `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.9.1 pinned to commit `62c2adc57983be37c1de2064d169073bddf71291` |
+| `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.10.2 pinned to commit `e5f31a49ae5dbb29f83d08405266c5def88b32e6` |
 | `caddy` | Caddy 2.11.4 |
 
 Silicon Apps is installed separately through its official installer; existing update preferences and services are preserved. Each Silicon connection runs `silicon-apps install 'app' --yes --json` for configured and registered canonical app IDs, the Silicon Accounts issuer (`silicon-accounts`), and Ting (`ting`). Omitting `--version` selects the latest public package each time; no app version is pinned. Apps are not copied into the interpreter bundle, wrapped to suppress updates, or given environment variables that disable their automatic updates. Omni and Caddy remain interpreter runtime dependencies.
@@ -1128,7 +1128,7 @@ Use `SILICON_APPS` to select a particular Apps executable. Use a dedicated Silic
 | Application discovery | `APP accounts --json` with matching bare `app_id`. |
 | Authentication | Accounts app token issuance, `APP login --slt`, account-bound persistent sessions, and explicit logout. |
 | Distribution | Silicon Apps `silicon-apps` CLI; publish through `silicon-apps`. |
-| Inference | Omni 0.9.1 Rust/client-daemon contract at `62c2adc57983be37c1de2064d169073bddf71291`. |
+| Inference | Omni 0.10.2 Rust/client-daemon contract at `e5f31a49ae5dbb29f83d08405266c5def88b32e6`. |
 | Local interpreter API | Protocol `1`; protected `POST /control` and `POST /si`. |
 
 Configuration and application contract changes require a major release and migration guidance. The current CLI help and Accounts discovery describe each application's supported contract.

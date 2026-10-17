@@ -35,7 +35,7 @@ silicon ls
 silicon web
 ```
 
-The installer supplies Silicon, Caddy, Omni 0.9.1, and Silicon Apps. Each connection installs Silicon Accounts, Ting, and the configured apps. App sessions persist until expiry or logout. The dashboard, built with the [Silicon UI foundation](https://ui.teamofsilicons.com/), also remembers local access across browser and interpreter restarts and provides explicit logout.
+The installer supplies Silicon, Caddy, Omni 0.10.2, and Silicon Apps. Each connection installs Silicon Accounts, Ting, and the configured apps. App sessions persist until expiry or logout. The dashboard, built with the [Silicon UI foundation](https://ui.teamofsilicons.com/), also remembers local access across browser and interpreter restarts and provides explicit logout.
 
 Declare apps under each ISI's `apps`; the interpreter installs and authenticates their union, including apps supplied by Starter ISIs. Reusable `starter:gene:ID`, `starter:function:ID`, and `starter:isi:ID` definitions are cached in `.fromstarter` and refreshed on connection. Native YAML flows support loops, functions, conditionals, aggregation, and durable delivery retries.
 

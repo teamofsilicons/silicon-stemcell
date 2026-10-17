@@ -736,8 +736,8 @@ dependencies = [
 
 [[package]]
 name = "omni-core"
-version = "0.9.1"
-source = "git+https://github.com/teamofsilicons/silicon-omni?rev=62c2adc57983be37c1de2064d169073bddf71291#62c2adc57983be37c1de2064d169073bddf71291"
+version = "0.10.2"
+source = "git+https://github.com/teamofsilicons/silicon-omni?rev=e5f31a49ae5dbb29f83d08405266c5def88b32e6#e5f31a49ae5dbb29f83d08405266c5def88b32e6"
 dependencies = [
  "libc",
  "serde",
@@ -1074,8 +1074,8 @@ dependencies = [
 
 [[package]]
 name = "silicon-omni"
-version = "0.9.1"
-source = "git+https://github.com/teamofsilicons/silicon-omni?rev=62c2adc57983be37c1de2064d169073bddf71291#62c2adc57983be37c1de2064d169073bddf71291"
+version = "0.10.2"
+source = "git+https://github.com/teamofsilicons/silicon-omni?rev=e5f31a49ae5dbb29f83d08405266c5def88b32e6#e5f31a49ae5dbb29f83d08405266c5def88b32e6"
 dependencies = [
  "libc",
  "omni-core",
