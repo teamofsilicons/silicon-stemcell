@@ -155,7 +155,7 @@ access:
   worker.browser: [deliberate]
   worker.creative: [deliberate]
 
-# run everytime silicon is pinged at its connection URL ({handle}.si.localhost when the handle is a DNS label)
+# run everytime silicon is pinged at its connection URL ({handle}.si.localhost for handles with alphanumeric ends, allowing inner hyphens and underscores; previous encoded hosts for these handles remain aliases)
 # Ting delivers these objects inside request.tings; each also includes an id.
 # {
 #   type: "new_message", # message_sent, event, or anything else.

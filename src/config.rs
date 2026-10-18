@@ -1018,7 +1018,7 @@ pub(crate) fn host_label(value: &str) -> bool {
         && value.len() <= 63
         && value
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
         && value.as_bytes()[0].is_ascii_alphanumeric()
         && value.as_bytes()[value.len() - 1].is_ascii_alphanumeric()
 }

@@ -71,6 +71,28 @@ pub struct Connection {
     pub host: String,
 }
 
+impl Connection {
+    fn hosts(&self) -> Vec<String> {
+        let mut hosts = vec![self.host.clone()];
+        if crate::config::valid_silicon_id(&self.id) {
+            let handle = self.id.strip_prefix("si:").unwrap();
+            // Keep both addresses through restoration, even before an old registry is rewritten.
+            if handle.contains('_') && crate::config::host_label(handle) {
+                for host in [identity_host(handle), encoded_host(handle)] {
+                    if !hosts.contains(&host) {
+                        hosts.push(host);
+                    }
+                }
+            }
+        }
+        hosts
+    }
+
+    fn serves(&self, host: &str) -> bool {
+        self.hosts().iter().any(|candidate| candidate == host)
+    }
+}
+
 /// One saved Silicon as `list` answers it: the saved descriptor, then how its restore is going.
 /// Older interpreters listed only connected Silicons, with no state.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -267,18 +289,21 @@ pub fn descriptor(cfg: &Config) -> Connection {
     }
 }
 
-// Encode handles that cannot be used as a DNS label.
-// Preserve distinct handles without lossy underscore/hyphen substitution.
+// Keep readable local hostnames distinct without replacing underscores with hyphens.
 fn identity_host(handle: &str) -> String {
     if crate::config::host_label(handle) {
         return format!("{handle}.si.localhost");
     }
+    encoded_host(handle)
+}
+
+fn encoded_host(handle: &str) -> String {
     let hex: String = handle.bytes().map(|b| format!("{b:02x}")).collect();
     format!("{hex}.encoded.si.localhost")
 }
 
 /// A saved host Caddy accepts. A hand-edited registry must not take routing down for every
-/// Silicon, so a saved host that is not a `.localhost` DNS name is left unrouted.
+/// Silicon, so a saved host that is not an accepted `.localhost` name is left unrouted.
 fn routable(host: &str) -> bool {
     host.len() <= 253
         && host.to_ascii_lowercase().ends_with(".localhost")
@@ -2763,13 +2788,14 @@ fn current_hosts(app: &App) -> Vec<String> {
         .recover()
         .entries
         .iter()
-        .map(|entry| entry.connection.host.clone())
+        .flat_map(|entry| entry.connection.hosts())
         .filter(|host| routable(host))
         .collect();
     for connected in app.runtime.silicons.read().recover().values() {
-        let host = descriptor(&connected.cfg).host;
-        if !hosts.contains(&host) {
-            hosts.push(host);
+        for host in descriptor(&connected.cfg).hosts() {
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
         }
     }
     hosts
@@ -3377,7 +3403,7 @@ fn addressed(app: &App, host: &str) -> Addressed {
         .read()
         .recover()
         .iter()
-        .find(|(_, c)| descriptor(&c.cfg).host == host)
+        .find(|(_, c)| descriptor(&c.cfg).serves(host))
         .map(|(id, _)| id.clone())
     {
         return Addressed::Live(id);
@@ -3386,7 +3412,7 @@ fn addressed(app: &App, host: &str) -> Addressed {
     match registry
         .entries
         .iter()
-        .find(|entry| entry.connection.host == host)
+        .find(|entry| entry.connection.serves(host))
     {
         Some(entry) => Addressed::Saved(registry.unavailable(&entry.connection.id)),
         None => Addressed::Unknown,
@@ -3403,7 +3429,7 @@ fn refusal_note(app: &App, host: &str) -> Option<String> {
     let entry = registry
         .entries
         .iter_mut()
-        .find(|entry| entry.connection.host == host)?;
+        .find(|entry| entry.connection.serves(host))?;
     if entry.refused == Some(entry.failures) {
         return None;
     }
@@ -3424,7 +3450,7 @@ fn refusal_note(app: &App, host: &str) -> Option<String> {
 /// Health for a Silicon host; when it is offline, `error` says why.
 fn ping(app: &App, host: &str) -> (u16, Value) {
     let silicons = app.runtime.silicons.read().recover();
-    let found = silicons.values().find(|c| descriptor(&c.cfg).host == host);
+    let found = silicons.values().find(|c| descriptor(&c.cfg).serves(host));
     let online = found
         .filter(|c| c.enabled.load(Ordering::SeqCst))
         .map(|c| descriptor(&c.cfg).id);
@@ -4166,6 +4192,77 @@ pub fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
         .into_iter()
         .rev()
         .collect())
+}
+
+#[cfg(test)]
+mod hostname_tests {
+    use super::*;
+
+    const READABLE: &str = "shubham_udd.si.localhost";
+    const ENCODED: &str = "7368756268616d5f756464.encoded.si.localhost";
+
+    fn connection(handle: &str, host: &str) -> Connection {
+        Connection {
+            id: format!("si:{handle}"),
+            yaml: PathBuf::from("/test/silicon.yaml"),
+            home: PathBuf::from("/test"),
+            host: host.to_owned(),
+        }
+    }
+
+    #[test]
+    fn readable_underscore_hosts_and_webhooks_preserve_the_handle() {
+        let cfg: Config = serde_json::from_value(json!({
+            "silicon": {"id":"si:shubham_udd"},
+            "isi": {}, "access": {}, "flow": []
+        }))
+        .unwrap();
+        let descriptor = descriptor(&cfg);
+        assert_eq!(descriptor.host, READABLE);
+        assert_eq!(webhook(&cfg), format!("http://{READABLE}/events"));
+        assert_eq!(descriptor.hosts(), [READABLE, ENCODED]);
+        assert!(descriptor.serves(READABLE));
+        assert!(descriptor.serves(ENCODED));
+        for distinct in ["shubham-udd", "7368756268616d5f756464", "shubham__udd"] {
+            assert!(!descriptor.serves(&identity_host(distinct)));
+        }
+        assert_eq!(identity_host("shubham-udd"), "shubham-udd.si.localhost");
+        for handle in ["_example", "example_", "-example", "example-"] {
+            let host = identity_host(handle);
+            assert!(host.ends_with(".encoded.si.localhost"));
+            assert_eq!(connection(handle, &host).hosts(), [host]);
+        }
+    }
+
+    #[test]
+    fn saved_connections_route_both_hosts_before_and_after_registry_migration() {
+        for saved_host in [ENCODED, READABLE] {
+            // Aliases are derived from the ID, so old and newly saved registries both work.
+            let saved = serde_json::to_vec(&vec![connection("shubham_udd", saved_host)]).unwrap();
+            let app = App::new(
+                Runtime::new("http://127.0.0.1:0".into()),
+                Daemon::default(),
+                PathBuf::from("/test/interpreter"),
+                serde_json::from_slice(&saved).unwrap(),
+                true,
+            );
+            let hosts = current_hosts(&app);
+            assert_eq!(hosts.len(), 2);
+            for host in [READABLE, ENCODED] {
+                assert!(hosts.iter().any(|candidate| candidate == host));
+                assert!(routable(host));
+                assert!(matches!(addressed(&app, host), Addressed::Saved(_)));
+                assert_eq!(ping(&app, host).0, 503);
+            }
+            assert!(refusal_note(&app, READABLE).is_some());
+            assert!(refusal_note(&app, ENCODED).is_none());
+            assert!(matches!(
+                addressed(&app, "shubham-udd.si.localhost"),
+                Addressed::Unknown
+            ));
+            assert_eq!(ping(&app, "shubham-udd.si.localhost").0, 404);
+        }
+    }
 }
 
 #[cfg(test)]

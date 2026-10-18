@@ -19,7 +19,7 @@ Silicon identity is `si:{handle}` and Carbon identity is `c:{handle}`. Every act
 connect:
 `silicon connect {path to yaml}`
 compiles the silicon.yaml and throws errors if any, or connect if all is good.
-create a local listening url ({handle}.si.localhost when the handle is a DNS label) for this silicon and maps that url to silicon interpreter's web server link. Use the connection's returned host for handles that need DNS encoding.
+create a local listening url ({handle}.si.localhost when the handle starts and ends with a letter or digit, allowing inner hyphens and underscores) for this silicon and maps that url to silicon interpreter's web server link. Use the connection's returned host for handles that need encoding. Previous encoded hosts for newly readable underscore handles remain working aliases across reconnects and interpreter restarts.
 
 Once the local route is ready, register its URL with Ting using the Silicon Apps-installed `ting` CLI. Ting is implicit, like Silicon Accounts, even when absent from apps.
 
@@ -51,7 +51,7 @@ Ting sends {tings: [{id: str, type: str, data: obj, metadata: obj}, ...]}. Dedup
 
 Flow send queues messages by default and aggregates them per (isi, session_id), in order, at the end of the flow. aggregate: false flushes earlier queued messages to that same destination and attempts the current message immediately. Flushed messages can enter an active provider turn; no inference completion is required. Function return/failure does not roll back queued messages.
 
-Persist outgoing messages before dispatch in .silicon/outbox/<silicon-id>/<request-id>.json. silicon.max_retries defaults to 10 retries after the first attempt. Record failures and recovery, retain undelivered groups after exhaustion, and only retry the stash when the next message is sent to that same isi+session. No timer-driven fallback or redirection to another destination after exhaustion. Delivery receipts are persisted so a retried incoming request can reuse its outgoing state. A crash before a receipt is saved may still duplicate delivery; app/shell side effects are not transactional.
+Persist outgoing messages before dispatch in .silicon/outbox/<silicon-id>/<request-id>.json. silicon.max_retries defaults to 10 retries after the first attempt. Record failures and recovery, retain undelivered groups after exhaustion, and only retry the stash when the next message is sent to that same isi+session. No timer-driven fallback or redirection to another destination after exhaustion. Delivery receipts are persisted so a retried incoming request can reuse its outgoing state. Recover missed START/INJECTED receipts from Omni history using a pre-send sequence boundary. After 60 seconds plus a bounded history lookup, retain unknown outcomes with needs_recovery=true and let newer messages proceed; later triggers may check receipts but must never automatically resend these entries, including after restart. Known legacy receipt-timeout records get the same protection. A crash before a receipt is saved may still duplicate delivery; app/shell side effects are not transactional.
 
 Logs:
 Log everything. New msg, what's happening in flow, what each of the isi is doing, everything. Omni has a event that you can subscribe to and use for loggin the active work. when displaying, color code different isi msg, runtime logs, errors. not the complete msg, but just the first section. include metadata with the logs like [type] [origin] [timestamp] [message]

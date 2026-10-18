@@ -48,6 +48,10 @@ const BEATS_WRITE: Duration = Duration::from_secs(1);
 /// The failure-report key of one heartbeat target is this followed by its address.
 const BEAT_REPORT: &str = "heartbeat for ";
 
+#[cfg(test)]
+#[path = "runtime_receipt_tests.rs"]
+mod receipt_tests;
+
 #[derive(Clone, Debug)]
 pub struct Caller {
     pub silicon: String,
@@ -79,12 +83,29 @@ pub struct Sent {
     pub session: Session,
     pub id: Uuid,
     receipt: Arc<SendReceipt>,
+    worker: Weak<Worker>,
+    client: Client,
 }
 
 impl Sent {
     /// Wait for START/INJECTED, never for the inference turn to finish.
     pub fn wait_started(&self) -> Result<()> {
-        self.receipt.wait().with_context(|| {
+        let mut result = self.receipt.wait();
+        if result
+            .as_ref()
+            .is_err_and(|error| error.is::<ReceiptPending>())
+        {
+            if let Some(worker) = self.worker.upgrade() {
+                result = match worker.recover_receipts(&self.client, i64::MAX) {
+                    Ok(()) => self.receipt.wait(),
+                    Err(error) => result.context(format!(
+                        "could not recover the provider receipt: {}",
+                        failure::report(&error)
+                    )),
+                };
+            }
+        }
+        result.with_context(|| {
             format!(
                 "delivery {} to {}:{}",
                 self.id, self.session.isi, self.session.id
@@ -229,7 +250,9 @@ impl std::error::Error for Retired {}
 struct Dispatch {
     id: Uuid,
     message: String,
-    turn: Option<i64>,
+    started_seq: Option<i64>,
+    /// Receipts at or before this boundary belong to an older dispatch.
+    after_seq: i64,
     receipt: Arc<SendReceipt>,
     origin: Option<Caller>,
     /// Heartbeats coalesce: a target with an unfinished one skips the next instead of queuing it.
@@ -256,6 +279,8 @@ struct WorkerState {
     last_progress: Instant,
     /// Between a START or INJECTED and the END that leaves Omni idle.
     turn_open: bool,
+    /// Idle ENDs and their replies, kept until delayed receipts can retire their work.
+    finished: BTreeMap<i64, String>,
 }
 
 impl WorkerState {
@@ -270,12 +295,54 @@ impl WorkerState {
             last_activity: Utc::now(),
             last_progress: Instant::now(),
             turn_open: false,
+            finished: BTreeMap::new(),
         }
     }
 
     fn touched(&mut self) {
         self.last_activity = Utc::now();
         self.last_progress = Instant::now();
+    }
+
+    fn confirm_receipt(&mut self, event: &Event) {
+        if !matches!(event.event_type.as_str(), Event::START | Event::INJECTED)
+            || event.extra.get("late").and_then(Value::as_bool) == Some(true)
+        {
+            return;
+        }
+        let Some(dispatch) = self.pending.iter_mut().find(|dispatch| {
+            dispatch.started_seq.is_none()
+                && dispatch.message == event.text
+                && event.seq > dispatch.after_seq
+        }) else {
+            return;
+        };
+        dispatch.started_seq = Some(event.seq);
+        dispatch.receipt.finish(Ok(()));
+        // A replayed receipt must not consume a second identical queued message.
+        for dispatch in &mut self.pending {
+            if dispatch.message == event.text {
+                dispatch.after_seq = dispatch.after_seq.max(event.seq);
+            }
+        }
+    }
+
+    fn take_finished(&mut self) -> Vec<(Dispatch, String)> {
+        let mut finished = Vec::new();
+        for dispatch in std::mem::take(&mut self.pending) {
+            let reply = dispatch
+                .started_seq
+                .and_then(|seq| self.finished.range(seq..).next());
+            if let Some((_, reply)) = reply {
+                finished.push((dispatch, reply.clone()));
+            } else {
+                self.pending.push(dispatch);
+            }
+        }
+        let after_seq = self.pending.iter().map(|dispatch| dispatch.after_seq).min();
+        self.finished
+            .retain(|seq, _| after_seq.is_some_and(|after| *seq > after));
+        finished
     }
 
     fn keep_trouble(&mut self, provider: String, said: String) {
@@ -690,7 +757,9 @@ impl Runtime {
                     slot,
                     delivery,
                     cfg.silicon.max_retries,
-                    |key, delivery| self.deliver_outgoing(connected, key, delivery),
+                    |key, delivery, check_only| {
+                        self.deliver_outgoing(connected, key, delivery, check_only)
+                    },
                     || self.delivery_ready(connected),
                 );
                 slot += 1;
@@ -716,6 +785,7 @@ impl Runtime {
         connected: &Arc<Connected>,
         key: &str,
         delivery: &flow::Delivery,
+        check_only: bool,
     ) -> Result<()> {
         self.delivery_ready(connected)?;
         // Outbox serializes this callback. Do not hold the receipt-map lock while sending
@@ -723,6 +793,7 @@ impl Runtime {
         let pending = connected.pending_outgoing.lock().recover().remove(key);
         let sent = match pending {
             Some(sent) => Ok(sent),
+            None if check_only => return Err(crate::outbox::AwaitingReceipt.into()),
             None => self.send_marked(
                 connected,
                 None,
@@ -890,7 +961,9 @@ impl Runtime {
             if !connected.outbox.flush(
                 &delivery,
                 connected.cfg.silicon.max_retries,
-                |key, pending| self.deliver_outgoing(connected, key, pending),
+                |key, pending, check_only| {
+                    self.deliver_outgoing(connected, key, pending, check_only)
+                },
                 || self.delivery_ready(connected),
             )? {
                 bail!("{target} is still unavailable; earlier flow messages remain stashed for this session");
@@ -1824,9 +1897,10 @@ impl Worker {
         }
         *self.daemon.lock().recover() = Some(Daemon { child, log, start });
         let worker = self.clone();
+        let listener_client = client.clone();
         let listening = thread::Builder::new()
             .name(format!("isi listen {}", self.session_id))
-            .spawn(move || worker.listen(chat));
+            .spawn(move || worker.listen(chat, listener_client));
         if let Err(error) = listening {
             let Some(Daemon { child, log, start }) = self.daemon.lock().recover().take() else {
                 bail!("could not start the Omni event listener for {address}: {error}");
@@ -1932,10 +2006,34 @@ impl Worker {
         });
         {
             let mut state = self.state.lock().recover();
+            let boundary = client
+                .as_ref()
+                .unwrap()
+                .call_with_timeout(
+                    Request::new(0, "status").on(&self.session_id.to_string()),
+                    Duration::from_secs(5),
+                )
+                .map_err(anyhow::Error::from)
+                .and_then(|status| {
+                    status["snapshot"]["seq"]
+                        .as_i64()
+                        .context("Omni status omitted its event sequence")
+                });
+            let after_seq = match boundary {
+                Ok(seq) => seq,
+                Err(error) => {
+                    drop(state);
+                    return Err(self.discard_disposable(
+                        &mut client,
+                        error.context("reading the event boundary before sending"),
+                    ));
+                }
+            };
             state.pending.push(Dispatch {
                 id,
                 message: message.into(),
-                turn: None,
+                started_seq: None,
+                after_seq,
                 receipt: receipt.clone(),
                 origin,
                 heartbeat,
@@ -2023,6 +2121,8 @@ impl Worker {
             session: state.record.clone(),
             id,
             receipt,
+            worker: Arc::downgrade(self),
+            client: client.as_ref().unwrap().clone(),
         };
         let name = state.record.isi.clone();
         drop(state);
@@ -2150,10 +2250,11 @@ impl Worker {
         Ok(())
     }
 
-    fn listen(self: Arc<Self>, mut chat: Chat) {
+    fn listen(self: Arc<Self>, mut chat: Chat, client: Client) {
         // A panic here must not leave a deaf worker that still looks alive: fail it, so the
         // next send starts a fresh one.
-        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| self.listen_loop(&mut chat))) {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| self.listen_loop(&mut chat, &client)))
+        {
             self.fail(&format!(
                 "the Omni event listener for session {} panicked: {}",
                 self.session_id,
@@ -2165,12 +2266,37 @@ impl Worker {
         let _ = chat.detach();
     }
 
-    fn listen_loop(self: &Arc<Self>, chat: &mut Chat) {
+    fn listen_loop(self: &Arc<Self>, chat: &mut Chat, client: &Client) {
         let stall = minutes_from_env("SILICON_TURN_STALL_MINUTES", 360);
         let mut last_event: Option<String> = None;
         while !self.stopped.load(Ordering::SeqCst) {
             match chat.next_event_timeout(Duration::from_secs(1)) {
                 Ok(Some(event)) => {
+                    let ambiguous =
+                        matches!(event.event_type.as_str(), Event::START | Event::INJECTED)
+                            && self
+                                .state
+                                .lock()
+                                .recover()
+                                .pending
+                                .iter()
+                                .filter(|dispatch| {
+                                    dispatch.started_seq.is_none() && dispatch.message == event.text
+                                })
+                                .count()
+                                > 1;
+                    if event.event_type == Event::END || ambiguous {
+                        if let Err(error) = self.recover_receipts(client, event.seq) {
+                            if let Some(connected) = self.connected.upgrade() {
+                                log_error(
+                                    &connected.cfg.home,
+                                    Some(connected.cfg.generation),
+                                    "delivery receipt",
+                                    &failure::report(&error),
+                                );
+                            }
+                        }
+                    }
                     let queued = chat.state().map_or(0, |state| state.queued);
                     let kind = event.event_type.clone();
                     last_event = serde_json::to_string(&event).ok();
@@ -2220,6 +2346,38 @@ impl Worker {
             }
             self.schedule_dna_refresh();
         }
+    }
+
+    /// Recover acknowledgements from Omni's durable log without replaying turn side effects.
+    fn recover_receipts(self: &Arc<Self>, client: &Client, through_seq: i64) -> Result<()> {
+        let after_seq = self
+            .state
+            .lock()
+            .recover()
+            .pending
+            .iter()
+            .filter(|dispatch| dispatch.started_seq.is_none())
+            .map(|dispatch| dispatch.after_seq)
+            .min();
+        let Some(after_seq) = after_seq else {
+            return Ok(());
+        };
+        let mut request = Request::new(0, "events").on(&self.session_id.to_string());
+        // shortcut: history starts at the oldest unresolved receipt; page it if long backlogs become common.
+        request.from = Some(after_seq.saturating_add(1));
+        let history = client
+            .call_with_timeout(request, Duration::from_secs(5))
+            .context("looking up durable provider acknowledgements")?;
+        let events: Vec<Event> = serde_json::from_value(history["events"].clone())
+            .context("reading durable provider acknowledgements")?;
+        let mut state = self.state.lock().recover();
+        for event in events {
+            if event.seq <= through_seq {
+                state.confirm_receipt(&event);
+            }
+        }
+        drop(state);
+        self.finish_deliveries()
     }
 
     /// An orderly stop is under way (shutdown, restart, disconnect, or this worker's own
@@ -2321,13 +2479,17 @@ impl Worker {
                 if event.event_type == Event::START {
                     state.text.clear();
                 }
-                if let Some(dispatch) = state
+                // Duplicate texts need ordered history before a live receipt can be assigned.
+                if state
                     .pending
-                    .iter_mut()
-                    .find(|d| d.turn.is_none() && d.message == event.text)
+                    .iter()
+                    .filter(|dispatch| {
+                        dispatch.started_seq.is_none() && dispatch.message == event.text
+                    })
+                    .count()
+                    <= 1
                 {
-                    dispatch.turn = Some(event.turn);
-                    dispatch.receipt.finish(Ok(()));
+                    state.confirm_receipt(&event);
                 }
             }
             Event::TEXT => {
@@ -2405,100 +2567,112 @@ impl Worker {
                 if !omni_idle || queued != 0 {
                     return Ok(());
                 }
-                state.turn_open = false;
-                let mut finished = Vec::new();
-                let mut pending = Vec::new();
-                for dispatch in state.pending.drain(..) {
-                    if dispatch.turn.is_some() {
-                        finished.push(dispatch);
-                    } else {
-                        pending.push(dispatch);
-                    }
-                }
-                state.pending = pending;
-                state.record.last = Utc::now();
-                if state.pending.is_empty() {
-                    state.record.status = if state.record.archived_at.is_some() {
-                        "archived"
-                    } else {
-                        "idle"
-                    }
-                    .into();
-                }
-                // A failed save is reported below; the replies and retirement still happen.
-                let saved = state.record.save(&cfg.home);
+                state.turn_open = state.pending.iter().any(|dispatch| {
+                    dispatch
+                        .started_seq
+                        .is_some_and(|started| started > event.seq)
+                });
                 let reply = state.text.clone();
-                let reply_to_caller = state.record.ephemeral || state.record.archived_at.is_some();
-                let name = state.record.isi.clone();
+                state.finished.insert(event.seq, reply);
                 drop(state);
-                // Disposable work and questions to archived sessions return to their caller.
-                for dispatch in finished {
-                    if !reply_to_caller {
-                        continue;
-                    }
-                    let Some(origin) = dispatch.origin else {
-                        continue;
-                    };
-                    let worker = self.clone();
-                    let reply_runtime = runtime.clone();
-                    let reply_connected = connected.clone();
-                    let message = format!("{name} completed:\n{reply}");
-                    let replying_isi = name.clone();
-                    // Recovery waits for provider events, so it must run off this listener.
-                    // Reserve activity before spawn so an idle restart cannot race this job.
-                    runtime.activities.fetch_add(1, Ordering::SeqCst);
-                    let started = thread::Builder::new()
-                        .name(format!("reply from {}", self.session_id))
-                        .spawn(move || {
-                            let _activity = Activity(&reply_runtime.activities);
-                            if let Err(error) =
-                                worker.reply(&reply_runtime, &reply_connected, &origin, &message)
-                            {
-                                log_error(
-                                    &reply_connected.cfg.home,
-                                    Some(reply_connected.cfg.generation),
-                                    &replying_isi,
-                                    &failure::report(&error.context("ephemeral reply")),
-                                );
-                            }
-                        });
-                    if let Err(error) = started {
-                        runtime.activities.fetch_sub(1, Ordering::SeqCst);
-                        log_error(
-                            &cfg.home,
-                            Some(cfg.generation),
-                            &name,
-                            &format!("could not start ephemeral reply: {error}"),
-                        );
-                    }
-                }
-                if let Err(error) = saved {
-                    log_error(
-                        &cfg.home,
-                        Some(cfg.generation),
-                        &name,
-                        &failure::report(&error.context(format!(
-                            "saving session {} after its turn ended",
-                            self.session_id
-                        ))),
-                    );
-                }
-                // This worker has stopped by now even when its cleanup failed, so the listener
-                // ends quietly after it: the failure is written here or nowhere.
-                if let Err(error) = self.retire_if_idle() {
-                    log_error(
-                        &cfg.home,
-                        Some(cfg.generation),
-                        &name,
-                        &failure::report(&error.context(format!(
-                            "session {} finished its work, but stopping it afterwards failed",
-                            self.session_id
-                        ))),
-                    );
-                }
-                return Ok(());
+                return self.finish_deliveries();
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish_deliveries(self: &Arc<Self>) -> Result<()> {
+        let mut state = self.state.lock().recover();
+        if state.finished.is_empty() {
+            return Ok(());
+        }
+        let runtime = self.runtime.upgrade().context("interpreter stopped")?;
+        let _activity = runtime.activity()?;
+        let connected = self.connected.upgrade().context("silicon disconnected")?;
+        let cfg = &connected.cfg;
+        let finished = state.take_finished();
+        if finished.is_empty() && !state.pending.is_empty() {
+            return Ok(());
+        }
+        state.record.last = Utc::now();
+        if state.pending.is_empty() {
+            state.record.status = if state.record.archived_at.is_some() {
+                "archived"
+            } else {
+                "idle"
+            }
+            .into();
+        }
+        // A failed save is reported below; the replies and retirement still happen.
+        let saved = state.record.save(&cfg.home);
+        let reply_to_caller = state.record.ephemeral || state.record.archived_at.is_some();
+        let name = state.record.isi.clone();
+        drop(state);
+        // Disposable work and questions to archived sessions return to their caller.
+        for (dispatch, reply) in finished {
+            if !reply_to_caller {
+                continue;
+            }
+            let Some(origin) = dispatch.origin else {
+                continue;
+            };
+            let worker = self.clone();
+            let reply_runtime = runtime.clone();
+            let reply_connected = connected.clone();
+            let message = format!("{name} completed:\n{reply}");
+            let replying_isi = name.clone();
+            // Recovery waits for provider events, so it must run off this listener.
+            // Reserve activity before spawn so an idle restart cannot race this job.
+            runtime.activities.fetch_add(1, Ordering::SeqCst);
+            let started = thread::Builder::new()
+                .name(format!("reply from {}", self.session_id))
+                .spawn(move || {
+                    let _activity = Activity(&reply_runtime.activities);
+                    if let Err(error) =
+                        worker.reply(&reply_runtime, &reply_connected, &origin, &message)
+                    {
+                        log_error(
+                            &reply_connected.cfg.home,
+                            Some(reply_connected.cfg.generation),
+                            &replying_isi,
+                            &failure::report(&error.context("ephemeral reply")),
+                        );
+                    }
+                });
+            if let Err(error) = started {
+                runtime.activities.fetch_sub(1, Ordering::SeqCst);
+                log_error(
+                    &cfg.home,
+                    Some(cfg.generation),
+                    &name,
+                    &format!("could not start ephemeral reply: {error}"),
+                );
+            }
+        }
+        if let Err(error) = saved {
+            log_error(
+                &cfg.home,
+                Some(cfg.generation),
+                &name,
+                &failure::report(&error.context(format!(
+                    "saving session {} after its turn ended",
+                    self.session_id
+                ))),
+            );
+        }
+        // This worker has stopped by now even when its cleanup failed, so the listener
+        // ends quietly after it: the failure is written here or nowhere.
+        if let Err(error) = self.retire_if_idle() {
+            log_error(
+                &cfg.home,
+                Some(cfg.generation),
+                &name,
+                &failure::report(&error.context(format!(
+                    "session {} finished its work, but stopping it afterwards failed",
+                    self.session_id
+                ))),
+            );
         }
         Ok(())
     }

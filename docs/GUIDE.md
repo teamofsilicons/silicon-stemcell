@@ -1,4 +1,4 @@
-# Silicon 7.0.2
+# Silicon 7.0.3
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -19,7 +19,7 @@ Silicon is a local interpreter for a `silicon.yaml` file. One interpreter can co
 
 The `silicon` command manages the interpreter from your terminal. The `si` command is provided inside an ISI so it can communicate with permitted ISIs, inspect work, manage its session, install or remove applications, and ask the interpreter to authenticate an application. The local dashboard exposes the same management operations through the interpreter's control API.
 
-The interpreter listens on `127.0.0.1:1823`. If that port is occupied, it tries 1822, 1821, and so on, down through 1024. A dedicated Caddy process provides `http://silicon.localhost` for the dashboard and `http://<handle>.si.localhost` for each connected Silicon whose handle is a DNS label. Other valid handles use a collision-free encoded host; use the hostname returned by `connect`. Caddy uses HTTP port 80; it does not search for an alternative proxy port.
+The interpreter listens on `127.0.0.1:1823`. If that port is occupied, it tries 1822, 1821, and so on, down through 1024. A dedicated Caddy process provides `http://silicon.localhost` for the dashboard and `http://<handle>.si.localhost` for each connected Silicon whose handle starts and ends with a letter or digit, with hyphens and underscores also allowed in between, such as `assistant_one.si.localhost`. Other valid handles use a collision-free encoded host; use the hostname returned by `connect`. Caddy uses HTTP port 80; it does not search for an alternative proxy port.
 
 Each active ISI session has an owned Omni daemon and uses Silicon Omni's Rust package. Omni starts and communicates with the selected inference provider. Silicon subscribes to Omni events, delivers new messages, assembles DNA, tracks sessions, and records progress. These are real provider processes; the interpreter does not simulate model output in normal use.
 
@@ -38,10 +38,10 @@ silicon-apps install silicon --yes
 For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. Native catalog installation for macOS and Windows is not available yet. No Rust compiler is required:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.2/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.3/install.sh | sh
 ```
 
-Find platform bundles and checksums on the [v7.0.2 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.2). The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.
+Find platform bundles and checksums on the [v7.0.3 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.3). The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.
 
 Silicon keeps reusable Starter genes, functions, and ISIs, per-ISI app declarations, native YAML flows, persistent sessions, and durable notification delivery. See the [7.0 migration](#upgrading-to-70) for the identity and configuration changes.
 
@@ -56,7 +56,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.2/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.3/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -66,7 +66,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 7.0.2 |
+| `silicon`, `si` | Interpreter and internal CLI, 7.0.3 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.10.2 pinned to commit `e5f31a49ae5dbb29f83d08405266c5def88b32e6` |
 | `caddy` | Caddy 2.11.4 |
 
@@ -76,7 +76,7 @@ Accounts, permissions, remote service availability, and authenticated inference 
 
 ### Upgrading from 5.x
 
-Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 7.0.2 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.
+Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 7.0.3 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.
 
 1. Replace bare `{error}` in every catch with `{self.error}`. Result and error values are scoped to their `then` or `catch` branch; save a value with `var` when it is needed later.
 2. Review each send that must happen immediately or remain a separate message. Add `aggregate: false` to it; otherwise messages to the same `(isi, session_id)` are joined in order and sent when the flow finishes. An immediate send also flushes earlier queued messages for that destination.
@@ -92,11 +92,11 @@ Stop the old interpreter and back up the configuration and Silicon home before e
 
 Keep the same YAML path and `SILICON_HOME` so session history remains in place. Install 7.0, run `silicon compile /path/to/silicon.yaml`, and reconnect. Existing application logins are checked against the complete Carbon or Silicon account. If an application is signed out or its session has expired, explicitly run `si auth setup APP` inside an ISI to sign in again.
 
-The local event hostname now follows the account, such as `assistant.si.localhost`. Use the URL returned by `silicon connect` and update local callers. See the [migration procedure](https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md) for the steps.
+The local event hostname now follows the account, such as `assistant.si.localhost` or `assistant_one.si.localhost`. Use the URL returned by `silicon connect` and update local callers. For underscore handles that now use a readable hostname, the previous `<hex>.encoded.si.localhost` hostname remains a working alias across reconnects and interpreter restarts. See the [migration procedure](https://github.com/teamofsilicons/silicon-stemcell/blob/main/docs/PUBLIC-IDENTIFIER-MIGRATION.md) for the steps.
 
 ### Ting migration
 
-For configurations from 4.0.x or earlier, before reconnecting on 7.0.2:
+For configurations from 4.0.x or earlier, before reconnecting on 7.0.3:
 
 1. Remove `silicon.webhooks` and `silicon.webhook`. Keep application IDs under `isi.<name>.apps`; legacy `silicon.apps` remains supported. Applications publish notifications through Ting and no longer register separate interpreter webhooks.
 2. Change the flow to read `request.tings`, a list of notification objects with `id`, `type`, `data`, and `metadata`. Other JSON shapes are also accepted, but Ting publishers use the batch envelope. Use native `for` steps or CEL list helpers to process a whole batch; the [first Silicon example](#first-silicon) shows a minimal flow.
@@ -112,7 +112,7 @@ Existing Windows installations should rerun this release's PowerShell installer 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.2/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.3/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Silicon Apps installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -676,9 +676,11 @@ flow:
 
 An immediate send first flushes older queued messages for the same destination, then sends its own message. It does not flush unrelated destinations. A flow can create a missing session-addressed session automatically; an internal CLI send to a missing persistent session still requires `--new`. Session-addressed ISIs require `session_id`.
 
-The runtime persists outgoing delivery state before dispatch. `silicon.max_retries` defaults to `10`: ten retries after the first attempt. Set it to `0` to make only the initial attempt before stashing a failure. Failed groups remain on disk across restart, with attempts, failures, stashing, and recovery reported in logs. After exhaustion there is no timer-driven fallback: the next send to the same ISI and session triggers replay of its stashed messages before the new message. No message is redirected to another ISI or session.
+The runtime persists outgoing delivery state before dispatch. `silicon.max_retries` defaults to `10`: ten retries after the first attempt. Set it to `0` to make only the initial attempt before stashing a failure. Failed groups remain on disk across restart, with attempts, failures, stashing, and recovery reported in logs. After exhaustion there is no timer-driven fallback: the next send to the same ISI and session triggers replay of its stashed messages before the new message. Deliveries whose acceptance is uncertain follow the receipt-recovery rules below so they cannot block the destination indefinitely. No message is redirected to another ISI or session.
 
-Delivery checks wait for provider receipts (`START` or `INJECTED`), not completion of the model's turn; provider delivery has a 60-second deadline. A timeout after dispatch acceptance keeps that pending receipt for a later check instead of immediately submitting the same message again. Active provider work can receive flushed messages mid-turn. The ordinary send CLI retains its own dispatch response behavior; YAML flow aggregation applies to flow `send` steps.
+Delivery checks wait up to 60 seconds for provider receipts (`START` or `INJECTED`), then query Omni's durable history with a five-second deadline. The runtime also checks that history when a turn ends without its receipt. Receipt matching uses the message and a pre-send event sequence, so old events and repeated receipts cannot acknowledge a newer identical message. Text, configuration changes, and an unrelated turn's `END` do not prove delivery.
+
+If acknowledgement remains uncertain, the journal records `needs_recovery: true`, logs the unknown outcome and journal path, and allows newer messages to proceed. It keeps the original message and error without marking it delivered or automatically resending it. Later sends to that destination check the retained receipt; a late acknowledgement records successful delivery. After restart, an uncertain delivery whose live receipt is gone stays available for manual reconciliation. Legacy records containing the interpreter's receipt-timeout diagnostic receive the same protection. Inspect the retained message and session history before deciding whether it needs another send. Active provider work can receive flushed messages mid-turn. The ordinary send CLI retains its own dispatch response behavior; YAML flow aggregation applies to flow `send` steps.
 
 ### Durable acceptance and recovery
 
@@ -686,7 +688,7 @@ An empty HTTP 204 means the JSON request was durably accepted, before its flow r
 
 The inbox holds at most 10,000 pending requests or 256 MiB. A full inbox, failing storage, a Silicon still being restored, or interpreter shutdown returns 503 with `Retry-After`; the sender must retry. The response names the oldest blocked request and its error where available. Invalid JSON is rejected with 400; a valid JSON shape is never rejected just for lacking `tings`.
 
-Outgoing journals are stored under `.silicon/outbox/<silicon-id>/<request-id>.json`, separately from the incoming inbox. A stable request ID and delivery slot track outgoing state across processing retries. The persisted message remains the delivery plan even if a timestamp or other expression changes on replay; changing that slot's destination raises an error rather than rerouting it. On reconnect, completed delivery receipts whose incoming requests are already gone are cleaned up, while undelivered messages remain. Crash recovery is at least once: a crash between provider receipt and persisting that receipt can still duplicate delivery. Other completed app/shell side effects may also repeat when a flow retries, so use application event IDs for idempotency. There is no transactional rollback of actions or queued sends. Flow nesting is limited to 64 levels.
+Outgoing journals are stored under `.silicon/outbox/<silicon-id>/<request-id>.json`, separately from the incoming inbox. A stable request ID and delivery slot track outgoing state across processing retries. The persisted message remains the delivery plan even if a timestamp or other expression changes on replay; changing that slot's destination raises an error rather than rerouting it. On reconnect, completed delivery receipts whose incoming requests are already gone are cleaned up, while undelivered messages remain. The journal's `completed` flag means its incoming request was consumed; it does not mean the provider completed a turn. Crash recovery is at least once: a crash between provider receipt and persisting that receipt can still duplicate delivery. Other completed app/shell side effects may also repeat when a flow retries, so use application event IDs for idempotency. There is no transactional rollback of actions or queued sends. Flow nesting is limited to 64 levels.
 
 ### Flow migration
 
@@ -905,7 +907,7 @@ Apps that accept configuration expose `APP config set JSON`. The interpreter sen
 
 ## Privacy and local diagnostics
 
-Silicon 7.0.2 sends no telemetry. The interpreter, `silicon` and `si` CLIs, runtime, local dashboard, and documentation website do not upload usage, commands, events, logs, or session history to TOS, Space Station, or another telemetry destination. There is no telemetry client, browser tracker, ingestion endpoint, or setting that enables telemetry.
+Silicon 7.0.3 sends no telemetry. The interpreter, `silicon` and `si` CLIs, runtime, local dashboard, and documentation website do not upload usage, commands, events, logs, or session history to TOS, Space Station, or another telemetry destination. There is no telemetry client, browser tracker, ingestion endpoint, or setting that enables telemetry.
 
 Existing `silicon.space_station` configuration is ignored, and its expressions are never evaluated. Remove that field from old configurations. Old telemetry preferences, table keys, and environment variables cannot enable delivery. Old local telemetry spools are not read or uploaded. Logs and session history remain on your machine. Configured inference providers, Accounts, Apps, and Ting still receive the requests needed to perform their normal work.
 
@@ -1134,7 +1136,7 @@ Use `SILICON_APPS` to select a particular Apps executable. Use a dedicated Silic
 
 ### Contract versions
 
-| Consumer or dependency | Silicon 7.0.2 contract |
+| Consumer or dependency | Silicon 7.0.3 contract |
 | --- | --- |
 | Configuration | Complete `si:handle` identity and bare app IDs; see [7.0 migration](#upgrading-to-70). |
 | Application discovery | `APP accounts --json` with matching bare `app_id`. |

@@ -1,5 +1,13 @@
 # Implementation diary
 
+### 7.0.3 — Outbox recovery and readable local hostnames
+
+The runtime recovers missed delivery acknowledgements from Omni's durable history, matching event sequences as well as message text. An uncertain delivery is retained for receipt checks or manual reconciliation after a bounded wait, while newer messages proceed. Recognized legacy timeout records receive the same protection against automatic resend. Duplicate messages, delayed confirmations, and older END events cannot consume or complete newer work; delayed ephemeral replies retain their own turn's output.
+
+Silicon handles with inner underscores now use readable local hostnames such as `assistant_one.si.localhost`. Their previous encoded hostnames remain aliases across reconnects and interpreter restarts, preserving existing webhook callers. Both names route to the same account, while hyphenated and underscored handles remain distinct.
+
+No configuration migration is required from 7.0.2. Omni remains at 0.10.2. Uncertain deliveries must still be reconciled before deliberate replay.
+
 ### 7.0.2 — Error traces and Omni delivery acknowledgements
 
 Failures show the original diagnostic first, followed by the source command or component, exit status, known project link, a supported explanation when available, and caller context. Both command streams remain visible with credentials masked. CLI, connection progress, HTTP responses, flow catches, retained delivery errors, and background logs preserve the trace. Cleanup failures remain alongside the primary error, and retry classifications survive formatting. Recovered app updates show the full diagnostic while continuing with a usable installed copy.

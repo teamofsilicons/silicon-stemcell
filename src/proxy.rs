@@ -1318,15 +1318,7 @@ fn validate_hosts(hosts: &[String]) -> Result<Vec<String>> {
         let host = host.to_ascii_lowercase();
         if !host.ends_with(".localhost")
             || host.len() > 253
-            || !host.split('.').all(|label| {
-                !label.is_empty()
-                    && label.len() <= 63
-                    && label.as_bytes()[0].is_ascii_alphanumeric()
-                    && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
-                    && label
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            })
+            || !host.split('.').all(crate::config::host_label)
         {
             invalid.push(format!("{host:?}"));
         } else {
@@ -1335,9 +1327,58 @@ fn validate_hosts(hosts: &[String]) -> Result<Vec<String>> {
     }
     if !invalid.is_empty() {
         bail!(
-            "invalid Silicon proxy hostname {}; expected a DNS name ending in .localhost, at most 253 characters, whose labels are 1–63 letters, digits or inner hyphens",
+            "invalid Silicon proxy hostname {}; expected a hostname ending in .localhost, at most 253 characters, whose labels are 1–63 letters, digits or inner hyphens or underscores",
             invalid.join(", ")
         );
     }
     Ok(allowed.into_iter().collect())
+}
+
+#[cfg(test)]
+mod hostname_tests {
+    use super::*;
+
+    #[test]
+    fn readable_and_legacy_hosts_are_both_routed() {
+        let legacy = "7368756268616d5f756464.encoded.si.localhost";
+        let hosts = validate_hosts(&[
+            "SHUBHAM_UDD.SI.LOCALHOST".into(),
+            "shubham-udd.si.localhost".into(),
+            legacy.into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            hosts,
+            [
+                legacy,
+                "shubham-udd.si.localhost",
+                "shubham_udd.si.localhost",
+                "silicon.localhost",
+            ]
+        );
+    }
+
+    #[test]
+    fn unsafe_and_nonlocal_hosts_are_rejected() {
+        for host in [
+            "shubham_udd.example.com",
+            "shubham_udd.localhost.example.com",
+            "*.si.localhost",
+            "user@shubham_udd.si.localhost",
+            "shubham_udd/path.si.localhost",
+            "shubham_udd:80.si.localhost",
+            "shubham_udd\r\n.si.localhost",
+            "shubham_udd..si.localhost",
+            "_shubham.si.localhost",
+            "shubham_.si.localhost",
+            "-shubham.si.localhost",
+            "shubham-.si.localhost",
+        ] {
+            assert!(validate_hosts(&[host.into()]).is_err(), "accepted {host:?}");
+        }
+        assert!(validate_hosts(&[format!("{}.si.localhost", "a".repeat(64))]).is_err());
+        let label = "a".repeat(63);
+        let long_host = format!("{}.localhost", [label.as_str(); 4].join("."));
+        assert!(validate_hosts(&[long_host]).is_err());
+    }
 }

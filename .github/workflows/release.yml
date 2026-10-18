@@ -132,12 +132,12 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 7.0.2 includes complete error traces and Omni 0.10.2.
+          Silicon 7.0.3 fixes blocked outgoing deliveries and preserves readable local hostnames for accounts with underscores.
 
-          Errors retain the original diagnostic, source command or component, exit status, known project link, supported meaning, and caller context. CLI, connection progress, HTTP responses, flow catches, delivery records, and background logs preserve that trace. Credentials stay masked, cleanup errors do not replace the primary failure, and retry classifications are preserved. Failed app updates show the full error while continuing with a usable installed copy.
+          Missing provider acknowledgements are recovered from Omni's durable history using event sequence boundaries. If confirmation remains uncertain after the bounded wait, the original message is retained with `needs_recovery: true` and newer messages can proceed. Uncertain entries, including recognized legacy timeout records, are never automatically resent by the interpreter. Late receipts settle safely without consuming duplicate messages or completing a newer turn from an older END.
 
-          Bundled Omni 0.10.2 fixes Claude replay acknowledgements for messages containing surrounding whitespace, including YAML's final newline. Accepted messages receive START or INJECTED instead of leaving later deliveries queued. Existing completed-but-unacknowledged deliveries need reconciliation before replay to avoid duplicate work.
+          Handles such as `assistant_one` now use `assistant_one.si.localhost`. Previous encoded hostnames remain working aliases across reconnects and interpreter restarts, including for webhook delivery and health checks.
 
-          Complete macOS and Linux bundles, Linux catalog packages, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.1. Installers preserve credentials and runtime data; telemetry remains disabled. Restart the interpreter after updating. Verify downloads against SHA256SUMS.
+          Complete macOS and Linux bundles, Linux catalog packages, and Windows WSL2 bundles are included. Omni remains at 0.10.2. No configuration migration is required from 7.0.2; installers preserve credentials and runtime data, and telemetry remains disabled. Existing uncertain deliveries still require reconciliation before deliberate replay. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
           NOTES
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS
