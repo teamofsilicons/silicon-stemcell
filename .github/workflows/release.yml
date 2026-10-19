@@ -132,12 +132,10 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 7.0.3 fixes blocked outgoing deliveries and preserves readable local hostnames for accounts with underscores.
+          Silicon 7.0.4 fixes `si app install` failing when an app is already signed in.
 
-          Missing provider acknowledgements are recovered from Omni's durable history using event sequence boundaries. If confirmation remains uncertain after the bounded wait, the original message is retained with `needs_recovery: true` and newer messages can proceed. Uncertain entries, including recognized legacy timeout records, are never automatically resent by the interpreter. Late receipts settle safely without consuming duplicate messages or completing a newer turn from an older END.
+          Installing Write or another app now checks and reuses a verified session for the configured Silicon, then adds the app to the ISI's apps list. Previously the interpreter requested a fresh login every time, and Write rejected it with “already signed in” before registration could finish. Signed-out apps still authenticate, and foreign or unidentified sessions are not accepted as the configured Silicon. Explicit `si auth setup` is unchanged.
 
-          Handles such as `assistant_one` now use `assistant_one.si.localhost`. Previous encoded hostnames remain working aliases across reconnects and interpreter restarts, including for webhook delivery and health checks.
-
-          Complete macOS and Linux bundles, Linux catalog packages, and Windows WSL2 bundles are included. Omni remains at 0.10.2. No configuration migration is required from 7.0.2; installers preserve credentials and runtime data, and telemetry remains disabled. Existing uncertain deliveries still require reconciliation before deliberate replay. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
+          Complete macOS and Linux bundles, catalog package archives, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.3. Installers preserve credentials and runtime data. Restart the interpreter after updating, then rerun `si app install write`. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
           NOTES
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

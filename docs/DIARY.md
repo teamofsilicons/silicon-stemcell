@@ -1,5 +1,11 @@
 # Implementation diary
 
+### 7.0.4 — Install apps with an existing sign-in
+
+`si app install APP` now checks and reuses a current session belonging to the configured Silicon before adding the app to the ISI. Previously it unconditionally requested a fresh login, so apps such as Write rejected the request with “already signed in” and never reached the apps-list update. Signed-out apps still authenticate; foreign or unidentified sessions cannot be accepted as this Silicon. Explicit `si auth setup` retains its fresh-login behavior.
+
+No configuration migration is required from 7.0.3. Restart the interpreter after updating and rerun the failed install.
+
 ### 7.0.3 — Outbox recovery and readable local hostnames
 
 The runtime recovers missed delivery acknowledgements from Omni's durable history, matching event sequences as well as message text. An uncertain delivery is retained for receipt checks or manual reconciliation after a bounded wait, while newer messages proceed. Recognized legacy timeout records receive the same protection against automatic resend. Duplicate messages, delayed confirmations, and older END events cannot consume or complete newer work; delayed ephemeral replies retain their own turn's output.
