@@ -894,6 +894,26 @@ pub fn ensure(home: &Path, sid: &str, stk: &str, app: &str) -> Result<String> {
     setup_using(home, sid, stk, app, Path::new("silicon-accounts"), true)
 }
 
+/// Explicit installation reuses a verified session for this Silicon and registers the app.
+/// Keep its progress attached to the active connection, just like fresh setup.
+pub fn ensure_scoped(
+    home: &Path,
+    sid: &str,
+    stk: &str,
+    app: &str,
+    generation: uuid::Uuid,
+) -> Result<String> {
+    setup_using_scoped(
+        home,
+        sid,
+        stk,
+        app,
+        Path::new("silicon-accounts"),
+        true,
+        Some(generation),
+    )
+}
+
 fn setup_using(
     home: &Path,
     sid: &str,
@@ -1752,5 +1772,166 @@ mod reporting_tests {
         assert!(disable_ting_reporting(&home).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "invalid JSON");
         fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod install_session_tests {
+    use super::*;
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+
+    const SID: &str = "si:install-test";
+    const UUID: &str = "00000000-0000-0000-0000-000000000001";
+
+    fn executable(home: &Path, name: &str, script: &str) -> Result<()> {
+        let bin = home.join(".silicon/bin");
+        fs::create_dir_all(&bin)?;
+        let path = bin.join(name);
+        fs::write(&path, script)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        Ok(())
+    }
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> Result<Fixture> {
+        let dir =
+            Fixture(std::env::temp_dir().join(format!("silicon-install-{}", uuid::Uuid::new_v4())));
+        fs::create_dir_all(dir.path())?;
+        executable(
+            dir.path(),
+            "write",
+            r#"#!/bin/sh
+set -eu
+case "$*" in
+'accounts --json') echo '{"app_id":"write"}' ;;
+'login status --json') cat "$SILICON_HOME/session.json" ;;
+'login --slt slt_install_fixture')
+    echo login >> "$SILICON_HOME/login-calls"
+    if [ -f "$SILICON_HOME/reject-login" ]; then
+        echo 'You are already signed in to Silicon Write.' >&2
+        exit 5
+    fi
+    cp "$SILICON_HOME/next-session.json" "$SILICON_HOME/session.json"
+    ;;
+*) exit 2 ;;
+esac
+"#,
+        )?;
+        executable(
+            dir.path(),
+            "silicon-accounts",
+            r#"#!/bin/sh
+set -eu
+case "$*" in
+'login status --json') cat "$SILICON_HOME/accounts-status.json" ;;
+'login --silicon si:install-test --app write --json')
+    echo mint >> "$SILICON_HOME/mint-calls"
+    cat "$SILICON_HOME/issued.json"
+    ;;
+*) exit 2 ;;
+esac
+"#,
+        )?;
+        save(
+            &dir.path().join("accounts-status.json"),
+            &json!({"authenticated":true,"id":SID,"uuid":UUID}),
+        )?;
+        save(
+            &dir.path().join("next-session.json"),
+            &json!({"authenticated":true,"id":SID}),
+        )?;
+        save(
+            &dir.path().join("issued.json"),
+            &json!({"slt":"slt_install_fixture","app_id":"write","expires_at":(chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339()}),
+        )?;
+        Ok(dir)
+    }
+
+    #[test]
+    fn install_reuses_matching_sessions_and_registers_once_without_login() -> Result<()> {
+        for identity in [SID, UUID] {
+            let dir = fixture()?;
+            let home = dir.path();
+            save(
+                &home.join("session.json"),
+                &json!({"authenticated":true,"id":identity}),
+            )?;
+            fs::write(home.join("reject-login"), "")?;
+            if identity == UUID {
+                let key = serde_json::to_string(&(SID, "write"))?;
+                save(
+                    &home.join(".silicon/auth-grants.json"),
+                    &BTreeMap::from([(key, UUID)]),
+                )?;
+            }
+            // A prior explicit logout marker must clear after an explicitly requested install.
+            set_signed_out(home, "write", true)?;
+            for _ in 0..2 {
+                assert_eq!(
+                    ensure_scoped(home, SID, "fixture-stk", "write", uuid::Uuid::new_v4())?,
+                    "write"
+                );
+            }
+            assert_eq!(registered(home)?, vec!["write"]);
+            assert!(!signed_out(home)?.contains("write"));
+            assert!(!home.join("mint-calls").exists());
+            assert!(!home.join("login-calls").exists());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn install_signs_in_a_signed_out_app_and_confirms_identity() -> Result<()> {
+        for resulting_identity in [SID, "si:other"] {
+            let dir = fixture()?;
+            let home = dir.path();
+            save(&home.join("session.json"), &json!({"authenticated":false}))?;
+            save(
+                &home.join("next-session.json"),
+                &json!({"authenticated":true,"id":resulting_identity}),
+            )?;
+            let result = ensure_scoped(home, SID, "fixture-stk", "write", uuid::Uuid::new_v4());
+            assert_eq!(result.is_ok(), resulting_identity == SID);
+            assert_eq!(fs::read_to_string(home.join("mint-calls"))?, "mint\n");
+            assert_eq!(fs::read_to_string(home.join("login-calls"))?, "login\n");
+            assert_eq!(
+                registered(home)?.contains(&"write".to_owned()),
+                resulting_identity == SID
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn install_does_not_reuse_foreign_or_unidentified_sessions() -> Result<()> {
+        for state in [
+            json!({"authenticated":true,"id":"si:other"}),
+            json!({"authenticated":true,"id":UUID}),
+            json!({"authenticated":true}),
+        ] {
+            let dir = fixture()?;
+            let home = dir.path();
+            save(&home.join("session.json"), &state)?;
+            fs::write(home.join("reject-login"), "")?;
+            assert!(
+                ensure_scoped(home, SID, "fixture-stk", "write", uuid::Uuid::new_v4()).is_err()
+            );
+            assert!(registered(home)?.is_empty());
+        }
+        Ok(())
     }
 }

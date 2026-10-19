@@ -1,4 +1,4 @@
-# Silicon 7.0.3
+# Silicon 7.0.4
 
 A local interpreter for connected Silicons, powered by Rust and Silicon Omni.
 
@@ -38,10 +38,10 @@ silicon-apps install silicon --yes
 For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. Native catalog installation for macOS and Windows is not available yet. No Rust compiler is required:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.3/install.sh | sh
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.4/install.sh | sh
 ```
 
-Find platform bundles and checksums on the [v7.0.3 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.3). The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.
+Find platform bundles and checksums on the [v7.0.4 release page](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.4). The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.
 
 Silicon keeps reusable Starter genes, functions, and ISIs, per-ISI app declarations, native YAML flows, persistent sessions, and durable notification delivery. See the [7.0 migration](#upgrading-to-70) for the identity and configuration changes.
 
@@ -56,7 +56,7 @@ For the default prefix, the installer adds this path once to the startup file fo
 To choose another dedicated prefix, set the variable on the `sh` side of the pipeline:
 
 ```sh
-curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.3/install.sh \
+curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.4/install.sh \
   | SILICON_PREFIX="$HOME/tools/silicon" sh
 ```
 
@@ -66,7 +66,7 @@ The binary installation needs `curl`, `tar`, and a SHA-256 verifier (`sha256sum`
 
 | Command | Bundled component |
 | --- | --- |
-| `silicon`, `si` | Interpreter and internal CLI, 7.0.3 |
+| `silicon`, `si` | Interpreter and internal CLI, 7.0.4 |
 | `omnid`, `silicon-omni`, `omni`, `so` | Omni 0.10.2 pinned to commit `e5f31a49ae5dbb29f83d08405266c5def88b32e6` |
 | `caddy` | Caddy 2.11.4 |
 
@@ -76,7 +76,7 @@ Accounts, permissions, remote service availability, and authenticated inference 
 
 ### Upgrading from 5.x
 
-Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 7.0.3 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.
+Prepare these edits in a separate copy of your configuration while 5.x is running. Do not replace its active flow with 6.0 syntax: 5.x does not support `aggregate`, native loops/functions, or `self.error`. Stop the old interpreter before installing 7.0.4 and applying the edited configuration. These changes also apply to older configurations after their account and webhook migrations. The installer preserves YAML and does not translate it.
 
 1. Replace bare `{error}` in every catch with `{self.error}`. Result and error values are scoped to their `then` or `catch` branch; save a value with `var` when it is needed later.
 2. Review each send that must happen immediately or remain a separate message. Add `aggregate: false` to it; otherwise messages to the same `(isi, session_id)` are joined in order and sent when the flow finishes. An immediate send also flushes earlier queued messages for that destination.
@@ -96,7 +96,7 @@ The local event hostname now follows the account, such as `assistant.si.localhos
 
 ### Ting migration
 
-For configurations from 4.0.x or earlier, before reconnecting on 7.0.3:
+For configurations from 4.0.x or earlier, before reconnecting on 7.0.4:
 
 1. Remove `silicon.webhooks` and `silicon.webhook`. Keep application IDs under `isi.<name>.apps`; legacy `silicon.apps` remains supported. Applications publish notifications through Ting and no longer register separate interpreter webhooks.
 2. Change the flow to read `request.tings`, a list of notification objects with `id`, `type`, `data`, and `metadata`. Other JSON shapes are also accepted, but Ting publishers use the batch envelope. Use native `for` steps or CEL list helpers to process a whole batch; the [first Silicon example](#first-silicon) shows a minimal flow.
@@ -112,7 +112,7 @@ Existing Windows installations should rerun this release's PowerShell installer 
 In PowerShell:
 
 ```powershell
-irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.3/install.ps1 | iex
+irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.4/install.ps1 | iex
 ```
 
 Windows uses a native launcher and a dedicated WSL2 distribution named `Silicon`, with the same Linux runtime bundle and independent Silicon Apps installation used on Linux. First-time WSL2 setup can require administrator access, hardware virtualization, and a restart; rerun the installer after completing that setup. Ordinary interpreter commands run as the unprivileged Linux user `silicon`.
@@ -907,7 +907,7 @@ Apps that accept configuration expose `APP config set JSON`. The interpreter sen
 
 ## Privacy and local diagnostics
 
-Silicon 7.0.3 sends no telemetry. The interpreter, `silicon` and `si` CLIs, runtime, local dashboard, and documentation website do not upload usage, commands, events, logs, or session history to TOS, Space Station, or another telemetry destination. There is no telemetry client, browser tracker, ingestion endpoint, or setting that enables telemetry.
+Silicon 7.0.4 sends no telemetry. The interpreter, `silicon` and `si` CLIs, runtime, local dashboard, and documentation website do not upload usage, commands, events, logs, or session history to TOS, Space Station, or another telemetry destination. There is no telemetry client, browser tracker, ingestion endpoint, or setting that enables telemetry.
 
 Existing `silicon.space_station` configuration is ignored, and its expressions are never evaluated. Remove that field from old configurations. Old telemetry preferences, table keys, and environment variables cannot enable delivery. Old local telemetry spools are not read or uploaded. Logs and session history remain on your machine. Configured inference providers, Accounts, Apps, and Ting still receive the requests needed to perform their normal work.
 
@@ -1136,7 +1136,7 @@ Use `SILICON_APPS` to select a particular Apps executable. Use a dedicated Silic
 
 ### Contract versions
 
-| Consumer or dependency | Silicon 7.0.3 contract |
+| Consumer or dependency | Silicon 7.0.4 contract |
 | --- | --- |
 | Configuration | Complete `si:handle` identity and bare app IDs; see [7.0 migration](#upgrading-to-70). |
 | Application discovery | `APP accounts --json` with matching bare `app_id`. |

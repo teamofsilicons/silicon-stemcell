@@ -4043,7 +4043,7 @@ fn internal_action(app: &Arc<App>, caller: &crate::runtime::Caller, body: &Value
             let cfg = &connected.cfg;
             if install {
                 crate::apps::install_at(&cfg.home, id)?;
-                auth::setup_scoped(
+                auth::ensure_scoped(
                     &cfg.home,
                     &caller.silicon,
                     cfg.silicon.token.as_deref().unwrap(),
