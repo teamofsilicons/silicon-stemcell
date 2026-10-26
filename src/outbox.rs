@@ -181,10 +181,12 @@ impl Outbox {
                     }
                 }
                 let entry = record.deliveries.get_mut(&slot).unwrap();
-                entry.attempts = entry.attempts.saturating_add(1);
+                let check_only = entry.needs_recovery;
+                if !check_only {
+                    entry.attempts = entry.attempts.saturating_add(1);
+                }
                 let attempt = entry.attempts;
                 let delivery = entry.delivery.clone();
-                let check_only = entry.needs_recovery;
                 save(&path, &mut record)?;
                 let key = format!("{}/{slot}", path.file_stem().unwrap().to_string_lossy());
                 match send(&key, &delivery, check_only) {
@@ -205,18 +207,22 @@ impl Outbox {
                         let message =
                             crate::failure::mask(&self.home, &crate::failure::report(&error), &[]);
                         let entry = record.deliveries.get_mut(&slot).unwrap();
+                        let report_error =
+                            !check_only || entry.last_error.as_deref() != Some(message.as_str());
                         entry.last_error = Some(message.clone());
                         if error.is::<AwaitingReceipt>() {
                             entry.needs_recovery = true;
                         }
                         save(&path, &mut record)?;
-                        self.note(
-                            "error",
-                            &format!(
-                                "{message}\nVia: {} attempt {attempt}",
-                                destination(&delivery)
-                            ),
-                        );
+                        if report_error {
+                            self.note(
+                                "error",
+                                &format!(
+                                    "{message}\nVia: {} attempt {attempt}",
+                                    destination(&delivery)
+                                ),
+                            );
+                        }
                         if flow::interrupted(&error) {
                             return Err(error);
                         }
@@ -413,6 +419,85 @@ mod tests {
     }
 
     #[test]
+    fn receipt_checks_only_report_changed_errors_and_do_not_count_as_attempts() {
+        let outbox = outbox();
+        let run = Uuid::new_v4().to_string();
+        let timeout = || {
+            anyhow::anyhow!("timed out after 60s awaiting provider START/INJECTED")
+                .context(AwaitingReceipt)
+        };
+        outbox
+            .deliver(
+                &run,
+                0,
+                &delivery("first"),
+                3,
+                |_, _, check_only| {
+                    assert!(!check_only);
+                    Err(timeout())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        outbox.complete(&run).unwrap();
+        let path = outbox.path(&run).unwrap();
+        let log_path = outbox.home.join(".silicon/silicon.log");
+        let initial_log = fs::read_to_string(&log_path).unwrap();
+        assert_eq!(initial_log.matches("[error]").count(), 1);
+        assert_eq!(initial_log.matches("[recovery]").count(), 1);
+        assert!(initial_log.contains("timed out after 60s"));
+
+        let restarted = Outbox {
+            gate: Arc::new(Mutex::new(())),
+            ..outbox
+        };
+        for (error, expected_errors) in [
+            (timeout(), 1),
+            (AwaitingReceipt.into(), 2),
+            (AwaitingReceipt.into(), 2),
+            (anyhow::anyhow!("old worker is no longer available"), 3),
+            (anyhow::anyhow!("old worker is no longer available"), 3),
+        ] {
+            let mut error = Some(error);
+            assert!(restarted
+                .flush(
+                    &delivery("newer"),
+                    3,
+                    |_, _, check_only| {
+                        assert!(check_only);
+                        Err(error
+                            .take()
+                            .expect("check the receipt only once per trigger"))
+                    },
+                    || Ok(()),
+                )
+                .unwrap());
+            let retained = read(&path).unwrap().unwrap();
+            assert_eq!(retained.deliveries[&0].attempts, 1);
+            assert!(retained.deliveries[&0].needs_recovery);
+            let log = fs::read_to_string(&log_path).unwrap();
+            assert_eq!(log.matches("[error]").count(), expected_errors);
+            assert_eq!(log.matches("[recovery]").count(), 1);
+        }
+        assert!(restarted
+            .flush(
+                &delivery("newer"),
+                3,
+                |_, _, check_only| {
+                    assert!(check_only);
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap());
+        assert!(!path.exists());
+        assert!(fs::read_to_string(&log_path)
+            .unwrap()
+            .contains("udd after 1 attempt(s)"));
+        fs::remove_dir_all(restarted.home).unwrap();
+    }
+
+    #[test]
     fn uncertain_delivery_releases_queue_and_survives_until_a_late_receipt() {
         let outbox = outbox();
         let first = Uuid::new_v4().to_string();
@@ -529,6 +614,9 @@ mod tests {
         }
         let retained = read(&outbox.path(&first).unwrap()).unwrap().unwrap();
         assert!(!retained.deliveries[&0].needs_recovery);
+        assert_eq!(retained.deliveries[&0].attempts, 2);
+        let log = fs::read_to_string(outbox.home.join(".silicon/silicon.log")).unwrap();
+        assert_eq!(log.matches("[error]").count(), 2);
         let queued = read(&outbox.path(&second).unwrap()).unwrap().unwrap();
         assert_eq!(queued.deliveries[&0].attempts, 0);
         fs::remove_dir_all(outbox.home).unwrap();
@@ -626,6 +714,7 @@ mod tests {
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             assert_eq!(persisted["deliveries"]["0"]["needs_recovery"], true);
             assert_eq!(persisted["deliveries"]["0"]["delivered"], false);
+            assert_eq!(persisted["deliveries"]["0"]["attempts"], 15);
             fs::remove_dir_all(outbox.home).unwrap();
         }
     }

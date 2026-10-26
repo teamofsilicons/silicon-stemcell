@@ -1,5 +1,13 @@
 # Implementation diary
 
+### 7.0.5 — Batched Claude receipts and quiet recovery checks
+
+The complete runtime bundles now include Omni 0.10.3. Claude can acknowledge several queued inputs in one replay event; Omni now matches every text block against the pending FIFO prefix and records a separate durable receipt for each input. Exact whitespace, duplicate occurrence counts, and all-or-nothing validation are preserved, so an unknown block cannot acknowledge unrelated work.
+
+Receipt-only outbox checks no longer increment send attempts or repeat an unchanged error on every trigger. New or changed failures are still logged, and uncertain deliveries remain protected against automatic resend.
+
+No configuration migration is required from 7.0.4. Existing uncertain deliveries still need reconciliation before deliberate replay.
+
 ### 7.0.4 — Install apps with an existing sign-in
 
 `si app install APP` now checks and reuses a current session belonging to the configured Silicon before adding the app to the ISI. Previously it unconditionally requested a fresh login, so apps such as Write rejected the request with “already signed in” and never reached the apps-list update. Signed-out apps still authenticate; foreign or unidentified sessions cannot be accepted as this Silicon. Explicit `si auth setup` retains its fresh-login behavior.

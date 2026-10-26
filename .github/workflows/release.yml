@@ -132,10 +132,12 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 7.0.4 fixes `si app install` failing when an app is already signed in.
+          Silicon 7.0.5 fixes stalled delivery receipts when Claude acknowledges several queued inputs together and stops repeated recovery checks from flooding the error log.
 
-          Installing Write or another app now checks and reuses a verified session for the configured Silicon, then adds the app to the ISI's apps list. Previously the interpreter requested a fresh login every time, and Write rejected it with “already signed in” before registration could finish. Signed-out apps still authenticate, and foreign or unidentified sessions are not accepted as the configured Silicon. Explicit `si auth setup` is unchanged.
+          Bundled Omni 0.10.3 validates each text block in a Claude replay against the pending FIFO prefix, then records a durable START or INJECTED receipt for every accepted input. Whitespace and duplicate occurrences remain exact, and a mismatched batch cannot acknowledge unrelated messages.
 
-          Complete macOS and Linux bundles, catalog package archives, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.3. Installers preserve credentials and runtime data. Restart the interpreter after updating, then rerun `si app install write`. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
+          Receipt-only outbox checks no longer count as send attempts or repeat unchanged errors. Actual send failures and changed receipt errors remain visible. Uncertain messages are never automatically resent.
+
+          Complete macOS and Linux bundles, catalog package archives, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.4. Installers preserve credentials and runtime data. Existing uncertain deliveries still require reconciliation before deliberate replay. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
           NOTES
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

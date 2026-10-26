@@ -20,7 +20,7 @@ case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="$PATH:/usr/sbin" ;; esac
 case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
 export PATH
 
-version=${SILICON_VERSION:-v7.0.4}
+version=${SILICON_VERSION:-v7.0.5}
 prefix=${SILICON_PREFIX:-"$HOME/.local/share/silicon"}
 manage_path=false
 if [ -z "${SILICON_PREFIX+x}" ] && [ "${SILICON_NO_PATH:-0}" != 1 ]; then manage_path=true; fi
@@ -28,7 +28,7 @@ repository=${SILICON_REPOSITORY:-teamofsilicons/silicon-stemcell}
 source_dir=${SILICON_SOURCE_DIR:-}
 git_rev=${SILICON_GIT_REV:-}
 dependency_bins=${SILICON_DEPENDENCY_BIN_DIR:-}
-omni_rev=e5f31a49ae5dbb29f83d08405266c5def88b32e6
+omni_rev=8be0648e7893d3d5748a1c1904a89fb2168a1284
 commands='silicon si omnid silicon-omni omni so caddy'
 binaries="$commands"
 notices='LICENSE LICENSES/README.md LICENSES/omni-LICENSE.txt LICENSES/caddy-LICENSE.txt LICENSES/caddy-AUTHORS.txt'
