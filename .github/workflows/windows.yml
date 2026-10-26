@@ -71,6 +71,42 @@ jobs:
       - name: Package matching Linux runtime and native Windows entry points
         shell: pwsh
         run: ./windows/package.ps1 -LinuxArchive "$PWD/linux-bundle/silicon-${{ matrix.linux_target }}.tar.gz" -OutputDirectory "$PWD/dist"
+      - name: Verify Windows catalog commands through the bundled WSL runtime
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        id: catalog-checks
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & wsl --status
+          if ($LASTEXITCODE -ne 0) { throw 'Windows catalog checks require an operational WSL2 host.' }
+          $payload = Join-Path $env:RUNNER_TEMP 'silicon-catalog-check'
+          New-Item -ItemType Directory -Path $payload | Out-Null
+          $archive = "$PWD/dist/silicon-apps-${{ matrix.target }}.tar.gz"
+          & tar -xzf $archive -C $payload
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract the Windows catalog package.' }
+          $version = (Get-Content -LiteralPath "$payload/VERSION" -Raw).Trim()
+          & "$payload/install.ps1" -PayloadRoot $payload -Version $version -Prefix "$env:RUNNER_TEMP/silicon-install" -NoPath -NoService
+          $env:SILICON_HOME = '/home/silicon'
+          $helpText = & "$payload/silicon.exe" --help | Out-String
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($helpText)) { throw 'Windows --help check failed.' }
+          $accountsText = & "$payload/silicon.exe" accounts --json | Out-String
+          if ($LASTEXITCODE -ne 0 -or ($accountsText | ConvertFrom-Json).app_id -ne 'silicon') { throw 'Windows accounts check failed.' }
+          $loginText = & "$payload/silicon.exe" login status --json | Out-String
+          if ($LASTEXITCODE -ne 0 -or ($loginText | ConvertFrom-Json).authenticated -ne $false) { throw 'Windows signed-out login status check failed.' }
+          @{
+            target = 'windows-x86_64'
+            version = $version
+            package_sha256 = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            commands = @('--help', 'accounts --json', 'login status --json')
+            passed = $true
+          } | ConvertTo-Json | Set-Content -Encoding utf8 "$PWD/dist/windows-x86_64-platform-checks.json"
+      - name: Report unavailable Windows catalog verification
+        if: matrix.target == 'x86_64-pc-windows-msvc' && steps.catalog-checks.outcome != 'success'
+        shell: pwsh
+        run: |
+          'Windows catalog verification did not pass. Standalone bundles remain available, but do not upload this Windows package with --confirm-platform-checks until its three native commands pass on a WSL2 host.' >> $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.target }}

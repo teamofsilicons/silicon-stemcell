@@ -27,5 +27,18 @@ foreach ($notice in 'README.md omni-LICENSE.txt caddy-LICENSE.txt caddy-AUTHORS.
 }
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Compress-Archive -Path "$stage/*" -DestinationPath "$OutputDirectory/silicon-$target.zip" -Force
+if ($arch -eq 'X64') {
+    # The launcher provisions the bundled runtime on first use, just like the ZIP installer.
+    $manifest = Join-Path $stage 'apps.yaml'
+    [IO.File]::WriteAllText($manifest, "schema_version: 1`napp_id: silicon`nversion: $version`ncommand: silicon`ntargets:`n  windows-x86_64:`n    binary: silicon.exe`n", [Text.UTF8Encoding]::new($false))
+    try {
+        $archive = Join-Path (Resolve-Path $OutputDirectory).Path "silicon-apps-$target.tar.gz"
+        $entries = @(Get-ChildItem -LiteralPath $stage -Name | Sort-Object)
+        & tar -czf $archive -C $stage @entries
+        if ($LASTEXITCODE -ne 0) { throw "Windows Apps package creation failed: tar exited $LASTEXITCODE" }
+    } finally {
+        Remove-Item -LiteralPath $manifest -Force
+    }
+}
 Copy-Item "$source/install.ps1" $OutputDirectory
 Write-Output $stage
