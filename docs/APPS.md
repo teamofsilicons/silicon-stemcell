@@ -2,7 +2,7 @@
 
 [Silicon Apps](https://apps.teamofsilicons.com/) supplies application discovery, verified packages, installation, and updates. The [Developer portal](https://developers.teamofsilicons.com/) and `silicon-apps` CLI manage publishing as an owning Carbon or Silicon account.
 
-On Linux, install the interpreter with `silicon-apps install silicon --yes`. The complete installer adds Silicon Apps where needed. macOS and Windows currently use the interpreter's complete GitHub bundle installers because native catalog runner support is not yet available.
+On Linux, macOS, or Windows x64, install the interpreter with `silicon-apps install silicon --yes`. The complete GitHub bundle installers add Silicon Apps where needed. Windows uses the same WSL2 runtime through either route; first setup may require administrator access and a restart. Windows ARM64 remains a preview through the complete bundle installer.
 
 The interpreter installs the latest configured app and implicit Accounts/Ting dependencies with:
 

@@ -29,13 +29,13 @@ No terminal window is opened for each ISI. Each receives an independent process 
 
 ### Public binary installation
 
-On Linux with Silicon Apps installed, use the catalog:
+With Silicon Apps installed on Linux, macOS, or Windows x64, use the catalog:
 
 ```sh
 silicon-apps install silicon --yes
 ```
 
-For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. Native catalog installation for macOS and Windows is not available yet. No Rust compiler is required:
+For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. The catalog also supports macOS on x64/ARM64 and Windows x64; the Windows catalog package provisions the same WSL2 runtime on first use. No Rust compiler is required:
 
 ```sh
 curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.5/install.sh | sh

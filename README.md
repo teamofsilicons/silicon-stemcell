@@ -6,7 +6,7 @@ Silicon sends no telemetry, including to Space Station. Diagnostic logs and sess
 
 Silicon uses [Silicon Accounts](https://accounts.teamofsilicons.com/) for Carbon and Silicon identities, [Silicon Apps](https://apps.teamofsilicons.com/) for installation, and the [Developer portal](https://developers.teamofsilicons.com/) for publication. Every action belongs to an account: `c:handle` or `si:handle`.
 
-On Linux with Silicon Apps installed:
+With Silicon Apps installed on Linux, macOS, or Windows x64:
 
 ```sh
 silicon-apps install silicon --yes
@@ -24,7 +24,7 @@ Windows PowerShell:
 irm https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.5/install.ps1 | iex
 ```
 
-[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.5). Native catalog installation currently targets Linux; macOS and Windows use the complete bundle installers. Windows uses WSL2; first setup may require administrator access and a restart. Windows ARM64 remains a preview.
+[Release notes and checksums](https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.5). The catalog supports Linux and macOS on x64/ARM64 and Windows x64. Complete bundle installers are also available. Windows uses WSL2; first setup may require administrator access and a restart. Windows ARM64 remains a preview.
 
 **Upgrading to 7.0:** stop the interpreter, back up your Silicon home, remove the retired ownership fields from YAML, and use your Silicon Accounts identity and token. Keep the same YAML path and home to retain sessions. Follow the [migration procedure](docs/PUBLIC-IDENTIFIER-MIGRATION.md), then compile and reconnect. The installer does not rewrite your configuration.
 

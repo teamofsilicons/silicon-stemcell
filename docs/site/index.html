@@ -37,10 +37,10 @@ header{height:76px;border-bottom:1px solid var(--line);display:flex;align-items:
 <p>No terminal window is opened for each ISI. Each receives an independent process context, an Omni session, and the environment needed by its commands. Persistent session data survives stopping the interpreter. Global ephemeral work is discarded when it finishes.</p>
 </section><section class="chapter"><h2 id="installation">Installation</h2>
 <h3 id="public-binary-installation">Public binary installation</h3>
-<p>On Linux with Silicon Apps installed, use the catalog:</p>
+<p>With Silicon Apps installed on Linux, macOS, or Windows x64, use the catalog:</p>
 <pre><code class="language-sh">silicon-apps install silicon --yes
 </code></pre>
-<p>For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. Native catalog installation for macOS and Windows is not available yet. No Rust compiler is required:</p>
+<p>For complete setup, the installer below delegates Linux installation to Silicon Apps and uses the complete GitHub bundle on macOS. Windows uses the PowerShell bundle installer. The catalog also supports macOS on x64/ARM64 and Windows x64; the Windows catalog package provisions the same WSL2 runtime on first use. No Rust compiler is required:</p>
 <pre><code class="language-sh">curl -fsSL https://github.com/teamofsilicons/silicon-stemcell/releases/download/v7.0.5/install.sh | sh
 </code></pre>
 <p>Find platform bundles and checksums on the <a href="https://github.com/teamofsilicons/silicon-stemcell/releases/tag/v7.0.5">v7.0.5 release page</a>. The installer sets up Silicon, Caddy, Omni, and the Silicon Apps CLI. Apps install the latest configured applications independently and retain their own automatic updates.</p>
