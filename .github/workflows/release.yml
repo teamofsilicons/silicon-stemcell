@@ -132,12 +132,10 @@ jobs:
           cd dist
           sha256sum silicon-*.tar.gz silicon-*.zip install.sh install.ps1 > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          Silicon 7.0.6 fixes messages to a busy ISI timing out after 60 seconds each and stalling every later delivery and Ting behind them.
+          Silicon 7.0.7 keeps `omni`, `omnid` and `caddy` up to date after `silicon update` moves a standalone bundle to the Silicon Apps package.
 
-          Bundled Omni 0.10.4 acknowledges messages Claude takes mid-turn. Claude replays those without their final newline, so they never received INJECTED, and the unmatched message then blocked every later acknowledgement in that Claude session. The trimmed echo now confirms the original message, and a later echo also confirms earlier messages Claude has already read instead of leaving them pending for resend after failover.
+          The move repointed only `silicon` and `si`. The bundle's other command links stayed on its old runtime, so `omni` and `omnid` on PATH kept that bundle's Omni (0.10.3 or older) through every later update. They now point at the package's copies. Bundles already moved by an earlier release are repaired when the 7.0.7 interpreter starts or `silicon update` next runs; links the installer did not create are left alone. The interpreter itself was not affected: it starts the Omni bundled beside it.
 
-          A flow delivery now completes when Omni durably accepts it rather than waiting for the provider to take it, so a long turn no longer holds the outbox. Only a send whose acceptance answer was lost still waits for its receipt.
-
-          Complete macOS and Linux bundles, catalog package archives, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.5. Installers preserve credentials and runtime data. Existing uncertain deliveries still require reconciliation before deliberate replay. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
+          Bundled Omni remains 0.10.4. Complete macOS and Linux bundles, catalog package archives, and Windows WSL2 bundles are included. No configuration migration is required from 7.0.6. Installers preserve credentials and runtime data. Windows ARM64 remains a preview. Verify downloads against SHA256SUMS.
           NOTES
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Silicon $RELEASE_TAG" --notes-file release-notes.md silicon-*.tar.gz silicon-*.zip install.sh install.ps1 SHA256SUMS

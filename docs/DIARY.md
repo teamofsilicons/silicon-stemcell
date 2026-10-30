@@ -1,5 +1,13 @@
 # Implementation diary
 
+### 7.0.7 — Bundle tools follow the Apps package
+
+`silicon update` moves a standalone bundle to the Silicon Apps package by repointing `silicon` and `si` in the bundle's `bin` to `~/.apps/bin`. The installer's other links (`omnid`, `silicon-omni`, `omni`, `so`, `caddy`) still resolved through `lib/silicon/current`, which no later update touches, so a terminal's `omni` and the standalone `omnid` daemon stayed on the bundle's Omni while the interpreter, which prepends its own package directory to PATH, ran the new one. A move now repoints each installer-owned link at the package's copy in `~/.apps/installed/silicon/bin`, whose path survives package updates.
+
+A move made by an earlier release ran that release's code, so the packaged interpreter repairs those bundles itself at startup, as does `silicon update`. It finds them through PATH and the default `~/.local/share/silicon` prefix, accepting only a directory whose `silicon` links to this Apps home and which has `lib/silicon`. A link the installer did not create, or a tool the package does not ship, is left alone.
+
+No configuration migration is required from 7.0.6.
+
 ### 7.0.6 — Mid-turn Claude receipts and non-blocking delivery
 
 The complete runtime bundles now include Omni 0.10.4. Claude starts a turn with a queued message and echoes it exactly, but a message it takes mid-turn is replayed from its rewritten queued command without the final newline that YAML messages end with. Omni matched exactly, so those messages never received INJECTED; the unmatched message stayed at the head of Omni's FIFO, and no later echo in that Claude session matched either. A busy runner therefore acknowledged nothing, Omni kept every delivered message pending for resend after failover, and each flow delivery timed out after 60 seconds. Omni now accepts an echo equal to the message or the message with surrounding whitespace trimmed, confirms the original text, and treats an echo of a later message as proof that earlier ones were read, marking those `inferred`.
