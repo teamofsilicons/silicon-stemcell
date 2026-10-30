@@ -2,10 +2,10 @@
 
 Application CLIs are installed separately through Silicon Apps and are not included in this archive. Their packages carry their own licenses.
 
-## Omni 0.10.3 (daemon and CLI aliases)
+## Omni 0.10.4 (daemon and CLI aliases)
 
 - Declared license: MIT
-- Source: https://github.com/teamofsilicons/silicon-omni/tree/8be0648e7893d3d5748a1c1904a89fb2168a1284
+- Source: https://github.com/teamofsilicons/silicon-omni/tree/2a18f4cab3aa326200f1a14c986e20dad5378c34
 - File: omni-LICENSE.txt
 
 ## Caddy 2.11.4

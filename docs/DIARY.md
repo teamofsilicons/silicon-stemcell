@@ -1,5 +1,13 @@
 # Implementation diary
 
+### 7.0.6 — Mid-turn Claude receipts and non-blocking delivery
+
+The complete runtime bundles now include Omni 0.10.4. Claude starts a turn with a queued message and echoes it exactly, but a message it takes mid-turn is replayed from its rewritten queued command without the final newline that YAML messages end with. Omni matched exactly, so those messages never received INJECTED; the unmatched message stayed at the head of Omni's FIFO, and no later echo in that Claude session matched either. A busy runner therefore acknowledged nothing, Omni kept every delivered message pending for resend after failover, and each flow delivery timed out after 60 seconds. Omni now accepts an echo equal to the message or the message with surrounding whitespace trimmed, confirms the original text, and treats an echo of a later message as proof that earlier ones were read, marking those `inferred`.
+
+The outbox no longer waits for START or INJECTED once Omni answers `accepted: true`. That answer means the message is in Omni's durable queue, and waiting held the Silicon's single delivery gate, so every Ting behind a long turn cost a full minute. Only a send whose acceptance answer was lost still waits for its receipt; receipts still attribute replies.
+
+No configuration migration is required from 7.0.5. Sessions already stuck keep their Claude process until it restarts; their old pending Omni messages and uncertain outbox journals were delivered and need reconciliation rather than replay.
+
 ### 7.0.5 — Batched Claude receipts and quiet recovery checks
 
 The complete runtime bundles now include Omni 0.10.3. Claude can acknowledge several queued inputs in one replay event; Omni now matches every text block against the pending FIFO prefix and records a separate durable receipt for each input. Exact whitespace, duplicate occurrence counts, and all-or-nothing validation are preserved, so an unknown block cannot acknowledge unrelated work.
