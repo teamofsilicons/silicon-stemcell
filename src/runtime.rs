@@ -85,9 +85,22 @@ pub struct Sent {
     receipt: Arc<SendReceipt>,
     worker: Weak<Worker>,
     client: Client,
+    /// Omni answered `accepted: true`: the message is in its durable queue.
+    accepted: bool,
 }
 
 impl Sent {
+    /// Settle an outgoing delivery. Once Omni has accepted a message it owns delivery,
+    /// resending after failover, and a provider that is mid-turn may take minutes to
+    /// acknowledge it; waiting here would hold every delivery behind that turn. Only a
+    /// send whose acceptance was never confirmed waits for its provider receipt.
+    pub fn settle(&self) -> Result<()> {
+        if self.accepted {
+            return Ok(());
+        }
+        self.wait_started()
+    }
+
     /// Wait for START/INJECTED, never for the inference turn to finish.
     pub fn wait_started(&self) -> Result<()> {
         let mut result = self.receipt.wait();
@@ -810,7 +823,7 @@ impl Runtime {
             ),
         };
         let result = sent.and_then(|sent| {
-            let result = sent.wait_started();
+            let result = sent.settle();
             if result
                 .as_ref()
                 .is_err_and(|error| error.is::<ReceiptPending>())
@@ -2069,6 +2082,7 @@ impl Worker {
             }
             return Err(self.discard_disposable(&mut client, anyhow!("{error}")));
         }
+        let accepted = matches!(result, Ok(true));
         if let Err(error) = result {
             // A lost/malformed transport acknowledgement does not prove rejection: Omni
             // may already be running the message. Its provider receipt remains authoritative.
@@ -2123,6 +2137,7 @@ impl Worker {
             receipt,
             worker: Arc::downgrade(self),
             client: client.as_ref().unwrap().clone(),
+            accepted,
         };
         let name = state.record.isi.clone();
         drop(state);

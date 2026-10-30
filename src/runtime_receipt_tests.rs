@@ -65,6 +65,7 @@ impl Fixture {
             receipt: dispatch.receipt.clone(),
             worker: Arc::downgrade(&self.worker),
             client,
+            accepted: false,
         };
         state.pending.push(dispatch);
         state.record.status = "running".into();
@@ -144,11 +145,35 @@ fn expired_receipt_recovers_durable_start_without_the_send_lock() {
 }
 
 #[test]
+fn accepted_delivery_settles_without_awaiting_a_mid_turn_receipt() {
+    let fixture = Fixture::new();
+    let (ours, theirs) = UnixStream::pair().unwrap();
+    let mut sent = fixture.send("Heyy\n", 5, Client::from_stream(ours).unwrap());
+    sent.accepted = true;
+    sent.settle().unwrap();
+    theirs.set_nonblocking(true).unwrap();
+    let mut asked = [0; 1];
+    assert!(
+        (&theirs).read(&mut asked).is_err(),
+        "an accepted delivery must not query Omni for its receipt"
+    );
+    // The receipt still settles the dispatch's reply when the provider takes it.
+    fixture
+        .worker
+        .on_event(event(Event::INJECTED, 6, "Heyy\n"), false, 0)
+        .unwrap();
+    assert_eq!(
+        fixture.worker.state.lock().unwrap().pending[0].started_seq,
+        Some(6)
+    );
+}
+
+#[test]
 fn missing_durable_receipt_stays_uncertain_without_resending() {
     let fixture = Fixture::new();
     let (client, server) = history(vec![event(Event::TEXT, 6, "response")]);
     let sent = fixture.send("Heyy", 5, client);
-    assert!(sent.wait_started().unwrap_err().is::<ReceiptPending>());
+    assert!(sent.settle().unwrap_err().is::<ReceiptPending>());
     server.join().unwrap();
     assert!(fixture.worker.state.lock().unwrap().pending[0]
         .started_seq
