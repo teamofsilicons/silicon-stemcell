@@ -1058,7 +1058,7 @@ Expressions that CLI commands such as `silicon compile` evaluate in your termina
 
 ## Updates
 
-Silicon Apps owns package updates. `silicon update` delegates to `silicon-apps update silicon`, then requests an interpreter restart when the installed executable changes. The running interpreter also watches for an executable replacement made by Apps and waits until active work finishes before restarting.
+Silicon Apps owns package updates. `silicon update` delegates to `silicon-apps update silicon`, then requests an interpreter restart when the installed executable changes. The running interpreter also watches for an executable replacement made by Apps and waits until active work finishes before restarting. Run from a standalone bundle, `silicon update` moves it to the Apps package: `silicon` and `si` in the bundle's `bin` then link to `~/.apps/bin`, and the installer's `omnid`, `silicon-omni`, `omni`, `so` and `caddy` links point at the package's copies, so later package updates reach them. A bundle moved by an earlier release keeps those five on its old runtime until the packaged interpreter starts or `silicon update` next runs, which repoint them; links the installer did not create are left alone.
 
 The restart closes admission, stops owned children, and restores saved connections and durable sessions with the installed version. Continuous work can postpone that restart. YAML files, memories, workspaces, archives, and account sessions are outside the release payload and remain in place.
 

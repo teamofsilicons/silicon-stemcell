@@ -1550,6 +1550,14 @@ fn serve_locked(
     let Some(_lock) = take_daemon_lock(&dir.join("daemon.lock"), supervised, stop)? else {
         return Ok(());
     };
+    // `silicon update` in an older bundle moved only `silicon` and `si` to the package.
+    match crate::update::repair_moved_bundles() {
+        Ok(repaired) => repaired.iter().for_each(|line| crate::stderr_line(line)),
+        Err(error) => crate::stderr_line(&format!(
+            "{}\nVia: repairing command links left on a previous bundle",
+            failure::report(&error)
+        )),
+    }
     match raise_open_files() {
         Ok(Some((from, to))) => {
             crate::stderr_line(&format!("raised the open-file limit from {from} to {to}"))
