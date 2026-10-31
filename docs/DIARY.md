@@ -1,5 +1,11 @@
 # Implementation diary
 
+### 7.0.8 — Merged Claude replays
+
+The complete runtime bundles now include Omni 0.10.5. When several messages are queued for a busy Claude session, Claude merges them into one turn and replays them as one message whose blocks all but the last end with an added newline. Omni 0.10.4 accepted an echo only as written or with whitespace trimmed, so this padded form matched nothing: three identical heartbeats stayed pending, the interpreter kept the first heartbeat as unfinished, every later heartbeat to that ISI was skipped, and the interpreter never became idle enough to restart into an installed update. Omni now lets trailing whitespace differ in either direction, while leading whitespace and empty echoes still never match.
+
+No configuration migration is required from 7.0.7. A session's pending Omni messages that were already delivered should be reconciled before its daemon restarts; Omni otherwise resends them.
+
 ### 7.0.7 — Bundle tools follow the Apps package
 
 `silicon update` moves a standalone bundle to the Silicon Apps package by repointing `silicon` and `si` in the bundle's `bin` to `~/.apps/bin`. The installer's other links (`omnid`, `silicon-omni`, `omni`, `so`, `caddy`) still resolved through `lib/silicon/current`, which no later update touches, so a terminal's `omni` and the standalone `omnid` daemon stayed on the bundle's Omni while the interpreter, which prepends its own package directory to PATH, ran the new one. A move now repoints each installer-owned link at the package's copy in `~/.apps/installed/silicon/bin`, whose path survives package updates.
